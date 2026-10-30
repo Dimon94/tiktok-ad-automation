@@ -16,6 +16,7 @@ from app.integrations.tiktok.contracts.ads import (
     MaterialUseRef,
 )
 from app.modules.ads.directory_requests import _partition_key
+from app.modules.ads.directory_services import IDENTITY_SERVICE, SERVICE_KEY
 from app.modules.ads.models import AdObject
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 
@@ -240,6 +241,7 @@ def ensure_material_directory_children(
             "ids": [],
             "parent_ids": sorted(selected),
             "include_deleted": source.query.get("include_deleted", False),
+            SERVICE_KEY: IDENTITY_SERVICE,
             MATERIAL_CHILD_KEY: {
                 "source_run_id": str(source.id),
                 "context_page": MATERIAL_CONTEXT_PAGE,

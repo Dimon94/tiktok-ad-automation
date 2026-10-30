@@ -21,6 +21,11 @@ from app.modules.ads.directory_calibration import (
     unstarted_without_delivery,
 )
 from app.modules.ads.directory_dispatch import enqueue_directory_step
+from app.modules.ads.directory_services import (
+    IDENTITY_SERVICE,
+    SERVICE_KEY,
+    STATUS_SERVICE,
+)
 from app.modules.ads.sync_models import AdDirectoryRun
 
 DIRECTORY_AD_TYPES = ("REGULAR", "LEGACY_SMART_PLUS", "SMART_PLUS")
@@ -55,7 +60,11 @@ PROBE_KINDS = ("campaign",)
 
 def _partition_key(query: dict) -> str:
     return hashlib.sha256(
-        json.dumps(query, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            {key: value for key, value in query.items() if key != SERVICE_KEY},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
 
 
@@ -206,6 +215,7 @@ def request_directory(
     include_deleted: bool = False,
     workload: str | None = None,
     dispatch_immediately: bool = True,
+    service: str | None = STATUS_SERVICE,
     periodic_intervals: Mapping[str, timedelta] | None = None,
     now: datetime | None = None,
 ) -> int:
@@ -221,6 +231,8 @@ def request_directory(
     workload = workload or ("live" if scope == "targeted" else "background")
     if workload not in ("live", "background"):
         raise DomainError("directory_request_invalid", "目录服务分类无效")
+    if service not in (None, STATUS_SERVICE, IDENTITY_SERVICE):
+        raise DomainError("directory_request_invalid", "目录调度目的无效")
     route = FrozenTikTokRoute.model_validate(frozen_route)
     advertiser_ids = tuple(sorted(set(advertiser_ids)))
     periodic = periodic_intervals is not None
@@ -324,6 +336,8 @@ def request_directory(
                     "parent_ids": list(parent_chunk),
                     "include_deleted": scope == "directory" or include_deleted,
                 }
+                if scope == "targeted" and service is not None:
+                    query[SERVICE_KEY] = service
                 partition = _partition_key(query)
                 if periodic:
                     if (

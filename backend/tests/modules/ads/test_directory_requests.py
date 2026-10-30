@@ -403,6 +403,8 @@ def test_explicit_directory_ids_are_not_intersected_with_other_refresh_parents(
     assert all(not r.query["parent_ids"] for r in runs)
     for run in runs:
         data = run.query | {"ids": tuple(run.query["ids"]), "parent_ids": ()}
+        # 本地调度目的不属于平台查询；生产执行入口也在传输前剥离此字段。
+        data.pop("directory_service_v1")
         _, args = compile_query(DirectoryQuery(**data))
         assert f"{parent_kind}_ids" not in args["filtering"]
 

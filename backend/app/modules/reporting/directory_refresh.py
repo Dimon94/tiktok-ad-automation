@@ -12,6 +12,7 @@ from sqlmodel import Session, col, select
 from app.core.config import settings
 from app.integrations.tiktok.contracts.ads import EntityKind, EntityRef
 from app.modules.ads.directory_requests import request_directory
+from app.modules.ads.directory_services import IDENTITY_SERVICE, promote_status_requests
 from app.modules.ads.material_directory_children import is_material_child
 from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.automation_rules.models import AutomationRule
@@ -147,6 +148,7 @@ def refresh_report_directory(
             objects[key].add(row[column])
             if parent_column and row[parent_column]:
                 parents[key][row[parent_column]].add(row[column])
+    status_requests = []
     for run in pending:
         # 素材子运行只读冻结素材桥，不能代替通用对象目录；授权范围已在查询中限定。
         if is_material_child(run):
@@ -170,7 +172,10 @@ def refresh_report_directory(
         else:
             covered = remaining.intersection(ids) if ids else remaining.copy()
         # 只有完全无筛选的查询覆盖整个层；不相关在途 ID 不会遮住新缺失对象。
+        if covered & remaining:
+            status_requests.append(run)
         remaining.difference_update(covered)
+    promote_status_requests(session, status_requests)
     refs_by_type: dict[str, list[EntityRef]] = defaultdict(list)
     types: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for (advertiser, ad_type, kind), remote_ids in sorted(objects.items()):
@@ -274,6 +279,7 @@ def request_link_directory(
             dispatch_immediately=False,
             include_deleted=True,
             workload=workload,
+            service=IDENTITY_SERVICE,
             refs=tuple(
                 EntityRef(job.tenant_id, job.advertiser_ids[0], "ad", r.ad_remote_id)
                 for r in rows

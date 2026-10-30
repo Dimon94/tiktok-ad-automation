@@ -35,6 +35,7 @@ from app.modules.ads.directory_dispatch import (
     enqueue_directory_step,
     is_live_directory,
 )
+from app.modules.ads.directory_services import SERVICE_KEY
 from app.modules.ads.material_directory_children import (
     MATERIAL_CHILD_KEY,
     material_child_scope,
@@ -359,6 +360,7 @@ def _run_directory_step(
         query_data = dict(run.query)
         query_data.pop(MATERIAL_CHILD_KEY, None)
         query_data.pop(PERIODIC_KEY, None)
+        query_data.pop(SERVICE_KEY, None)
         # Celery retries must resume the persisted cursor.  The durable query is
         # the contract; page is the only mutable transport cursor.
         query_data["page"] = run.next_page

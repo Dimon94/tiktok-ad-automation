@@ -26,6 +26,11 @@ from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.modules.accounts.routing import verify_route
 from app.modules.ads.directory import append_campaign_name_projections
 from app.modules.ads.directory_requests import request_directory
+from app.modules.ads.directory_services import (
+    STATUS_SERVICE,
+    directory_service,
+    promote_status_requests,
+)
 from app.modules.ads.models import AdMaterialReference, AdObject
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 from app.modules.tenants.models import Tenant
@@ -612,13 +617,20 @@ def _queue_missing_parents(
                 ),
             )
         ).all()
-        missing.difference_update(
-            (pending_run.kind, remote_id)
-            for pending_run in pending
-            if (run.workload == "background" or pending_run.workload == "live")
-            and (not include_deleted or pending_run.query.get("include_deleted"))
-            for remote_id in pending_run.query.get("ids", ())
-        )
+        status_requests = []
+        for pending_run in pending:
+            if (run.workload != "background" and pending_run.workload != "live") or (
+                include_deleted and not pending_run.query.get("include_deleted")
+            ):
+                continue
+            covered = missing.intersection(
+                (pending_run.kind, remote_id)
+                for remote_id in pending_run.query.get("ids", ())
+            )
+            if covered and directory_service(run) == STATUS_SERVICE:
+                status_requests.append(pending_run)
+            missing.difference_update(covered)
+        promote_status_requests(session, status_requests)
         if not missing:
             return
         # 父级与子级属于同一广告类型；只补父级，不能顺带再扫子级或其它两种类型。
@@ -633,6 +645,7 @@ def _queue_missing_parents(
             scope="targeted",
             include_deleted=include_deleted,
             workload=run.workload,
+            service=directory_service(run),
             ad_types={run.advertiser_id: {run.ad_type: {kind for kind, _ in missing}}},
             refs=[
                 EntityRef(run.tenant_id, run.advertiser_id, cast(Any, kind), remote_id)

@@ -22,9 +22,11 @@ register_dispatch_task("reporting.plan_due", "control")
 TARGETED_DISPATCH_WINDOW = 32
 
 
-def targeted_capacity(session, now=None) -> int:
+def targeted_capacity(session, now=None, *, service=None) -> int:
     """生产者和恢复扫描共用同一事务锁；未领取的 ID 请求留在数据库。"""
     from app.jobs.models import PendingDispatch
+    from app.modules.ads.directory_services import SERVICE_KEY, STATUS_SERVICE
+    from app.modules.ads.material_directory_children import MATERIAL_CHILD_KEY
     from app.modules.ads.sync_models import AdDirectoryRun
 
     now = now or datetime.now(UTC)
@@ -63,17 +65,48 @@ def targeted_capacity(session, now=None) -> int:
         func.coalesce(func.jsonb_array_length(AdDirectoryRun.query["parent_ids"]), 0)
         > 0
     )
-    inflight = session.exec(
-        select(func.count())
+    status_service = func.coalesce(
+        AdDirectoryRun.query[SERVICE_KEY].astext == STATUS_SERVICE, False
+    ) & ~col(AdDirectoryRun.query).op("?")(MATERIAL_CHILD_KEY)
+    occupied = enqueued | (col(AdDirectoryRun.claimed_until) > now)
+    # 未标记旧请求不占用状态保底；只有真实状态需求可以将它晋升。
+    other_service = ~status_service if service == STATUS_SERVICE else status_service
+    eligible = (
+        ~enqueued
+        & (
+            col(AdDirectoryRun.claimed_until).is_(None)
+            | (col(AdDirectoryRun.claimed_until) <= now)
+        )
+        & (
+            col(AdDirectoryRun.next_attempt_at).is_(None)
+            | (col(AdDirectoryRun.next_attempt_at) <= now)
+        )
+        & (AdDirectoryRun.channel == "OFFICIAL_API")
+    )
+    inflight, other_inflight, other_waiting = session.exec(
+        select(
+            func.count().filter(occupied),
+            func.count().filter(occupied & other_service),
+            func.count().filter(eligible & other_service),
+        )
         .select_from(AdDirectoryRun)
         .where(
             targeted,
             AdDirectoryRun.workload == "live",
             col(AdDirectoryRun.status).in_(["QUEUED", "RUNNING", "WAITING_REMOTE"]),
-            enqueued | (col(AdDirectoryRun.claimed_until) > now),
         )
     ).one()
-    return max(0, TARGETED_DISPATCH_WINDOW - inflight)
+    available = max(0, TARGETED_DISPATCH_WINDOW - inflight)
+    if TARGETED_DISPATCH_WINDOW < 2:
+        return available
+    other_share = (
+        TARGETED_DISPATCH_WINDOW - TARGETED_DISPATCH_WINDOW // 2
+        if service == STATUS_SERVICE
+        else TARGETED_DISPATCH_WINDOW // 2
+    )
+    # 只为另一类当前可执行需求保留空槽，没有需求时整池互借。
+    reserved = max(0, other_share - other_inflight) if other_waiting else 0
+    return max(0, available - reserved)
 
 
 def is_targeted(run) -> bool:
@@ -92,8 +125,13 @@ def directory_step_key(run) -> str:
 def enqueue_directory_step(
     session, run, *, publish_only=False, initial=False, available_at=None
 ) -> None:
-    if initial and (not is_live_directory(run) or not targeted_capacity(session)):
-        return
+    if initial:
+        from app.modules.ads.directory_services import directory_service
+
+        if not is_live_directory(run) or not targeted_capacity(
+            session, service=directory_service(run)
+        ):
+            return
     dispatch_id = enqueue_after_commit(
         session,
         context=TenantContext(
