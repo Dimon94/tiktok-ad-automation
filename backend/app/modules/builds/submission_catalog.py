@@ -36,6 +36,7 @@ from app.modules.builds.submissions import (
 )
 
 from .ad_readiness import included_ad_sql, included_group_sql
+from .submission_counts import INCLUDED_OBJECT_COUNTS
 
 StatusGroup = Literal["all", "active", "attention", "completed"]
 
@@ -88,15 +89,16 @@ COUNTS = (
  FROM page p JOIN build_unit u ON u.tenant_id=p.tenant_id AND u.preview_id=p.preview_id
 ), scope AS (
  SELECT b.*, b.complete AND b.readiness IN ('READY','PREPARING') AND NOT b.covered included FROM scope_basis b
-), totals AS (
+)"""
+    + INCLUDED_OBJECT_COUNTS
+    + """, totals AS (
  SELECT submission_id,count(DISTINCT drama_id) drama_count,count(DISTINCT advertiser_id) account_count,
  count(*) FILTER(WHERE NOT included) excluded_unit_count,count(*) FILTER(WHERE included) submitted_c,
- coalesce(sum((SELECT count(*) FROM planned_group g WHERE g.tenant_id=scope.tenant_id AND g.unit_id=scope.id AND """
-    + included_group_sql()
-    + """)) FILTER(WHERE included),0) submitted_g,coalesce(sum((SELECT count(*) FROM planned_group g JOIN planned_ad a ON a.tenant_id=g.tenant_id AND a.group_id=g.id WHERE g.tenant_id=scope.tenant_id AND g.unit_id=scope.id AND """
-    + included_ad_sql()
-    + """)) FILTER(WHERE included),0) submitted_a
- FROM scope GROUP BY submission_id
+ coalesce(sum(c.group_count) FILTER(WHERE included),0) submitted_g,
+ coalesce(sum(c.ad_count) FILTER(WHERE included),0) submitted_a
+ FROM scope LEFT JOIN included_object_counts c
+ ON c.tenant_id=scope.tenant_id AND c.preview_id=scope.preview_id AND c.unit_id=scope.id
+ GROUP BY submission_id
 ), failed_ancestors AS MATERIALIZED (
  SELECT p.id submission_id,s.unit_id,bool_or(s.kind='CTA') cta_failed,bool_or(s.kind='CAMPAIGN') campaign_failed
  FROM page p JOIN execution_step s ON s.tenant_id=p.tenant_id AND s.submission_id=p.id

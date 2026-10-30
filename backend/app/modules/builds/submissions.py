@@ -45,6 +45,7 @@ from app.modules.builds.routes import (
 from app.modules.tenants.permissions import require_tenant
 
 from .ad_readiness import included_ad_sql, included_group_sql
+from .submission_counts import INCLUDED_OBJECT_COUNTS
 
 
 def authorize(session: Session, context: TenantContext, action: str = "read") -> None:
@@ -622,14 +623,13 @@ def get_submission(
             session,
             text(
                 SCOPE_CTE
-                + """SELECT count(*) planned_c,coalesce(sum(group_count),0) planned_g,coalesce(sum(ad_count),0) planned_a,
- count(*) FILTER(WHERE included) submitted_c,coalesce(sum((SELECT count(*) FROM planned_group g WHERE g.tenant_id=scope.tenant_id AND g.unit_id=scope.id AND """
-                + included_group_sql()
-                + """)) FILTER(WHERE included),0) submitted_g,coalesce(sum((SELECT count(*) FROM planned_group g JOIN planned_ad a ON a.tenant_id=g.tenant_id AND a.group_id=g.id WHERE g.tenant_id=scope.tenant_id AND g.unit_id=scope.id AND """
-                + included_ad_sql()
-                + """)) FILTER(WHERE included),0) submitted_a,
+                + INCLUDED_OBJECT_COUNTS
+                + """SELECT count(*) planned_c,coalesce(sum(scope.group_count),0) planned_g,coalesce(sum(scope.ad_count),0) planned_a,
+ count(*) FILTER(WHERE included) submitted_c,coalesce(sum(c.group_count) FILTER(WHERE included),0) submitted_g,
+ coalesce(sum(c.ad_count) FILTER(WHERE included),0) submitted_a,
  count(*) FILTER(WHERE NOT included) excluded_units,count(DISTINCT drama_id) dramas,count(DISTINCT advertiser_id) accounts
- FROM scope"""
+ FROM scope LEFT JOIN included_object_counts c
+ ON c.tenant_id=scope.tenant_id AND c.preview_id=scope.preview_id AND c.unit_id=scope.id"""
             ),
             params(row),
         )
