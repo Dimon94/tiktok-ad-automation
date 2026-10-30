@@ -14,8 +14,7 @@ from redis import Redis
 from redis.backoff import NoBackoff
 from redis.exceptions import RedisError
 from redis.retry import Retry
-from sqlalchemy import delete, func, text, tuple_, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import Engine, delete, func, text, tuple_, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
@@ -29,20 +28,10 @@ from app.integrations.tiktok.gateway import open_tiktok_gateway
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
 from app.jobs.celery_app import celery_app
 from app.jobs.models import PendingDispatch
-from app.jobs.outbox import (
-    enqueue_after_commit,
-    enqueue_many_after_commit,
-    validate_dispatch_payload,
-)
+from app.jobs.outbox import validate_dispatch_payload
 from app.jobs.tasks import register_dispatch_task
 from app.modules.accounts.routing import verify_route
 from app.modules.ads.directory_calibration import calibration_interval
-from app.modules.ads.directory_dispatch import (
-    PUBLISH_TASK_NAME,
-    directory_step_key,
-    enqueue_directory_step,
-    is_live_directory,
-)
 from app.modules.ads.directory_requests import (
     directory_ad_types,
     directory_unblocked_accounts,
@@ -53,54 +42,28 @@ from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 from app.modules.reporting import diagnostics, planner, publish
 from app.modules.reporting.jobs import (
     LEASE,
-    claim_jobs,
     execute_job,
     request_time,
 )
 from app.modules.reporting.lanes import (
-    has_background_facts,
-    lane_condition,
     report_workload,
 )
 from app.modules.reporting.metrics import parse_decimal
-from app.modules.reporting.partitions import ensure_month_partitions
 from app.modules.reporting.query_budget import QueryBudgetExceeded, query_budget
 from app.modules.reporting.query_models import QuerySnapshot, QuerySnapshotRow
 from app.modules.reporting.store_models import (
     AdSyncBc,
-    CampaignReportHour,
-    DirectoryDispatchCursor,
-    ReportBalanceRun,
-    ReportDispatchCursor,
     ReportSyncJob,
     ReportSyncPage,
 )
+from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 
 logger = logging.getLogger(__name__)
 
-# 每次派发最多入队的目录运行数；其余留给后续轮次，保证规划耗时有界。
-DIRECTORY_DISPATCH_BATCH = 1000
-# 历史定向与全量目录共用后台窗口；只在独立后台消费者执行，不占实时目录槽。
-DIRECTORY_DISPATCH_WINDOW = 8
-# 事实与关联独立限制在途任务；这是领取上限，不代表共享 Worker 中的专属执行槽。
-# 12 个执行进程保留两批有界候补，吸收 outbox 投递空档；
-# 实际 SDK 并发和调用次数始终由共享准入额度约束。
-REPORT_DISPATCH_WINDOW = 24
-# 昨日收尾只保留两个独立实时候补；今日先派发且原 24 个名额不被收尾占用。
-# 这是数据库在途限制，实际执行仍共享 reporting Worker 与平台准入额度。
-CLOSEOUT_DISPATCH_WINDOW = 2
-# 当地今天关联独立于实时事实；历史关联使用下面的后台窗口。
-LINK_DISPATCH_WINDOW = 4
-# 后台3个执行进程同样保留两批有界候补，避免每步等待outbox投递而空转。
-# 历史事实/关联各保底一半，闲置份额可借；实际执行并发及平台配额不变。
-BACKFILL_DISPATCH_WINDOW = 6
-# 目录消息发布后超过此时长仍未被领取，视为丢失并重新入队。
-# 读取孤儿10分钟恢复；单槽发布可执行至210秒，8个窗口最坏排队低于30分钟。
-# 发布单独判丢失，避免长队中合法消息被反复换代；行锁/代数仍防重复发布。
-# 实时定向仍使用更短的2分钟。
-DIRECTORY_MESSAGE_LOST_AFTER = timedelta(minutes=10)
-PUBLISH_MESSAGE_LOST_AFTER = timedelta(minutes=30)
-TARGETED_MESSAGE_LOST_AFTER = timedelta(minutes=2)
+# 保留原实时32+后台8的总目录候补预算；实际发送受原平台账本及queued占位限制。
+DIRECTORY_DISPATCH_WINDOW = 40
+# 合并旧24+2+4+6个报表候补为统一物理窗口，工作类份额由持久公平游标分配。
+REPORT_DISPATCH_WINDOW = 36
 # 一轮周期目录分批推进；此游标不占用账户筛选或规则相位的进度键。
 DIRECTORY_PLAN_PROGRESS = "directory_cycle_v1"
 # 批量上限配合查询预算保护数据库；不再按固定分钟额度延迟必要任务发现。
@@ -122,14 +85,38 @@ def _context(row):
 
 @contextmanager
 def _reader_for(*, database_engine, redis_client, plan, deadline, workload="live"):
-    with open_tiktok_gateway(
-        database_engine=database_engine,
-        redis_client=redis_client,
-        context=_context(plan),
-        route=FrozenTikTokRoute.model_validate(plan.frozen_route),
-        task_deadline=deadline,
-        workload=workload,
-    ) as gateway:
+    from contextlib import nullcontext
+
+    from app.modules.sync_control.occupancy import dispatch_context
+    from app.modules.sync_control.schedule import report_endpoint
+
+    reservation = getattr(plan, "claim_token", None)
+    budget = (
+        dispatch_context(
+            redis_client,
+            reservation_id=reservation,
+            scope={
+                "app_scope": settings.TIKTOK_APP_ID,
+                "endpoint": report_endpoint(plan.kind),
+                "rate_group": report_endpoint(plan.kind),
+                "tenant_id": plan.tenant_id,
+                "advertiser_id": plan.advertiser_ids[0],
+            },
+        )
+        if reservation is not None
+        else nullcontext()
+    )
+    with (
+        budget,
+        open_tiktok_gateway(
+            database_engine=database_engine,
+            redis_client=redis_client,
+            context=_context(plan),
+            route=FrozenTikTokRoute.model_validate(plan.frozen_route),
+            task_deadline=deadline,
+            workload=workload,
+        ) as gateway,
+    ):
         yield gateway.report_reader
 
 
@@ -256,137 +243,17 @@ def _advance(due, now, interval):
     return due + (max(0, (now - due) // interval) + 1) * interval
 
 
-def _message_lost(session: Session, row: AdDirectoryRun, now: datetime) -> bool:
-    key = directory_step_key(row)
-    dispatch = session.exec(
-        select(PendingDispatch.published_at, PendingDispatch.task_name).where(
-            PendingDispatch.tenant_id == row.tenant_id,
-            PendingDispatch.task_key == key,
-        )
-    ).first()
-    if dispatch is None or dispatch.published_at is None:
-        return False
-    threshold = (
-        PUBLISH_MESSAGE_LOST_AFTER
-        if dispatch.task_name == PUBLISH_TASK_NAME
-        else TARGETED_MESSAGE_LOST_AFTER
-        if is_live_directory(row)
-        else DIRECTORY_MESSAGE_LOST_AFTER
-    )
-    return dispatch.published_at < now - threshold
-
-
 def _dispatch_directories(session, now, *, allow_backfill=True):
-    from app.modules.ads import directory_dispatch
-    from app.modules.ads.directory_candidates import directory_candidates
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
 
-    # 与显式定向入口共享窗口锁；一次活动快照同时计算两池容量和公平候选。
-    locked = (
-        session.connection()
-        .execute(
-            text(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended('tkada:directory-dispatch-window', 0))"
-            )
+    with Redis.from_url(settings.REDIS_URL) as redis:
+        return dispatch_directories_due(
+            session,
+            redis,
+            now=now,
+            limit=DIRECTORY_DISPATCH_WINDOW,
+            allow_backfill=allow_backfill,
         )
-        .scalar_one()
-    )
-    if not locked:
-        return 0
-    candidates = directory_candidates(
-        session,
-        now,
-        background_window=1
-        if allow_backfill and has_background_facts(session, now)
-        else DIRECTORY_DISPATCH_WINDOW,
-        live_window=directory_dispatch.TARGETED_DISPATCH_WINDOW,
-        batch_limit=DIRECTORY_DISPATCH_BATCH,
-        directory_lost_after=DIRECTORY_MESSAGE_LOST_AFTER,
-        publish_lost_after=PUBLISH_MESSAGE_LOST_AFTER,
-        targeted_lost_after=TARGETED_MESSAGE_LOST_AFTER,
-    )
-    available = candidates[0]["background_available"]
-    targeted_available = candidates[0]["live_available"]
-    ids = [row["id"] for row in candidates if row["id"] is not None]
-    if not ids:
-        return 0
-    # 候选 SQL 已按原行锁跳过竞争队首；这里只加载实际窗口内的业务对象。
-    loaded = session.exec(
-        select(AdDirectoryRun)
-        .where(col(AdDirectoryRun.id).in_(ids))
-        .execution_options(populate_existing=True)
-    ).all()
-    by_id = {row.id: row for row in loaded}
-    rows = [by_id[identity] for identity in ids]
-    # 批量识别末页；全量发布保留独立队列，定向抓取/发布使用实时目录队列。
-    terminal_runs = (
-        set(
-            session.exec(
-                select(AdDirectoryPage.run_id).where(
-                    col(AdDirectoryPage.run_id).in_([row.id for row in rows]),
-                    col(AdDirectoryPage.complete).is_(True),
-                )
-            ).all()
-        )
-        if rows
-        else set()
-    )
-    count = 0
-    served = set()
-    served_status = {}
-    for row in rows:
-        from app.modules.ads.directory_backlog import review_unstarted_directory
-
-        if review_unstarted_directory(session, row, now):
-            continue
-        if is_live_directory(row):
-            if targeted_available <= 0:
-                continue
-            targeted_available -= 1
-        else:
-            if available <= 0:
-                continue
-            available -= 1
-        if row.claimed_until is not None or _message_lost(session, row, now):
-            row.claim_generation += 1
-            row.claim_token = row.claimed_until = None
-        enqueue_directory_step(session, row, publish_only=row.id in terminal_runs)
-        served.add(row.tenant_id)
-        from app.modules.ads.directory_services import (
-            directory_service,
-            is_missing_status,
-        )
-
-        if (
-            is_live_directory(row)
-            and directory_service(row) == "status"
-            and row.next_page == 1
-            and row.id not in terminal_runs
-        ):
-            served_status[row.tenant_id] = is_missing_status(row)
-        count += 1
-    for tenant in sorted(served):
-        statement = insert(DirectoryDispatchCursor).values(
-            tenant_id=tenant,
-            last_dispatched_at=now,
-            last_status_missing=served_status.get(tenant),
-        )
-        session.exec(
-            statement.on_conflict_do_update(
-                index_elements=["tenant_id"],
-                set_={
-                    **(
-                        {"last_status_missing": statement.excluded.last_status_missing}
-                        if tenant in served_status
-                        else {}
-                    ),
-                    "last_dispatched_at": func.greatest(
-                        col(DirectoryDispatchCursor.last_dispatched_at),
-                        statement.excluded.last_dispatched_at,
-                    ),
-                },
-            )
-        )
-    return count
 
 
 PLANNING_ENTRY_LOCK = "reporting:planner:entry:v1"
@@ -504,26 +371,27 @@ def _schedule_planning_continuation(
                     )
                     return
                 created = True
-                enqueue_many_after_commit(
+                dispatch_id = enqueue_sync_dispatch(
                     session,
                     context=_context(plans[0]),
-                    entries=[
-                        (
-                            "reporting.plan_continue",
-                            f"report-planning-continue:{identity}",
-                            {
-                                "continuation_id": identity,
-                                "expires_at": expires.isoformat(),
-                            },
-                            started_at + timedelta(seconds=15),
-                        )
-                    ],
+                    now=datetime.now(UTC),
+                    task_name="reporting.plan_continue",
+                    task_key=f"report-planning-continue:{identity}",
+                    payload={
+                        "continuation_id": identity,
+                        "expires_at": expires.isoformat(),
+                    },
                 )
+                dispatch = session.get(PendingDispatch, dispatch_id)
+                assert dispatch is not None
+                dispatch.available_at = started_at + timedelta(seconds=15)
                 session.flush()
         logger.info("report planning signal: outcome=scheduled mode=regular")
     except BaseException as error:
         if created:
             _release_planning_key(redis_client, PLANNING_CONTINUATION, identity)
+        if isinstance(error, DomainError) and error.code == "dispatch_expired":
+            return
         if not _planning_budget_error(error):
             raise
         logger.info(
@@ -548,6 +416,10 @@ def _run_planning_entry(
     deadline = datetime.now(UTC) + timedelta(seconds=max(0, stop - started))
     # 额度紧张优先让出历史补数，不静默把止损数据降成小时级。
     hot, material = planner.HOT_INTERVAL, planner.MATERIAL_INTERVAL
+    if not realtime_only:
+        from app.modules.reporting.partitions import maintain_partitions
+
+        maintain_partitions(database_engine, today=now.date(), limit=2)
     try:
         with (
             Session(database_engine) as session,
@@ -555,7 +427,6 @@ def _run_planning_entry(
             query_budget(session, seconds=max(0, stop - time.monotonic())),
         ):
             if not realtime_only:
-                ensure_month_partitions(session, today=now.date())
                 planner.ensure_bc_plans(session, now=now)
             keys = [
                 (p.tenant_id, p.bc_id)
@@ -586,9 +457,7 @@ def _run_planning_entry(
         include_directories=not realtime_only,
     )
     dispatch_seconds = time.monotonic() - dispatch_started
-    # 两类维护各自提交：旧任务归并读慢时，不能回滚/挡住目录依赖的复核游标。
-    # 先唤醒再归并，各一秒预算；正常事实派发已提交，不受维护失败影响。
-    from app.modules.reporting.link_reconciliation import reconcile_link_work_batch
+    # 关联需求在创建时统一归并；维护只能唤醒依赖，不能再扩大已冻结执行的查询。
     from app.modules.reporting.link_work import wake_link_dependencies
 
     maintenance_started = time.monotonic()
@@ -606,16 +475,6 @@ def _run_planning_entry(
         except Exception:
             logger.exception(
                 "report link maintenance deferred phase=wake_link_dependencies"
-            )
-        try:
-            # runner 独立提交后才保存轮转位置，超时或 Redis 故障只会安全重扫。
-            if stop - time.monotonic() >= 1.2:
-                reconcile_link_work_batch(
-                    database_engine=database_engine, redis_client=redis_client, now=now
-                )
-        except Exception:
-            logger.exception(
-                "report link maintenance deferred phase=reconcile_link_work"
             )
     # 每轮每BC只推进一个阶段，预算有余继续下一轮；不以账户数量人为限速。
     remaining = list(keys)
@@ -959,120 +818,42 @@ def _plan_one(
 
 
 def _dispatch_report_jobs(
-    session: Session, now: datetime, *, allow_backfill=True
+    session: Session, now: datetime, *, allow_backfill=True, redis_client=None
 ) -> int:
-    # 多个调度唤醒也必须原子核对全局窗口，不能各自看到两个空槽后重复领取。
-    locked = (
-        session.connection()
-        .execute(
-            text(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended('tkada:report-dispatch-window', 0))"
-            )
-        )
-        .scalar_one()
-    )
-    if not locked:
-        return 0
-    jobs = []
-    for lane, window, task in (
-        ("live", REPORT_DISPATCH_WINDOW, "reporting.job_step"),
-        ("closeout", CLOSEOUT_DISPATCH_WINDOW, "reporting.job_step"),
-        ("links", LINK_DISPATCH_WINDOW, "reporting.job_step"),
-        ("backfill", BACKFILL_DISPATCH_WINDOW, "reporting.backfill_step"),
-    ):
-        if lane == "backfill" and not allow_backfill:
-            continue
-        inflight = session.exec(
-            select(func.count())
-            .select_from(ReportSyncJob)
-            .where(
-                ReportSyncJob.status == "RUNNING",
-                col(ReportSyncJob.claimed_until) > now,
-                lane_condition(lane=lane, now=now),
-            )
-        ).one()
-        available = max(0, window - inflight)
-        claimed = []
-        protect_facts = lane == "backfill" and has_background_facts(session, now)
-        if available and lane == "backfill":
-            # 四进程还消费目录队列：有事实需求时目录/补链各至多一个在途步骤，
-            # 剩余容量给事实。没有到期事实时恢复借用，不凭积压总数压低吞吐。
-            for group in ("facts", "links"):
-                kind_filter = (
-                    ReportSyncJob.kind == "material_links"
-                    if group == "links"
-                    else ReportSyncJob.kind != "material_links"
-                )
-                running = session.exec(
-                    select(func.count())
-                    .select_from(ReportSyncJob)
-                    .where(
-                        kind_filter,
-                        ReportSyncJob.status == "RUNNING",
-                        col(ReportSyncJob.claimed_until) > now,
-                        lane_condition(lane=lane, now=now),
-                    )
-                ).one()
-                share = (
-                    (1 if group == "links" else window - 1)
-                    if protect_facts
-                    else (window + (group == "facts")) // 2
-                )
-                count = min(available - len(claimed), max(0, share - running))
-                if count:
-                    batch = claim_jobs(
-                        session, now=now, limit=count, lane=lane, backfill_group=group
-                    )
-                    claimed.extend(batch)
-                    _record_report_dispatch(session, batch, now)
-        remaining = available - len(claimed)
-        if remaining:
-            claimed.extend(
-                claim_jobs(
-                    session,
-                    now=now,
-                    limit=remaining,
-                    lane=lane,
-                    backfill_group="facts" if protect_facts else None,
-                )
-            )
-        for job in claimed:
-            enqueue_after_commit(
+    from app.modules.sync_control.dispatcher import dispatch_due
+
+    slots = REPORT_DISPATCH_WINDOW
+    if redis_client is None:
+        with Redis.from_url(settings.REDIS_URL) as redis:
+            return dispatch_due(
                 session,
-                context=_context(job),
-                task_name=task,
-                task_key=f"report-job:{job.id}:{job.claim_token}",
-                payload={"job_id": str(job.id), "claim_id": str(job.claim_token)},
+                redis,
+                now=now,
+                physical_slots=slots,
+                allow_backfill=allow_backfill,
             )
-        jobs.extend(claimed)
-    _record_report_dispatch(session, jobs, now)
-    return len(jobs)
-
-
-def _record_report_dispatch(session, jobs, now):
-    for tenant_id in sorted({job.tenant_id for job in jobs}):
-        # 游标与领取/outbox 同事务提交，失败不跳过租户，也不干扰其他业务队列。
-        statement = insert(ReportDispatchCursor).values(
-            tenant_id=tenant_id, last_dispatched_at=now
-        )
-        session.exec(
-            statement.on_conflict_do_update(
-                index_elements=["tenant_id"],
-                set_={
-                    "last_dispatched_at": func.greatest(
-                        col(ReportDispatchCursor.last_dispatched_at),
-                        statement.excluded.last_dispatched_at,
-                    )
-                },
-            )
-        )
+    return dispatch_due(
+        session,
+        redis_client,
+        now=now,
+        physical_slots=slots,
+        allow_backfill=allow_backfill,
+    )
 
 
 @contextmanager
 def _report_refill_after(database_engine, redis_client, job):
+    completed = True
     try:
         yield
+    except SoftTimeLimitExceeded, KeyboardInterrupt, SystemExit:
+        completed = False
+        raise
     finally:
+        if completed:
+            from app.modules.sync_control.costs import finish_current_cost
+
+            finish_current_cost()
         if settings.ADS_SYNC_ENABLED:
             try:
                 with diagnostics.stage("refill"):
@@ -1080,14 +861,13 @@ def _report_refill_after(database_engine, redis_client, job):
                     allow_backfill = planner.backfill_allowed(redis_client, now)
                     # 当前步骤提交后直接执行有锁本地领取；新消息仍写正常 outbox，
                     # 去掉先发 control 唤醒再领取的双跳，不在读取 Worker 内发送 broker。
-                    # 仅补报表槽；目录保留自身完成唤醒和Control调度，不能每个事实步骤
-                    # 都重新搬运其独立积压、延长报表窗口锁和CPU占用。
+                    # 后台事实与目录共用池，完成后按池公平顺序补位，避免空槽等Beat。
                     with diagnostics.stage("refill_dispatch"):
                         count = _dispatch_pending(
                             database_engine,
                             now,
                             allow_backfill=allow_backfill,
-                            include_directories=False,
+                            include_directories=job.execution_pool == "background",
                         )
                     diagnostics.counts(refill_jobs=count)
             except Exception:
@@ -1096,13 +876,13 @@ def _report_refill_after(database_engine, redis_client, job):
 
 
 def _dispatch_pending(
-    database_engine,
-    now,
+    database_engine: Engine,
+    now: datetime,
     *,
-    allow_backfill=True,
-    include_directories=True,
-    budget_seconds=None,
-):
+    allow_backfill: bool = True,
+    include_directories: bool = True,
+    budget_seconds: float | None = None,
+) -> int:
     from contextlib import nullcontext
 
     with (
@@ -1114,18 +894,33 @@ def _dispatch_pending(
             else nullcontext()
         ),
     ):
-        count = _dispatch_report_jobs(session, now, allow_backfill=allow_backfill) + (
-            _dispatch_directories(session, now, allow_backfill=allow_backfill)
-            if include_directories
-            else 0
-        )
+        from app.modules.sync_control.balance_demand import dispatch_balances_due
 
+        count = 0
+        started = time.monotonic()
+        # 公共池的下一类可能在另一派发器；有界轮转填满，不能一个pair后等Beat。
+        with Redis.from_url(settings.REDIS_URL) as redis:
+            for _ in range(8):
+                current = _dispatch_report_jobs(
+                    session, now, allow_backfill=allow_backfill
+                )
+                if include_directories:
+                    current += _dispatch_directories(
+                        session, now, allow_backfill=allow_backfill
+                    )
+                current += dispatch_balances_due(session, redis, now=now)
+                count += current
+                if not current or time.monotonic() - started >= (budget_seconds or 4):
+                    break
         session.flush()
         return count
 
 
 def _failed(session, job, code):
     job.status, job.error_code, job.finished_at = "FAILED", code, datetime.now(UTC)
+    from app.modules.sync_control.schedule import record_report_outcome
+
+    record_report_outcome(session, job)
     job.claim_token = job.claimed_until = None
     publish.mark_failed(
         session,
@@ -1141,6 +936,52 @@ def _failed(session, job, code):
 
 @diagnostics.summarize_job
 def run_job_step(*, database_engine, redis_client, job_id, claim_token):
+    from app.modules.sync_control.costs import execution_cost_context
+    from app.modules.sync_control.occupancy import release_dispatch
+    from app.modules.sync_control.schedule import report_endpoint
+
+    with Session(database_engine) as session:
+        job = session.get(ReportSyncJob, job_id)
+        if job is None:
+            return "FAILED"
+        tenant_id, generation = job.tenant_id, job.claim_generation
+        advertiser, endpoint = job.advertiser_ids[0], report_endpoint(job.kind)
+        valid_claim = job.claim_token == claim_token
+    try:
+        if not valid_claim:
+            return "FAILED"
+        with execution_cost_context(
+            database_engine,
+            tenant_id=tenant_id,
+            execution_id=job_id,
+            generation=generation,
+            kind="report",
+        ):
+            return _run_job_step(
+                database_engine=database_engine,
+                redis_client=redis_client,
+                job_id=job_id,
+                claim_token=claim_token,
+            )
+    finally:
+        try:
+            # 发送前撤权也必须释放本消息的queued占位；旧token不会清新代，
+            # 此函数只动dispatch键，不退还原平台已消费次数或正在发送的inflight。
+            release_dispatch(
+                redis_client,
+                reservation_id=claim_token,
+                app_scope=settings.TIKTOK_APP_ID,
+                endpoint=endpoint,
+                rate_group=endpoint,
+                tenant_id=tenant_id,
+                advertiser_id=advertiser,
+            )
+        except RedisError:
+            logger.warning("report queued occupancy release deferred to expiry")
+
+
+def _run_job_step(*, database_engine, redis_client, job_id, claim_token):
+    queued_token = claim_token
     with diagnostics.stage("step_prepare"):
         with Session(database_engine, expire_on_commit=False) as session:
             job = session.get(ReportSyncJob, job_id, with_for_update=True)
@@ -1154,6 +995,9 @@ def run_job_step(*, database_engine, redis_client, job_id, claim_token):
                 return "FAILED"
             if not settings.ADS_SYNC_ENABLED:
                 job.status, job.due_at = "WAITING", now + timedelta(minutes=1)
+                from app.modules.sync_control.schedule import record_report_outcome
+
+                record_report_outcome(session, job)
                 job.claim_token = job.claimed_until = None
                 with diagnostics.stage("job_commit"):
                     session.commit()
@@ -1179,6 +1023,9 @@ def run_job_step(*, database_engine, redis_client, job_id, claim_token):
                 return "FAILED"
             workload = report_workload(session, job, now=now)
             before = job.request_count
+            # 原子消费queued身份：同代重投即使趁HTTP已释放DB锁，也不能成为第二消费者。
+            # 私有token只用于worker/发布围栏，原queued token仍用于真实准入交接及精确释放。
+            job.claim_token = claim_token = uuid4()
             # 排队等待不侵占实际读取期限，避免刚开始执行就被扫描器换代。
             job.claimed_until = now + LEASE
             with diagnostics.stage("claim_commit"):
@@ -1192,7 +1039,7 @@ def run_job_step(*, database_engine, redis_client, job_id, claim_token):
             with _reader_for(
                 database_engine=database_engine,
                 redis_client=redis_client,
-                plan=job,
+                plan=job.model_copy(update={"claim_token": queued_token}),
                 deadline=now + timedelta(seconds=170),
                 workload=workload,
             ) as reader:
@@ -1210,6 +1057,9 @@ def run_job_step(*, database_engine, redis_client, job_id, claim_token):
                     current.due_at = now + timedelta(
                         milliseconds=max(1000, error.retry_after_ms)
                     )
+                    from app.modules.sync_control.schedule import record_report_outcome
+
+                    record_report_outcome(session, current)
                     current.claim_token = current.claimed_until = None
                     with diagnostics.stage("job_commit"):
                         session.commit()
@@ -1236,8 +1086,9 @@ def run_job_step(*, database_engine, redis_client, job_id, claim_token):
 
 
 # 目录分页暂存只服务于本次运行的整批发布；运行发布或作废后不再被读取。
-# 只保留 1 小时：每日新增约 1.8 万页，保留越久发布备份与恢复越慢。FAILED 可重试，不清理。
+# 成功/作废页保留1小时；FAILED保留7天排查与人工恢复窗口，之后仅无活租约/待发布子桶才清页。
 DIRECTORY_PAGE_RETENTION = timedelta(hours=1)
+FAILED_DIRECTORY_PAGE_RETENTION = timedelta(days=7)
 # 单批清理的运行数上限：暂存页含大 JSONB，分批各自提交，避免长事务。
 DIRECTORY_PAGE_CLEANUP_RUNS = 2000
 # 每分钟以10秒为续批预算，首轮每类仍有一次机会；短批各自提交，持续追赶暂存。
@@ -1305,13 +1156,29 @@ def _supersede_stalled_directory_runs(now, *, candidate_ids=None, batch_limit=No
 
 
 def _expired_directory_runs(now):
+    from app.modules.sync_control.models import SyncExecutionScope
+
     finished = col(AdDirectoryRun.published_version).is_not(None) | col(
         AdDirectoryRun.status
-    ).in_(["CANCELLED", "STALE"])
+    ).in_(["CANCELLED", "STALE", "FAILED"])
     return (
         select(AdDirectoryRun.id)
         .where(
             finished,
+            col(AdDirectoryRun.claim_token).is_(None),
+            col(AdDirectoryRun.claimed_until).is_(None)
+            | (col(AdDirectoryRun.claimed_until) <= now),
+            # 失败完成时间未知时保守保留，不能从创建时间倒推7天窗口。
+            (col(AdDirectoryRun.status) != "FAILED")
+            | (
+                col(AdDirectoryRun.completed_at) < now - FAILED_DIRECTORY_PAGE_RETENTION
+            ),
+            ~select(SyncExecutionScope.id)
+            .where(
+                SyncExecutionScope.directory_run_id == AdDirectoryRun.id,
+                SyncExecutionScope.status == "PENDING",
+            )
+            .exists(),
             # 被新运行取代的运行（superseded）不再需要排查窗口，立即清理。
             (col(AdDirectoryRun.error_code) == "superseded")
             | (
@@ -1323,6 +1190,7 @@ def _expired_directory_runs(now):
             .exists(),
         )
         .limit(DIRECTORY_PAGE_CLEANUP_RUNS)
+        .with_for_update(skip_locked=True)
     )
 
 
@@ -1350,30 +1218,70 @@ def _cleanup_candidates(session, model, *, cursor, limit):
     return keys, list(session.connection().execute(statement).all())
 
 
+def _execution_cleanup_guard(model, execution_column, payload_key):
+    from sqlalchemy import String, cast
+
+    from app.modules.sync_control.models import SyncCostLedger, SyncExecutionScope
+
+    pending = (
+        select(SyncExecutionScope.id)
+        .where(execution_column == model.id, SyncExecutionScope.status == "PENDING")
+        .exists()
+    )
+    # 先保留outbox摘要，再删父任务，否则正文再也无法凭终态证据安全压缩。
+    unpreserved_dispatch = (
+        select(PendingDispatch.id)
+        .where(
+            PendingDispatch.tenant_id == model.tenant_id,
+            PendingDispatch.payload[payload_key].astext == cast(model.id, String),
+            PendingDispatch.payload[payload_key].astext.is_not(None),
+            PendingDispatch.compacted_at.is_(None),
+        )
+        .exists()
+    )
+    cost_column = getattr(SyncCostLedger, execution_column.key)
+    unsettled_cost = (
+        select(SyncCostLedger.id)
+        .where(
+            cost_column == model.id,
+            (SyncCostLedger.receipt_version > SyncCostLedger.settled_version)
+            | (
+                SyncCostLedger.closed.is_(False) & SyncCostLedger.abandoned_at.is_(None)
+            ),
+        )
+        .exists()
+    )
+    # 未结算/未封存的未知成本仍是恢复证据；失效代数保守封存并结算后可回收。
+    return (
+        ~pending & ~unpreserved_dispatch & ~unsettled_cost & model.claim_token.is_(None)
+    )
+
+
 def _cleanup_category(session, *, category, now, cursors):
+    from app.modules.sync_control.models import SyncExecutionScope
+
+    # 摘要只由持久归档回收；平台小时金额是原始事实，不能当作30天缓存删除。
+    # 保留旧游标类别为空操作，其他短期页及快照继续有界清理。
+    if category in {"jobs", "balances", "hours"}:
+        return 0
+
     terminal = col(ReportSyncJob.status).in_(["COMPLETE", "FAILED", "CANCELLED"])
-    expired_jobs = terminal & (col(ReportSyncJob.finished_at) < now - timedelta(days=7))
+    expired_jobs = (
+        terminal
+        & (col(ReportSyncJob.finished_at) < now - timedelta(days=7))
+        & _execution_cleanup_guard(
+            ReportSyncJob, SyncExecutionScope.report_job_id, "job_id"
+        )
+    )
     models = {
-        "jobs": (ReportSyncJob, expired_jobs),
         "material_pages": (ReportSyncJob, expired_jobs),
-        "hours": (
-            CampaignReportHour,
-            col(CampaignReportHour.stat_hour) < now - timedelta(days=30),
-        ),
         "snapshots": (QuerySnapshot, col(QuerySnapshot.expires_at) < now),
-        "balances": (
-            ReportBalanceRun,
-            (col(ReportBalanceRun.created_at) < now - timedelta(days=7))
-            & col(ReportBalanceRun.status).in_(["COMPLETE", "FAILED"]),
-        ),
         "directory_superseded": (AdDirectoryRun, None),
         "directory_pages": (AdDirectoryRun, None),
     }
     model, condition = models[category]
     limits = cursors.get("_limits", {}).get(category, {})
-    batch_limit = limits.get(
-        "batch", CLEANUP_JOB_BATCH_ROWS if category == "jobs" else CLEANUP_BATCH_ROWS
-    )
+    batch_limit = limits.get("batch", CLEANUP_BATCH_ROWS)
     # 分页从子表自己的主键窗口出发，避免为找到少量有页任务反复读无页父记录。
     # v2游标记录(job_id/run_id,page)，旧v1父表游标不复用；重扫不会越过保留策略。
     page_model = {
@@ -1406,33 +1314,36 @@ def _cleanup_category(session, *, category, now, cursors):
     )
     if category == "material_pages":
         eligible = eligible.where(has_pages)
-    elif category == "jobs":
-        eligible = eligible.where(~has_pages)
     eligible = eligible.limit(batch_limit).with_for_update(skip_locked=True)
     child_removed = 0
     if category == "material_pages":
+        # DELETE计划可能重求值IN子查询；物化有限页键固定单条删除上限。
         page_keys = (
             select(ReportSyncPage.job_id, ReportSyncPage.page)
             .where(col(ReportSyncPage.job_id).in_(eligible))
             .limit(batch_limit)
             .with_for_update(skip_locked=True)
+            .cte("expired_report_page_batch")
+            .prefix_with("MATERIALIZED")
         )
         statement = delete(ReportSyncPage).where(
-            tuple_(col(ReportSyncPage.job_id), col(ReportSyncPage.page)).in_(page_keys)
-        )
-    elif category == "jobs":
-        # 大 JSONB 子页另按页清理；只删已无页的父任务，禁止隐式大级联。
-        statement = delete(ReportSyncJob).where(
-            expired_jobs,
-            col(ReportSyncJob.id).in_(eligible),
-            ~select(ReportSyncPage.job_id)
-            .where(ReportSyncPage.job_id == ReportSyncJob.id)
-            .exists(),
+            tuple_(col(ReportSyncPage.job_id), col(ReportSyncPage.page)).in_(
+                select(page_keys.c.job_id, page_keys.c.page)
+            )
         )
     elif category == "directory_superseded":
         statement = _supersede_stalled_directory_runs(
             now, candidate_ids=[row[0] for row in candidates], batch_limit=batch_limit
-        )
+        ).returning(AdDirectoryRun.id)
+        identifiers = list(session.connection().execute(statement).scalars())
+        from app.modules.sync_control.directory_demand import directory_outcome
+
+        for identifier in identifiers:
+            run = session.get(AdDirectoryRun, identifier, populate_existing=True)
+            directory_outcome(session, run)
+        if not identifiers:
+            cursors[category] = [str(value) for value in candidates[-1]]
+        return len(identifiers)
     elif category == "directory_pages":
         removed = cleanup_directory_pages(
             session,
@@ -1534,18 +1445,21 @@ def cleanup_directory_pages(session, *, now, candidate_ids=None, batch_limit=Non
     runs = _expired_directory_runs(now)
     if candidate_ids is not None:
         runs = runs.where(col(AdDirectoryRun.id).in_(candidate_ids))
+    runs = runs.cte("expired_directory_runs").prefix_with("MATERIALIZED")
     pages = (
         select(AdDirectoryPage.run_id, AdDirectoryPage.page)
-        .where(col(AdDirectoryPage.run_id).in_(runs))
+        .where(col(AdDirectoryPage.run_id).in_(select(runs.c.id)))
         .limit(batch_limit or CLEANUP_BATCH_ROWS)
         .with_for_update(skip_locked=True)
+        .cte("expired_directory_page_batch")
+        .prefix_with("MATERIALIZED")
     )
     return (
         session.connection()
         .execute(
             delete(AdDirectoryPage).where(
                 tuple_(col(AdDirectoryPage.run_id), col(AdDirectoryPage.page)).in_(
-                    pages
+                    select(pages.c.run_id, pages.c.page)
                 )
             )
         )
@@ -1554,7 +1468,19 @@ def cleanup_directory_pages(session, *, now, candidate_ids=None, batch_limit=Non
 
 
 @celery_app.task(name="reporting.plan_due", time_limit=30, soft_time_limit=25)
-def plan_due(*, tenant_id=None, actor_id=None, payload=None):
+def plan_due(*, tenant_id=None, actor_id=None, payload=None, dispatch=None):
+    if dispatch is not None:
+        from app.jobs.tasks import guard_sync_dispatch
+
+        if not guard_sync_dispatch(
+            database_engine=engine,
+            task_name="reporting.plan_due",
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            payload=payload,
+            dispatch=dispatch,
+        ):
+            return "IGNORED"
     del tenant_id, actor_id
     if payload == {"dispatch_only": True}:
         if not settings.ADS_SYNC_ENABLED:
@@ -1582,10 +1508,20 @@ def plan_due(*, tenant_id=None, actor_id=None, payload=None):
 
 
 @celery_app.task(name="reporting.plan_continue", time_limit=30, soft_time_limit=25)
-def plan_continue(*, tenant_id, actor_id, payload):
-    # tenant/actor仅是outbox信号归属；逐BC仍读取自身冻结route和当前owned范围。
-    del tenant_id, actor_id
+def plan_continue(*, tenant_id, actor_id, payload, dispatch=None):
+    # 先验证既有严格正文，再验证消息身份/原30秒期限；逐BC仍核冻结route。
     _continuation_contract(payload)
+    from app.jobs.tasks import guard_sync_dispatch
+
+    if not guard_sync_dispatch(
+        database_engine=engine,
+        task_name="reporting.plan_continue",
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    ):
+        return "IGNORED"
     with Redis.from_url(
         settings.REDIS_URL,
         socket_connect_timeout=0.5,
@@ -1605,7 +1541,22 @@ def plan_continue(*, tenant_id, actor_id, payload):
     acks_late=True,
     reject_on_worker_lost=True,
 )
-def job_step(*, tenant_id, actor_id, payload):
+def job_step(*, tenant_id, actor_id, payload, dispatch=None):
+    from app.jobs.tasks import guard_sync_dispatch
+
+    if not guard_sync_dispatch(
+        database_engine=engine,
+        task_name="reporting.job_step",
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    ):
+        return "IGNORED"
+    return _consume_job_step(tenant_id=tenant_id, actor_id=actor_id, payload=payload)
+
+
+def _consume_job_step(*, tenant_id, actor_id, payload):
     validate_dispatch_payload(payload)
     if set(payload) != {"job_id", "claim_id"}:
         raise DomainError("dispatch_payload_invalid", "报表任务参数无效")
@@ -1631,9 +1582,20 @@ def job_step(*, tenant_id, actor_id, payload):
     acks_late=True,
     reject_on_worker_lost=True,
 )
-def backfill_step(*, tenant_id, actor_id, payload):
+def backfill_step(*, tenant_id, actor_id, payload, dispatch=None):
+    from app.jobs.tasks import guard_sync_dispatch
+
+    if not guard_sync_dispatch(
+        database_engine=engine,
+        task_name="reporting.backfill_step",
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    ):
+        return "IGNORED"
     # 相同执行合同与冻结权限，只把慢任务的物理执行容量隔离。
-    return job_step.run(tenant_id=tenant_id, actor_id=actor_id, payload=payload)
+    return _consume_job_step(tenant_id=tenant_id, actor_id=actor_id, payload=payload)
 
 
 @celery_app.task(name="reporting.cleanup_store", time_limit=60, soft_time_limit=55)

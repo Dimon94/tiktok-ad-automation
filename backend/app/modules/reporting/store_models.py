@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     ForeignKeyConstraint,
@@ -104,7 +105,7 @@ class CampaignReportDay(_Fact, table=True):
 
 
 class CampaignReportHour(_Fact, table=True):
-    """系列小时数据，只保留最近 30 天；stat_hour 为该账户本地整点对应的 UTC 时刻。"""
+    """平台系列小时原始事实；stat_hour 为账户本地整点对应的 UTC 时刻，不自动删金额。"""
 
     __tablename__ = "campaign_report_hour"
     stat_hour: datetime = Field(primary_key=True, sa_type=AwareDateTime)
@@ -152,6 +153,15 @@ class MaterialPostLink(SQLModel, table=True):
     __tablename__ = "material_post_link"
     __table_args__ = (
         Index("ix_material_post_link_ad", "tenant_id", "advertiser_id", "ad_remote_id"),
+        Index(
+            "ix_material_post_link_video_page",
+            "tenant_id",
+            "platform_material_id",
+            "advertiser_id",
+            "main_material_id",
+            "main_material_type",
+            postgresql_where=text("platform_material_id IS NOT NULL"),
+        ),
     )
     tenant_id: UUID = Field(primary_key=True)
     advertiser_id: str = Field(primary_key=True, max_length=128)
@@ -213,6 +223,9 @@ class ReportDispatchCursor(SQLModel, table=True):
         primary_key=True, foreign_key="tenant.id", ondelete="CASCADE"
     )
     last_dispatched_at: datetime = Field(sa_type=AwareDateTime)
+    fairness_state: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
 
 
 class DirectoryDispatchCursor(SQLModel, table=True):
@@ -244,6 +257,9 @@ class ReportSyncState(SQLModel, table=True):
     status: str = Field(max_length=16)
     row_count: int = 0
     last_success_at: datetime | None = Field(default=None, sa_type=AwareDateTime)
+    # 完成时间只描述发布延迟；覆盖比较使用实际首页观测时点。
+    observed_at: datetime | None = Field(default=None, sa_type=AwareDateTime)
+    publication_version: int = Field(default=0, sa_type=BigInteger)
     error_code: str | None = Field(default=None, max_length=128)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=AwareDateTime
@@ -255,6 +271,23 @@ class ReportSyncJob(SQLModel, table=True):
 
     __tablename__ = "report_sync_job"
     __table_args__ = (
+        Index(
+            "ix_report_summary_archive",
+            "tenant_id",
+            "finished_at",
+            "id",
+            postgresql_where=text("status IN ('COMPLETE','FAILED','CANCELLED')"),
+        ),
+        CheckConstraint(
+            "execution_pool IS NULL OR execution_pool IN ('background','live-report')",
+            name="ck_report_execution_pool",
+        ),
+        Index(
+            "ix_report_execution_pool",
+            "execution_pool",
+            "claimed_until",
+            postgresql_where=text("status='RUNNING'"),
+        ),
         CheckConstraint(
             "status IN ('QUEUED','RUNNING','WAITING','COMPLETE','FAILED','CANCELLED')",
             name="ck_report_sync_job_status",
@@ -300,6 +333,11 @@ class ReportSyncJob(SQLModel, table=True):
     frozen_route: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
     actor_id: UUID
     due_at: datetime = Field(sa_type=AwareDateTime)
+    claim_generation: int = Field(default=0, sa_type=BigInteger)
+    # 派发时冻结真实消费池；不能把逻辑directory类的历史补链送入实时Worker。
+    execution_pool: str | None = Field(default=None, max_length=32)
+    owner_epoch: int = Field(default=1, sa_type=BigInteger)
+    contract_version: int = 2
     claim_token: UUID | None = None
     claimed_until: datetime | None = Field(default=None, sa_type=AwareDateTime)
     attempts: int = 0
@@ -392,7 +430,16 @@ class ReportBalanceRun(SQLModel, table=True):
 
     __tablename__ = "report_balance_run"
     __table_args__ = (
+        Index(
+            "ix_balance_summary_archive",
+            "tenant_id",
+            "completed_at",
+            "id",
+            postgresql_where=text("status IN ('COMPLETE','FAILED','CANCELLED')"),
+        ),
         Index("uq_report_balance_run_key", "tenant_id", "run_key", unique=True),
+        CheckConstraint("provider_failures >= 0", name="ck_balance_provider_failures"),
+        Index("ix_balance_active_lease", "status", "claimed_until"),
     )
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: UUID
@@ -401,7 +448,17 @@ class ReportBalanceRun(SQLModel, table=True):
     frozen_route: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
     remaining_advertiser_ids: list[str] = Field(sa_column=Column(JSONB, nullable=False))
     next_page: int = 1
+    claim_generation: int = Field(default=0, sa_type=BigInteger)
+    owner_epoch: int = Field(default=1, sa_type=BigInteger)
+    contract_version: int = 2
+    # 换代重新派发仍保留平台失败次数，避免消息重投把重试预算重置。
+    provider_failures: int = 0
+    claim_token: UUID | None = None
+    claimed_until: datetime | None = Field(default=None, sa_type=AwareDateTime)
+    error_code: str | None = Field(default=None, max_length=128)
+    next_attempt_at: datetime | None = Field(default=None, sa_type=AwareDateTime)
     status: str = Field(default="ACTIVE", max_length=16)
+    completed_at: datetime | None = Field(default=None, sa_type=AwareDateTime)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=AwareDateTime
     )

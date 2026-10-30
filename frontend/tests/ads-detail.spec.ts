@@ -1,6 +1,37 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page, type Request } from "@playwright/test"
 import { adsBoundary, BC_A, TENANT } from "./utils/adsBoundary"
 import { expectLineDrawn } from "./utils/trendChart"
+
+// 启停自12d24fa3起直接提交冻结选择；这些详情回归不能再等待已移除的确认面板。
+async function statusSubmission(page: Page) {
+  await page.route("**/ad-management-requests", (route) =>
+    route.fulfill({
+      status: 202,
+      json: {
+        task_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        bc_id: BC_A,
+        status: "PREPARING",
+        counts: { selected: 1, prepared: 0, targets: 0 },
+      },
+    }),
+  )
+  return {
+    request: page.waitForRequest((r) =>
+      r.url().endsWith("/ad-management-requests"),
+    ),
+  }
+}
+
+async function expectPausedSubmission(page: Page, request: Promise<Request>) {
+  expect((await request).postDataJSON()).toMatchObject({
+    bc_id: BC_A,
+    selection_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    mutation: { field: "status", mode: "set", value: "DISABLE" },
+  })
+  await expect(
+    page.getByText("操作已提交。回读完成后本页自动更新状态，可继续操作。"),
+  ).toBeVisible()
+}
 
 test.describe("ads detail", () => {
   for (const hourly of [false, true]) {
@@ -84,7 +115,7 @@ test.describe("ads detail", () => {
     await expect(rejected).toHaveClass(/bg-destructive/)
   })
 
-  test("详情内暂停走同一预览流程", async ({ page }) => {
+  test("详情内暂停提交该对象的冻结选择", async ({ page }) => {
     await adsBoundary(page)
     await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
     await page.getByRole("tab", { name: "系列" }).click()
@@ -92,6 +123,7 @@ test.describe("ads detail", () => {
       .getByRole("button", { name: /嘉书-总裁归来/ })
       .first()
       .click()
+    const submission = await statusSubmission(page)
     const freeze = page.waitForRequest((r) =>
       r.url().includes("/ad-selections"),
     )
@@ -100,7 +132,7 @@ test.describe("ads detail", () => {
       mode: "EXPLICIT",
       row_keys: [`${BC_A}-campaign-1`],
     })
-    await expect(page.getByRole("heading", { name: "批量暂停" })).toBeVisible()
+    await expectPausedSubmission(page, submission.request)
   })
 
   test("广告详情显示本广告素材数据，只启停本广告的素材", async ({ page }) => {
@@ -116,6 +148,7 @@ test.describe("ads detail", () => {
     await expect(sheet.getByText("ep1.mp4")).toBeVisible()
     await expect(sheet.getByText("12.50")).toBeVisible()
     await sheet.getByRole("checkbox", { name: "选择 ep2.mp4" }).click()
+    const submission = await statusSubmission(page)
     const freeze = page.waitForRequest((r) =>
       r.url().includes("/ads/ad/ad-1/material-selections"),
     )
@@ -128,7 +161,7 @@ test.describe("ads detail", () => {
     expect(new URL(request.url()).searchParams.get("advertiser_id")).toBe(
       "adv-1",
     )
-    await expect(page.getByRole("heading", { name: "批量暂停" })).toBeVisible()
+    await expectPausedSubmission(page, submission.request)
   })
 
   for (const role of ["operator", "viewer"] as const) {
@@ -330,8 +363,9 @@ test.describe("ads detail", () => {
     await sheet.getByRole("button", { name: "返回" }).click()
     await expect(sheet.getByText("关联系列")).toBeVisible()
     await expect(sheet.getByRole("button", { name: "返回" })).toHaveCount(0)
-    // 再进系列详情发起暂停：冻结的是关联查询快照里的这一行，预览按系列层级说明。
+    // 再进系列详情发起暂停：冻结的是关联查询快照里的这一行，提交按系列层级执行。
     await campaign.click()
+    const submission = await statusSubmission(page)
     const freeze = page.waitForRequest((r) =>
       r.url().includes("/ad-selections"),
     )
@@ -341,7 +375,7 @@ test.describe("ads detail", () => {
       mode: "EXPLICIT",
       row_keys: [`${BC_A}-campaign-1`],
     })
-    await expect(page.getByRole("heading", { name: "批量暂停" })).toBeVisible()
+    await expectPausedSubmission(page, submission.request)
   })
 
   test("层级路径可多层跳转并逐层返回", async ({ page }) => {

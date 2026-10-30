@@ -17,6 +17,7 @@ from app.modules.reporting.store_models import (
     MaterialReportDay,
     ReportSyncJob,
 )
+from tests.modules.reporting.claiming import claim_jobs
 from tests.modules.reporting.test_backlog_control import request
 from tests.modules.reporting.test_material_links import overview, refresh
 from tests.modules.reporting.test_material_query import D
@@ -101,6 +102,9 @@ def test_zero_value_waiting_job_completes_after_dependency_recheck(
         job = session.get(ReportSyncJob, job_id)
         assert material_links.wait_for_dependencies(session, job, now=now)
         job.status = "WAITING"
+        from app.modules.sync_control.schedule import record_report_outcome
+
+        record_report_outcome(session, job)
         session.commit()
         # 模拟回刷修正金额，也覆盖升级后旧等待集合仍含零金额帖子的情况。
         row.spend = Decimal(0)
@@ -111,8 +115,14 @@ def test_zero_value_waiting_job_completes_after_dependency_recheck(
         assert job.status == "WAITING" and job.due_at > now
         assert material_links.dependency_changed(session, job)
         assert wake_link_dependencies(session, now=now) == 1
+        from app.modules.sync_control.models import SyncSchedule
+
+        head = session.exec(
+            select(SyncSchedule).where(SyncSchedule.tenant_id == seed.tenant_id)
+        ).one()
+        assert head.active and head.next_eligible_at <= now
         session.commit()
-        claimed = jobs.claim_jobs(session, now=now, limit=10)
+        claimed = claim_jobs(session, now=now, limit=10)
         assert [j.id for j in claimed] == [job_id]
         token = claimed[0].claim_token
         session.commit()

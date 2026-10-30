@@ -1,7 +1,6 @@
 """后台四进程中，目录与补链不能共同占完历史事实的执行机会。"""
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -9,7 +8,6 @@ from sqlmodel import select
 
 from app.jobs.models import PendingDispatch
 from app.modules.ads.sync_models import AdDirectoryRun
-from app.modules.reporting import job_tasks
 from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob
 from tests.modules.reporting.test_directory_direct_delivery import directory
@@ -34,197 +32,370 @@ def pending(session, seed, kind, offset, now, *, future=False):
     )
 
 
-def fill(session, seed, now, *, facts=True, future=False):
-    for i in range(10):
+@pytest.mark.parametrize("directory_first", [False, True])
+def test_real_registered_queues_share_four_live_execution_slots(
+    session, sync_seed, redis_client, directory_first
+):
+    from app.modules.sync_control.directory_demand import register_directory_run
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from app.modules.sync_control.dispatcher import dispatch_due
+    from app.modules.sync_control.models import SyncSchedule
+
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    for i in range(8):
+        pending(session, sync_seed, "material_day", i, now)
+        pending(session, sync_seed, "material_links", i, now)
+        run = directory(session, sync_seed)
+        run.workload = "background"
+        # 独立查询scope避免把单头串行误当成共享池容量保护。
+        run.query = run.query | {"page_size": 100 + i}
+        register_directory_run(session, run, new_execution=True)
+    dispatchers = [
+        lambda: dispatch_due(session, redis_client, now=now, physical_slots=36),
+        lambda: dispatch_directories_due(session, redis_client, now=now, limit=40),
+    ]
+    if directory_first:
+        dispatchers.reverse()
+    for _ in range(4):
+        if sum(dispatch() for dispatch in dispatchers) == 0:
+            break
+    heads = session.exec(
+        select(SyncSchedule).where(
+            SyncSchedule.tenant_id == sync_seed.tenant_id,
+            SyncSchedule.leased_until > now,
+            SyncSchedule.lease_execution_id.is_not(None),
+        )
+    ).all()
+    identities = {head.lease_execution_id for head in heads}
+    assert len(identities) <= 4
+    assert identities
+    for message in session.exec(
+        select(PendingDispatch).where(PendingDispatch.tenant_id == sync_seed.tenant_id)
+    ).all():
+        if "job_id" in message.payload:
+            assert message.task_name == "reporting.backfill_step"
+    before = identities
+    for dispatch in dispatchers:
+        dispatch()
+    heads = session.exec(
+        select(SyncSchedule).where(
+            SyncSchedule.tenant_id == sync_seed.tenant_id,
+            SyncSchedule.leased_until > now,
+            SyncSchedule.lease_execution_id.is_not(None),
+        )
+    ).all()
+    assert {head.lease_execution_id for head in heads} == before
+
+
+def pool_backlog(session, seed, now, *, facts=True, future=False):
+    from app.modules.sync_control.directory_demand import register_directory_run
+
+    for i in range(8):
         if facts:
             pending(session, seed, "material_day", i, now, future=future)
         pending(session, seed, "material_links", i, now)
         run = directory(session, seed)
         run.workload = "background"
+        run.query = run.query | {"page_size": 100 + i}
+        register_directory_run(session, run, new_execution=True)
     session.flush()
 
 
-@pytest.mark.parametrize("directory_first", [True, False])
-def test_fact_backlog_leaves_at_most_two_other_steps_in_shared_pool(
-    session, sync_seed, directory_first
-):
-    now = datetime.now(UTC)
-    fill(session, sync_seed, now)
-    dispatchers = [job_tasks._dispatch_report_jobs, job_tasks._dispatch_directories]
+def dispatch_pool(session, redis, now, *, directory_first=False, allow_backfill=True):
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from app.modules.sync_control.dispatcher import dispatch_due
+
+    actions = [
+        lambda: dispatch_due(
+            session, redis, now=now, physical_slots=36, allow_backfill=allow_backfill
+        ),
+        lambda: dispatch_directories_due(
+            session, redis, now=now, limit=40, allow_backfill=allow_backfill
+        ),
+    ]
     if directory_first:
-        dispatchers.reverse()
-    for dispatch in dispatchers:
-        dispatch(session, now)
-    links = session.exec(
-        select(ReportSyncJob).where(
-            ReportSyncJob.kind == "material_links", ReportSyncJob.status == "RUNNING"
+        actions.reverse()
+    total = 0
+    for _ in range(4):
+        claimed = sum(action() for action in actions)
+        total += claimed
+        if not claimed:
+            break
+    return total
+
+
+def pool_running(session, seed, now):
+    from app.modules.sync_control.models import SyncSchedule
+
+    identities = set(
+        session.exec(
+            select(SyncSchedule.lease_execution_id).where(
+                SyncSchedule.tenant_id == seed.tenant_id,
+                SyncSchedule.leased_until > now,
+                SyncSchedule.lease_execution_id.is_not(None),
+            )
+        ).all()
+    )
+    result = []
+    for identity in identities:
+        run = session.get(ReportSyncJob, identity)
+        if run is not None:
+            result.append((run.kind, run))
+        else:
+            run = session.get(AdDirectoryRun, identity)
+            if run is not None and run.workload == "background":
+                result.append(("directory", run))
+    return result
+
+
+def finish_pool_step(session, redis, kind, run, now):
+    from uuid import uuid4
+
+    from app.core.config import settings
+    from app.modules.ads.directory_dispatch import directory_step_key
+    from app.modules.sync_control.costs import record_cost_receipt
+    from app.modules.sync_control.directory_demand import (
+        directory_endpoint,
+        directory_outcome,
+    )
+    from app.modules.sync_control.models import SyncCostLedger
+    from app.modules.sync_control.occupancy import release_dispatch
+    from app.modules.sync_control.schedule import record_report_outcome, report_endpoint
+
+    # 调度测试模拟运输步骤完成；真实SDK成本另由directory_continuation覆盖。
+    if kind == "directory":
+        identity, endpoint = directory_step_key(run), directory_endpoint(run)
+        run.status = "COMPLETE"
+        run.completed_at = now
+        directory_outcome(session, run)
+        cost_filter = SyncCostLedger.directory_run_id == run.id
+        advertiser = run.advertiser_id
+    else:
+        identity, endpoint = run.claim_token, report_endpoint(run.kind)
+        run.status = "COMPLETE"
+        run.finished_at = now
+        record_report_outcome(session, run)
+        cost_filter = SyncCostLedger.report_job_id == run.id
+        advertiser = run.advertiser_ids[0]
+    release_dispatch(
+        redis,
+        reservation_id=identity,
+        app_scope=settings.TIKTOK_APP_ID,
+        endpoint=endpoint,
+        rate_group=endpoint,
+        tenant_id=run.tenant_id,
+        advertiser_id=advertiser,
+    )
+    for cost in session.exec(
+        select(SyncCostLedger).where(
+            cost_filter, SyncCostLedger.generation == run.claim_generation
         )
+    ).all():
+        record_cost_receipt(session, cost.id, uuid4(), total_units=1, closed=True)
+    run.claim_token = run.claimed_until = None
+    session.flush()
+
+
+@pytest.mark.parametrize("directory_first", [False, True])
+def test_shared_pool_gives_every_backlogged_kind_progress(
+    session, sync_seed, redis_client, directory_first
+):
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    pool_backlog(session, sync_seed, now)
+    initial_reports = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    facts = session.exec(
-        select(ReportSyncJob).where(
-            ReportSyncJob.kind == "material_day", ReportSyncJob.status == "RUNNING"
-        )
+    initial_directories = session.exec(
+        select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == sync_seed.tenant_id)
     ).all()
-    directories = session.exec(
-        select(PendingDispatch).where(PendingDispatch.task_name == "ads.sync_step")
-    ).all()
-    assert len(links) == 1
-    assert len(directories) == 1
-    assert len(facts) >= 2
-    # 连续补位不能越过共同服务四进程的保护条件。
-    for dispatch in dispatchers:
-        assert dispatch(session, now) == 0
+    kinds = set()
+    for _ in range(6):
+        # outcome使用真实DB/墙钟写下一到期时点；每轮同步推进测试时钟，
+        # 不因真实探测超过初始1秒而把已可运行工作误判为未来任务。
+        now = datetime.now(UTC) + timedelta(seconds=1)
+        dispatch_pool(session, redis_client, now, directory_first=directory_first)
+        active = pool_running(session, sync_seed, now)
+        if not active:
+            # 新需求合并可能提前耗尽夹具；仅允许所有原请求均终结后结束轮转。
+            assert all(r.status == "COMPLETE" for r in initial_reports), [
+                (r.kind, r.status, str(r.due_at), r.error_code)
+                for r in initial_reports
+                if r.status != "COMPLETE"
+            ]
+            assert all(r.status == "COMPLETE" for r in initial_directories)
+            break
+        assert 1 <= len(active) <= 4
+        kinds.update(kind for kind, _ in active)
+        for kind, run in active:
+            finish_pool_step(session, redis_client, kind, run, now)
+    assert kinds == {"material_day", "material_links", "directory"}
 
 
 @pytest.mark.parametrize("future", [False, True])
-def test_idle_fact_share_can_be_borrowed(session, sync_seed, future):
-    now = datetime.now(UTC)
-    fill(session, sync_seed, now, facts=future, future=future)
-    job_tasks._dispatch_report_jobs(session, now)
-    job_tasks._dispatch_directories(session, now)
-    links = session.exec(
-        select(ReportSyncJob).where(
-            ReportSyncJob.kind == "material_links", ReportSyncJob.status == "RUNNING"
-        )
-    ).all()
-    messages = session.exec(
-        select(PendingDispatch).where(PendingDispatch.task_name == "ads.sync_step")
-    ).all()
-    assert len(links) > 1 and len(messages) > 1
+def test_idle_or_future_fact_share_can_be_borrowed(
+    session, sync_seed, redis_client, future
+):
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    pool_backlog(session, sync_seed, now, facts=future, future=future)
+    dispatch_pool(session, redis_client, now)
+    active = pool_running(session, sync_seed, now)
+    assert len(active) == 4
+    assert {kind for kind, _ in active} <= {"material_links", "directory"}
 
 
-def test_realtime_directory_keeps_its_own_window(session, sync_seed):
-    now = datetime.now(UTC)
-    fill(session, sync_seed, now)
-    for _ in range(40):
-        directory(session, sync_seed)
-    session.flush()
-    job_tasks._dispatch_directories(session, now)
-    messages = session.exec(
-        select(PendingDispatch).where(PendingDispatch.task_name == "ads.targeted_step")
-    ).all()
-    assert len(messages) == 32
-    assert all(
-        session.get(AdDirectoryRun, UUID(m.payload["run_id"])).workload == "live"
-        for m in messages
-    )
+def test_arriving_facts_reclaim_next_released_slot_without_cancelling_work(
+    session, sync_seed, redis_client
+):
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    pool_backlog(session, sync_seed, now, facts=False)
+    dispatch_pool(session, redis_client, now, directory_first=True)
+    active = pool_running(session, sync_seed, now)
+    assert len(active) == 4
+    pending(session, sync_seed, "material_day", 50, now)
+    held = {run.id for _, run in active[1:]}
+    finish_pool_step(session, redis_client, *active[0], now)
+    dispatch_pool(session, redis_client, now, directory_first=True)
+    current = pool_running(session, sync_seed, now)
+    assert len(current) == 4
+    assert held <= {run.id for _, run in current}
+    assert any(kind == "material_day" for kind, _ in current)
 
 
-def test_concurrent_dispatchers_preserve_background_fact_share(committed_sync_seed):
+@pytest.mark.parametrize("service", [None, "status"])
+def test_realtime_directory_does_not_take_shared_background_slot(
+    session, sync_seed, redis_client, service
+):
+    from app.modules.sync_control.directory_demand import register_directory_run
+
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    pool_backlog(session, sync_seed, now)
+    dispatch_pool(session, redis_client, now)
+    assert len(pool_running(session, sync_seed, now)) == 4
+    live = directory(session, sync_seed)
+    live.query = live.query | {"page_size": 200}
+    if service is not None:
+        live.query = live.query | {"directory_service_v1": service}
+    register_directory_run(session, live, new_execution=True)
+    assert dispatch_pool(session, redis_client, now) >= 1
+    assert live.claim_generation > 1
+    assert len(pool_running(session, sync_seed, now)) == 4
+
+
+def test_simultaneous_dispatchers_never_overfill_shared_pool(
+    committed_sync_seed, redis_client
+):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
     seed, factory = committed_sync_seed
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) + timedelta(seconds=1)
     with factory() as db, db.begin():
-        fill(db, seed, now)
+        pool_backlog(db, seed, now)
     barrier = Barrier(4)
 
-    def dispatch(index):
+    def claim(index):
         barrier.wait(timeout=10)
         with factory() as db, db.begin():
-            return (
-                job_tasks._dispatch_report_jobs
-                if index % 2
-                else job_tasks._dispatch_directories
-            )(db, now)
+            return dispatch_pool(db, redis_client, now, directory_first=bool(index % 2))
 
-    with ThreadPoolExecutor(4) as executor:
-        list(executor.map(dispatch, range(4)))
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(claim, range(4)))
     with factory() as db:
-        running = db.exec(
-            select(ReportSyncJob).where(
-                ReportSyncJob.tenant_id == seed.tenant_id,
-                ReportSyncJob.status == "RUNNING",
-            )
-        ).all()
-        assert sum(r.kind == "material_links" for r in running) == 1
-        assert sum(r.kind != "material_links" for r in running) == 5
-        messages = db.exec(
-            select(PendingDispatch).where(
-                PendingDispatch.tenant_id == seed.tenant_id,
-                PendingDispatch.task_name == "ads.sync_step",
-            )
-        ).all()
-        assert len(messages) == 1
+        active = pool_running(db, seed, now)
+        assert 1 <= len(active) <= 4
+        assert len({run.id for _, run in active}) == len(active)
 
 
-def test_new_due_facts_reclaim_borrowed_link_window(session, sync_seed):
-    now = datetime.now(UTC)
-    fill(session, sync_seed, now, facts=False)
-    job_tasks._dispatch_report_jobs(session, now)
-    links = session.exec(
-        select(ReportSyncJob).where(
-            ReportSyncJob.kind == "material_links", ReportSyncJob.status == "RUNNING"
-        )
-    ).all()
-    assert len(links) == 6
-    pending(session, sync_seed, "material_day", 50, now)
-    # 不取消已领取的工作；一个旧步骤释放后，候补必须交给已到期事实。
-    links[0].status = "WAITING"
-    links[0].claim_token = links[0].claimed_until = None
-    links[0].due_at = now + timedelta(minutes=1)
-    session.flush()
-    assert job_tasks._dispatch_report_jobs(session, now) == 1
-    facts = session.exec(
-        select(ReportSyncJob).where(
-            ReportSyncJob.kind == "material_day", ReportSyncJob.status == "RUNNING"
-        )
-    ).all()
-    assert len(facts) == 1
-
-
-def test_paused_fact_budget_does_not_reserve_directory_capacity(session, sync_seed):
-    now = datetime.now(UTC)
-    fill(session, sync_seed, now)
-    assert job_tasks._dispatch_directories(session, now, allow_backfill=False) == 8
-
-
-def test_historical_directory_slot_keeps_fifo_live_dependencies_use_separate_pool(
-    session, sync_seed
+def test_paused_history_budget_does_not_reserve_idle_pool_slots(
+    session, sync_seed, redis_client
 ):
-    now = datetime.now(UTC)
-    pending(session, sync_seed, "material_day", 0, now)
-    old_full = directory(session, sync_seed)
-    old_full.query = old_full.query | {"ids": []}
-    old_full.workload = "background"
-    old_full.created_at = now - timedelta(hours=2)
-    dependency = directory(session, sync_seed)
-    dependency.workload = "background"
-    dependency.created_at = now - timedelta(hours=1)
-    live = directory(session, sync_seed)
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    pool_backlog(session, sync_seed, now)
+    dispatch_pool(session, redis_client, now, allow_backfill=False)
+    active = pool_running(session, sync_seed, now)
+    assert len(active) == 4 and {kind for kind, _ in active} == {"directory"}
+
+
+def directory_only_backlog(session, seed):
+    from app.modules.sync_control.directory_demand import register_directory_run
+
+    for i in range(8):
+        run = directory(session, seed)
+        run.workload = "background"
+        run.query = run.query | {"page_size": 100 + i}
+        register_directory_run(session, run, new_execution=True)
     session.flush()
-    job_tasks._dispatch_directories(session, now)
-    messages = session.exec(select(PendingDispatch)).all()
-    assert {m.payload["run_id"] for m in messages} == {str(old_full.id), str(live.id)}
 
 
 @pytest.mark.parametrize(
-    "state", ["lease", "unpublished", "recent", "lost", "old_generation", "live"]
+    "state", ["queued", "worker", "expired", "old_generation", "old_owner", "publisher"]
 )
-def test_continuation_capacity_uses_current_message_and_lease(
-    session, sync_seed, state
+def test_shared_pool_counts_only_current_remote_execution_leases(
+    session, sync_seed, redis_client, state
 ):
-    from app.modules.ads.directory_dispatch import (
-        background_continuation_available,
-        enqueue_directory_step,
+    from app.modules.ads.sync_models import AdDirectoryPage
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from app.modules.sync_control.models import SyncSchedule, SyncScope
+
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    directory_only_backlog(session, sync_seed)
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 4
+    heads = session.exec(
+        select(SyncSchedule).where(
+            SyncSchedule.tenant_id == sync_seed.tenant_id,
+            SyncSchedule.lease_token.is_not(None),
+        )
+    ).all()
+    assert len(heads) == 4
+    for head in heads:
+        run = session.get(AdDirectoryRun, head.lease_execution_id)
+        if state == "worker":
+            run.claimed_until = now + timedelta(minutes=1)
+            head.leased_until = now - timedelta(seconds=1)
+        elif state == "expired":
+            run.claimed_until = now - timedelta(seconds=1)
+        elif state == "old_generation":
+            run.claim_generation += 1
+        elif state == "old_owner":
+            session.get(SyncScope, head.scope_id).owner_epoch += 1
+        elif state == "publisher":
+            session.add(
+                AdDirectoryPage(
+                    run_id=run.id,
+                    tenant_id=run.tenant_id,
+                    advertiser_id=run.advertiser_id,
+                    page=1,
+                    complete=True,
+                    claim_generation=run.claim_generation,
+                    items=[],
+                    materials=[],
+                )
+            )
+    session.flush()
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == (
+        0 if state in {"queued", "worker"} else 4
     )
 
-    now = datetime.now(UTC)
-    own, other = directory(session, sync_seed), directory(session, sync_seed)
-    own.workload = other.workload = "background"
-    if state == "lease":
-        other.claimed_until = now + timedelta(minutes=1)
-    else:
-        if state == "live":
-            other.workload = "live"
-        enqueue_directory_step(session, other)
-        message = session.exec(select(PendingDispatch)).one()
-        if state != "unpublished":
-            message.published_at = now - timedelta(minutes=11 if state == "lost" else 1)
-        if state == "old_generation":
-            other.claim_generation += 1
+
+def test_multiple_heads_for_one_execution_use_one_pool_slot(
+    session, sync_seed, redis_client
+):
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from app.modules.sync_control.models import SyncSchedule
+
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    directory_only_backlog(session, sync_seed)
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 4
+    heads = session.exec(
+        select(SyncSchedule).where(
+            SyncSchedule.tenant_id == sync_seed.tenant_id,
+            SyncSchedule.lease_token.is_not(None),
+        )
+    ).all()
+    for head in heads:
+        session.add(SyncSchedule(**(head.model_dump() | {"work_class": "realtime"})))
     session.flush()
-    assert background_continuation_available(session, own, now) == (
-        state in {"lost", "old_generation", "live"}
-    )
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 0
+    run = session.get(AdDirectoryRun, heads[0].lease_execution_id)
+    finish_pool_step(session, redis_client, "directory", run, now)
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 1

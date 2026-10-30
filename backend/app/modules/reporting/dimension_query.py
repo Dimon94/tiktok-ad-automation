@@ -5,26 +5,33 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import Text, any_, bindparam, func
+from sqlalchemy import RowMapping, Text, any_, bindparam, func
 from sqlalchemy import select as sql_select
 from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 from sqlalchemy.sql import ColumnElement
-from sqlmodel import Session, col, select
+from sqlmodel import Session, SQLModel, col, select
 
 from app.core.context import TenantContext
 from app.integrations.tiktok.contracts.ads import EntityRef
+from app.integrations.tiktok.contracts.carousel import CarouselDirectory
 from app.modules.accounts.models import AdvertiserAccount
 from app.modules.ads.directory import directory_carousels
-from app.modules.ads.models import AdObject, CampaignNameProjection
+from app.modules.ads.models import AdObject as CanonicalAdObject
+from app.modules.reporting import query_diagnostics
 from app.modules.reporting.filters import authorized_grants, compile_filter
 from app.modules.reporting.metric_catalog import DERIVED_RATIOS
 from app.modules.reporting.models import AccountBalanceObservation
+from app.modules.reporting.read_models.models import AdEntityRead as AdObject
+from app.modules.reporting.read_models.models import AdgroupReportDay
+from app.modules.reporting.read_models.models import (
+    CampaignNameCurrent as CampaignNameProjection,
+)
 from app.modules.reporting.row_set import SnapshotMember, entity_ref, ordered_members
 from app.modules.reporting.schemas import (
     Availability,
@@ -47,9 +54,14 @@ def bucket_key(vector: MetricVector) -> tuple[str]:
 
 
 def metric_vector(
-    values, *, currency, timezone, unsupported=(), partial=frozenset()
+    values: Mapping[str, Decimal | None] | RowMapping,
+    *,
+    currency: str,
+    timezone: str,
+    unsupported: Collection[str] = (),
+    partial: Collection[str] = frozenset(),
 ) -> MetricVector:
-    values = {
+    resolved: dict[str, Decimal | None] = {
         name: None if name in unsupported else values.get(name)
         for name in METRIC_COLUMNS
     }
@@ -61,17 +73,17 @@ def metric_vector(
         else "PARTIAL"
         if name in partial
         else "AVAILABLE"
-        for name, value in values.items()
+        for name, value in resolved.items()
     }
     for name, numerator, denominator, scale in DERIVED_RATIOS:
-        a, b = values.get(numerator), values.get(denominator)
-        values[name] = a / b * scale if a is not None and b else None
+        a, b = resolved.get(numerator), resolved.get(denominator)
+        resolved[name] = a / b * scale if a is not None and b else None
         # 派生比率由合计重算，状态跟随分子、分母中较差的一个。
         states[name] = (
             "UNSUPPORTED"
             if numerator in unsupported or denominator in unsupported
             else "MISSING"
-            if values[name] is None
+            if resolved[name] is None
             else "PARTIAL"
             if numerator in partial or denominator in partial
             else "AVAILABLE"
@@ -80,7 +92,7 @@ def metric_vector(
         currency=currency,
         timezone=timezone,
         attribution="default",
-        values=values,
+        values=resolved,
         availability=cast(dict[str, Availability], states),
     )
 
@@ -152,26 +164,35 @@ def merge_metric_buckets(
     )
 
 
-def scoped_rows(session, model, *, tenant_id, advertisers):
+def scoped_rows[ModelT: SQLModel](
+    session: Session,
+    model: type[ModelT],
+    *,
+    tenant_id: UUID,
+    advertisers: Collection[str],
+) -> Sequence[ModelT]:
+    tenant_column, advertiser_column = [
+        col(getattr(model, name)) for name in ("tenant_id", "advertiser_id")
+    ]
     return session.exec(
         select(model).where(
-            model.tenant_id == tenant_id, col(model.advertiser_id).in_(advertisers)
+            tenant_column == tenant_id, advertiser_column.in_(advertisers)
         )
     ).all()
 
 
 def _aggregate(
-    session,
+    session: Session,
     *,
-    model,
-    group_cols,
-    tenant_id,
-    advertisers,
-    start,
-    end,
-    ids=None,
-    material_types=None,
-):
+    model: type[Any],
+    group_cols: Sequence[str],
+    tenant_id: UUID,
+    advertisers: Collection[str],
+    start: date,
+    end: date,
+    ids: Iterable[str] | None = None,
+    material_types: Collection[str] | None = None,
+) -> list[RowMapping]:
     # 同一对象跨日按部分合计规则（设计 7.3）：只合计有值的日期，另带
     # "<列>_has_null" 标记该列是否有日期为空，由 fact_vector 标成 PARTIAL。
     columns = [col(getattr(model, name)) for name in group_cols]
@@ -194,7 +215,12 @@ def _aggregate(
             "main_material_name",
             "main_material_type",
         )
-        if hasattr(model, name) and name not in group_cols
+        if hasattr(model, name)
+        and name not in group_cols
+        and not (
+            model.__tablename__ == "material_entity_day"
+            and name == "main_material_name"
+        )
     ]
     stmt = (
         sql_select(
@@ -208,9 +234,12 @@ def _aggregate(
                 for name in METRIC_COLUMNS
             ],
             *[
-                (func.count(col(getattr(model, name))) < func.count()).label(
-                    f"{name}_has_null"
-                )
+                (
+                    func.bool_or(col(getattr(model, f"{name}_has_null")))
+                    | (func.count(col(getattr(model, name))) < func.count())
+                    if hasattr(model, f"{name}_has_null")
+                    else (func.count(col(getattr(model, name))) < func.count())
+                ).label(f"{name}_has_null")
                 for name in METRIC_COLUMNS
             ],
         )
@@ -233,7 +262,13 @@ def _aggregate(
     return list(session.connection().execute(stmt).mappings().all())
 
 
-def _coverage(states, *, advertisers, filters, kind="ad_day"):
+def _coverage(
+    states: Sequence[ReportSyncState],
+    *,
+    advertisers: Collection[str],
+    filters: ReportingFilter,
+    kind: str = "ad_day",
+) -> dict[str, Any]:
     relevant = {
         (s.advertiser_id, s.stat_date): s
         for s in states
@@ -278,7 +313,13 @@ def _coverage(states, *, advertisers, filters, kind="ad_day"):
     }
 
 
-def empty_metric_values(states, *, advertiser, filters, kind="ad_day"):
+def empty_metric_values(
+    states: Sequence[ReportSyncState],
+    *,
+    advertiser: str,
+    filters: ReportingFilter,
+    kind: str = "ad_day",
+) -> dict[str, Decimal | None]:
     # 用户裁定：完整覆盖的无事实对象才为零；缺覆盖与平台显式 NULL 不能填零。
     complete = (
         _coverage(states, advertisers={advertiser}, filters=filters, kind=kind)[
@@ -337,24 +378,11 @@ def _config_display(entity: AdObject | None) -> dict[str, str | None]:
     """把目录配置转成报表可读字段，避免把原始 JSON 直接暴露到表格。"""
     if entity is None:
         return {}
-    config = entity.configuration or {}
-    target = _text_number(config.get("roas_bid") or config.get("target_roas"))
-    budget = _text_number(
-        config.get("budget")
-        or config.get("daily_budget")
-        or config.get("campaign_daily_budget")
-    )
     return {
-        "target_roas": target,
-        "budget": budget,
-        "budget_mode": str(config.get("budget_mode"))
-        if config.get("budget_mode")
-        else None,
-        "optimization_goal": (
-            str(config.get("optimization_goal"))
-            if config.get("optimization_goal")
-            else None
-        ),
+        "target_roas": _text_number(entity.target_roas),
+        "budget": _text_number(entity.budget_value),
+        "budget_mode": entity.budget_mode or None,
+        "optimization_goal": entity.optimization_goal or None,
     }
 
 
@@ -439,7 +467,7 @@ def _hierarchy_display(
 
 
 def fact_vector(
-    item: Mapping[str, Any], *, unsupported: Collection[str] = ()
+    item: Mapping[str, Any] | RowMapping, *, unsupported: Collection[str] = ()
 ) -> MetricVector:
     """把 _aggregate 的一行跨日合计转成指标向量；有日期为空的列标 PARTIAL。"""
     return metric_vector(
@@ -489,6 +517,7 @@ def build_rows(
     )
 
 
+@query_diagnostics.timed("hydrate")
 def materialize_rows(
     session: Session,
     *,
@@ -547,7 +576,13 @@ def materialize_rows(
             ReportSyncState.stat_date <= filters.end_date,
         )
     ).all()
-    model = CampaignReportDay if kind in {"account", "campaign"} else AdReportDay
+    model = (
+        CampaignReportDay
+        if kind in {"account", "campaign"}
+        else AdgroupReportDay
+        if kind == "adgroup"
+        else AdReportDay
+    )
     group_cols = ["advertiser_id"] + ([] if kind == "account" else [f"{kind}_id"])
     grouped_facts = _aggregate(
         session,
@@ -580,6 +615,22 @@ def materialize_rows(
         kind=kind,
         ids=member_ids,
         parents=parents,
+    )
+    # 轮播完整身份只在当前广告页补全；全候选筛选和排序始终只读窄投影。
+    carousels = (
+        {
+            (entity.advertiser_id, entity.remote_id): directory_carousels(entity)
+            for entity in session.exec(
+                select(CanonicalAdObject).where(
+                    CanonicalAdObject.tenant_id == tenant_id,
+                    col(CanonicalAdObject.advertiser_id).in_(advertisers),
+                    CanonicalAdObject.kind == "ad",
+                    any_of(col(CanonicalAdObject.remote_id), member_ids),
+                )
+            ).all()
+        }
+        if kind == "ad"
+        else {}
     )
     campaign_ids = (
         {o.remote_id for (_, k, _), o in objects.items() if k == "campaign"}
@@ -671,7 +722,11 @@ def materialize_rows(
             if entity and kind == "ad":
                 parent = objects.get((adv, "adgroup", entity.parent_remote_id or ""))
                 campaign_id = parent.parent_remote_id if parent else campaign_id
-            projection = projections.get((adv, campaign_id))
+            projection = (
+                projections.get((adv, campaign_id))
+                if isinstance(campaign_id, str)
+                else None
+            )
             rows.append(
                 _member_row(
                     kind=kind,
@@ -688,6 +743,7 @@ def materialize_rows(
                         r for r in reconciliations if r.advertiser_id == adv
                     ],
                     empty_values=empty_values_for(adv),
+                    carousel=carousels.get((adv, rid)),
                 )
             )
             statuses.append(entity.operation_status if entity else None)
@@ -769,11 +825,12 @@ def _member_row(
     adv: str,
     rid: str,
     entity: AdObject | None,
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, Any] | RowMapping],
     projection: CampaignNameProjection | None,
     balance: AccountBalanceObservation | None,
     reconciliations: Sequence[AccountReconciliationDay],
     empty_values: Mapping[str, Decimal | None],
+    carousel: CarouselDirectory | None = None,
 ) -> ReportRow:
     metadata = items[0] if items else {}
     name = (
@@ -858,7 +915,6 @@ def _member_row(
             if all(r.account_spend is not None for r in reconciliations)
             else None
         )
-    carousel = directory_carousels(entity) if entity and kind == "ad" else None
     if carousel and carousel.is_carousel:
         display.update(
             creative_format="CAROUSEL_ADS",

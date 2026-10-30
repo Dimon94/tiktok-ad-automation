@@ -1,7 +1,6 @@
 """真实 PostgreSQL 复现旧补数占满热槽、素材关联回滚金额与重复周期积压。"""
 
 from datetime import UTC, date, datetime, timedelta
-from uuid import uuid4
 
 from sqlmodel import select
 
@@ -9,12 +8,13 @@ from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.report_reader import RawReportPage
 from app.jobs.models import PendingDispatch
 from app.modules.reporting import job_tasks, planner
-from app.modules.reporting.jobs import LEASE, claim_jobs, enqueue_job, execute_job
+from app.modules.reporting.jobs import enqueue_job, execute_job
 from app.modules.reporting.store_models import (
     MaterialReportDay,
     ReportSyncJob,
     ReportSyncState,
 )
+from tests.modules.reporting.claiming import claim_jobs
 from tests.modules.reporting.test_jobs import _route
 
 
@@ -36,7 +36,7 @@ def enqueue(session, seed, *, kind="ad_day", tier="hot", day=None):
     return session.get(ReportSyncJob, key)
 
 
-def test_busy_backfill_never_uses_live_dispatch_capacity(
+def test_busy_history_uses_background_pool_and_live_slot_remains_bounded(
     session, sync_seed, monkeypatch
 ):
     monkeypatch.setattr(job_tasks.settings, "ADS_SYNC_ENABLED", True)
@@ -44,17 +44,24 @@ def test_busy_backfill_never_uses_live_dispatch_capacity(
     cold = enqueue(
         session, sync_seed, tier="daily", day=now.date() - timedelta(days=10)
     )
-    cold.status, cold.claim_token, cold.claimed_until = "RUNNING", uuid4(), now + LEASE
+    assert claim_jobs(session, now=now + timedelta(seconds=1), limit=1)[0].id == cold.id
     live = enqueue(session, sync_seed)
     session.flush()
     monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 1)
+    assert cold.execution_pool == "background"
     assert job_tasks._dispatch_report_jobs(session, now + timedelta(seconds=1)) == 1
     session.refresh(live)
-    assert live.status == "RUNNING"
+    assert live.status == "RUNNING" and live.execution_pool != "background"
     message = session.exec(
         select(PendingDispatch).where(PendingDispatch.task_key.contains(str(live.id)))
-    ).one()
-    assert message.task_name == "reporting.job_step"
+    ).first()
+    assert message is not None
+    # 后继需求仍须等真实实时槽，不能因后台池另有容量而超领实时执行。
+    successor = enqueue(session, sync_seed)
+    assert successor.id != live.id
+    assert job_tasks._dispatch_report_jobs(session, now + timedelta(seconds=1)) == 0
+    session.refresh(successor)
+    assert successor.status == "QUEUED"
 
 
 def test_material_facts_publish_without_waiting_for_historical_link_lookup(

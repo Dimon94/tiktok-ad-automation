@@ -235,6 +235,29 @@ def test_snapshot_read_is_tenant_bc_scoped_and_viewer_allowed(report_case):
         )
     )
     report_case.session.flush()
+    viewer_context = TenantContext(
+        tenant_id=report_case.context.tenant_id, actor_id=viewer.id, role="viewer"
+    )
+    with pytest.raises(HTTPException) as denied:
+        read_snapshot(
+            report_case.session,
+            context=viewer_context,
+            bc_id=report_case.bc_id,
+            snapshot_id=snapshot.id,
+        )
+    assert denied.value.status_code == 404
+    # viewer可以读自己创建的快照；同租户并不授予其他actor的快照身份。
+    snapshot = QuerySnapshot(
+        tenant_id=report_case.context.tenant_id,
+        bc_id=report_case.bc_id,
+        actor_id=viewer.id,
+        advertiser_ids=["report-account"],
+        filters={"dimension": "campaign"},
+        filter_digest="b" * 64,
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    report_case.session.add(snapshot)
+    report_case.session.flush()
     assert (
         read_snapshot(
             report_case.session,

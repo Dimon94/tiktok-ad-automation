@@ -72,6 +72,17 @@ export function AdsWorkspace() {
   const [applied, setApplied] = useState<AdsSearch>(search)
   const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
   const [queryRevision, setQueryRevision] = useState(0)
+  const lastSnapshotRequestAt = useRef(Date.now())
+  const [pageVisible, setPageVisible] = useState(!document.hidden)
+  useEffect(() => {
+    const changed = () => setPageVisible(!document.hidden)
+    document.addEventListener("visibilitychange", changed)
+    return () => document.removeEventListener("visibilitychange", changed)
+  }, [])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 主动刷新或切换查询范围重新起算自动刷新间隔。
+  useEffect(() => {
+    lastSnapshotRequestAt.current = Date.now()
+  }, [queryRevision, applied.dimension, bc?.bc_id])
   const currentBcId = bc?.bc_id
   const [appliedBcId, setAppliedBcId] = useState<string | null>(null)
   const requestSearch =
@@ -153,10 +164,13 @@ export function AdsWorkspace() {
         })
       ).data,
     // 用户主动操作后短时加快本地版本观察；不在浏览器反复触发平台刷新任务。
+    refetchIntervalInBackground: false,
     refetchInterval: () =>
-      submittedTask && Date.now() - submittedTask.submittedAt < 5 * 60_000
-        ? 2000
-        : 30_000,
+      !pageVisible
+        ? false
+        : submittedTask && Date.now() - submittedTask.submittedAt < 5 * 60_000
+          ? 2000
+          : 30_000,
   })
   const publicationRef = useRef<{ scope: string; version: string } | null>(null)
   const publicationScope = `${tenantId}:${currentBcId}:${applied.start_date}:${applied.end_date}`
@@ -164,6 +178,7 @@ export function AdsWorkspace() {
   const pendingRefreshScope = useRef<string | null>(null)
   const [newDataAvailable, setNewDataAvailable] = useState(false)
   const loadLatest = useCallback(() => {
+    lastSnapshotRequestAt.current = Date.now()
     pendingRefreshScope.current = null
     setNewDataAvailable(false)
     clearSelection()
@@ -558,6 +573,7 @@ export function AdsWorkspace() {
     })
   }
   const canAutoLoadLatest =
+    pageVisible &&
     !ads.selection.selected.size &&
     !ads.selection.allMatching &&
     !previewOpen &&
@@ -585,9 +601,18 @@ export function AdsWorkspace() {
     // 延迟的新版本在操作结束后仍可自动加载；同一版本只加载一次，避免刷新循环。
     if (previous.version === version && !newDataAvailable) return
     // 只有空闲且当前请求结束时换快照，避免打断选择、详情、预览或跨页操作。
-    if (pendingRefreshScope.current === publicationScope) loadLatest()
-    else if (canAutoLoadLatest) loadLatest()
-    else if (previous.version !== version && followOwnOperation) {
+    // 用户明确点击刷新可重建；后台发布必须服从空闲状态和60秒间隔。
+    if (pendingRefreshScope.current === publicationScope && pageVisible)
+      loadLatest()
+    else if (canAutoLoadLatest) {
+      const remaining = 60_000 - (Date.now() - lastSnapshotRequestAt.current)
+      if (remaining <= 0) loadLatest()
+      else {
+        setNewDataAvailable(true)
+        const timer = window.setTimeout(loadLatest, remaining)
+        return () => window.clearTimeout(timer)
+      }
+    } else if (previous.version !== version && followOwnOperation) {
       // 本人操作的回读结果自动补全原快照；不换成员、不重排，也不清掉后续勾选或预览。
       void refreshCurrentPage()
       setNewDataAvailable(true)
@@ -602,6 +627,7 @@ export function AdsWorkspace() {
     refreshCurrentPage,
     canAutoLoadLatest,
     newDataAvailable,
+    pageVisible,
   ])
   const nextPage = () => {
     const nextCursor = ads.query.data?.next_cursor
@@ -731,6 +757,11 @@ export function AdsWorkspace() {
       <ReportQueryStatus
         loading={ads.query.isFetching}
         hasPreviousData={!!ads.query.data}
+        snapshotAt={ads.snapshot?.snapshot_at}
+        metricsObservedAt={ads.query.data?.metrics_observed_at}
+        projectionStatus={String(
+          ads.query.data?.metrics_coverage?.status ?? "",
+        )}
       />
       <AdsSummary
         summary={ads.query.data?.summary}
@@ -834,6 +865,11 @@ export function AdsWorkspace() {
                   sortDirection={applied.sort_direction ?? "desc"}
                   onSort={sort}
                   loading={ads.query.isFetching}
+                  emptyMessage={
+                    ads.query.data?.metrics_coverage?.status === "BUILDING"
+                      ? "素材数据正在整理，完成后显示查询结果。"
+                      : undefined
+                  }
                 />
               </TabsContent>
             ))}

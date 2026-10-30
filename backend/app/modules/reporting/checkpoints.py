@@ -31,6 +31,9 @@ class CheckpointReader:
                 "observed_at": self.observed_at.isoformat(),
                 "pages": {},
             }
+            job.progress = job.progress | {
+                "snapshot_observed_at": self.observed_at.isoformat()
+            }
         else:
             try:
                 self.observed_at = datetime.fromisoformat(self.progress["observed_at"])

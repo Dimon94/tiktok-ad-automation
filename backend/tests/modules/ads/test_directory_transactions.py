@@ -67,7 +67,17 @@ def test_soft_timeout_during_savepoint_closes_backend():
 def test_directory_transaction_bounds_total_time_across_short_statements(monkeypatch):
     # 每条 SQL 都很快也不能让总事务超过预算，否则仍会撞上 Celery 信号。
     monkeypatch.setattr(tasks, "_TRANSACTION_TIMEOUT", "150ms", raising=False)
+    started = monotonic()
     with pytest.raises(DBAPIError, match="transaction timeout"):
         with tasks._directory_session(engine) as session:
-            for _ in range(4):
+            assert (
+                session.connection()
+                .execute(text("SHOW transaction_timeout"))
+                .scalar_one()
+                == "150ms"
+            )
+            # PG取消信号传播并不保证恰好第4条SQL前到达；每条仍远短于150ms，
+            # 有界循环证明限制的是整个事务，不能改成单条长SQL超时。
+            for _ in range(32):
                 session.connection().execute(text("SELECT pg_sleep(0.06)"))
+    assert monotonic() - started < 2

@@ -13,10 +13,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from random import randint
 from time import monotonic
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from sqlalchemy import delete, func, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import delete, text
 from sqlmodel import Session, col, select
 
 from app.core.errors import DomainError
@@ -37,7 +36,6 @@ from app.modules.reporting.directory_refresh import (
 )
 from app.modules.reporting.lanes import (
     CLOSEOUT_PRIORITY,
-    lane_predicate,
     report_workload,
 )
 from app.modules.reporting.link_policy import complete_material_link
@@ -48,6 +46,7 @@ from app.modules.reporting.material_value import (
 )
 from app.modules.reporting.metrics import material_metric_values, parse_local_day
 from app.modules.reporting.store_models import ReportSyncJob, ReportSyncPage
+from app.modules.sync_control.executions import ExecutionLost, TransactionBoundaryReader
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +74,14 @@ _CONTRACT_ERRORS = frozenset(
         "report_row_invalid",
         "report_value_invalid",
         "report_operation_invalid",
+        "route_binding_changed",
+        "route_authorization_changed",
+        "route_contract_changed",
+        "account_access_denied",
+        "account_not_in_bc",
+        "connection_unavailable",
+        "connection_channel_mismatch",
+        "connection_tenant_mismatch",
     }
 )
 _DEFERRED_CODES = frozenset(
@@ -133,6 +140,7 @@ def enqueue_job(
     campaign_ids=(),
     due_at=None,
     requested_at: datetime | None = None,
+    execution_window_days: int | None = None,
 ) -> UUID | None:
     """单任务入口与周期批量规划共用去重和写入，未新建时返回 None。"""
     ids = enqueue_jobs(
@@ -149,6 +157,7 @@ def enqueue_job(
         campaign_ids=campaign_ids,
         due_at=due_at,
         requested_at=requested_at,
+        execution_window_days=execution_window_days,
     )
     return ids[0] if ids else None
 
@@ -168,260 +177,27 @@ def enqueue_jobs(
     campaign_ids=(),
     due_at=None,
     requested_at: datetime | None = None,
+    execution_window_days: int | None = None,
 ) -> list[UUID]:
     """同一冻结范围整批去重、整批写入；每个账户组仍是一条独立同步任务。"""
-    priority = PRIORITY[tier]
-    groups = [list(group) for group in advertiser_groups]
-    if not groups:
-        return []
-    if kind == "material_links":
-        from app.modules.reporting.link_work import enqueue_link_jobs
+    from app.modules.sync_control.report_demand import enqueue_report_requirements
 
-        return enqueue_link_jobs(
-            session,
-            tenant_id=tenant_id,
-            bc_id=bc_id,
-            actor_id=actor_id,
-            frozen_route=frozen_route,
-            advertiser_groups=groups,
-            campaign_ids=campaign_ids,
-            start=start,
-            end=end,
-            priority=priority,
-            due_at=due_at,
-            requested_at=requested_at,
-        )
-    if priority <= 2:
-        coverage_key = _key(
-            tenant_id,
-            kind,
-            "live-coverage",
-            (),
-            start,
-            end,
-            campaign_ids,
-            bc_id,
-            actor_id,
-            frozen_route,
-        )
-        # 同一范围仍由原事务锁串行规划；批内覆盖只需读取一次。
-        session.connection().execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
-            {"scope": f"report-enqueue:{coverage_key}"},
-        )
-        pending = session.exec(
-            select(ReportSyncJob.advertiser_ids).where(
-                ReportSyncJob.tenant_id == tenant_id,
-                ReportSyncJob.bc_id == bc_id,
-                ReportSyncJob.actor_id == actor_id,
-                ReportSyncJob.frozen_route == frozen_route,
-                ReportSyncJob.kind == kind,
-                # 午夜前开始的旧热报未必覆盖尾数，不能吞掉午夜后的收尾请求。
-                ReportSyncJob.priority == CLOSEOUT_PRIORITY
-                if tier == "closeout"
-                else ReportSyncJob.priority <= 2,
-                ReportSyncJob.start_date == start,
-                ReportSyncJob.end_date == end,
-                ReportSyncJob.campaign_ids == list(campaign_ids),
-                col(ReportSyncJob.status).in_(["QUEUED", "RUNNING", "WAITING"]),
-            )
-        ).all()
-        covered = {advertiser for group in pending for advertiser in group}
-        remaining = []
-        for group in groups:
-            uncovered = [
-                advertiser for advertiser in group if advertiser not in covered
-            ]
-            if uncovered:
-                remaining.append(uncovered)
-                covered.update(uncovered)
-        groups = remaining
-    if not groups:
-        return []
-    rows = [
-        {
-            "id": uuid4(),
-            "tenant_id": tenant_id,
-            "bc_id": bc_id,
-            "kind": kind,
-            "priority": priority,
-            "status": "QUEUED",
-            "advertiser_ids": advertisers,
-            "campaign_ids": list(campaign_ids),
-            "start_date": start,
-            "end_date": end,
-            "job_key": _key(
-                tenant_id,
-                kind,
-                tier,
-                advertisers,
-                start,
-                end,
-                campaign_ids,
-                bc_id,
-                actor_id,
-                frozen_route,
-            ),
-            "frozen_route": frozen_route,
-            "actor_id": actor_id,
-            "due_at": due_at or datetime.now(UTC),
-            "attempts": 0,
-            "request_count": 0,
-            "progress": {"requested_at": requested_at.isoformat()}
-            if requested_at
-            else {},
-        }
-        for advertisers in groups
-    ]
-    # SQLAlchemy 按 PostgreSQL 参数上限批量发送，保留原部分唯一键的并发兜底。
-    statement = (
-        insert(ReportSyncJob)
-        .values(created_at=func.clock_timestamp())
-        .on_conflict_do_nothing(
-            index_elements=["job_key"],
-            index_where=text("status IN ('QUEUED','RUNNING','WAITING')"),
-        )
-        .returning(col(ReportSyncJob.id))
+    return enqueue_report_requirements(
+        session,
+        tenant_id=tenant_id,
+        bc_id=bc_id,
+        kind=kind,
+        priority=PRIORITY[tier],
+        advertiser_groups=advertiser_groups,
+        start=start,
+        end=end,
+        frozen_route=frozen_route,
+        actor_id=actor_id,
+        campaign_ids=campaign_ids,
+        due_at=due_at,
+        requested_at=requested_at,
+        execution_window_days=execution_window_days,
     )
-    return list(session.connection().execute(statement, rows).scalars())
-
-
-def claim_jobs(
-    session: Session,
-    *,
-    now: datetime,
-    limit: int,
-    lane: str | None = None,
-    backfill_group: str | None = None,
-) -> list[ReportSyncJob]:
-    """按持久游标轮转租户；事实均衡类型在途，类型内保留各 lane 的顺序。"""
-    if lane not in {None, "live", "closeout", "links", "backfill"}:
-        raise ValueError("invalid report lane")
-    lane_filter = "" if lane is None else f"AND {lane_predicate(lane=lane, alias='j')}"
-    if backfill_group is not None:
-        if lane != "backfill" or backfill_group not in {"facts", "links"}:
-            raise ValueError("invalid backfill group")
-        operator = "=" if backfill_group == "links" else "<>"
-        lane_filter += f" AND j.kind {operator} 'material_links'"
-    # 每类事实按任务创建先后服务；due_at 仅控制准入，退避不能把老任务反复排到队尾。
-    # 关联使用独立窗口，不能以旧关联 FIFO 阻挡较新的事实。
-    # 历史关联不再继承产生它的事实优先级，统一按due_at轮转；否则热报来源
-    # 的历史续步会永久压住每日/历史来源。过期热报/收尾事实同样归入每日档，
-    # 不能带着 0/1/2 的实时优先级永久插队；历史事实仍保留一天后的优先级提升。
-    # 同档继续按 due_at 轮转，续页或准入退避更新到期时间后让出给已等待的任务。
-    priority = (
-        "CASE WHEN j.kind = 'material_links' THEN 2 "
-        "WHEN j.created_at <= :now - interval '24 hours' THEN 3 "
-        "ELSE GREATEST(j.priority, 3) END"
-        if lane == "backfill"
-        else "j.priority"
-    )
-    local_order = (
-        f"j.created_at, {priority}, j.id"
-        if lane == "live"
-        else f"{priority}, j.due_at, j.id"
-    )
-    # 关联按可运行时间轮转，单个大账户每步让出。
-    if lane == "links":
-        local_order = "j.due_at, j.created_at, j.id"
-    global_order = (
-        "created_at, priority, id" if lane == "live" else "priority, due_at, id"
-    )
-    if lane == "links":
-        global_order = "due_at, created_at, id"
-    balance_kinds = lane == "live" or (lane == "backfill" and backfill_group != "links")
-    partition = "j.tenant_id, j.kind" if balance_kinds else "j.tenant_id"
-    rank_column = "kind_prefix" if balance_kinds else "rn"
-    rank_expression = (
-        f"COALESCE(SUM(GREATEST(1, jsonb_array_length(j.advertiser_ids))) OVER "
-        f"(PARTITION BY {partition} ORDER BY {local_order} "
-        "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)"
-        if lane == "live"
-        else f"ROW_NUMBER() OVER (PARTITION BY {partition} ORDER BY {local_order})"
-        + (" - 1" if balance_kinds else "")
-    )
-    eligible = """(j.status IN ('QUEUED','WAITING') AND j.due_at <= :now
-              AND (j.claimed_until IS NULL OR j.claimed_until <= :now)
-              OR j.status = 'RUNNING' AND (j.claimed_until IS NULL OR j.claimed_until <= :now))"""
-    ranking = f"""
-        candidates AS (
-            SELECT j.id, j.tenant_id, j.kind, {priority} AS priority,
-                   j.created_at, j.due_at, c.last_dispatched_at,
-                   {rank_expression} AS {rank_column}
-            FROM report_sync_job j
-            LEFT JOIN report_dispatch_cursor c ON c.tenant_id = j.tenant_id
-            WHERE {eligible} {lane_filter})
-    """
-    if balance_kinds:
-        # 广告可批量读多个账户，素材只能单账户；类型负载按账户覆盖而非任务数均衡。
-        # 前缀只计本候选之前的分配：先选负载较空的类型，再承担本批账户，避免
-        # 单槽时大批次因自身成本较高永远排在单账户任务之后。总窗口仍按任务计数。
-        # 历史事实窗口按任务数均衡，避免数千素材任务挡住广告/账户事实；同类
-        # 仍按有效优先级和 due_at 轮转，退避与续步不插队。仅复用一次候选扫描，
-        # 不逐类型重复扫描积压。这里是类型在途均衡，不是持久的类型派发游标：
-        # 可运行类型多于槽位时，不承诺跨轮严格轮转。空闲份额仍可被其它类型借用。
-        running = (
-            "SUM(GREATEST(1, jsonb_array_length(j.advertiser_ids)))"
-            if lane == "live"
-            else "COUNT(*)"
-        )
-        ranking += f""",
-        inflight AS (
-            SELECT j.tenant_id, j.kind,
-                   {running} AS running
-            FROM report_sync_job j
-            WHERE j.status = 'RUNNING' AND j.claimed_until > :now
-              {lane_filter}
-            GROUP BY j.tenant_id, j.kind),
-        ranked AS (
-            SELECT c.*, ROW_NUMBER() OVER (
-                PARTITION BY c.tenant_id
-                ORDER BY COALESCE(i.running, 0) + c.kind_prefix,
-                         {", ".join(f"c.{column}" for column in global_order.split(", "))}) AS rn
-            FROM candidates c LEFT JOIN inflight i
-              ON i.tenant_id = c.tenant_id AND i.kind = c.kind)
-        """
-    else:
-        ranking += ", ranked AS (SELECT * FROM candidates)"
-    # 限额用于实际拿到行锁的任务；不能先截断 ID 再跳锁，否则被锁的队首会
-    # 吞掉本轮空槽。有序候选逐个按主键拿锁，拿满即停；LATERAL 内的行锁
-    # 阻止优化器把它改成再次扫描全部候选的 hash join，也不锁租户游标。
-    ids = (
-        session.connection()
-        .execute(
-            text(f"""
-        WITH {ranking}
-        SELECT picked.id FROM (
-            SELECT r.id FROM ranked r
-            ORDER BY r.rn, r.last_dispatched_at NULLS FIRST,
-                     {", ".join(f"r.{column}" for column in global_order.split(", "))}
-        ) ordered
-        CROSS JOIN LATERAL (
-            SELECT j.id FROM report_sync_job j
-            WHERE j.id = ordered.id AND {eligible} {lane_filter}
-            FOR UPDATE OF j SKIP LOCKED
-        ) picked
-        LIMIT :limit"""),
-            parameters={"now": now, "lane_now": now, "limit": limit},
-        )
-        .scalars()
-        .all()
-    )
-    claimed = []
-    for job_id in ids:
-        job = session.exec(
-            select(ReportSyncJob)
-            .where(ReportSyncJob.id == job_id)
-            .with_for_update(skip_locked=True)
-        ).one_or_none()
-        if job is None or job.status not in ("QUEUED", "WAITING", "RUNNING"):
-            continue
-        if job.claimed_until is not None and job.claimed_until > now:
-            continue
-        job.status, job.claim_token, job.claimed_until = "RUNNING", uuid4(), now + LEASE
-        claimed.append(job)
-    session.flush()
-    return claimed
 
 
 def _accounts(session, tenant_id, advertiser_ids) -> dict[str, publish.AccountMeta]:
@@ -620,6 +396,7 @@ def _split_material_dates(session, job, result: RawReportPage):
             frozen_route=job.frozen_route,
             actor_id=job.actor_id,
             requested_at=request_time(job),
+            execution_window_days=chunk_days,
         )
         cursor = end + timedelta(days=1)
 
@@ -665,6 +442,7 @@ def _run_material(session, job, reader, accounts):
     if page == 1:
         # 已持有账户事务锁；从头读取的每个 attempt 都以实际首页开始为水位。
         observed_at = publish._database_now(session)
+        job.progress = job.progress | {"snapshot_observed_at": observed_at.isoformat()}
     else:
         try:
             saved_observation = progress["observed_at"]
@@ -746,19 +524,28 @@ def _run_material(session, job, reader, accounts):
         job.progress = job.progress | {"material_paging": progress}
         session.flush()
         if result.next_page is None:
-            staged = session.exec(
-                select(ReportSyncPage)
-                .where(col(ReportSyncPage.job_id) == job.id)
-                .order_by(col(ReportSyncPage.page))
-            ).all()
-            if any(
-                item.scope_key != scope or item.tenant_id != job.tenant_id
-                for item in staged
-            ):
+            evidence = (
+                session.connection()
+                .execute(
+                    text("""SELECT coalesce(sum(jsonb_array_length(rows)),0),
+                    coalesce(bool_and(scope_key=:scope AND tenant_id=:tenant),true)
+                    FROM report_sync_page WHERE job_id=:job"""),
+                    {"scope": scope, "tenant": job.tenant_id, "job": job.id},
+                )
+                .one()
+            )
+            if not evidence[1]:
                 raise DomainError("report_query_invalid", "素材暂存证据超出冻结范围")
-            rows = [row for item in staged for row in item.rows]
-            if len(rows) != result.total_number:
+            if evidence[0] != result.total_number:
                 raise DomainError("report_response_invalid", "素材完整页数与行数不一致")
+            # 单遍服务器游标逐页解码；发布器分批规范化暂存，不把大日桶拼成Python列表。
+            payloads = session.exec(
+                select(ReportSyncPage.rows)
+                .where(ReportSyncPage.job_id == job.id)
+                .order_by(ReportSyncPage.page)
+                .execution_options(stream_results=True)
+            ).yield_per(1)
+            rows = (row for payload in payloads for row in payload)
             count = publish.publish_material_day(
                 session,
                 tenant_id=job.tenant_id,
@@ -1006,6 +793,7 @@ def _run(
         )
         return publish.publish_account_reconciliation(
             session,
+            job_id=j,
             tenant_id=t,
             accounts=accounts,
             start=s,
@@ -1130,28 +918,17 @@ def execute_job(
 ) -> str:
     with session_factory() as session:
         job = session.exec(
-            select(ReportSyncJob).where(ReportSyncJob.id == job_id).with_for_update()
+            select(ReportSyncJob).where(ReportSyncJob.id == job_id)
         ).one()
         if job.claim_token != claim_token or job.status != "RUNNING":
             return "FAILED"  # 旧领取者：不得改写新领取的任务
-        counted = _CountingReader(reader)
+        boundary = TransactionBoundaryReader(session, job, reader)
+        counted = _CountingReader(boundary)
         try:
-            # 按账户排序取得事务锁；不同档位和重叠日期必须从读取开始串行。
-            # 账户对账与广告日共享锁，避免对账读取旧广告而覆盖新结果。
-            lock_kind = "ad_day" if job.kind == "account_day" else job.kind
-            for advertiser in sorted(job.advertiser_ids):
-                acquired = (
-                    session.connection()
-                    .execute(
-                        text(
-                            "SELECT pg_try_advisory_xact_lock(hashtextextended(:scope, 0))"
-                        ),
-                        {"scope": f"report:{job.tenant_id}:{advertiser}:{lock_kind}"},
-                    )
-                    .scalar_one()
-                )
-                if not acquired:
-                    raise AccountAdmissionDeferred(5000)
+            # 网络读取不持业务事务；只在发布器内串行同桶替换并核验观测水位。
+            # 关闭expire避免commit后访问冻结job属性隐式打开跨HTTP事务。
+            session.expire_on_commit = False
+            boundary._check()
             more = _run(session, job, counted) is None
             with diagnostics.stage("job_finalize"):
                 _clear_completed_throttle(job, counted)
@@ -1175,6 +952,24 @@ def execute_job(
                         datetime.now(UTC),
                     )
                     result = "COMPLETE"
+                    if job.kind == "material_links" or job.campaign_ids:
+                        from app.modules.sync_control.contracts import ExecutionFence
+                        from app.modules.sync_control.requirements import (
+                            satisfy_requirements,
+                        )
+
+                        satisfy_requirements(
+                            session,
+                            fence=ExecutionFence(
+                                job.id, "report", job.claim_generation, job.owner_epoch
+                            ),
+                            observed_at=datetime.fromisoformat(
+                                job.progress["snapshot_observed_at"]
+                            )
+                            if job.progress.get("snapshot_observed_at")
+                            else datetime.now(UTC),
+                            publication_version=max(1, job.claim_generation),
+                        )
                     if job.kind in BASIC_KINDS and "basic_paging" in job.progress:
                         # 财务事实已原子发布，暂存正文立即回收；保留观测/页数审计，避免热刷堆盘。
                         checkpoint = job.progress["basic_paging"]
@@ -1192,6 +987,9 @@ def execute_job(
                                 col(ReportSyncPage.job_id) == job.id
                             )
                         )
+        except ExecutionLost:
+            session.rollback()
+            return "FAILED"
         except AccountAdmissionDeferred as deferred:
             # 完整的私有页可以保留；额度退避不能迫使多页报表反复从首页开始。
             if job.kind not in BASIC_KINDS | {"material_day"}:
@@ -1219,6 +1017,9 @@ def execute_job(
                 return "FAILED"
             result = _handle_error(session, job, error)
         job.request_count += counted.count
+        from app.modules.sync_control.schedule import record_report_outcome
+
+        record_report_outcome(session, job)
         job.claim_token = job.claimed_until = None
         with diagnostics.stage("job_commit"):
             session.commit()

@@ -177,8 +177,8 @@ def test_unknown_candidate_timeout_preserves_freshness_and_previous_coverage(
     def slow_candidates(statement, *args, **kwargs):
         if "ORDER BY s.last_success_at" in str(statement):
             nested.append(session.in_nested_transaction())
-            original(text("SET LOCAL statement_timeout='50ms'"))
-            original(text("SELECT pg_sleep(0.1)"))
+            with health.query_budget(session, seconds=0.05):
+                original(text("SELECT pg_sleep(1)"))
         return original(statement, *args, **kwargs)
 
     monkeypatch.setattr(session, "execute", slow_candidates)

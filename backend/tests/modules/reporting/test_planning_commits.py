@@ -256,6 +256,24 @@ def test_thousands_of_accounts_progress_many_batches_and_cover_both_facts(
                 screened_at_attempt = attempt + 1
             if all(set(accounts) <= values for values in covered.values()) and screened:
                 break
+    # 独立记录规划覆盖/逻辑轮次；pytest总耗时包含造数与清理，不能当平台吞吐。
+    import json
+
+    print(  # noqa: T201
+        "SYNC_PLANNING_TRACE "
+        + json.dumps(
+            {
+                "fixture_accounts": 4859,
+                "simulated_transport_seconds_per_page": page_seconds,
+                "screened_at_attempt": screened_at_attempt,
+                "logical_round_interval_seconds": 30,
+                "bc_a_pages": [page for bc, page in pages if bc == "bc-a"],
+                "samples": samples,
+            },
+            default=str,
+        )
+    )
+
     assert all(set(accounts) <= values for values in covered.values()), samples
     assert screened, samples
     if page_seconds:

@@ -5,8 +5,8 @@ from app.modules.reporting.schemas import ReportingFilter, SelectionRequest
 
 
 def test_material_selection_keeps_usage_ids(report_case):
-    from app.modules.reporting.queries import query_ads
     from app.modules.reporting.selection import freeze_selection
+    from tests.modules.reporting.query_helpers import query_ads
 
     # The material view consumes the typed ad usage identity; platform VID alone
     # cannot represent two uses in the same ad account.

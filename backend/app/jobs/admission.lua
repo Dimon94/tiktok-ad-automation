@@ -1,6 +1,10 @@
 local stamp = redis.call('TIME')
 local now = tonumber(stamp[1]) * 1000 + math.floor(tonumber(stamp[2]) / 1000)
 local member, window, lease = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3])
+-- 派发占位只约束本机排队，不消费次数；实际准入原子交接且拒绝也释放占位。
+if ARGV[13] then
+    for i=17,20 do redis.call('ZREM',KEYS[i],ARGV[13]) end
+end
 local wait, reason = 0, 0
 if KEYS[16] then
     local until_at = tonumber(redis.call('GET', KEYS[16])) or 0

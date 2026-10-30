@@ -52,7 +52,7 @@ def test_slow_probe_rolls_back_only_its_savepoint_and_wakes_next(
         if job.id == slow_id:
             job.progress = job.progress | {"must_rollback": True}
             db.flush()
-            db.execute(text("SELECT pg_sleep(0.1)"))
+            db.execute(text("SELECT pg_sleep(0.5)"))
         return True
 
     monkeypatch.setattr(material_links, "dependency_changed", changed)
@@ -79,7 +79,7 @@ def test_timed_out_first_probe_rotates_after_commit(committed_sync_seed, monkeyp
     def changed(db, job):
         seen.append(job.id)
         if job.id == first:
-            db.execute(text("SELECT pg_sleep(0.1)"))
+            db.execute(text("SELECT pg_sleep(0.5)"))
         return False
 
     monkeypatch.setattr(material_links, "dependency_changed", changed)
@@ -208,9 +208,7 @@ def test_more_than_fifty_dependencies_rotate_without_losing_scope(
     assert set(seen[:60]) == expected
 
 
-@pytest.mark.parametrize(
-    "query_name", ["RECONCILE_CANDIDATES_SQL", "WAKE_CANDIDATES_SQL"]
-)
+@pytest.mark.parametrize("query_name", ["WAKE_CANDIDATES_SQL"])
 def test_candidates_read_active_index_instead_of_completed_history(
     session, sync_seed, query_name
 ):
@@ -266,7 +264,6 @@ def isolate_planning(monkeypatch):
     from app.modules.reporting import job_tasks
 
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
-    monkeypatch.setattr(job_tasks, "ensure_month_partitions", lambda *_, **__: None)
     monkeypatch.setattr(job_tasks.planner, "ensure_bc_plans", lambda *_, **__: None)
     monkeypatch.setattr(job_tasks.planner, "due_plans", lambda *_, **__: [])
     monkeypatch.setattr(job_tasks.planner, "backfill_allowed", lambda *_: True)
@@ -274,7 +271,7 @@ def isolate_planning(monkeypatch):
     return job_tasks
 
 
-def test_plan_due_commits_wake_before_reconcile_database_failure(
+def test_plan_due_commits_wake_without_rewriting_frozen_link_scope(
     committed_sync_seed, redis_client, monkeypatch
 ):
     from app.core.db import engine
@@ -287,16 +284,6 @@ def test_plan_due_commits_wake_before_reconcile_database_failure(
     tasks = isolate_planning(monkeypatch)
     monkeypatch.setattr(material_links, "dependency_changed", lambda *_: True)
 
-    def failed_reconcile(session, **_):
-        # 第二阶段先写数据库，再用真实PG异常使整个事务失败。
-        job = session.get(ReportSyncJob, job_id)
-        assert job.error_code is None
-        assert job.progress["dependency_probed_at"] == now.isoformat()
-        job.progress = job.progress | {"reconcile_rolled_back": True}
-        session.flush()
-        session.execute(text("SELECT 1 / 0"))
-
-    monkeypatch.setattr(link_work, "reconcile_link_work", failed_reconcile)
     assert (
         tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
         == 0
@@ -305,10 +292,11 @@ def test_plan_due_commits_wake_before_reconcile_database_failure(
         job = session.get(ReportSyncJob, job_id)
         assert job.due_at == now and job.error_code is None
         assert job.progress["dependency_probed_at"] == now.isoformat()
-        assert "reconcile_rolled_back" not in job.progress
+        assert job.start_date == job.end_date == date(2026, 10, 1)
+        assert job.status == "WAITING"
 
 
-def test_plan_due_reconciles_after_wake_database_failure(
+def test_plan_due_wake_database_failure_preserves_both_frozen_jobs(
     committed_sync_seed, redis_client, monkeypatch
 ):
     from app.core.db import engine
@@ -334,11 +322,11 @@ def test_plan_due_reconciles_after_wake_database_failure(
     with factory() as session:
         root = session.get(ReportSyncJob, first)
         merged = session.get(ReportSyncJob, second)
-        assert root.progress["coalesced_v1"] is True
         assert "wake_rolled_back" not in root.progress
         assert "dependency_probed_at" not in root.progress
-        assert merged.status == "CANCELLED"
-        assert merged.progress["merged_into"] == str(first)
+        assert root.status == merged.status == "WAITING"
+        assert "merged_into" not in merged.progress
+        assert root.start_date == merged.start_date == date(2026, 10, 1)
 
 
 def orphan_directory(session, job, now, ids=("ad",), **changes):

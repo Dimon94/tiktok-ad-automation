@@ -7,6 +7,7 @@ a role from a request or queue message never constitutes authorization.
 """
 
 from time import monotonic
+from typing import Any
 from uuid import UUID
 
 from app.core.config import settings
@@ -58,6 +59,37 @@ def register_dispatch_task(name: str, queue: str) -> None:
     _DISPATCH_TASKS[name] = queue
 
 
+def guard_sync_dispatch(
+    *,
+    database_engine: Any,
+    task_name: str,
+    tenant_id: str,
+    actor_id: str,
+    payload: dict[str, Any],
+    dispatch: dict[str, Any] | None,
+) -> bool:
+    """已注册同步入口共用寿命围栏；不改变legacy及广告写任务注册合同。"""
+    from app.modules.sync_control.dispatch_envelope import (
+        SYNC_EXECUTION_TASKS,
+        consume_sync_dispatch,
+    )
+
+    dispatch_queue(task_name)
+    if task_name not in SYNC_EXECUTION_TASKS and task_name not in {
+        "reporting.plan_due",
+        "reporting.plan_continue",
+    }:
+        raise ValueError("not a canonical sync task")
+    return consume_sync_dispatch(
+        database_engine=database_engine,
+        task_name=task_name,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    )
+
+
 def dispatch_queue(name: str) -> str:
     try:
         return _DISPATCH_TASKS[name]
@@ -74,8 +106,8 @@ register_dispatch_task("reporting.export", "ads-reporting")
 register_dispatch_task("ad_management.execute", "ad-management")
 
 
-@celery_app.task(name="jobs.probe")
-def probe(*, tenant_id: str, actor_id: str, payload: dict) -> None:
+@celery_app.task(name="jobs.probe")  # type: ignore[untyped-decorator]
+def probe(*, tenant_id: str, actor_id: str, payload: dict[str, Any]) -> None:
     """Internal no-op diagnostics only; does not grant or verify business access."""
     UUID(tenant_id)
     UUID(actor_id)
@@ -103,17 +135,30 @@ def drain_dispatch(limit: int = 100) -> int:
     return published
 
 
-@celery_app.task(name="jobs.flush_dispatch", time_limit=30, soft_time_limit=25)
+@celery_app.task(name="jobs.flush_dispatch", time_limit=30, soft_time_limit=25)  # type: ignore[untyped-decorator]
 def flush_dispatch_task(limit: int = 100) -> int:
     return drain_dispatch(limit=limit)
 
 
-@celery_app.task(name="jobs.compact_dispatches", time_limit=45, soft_time_limit=40)
+@celery_app.task(name="jobs.compact_dispatches", time_limit=45, soft_time_limit=40)  # type: ignore[untyped-decorator]
 def compact_dispatches_task(limit: int = 1000) -> int:
-    """分批压缩已结算构建消息；保留七天完整正文供恢复与排障。"""
+    """分批压缩已结算构建/同步消息；保留七天正文及幂等摘要。"""
     from sqlmodel import Session
 
     from app.jobs.outbox import compact_published_dispatches
 
     with Session(engine) as session, session.begin():
-        return compact_published_dispatches(session, limit=limit)
+        from sqlalchemy import text
+
+        session.execute(text("SET LOCAL statement_timeout='5s'"))
+        session.execute(text("SET LOCAL lock_timeout='200ms'"))
+        from datetime import UTC, datetime
+
+        from app.modules.sync_control.retention import prune_sync_dispatches
+
+        pruned = prune_sync_dispatches(
+            session, now=datetime.now(UTC), limit=max(1, limit // 2)
+        )
+        return compact_published_dispatches(session, limit=max(1, limit // 2)) + sum(
+            pruned.values()
+        )

@@ -6,31 +6,47 @@ import {
   type ReportRow,
 } from "@/client"
 import { useTenantScope } from "@/features/tenants/TenantScope"
+import useAuth from "@/hooks/useAuth"
 import { type AdsSearch, toAdsQuery } from "./search"
 export function useAdsQuery(search: AdsSearch, queryRevision = 0) {
   const { tenantId, bc, scope } = useTenantScope()
+  const { user } = useAuth()
+  const actorId = user?.id ?? null
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [allMatching, setAllMatching] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(new Set())
   const bcId = bc?.bc_id ?? null
   const queryKey = useMemo(
-    () => ["tenant", tenantId, "ads", bcId, queryRevision, search] as const,
-    [tenantId, bcId, queryRevision, search],
+    () =>
+      [
+        "tenant",
+        tenantId,
+        "ads",
+        bcId,
+        queryRevision,
+        search,
+        actorId,
+      ] as const,
+    [tenantId, bcId, queryRevision, search, actorId],
   )
   const query = useQuery<AdsQueryPage>({
     queryKey,
-    enabled: !!tenantId && !!bcId,
+    enabled: !!tenantId && !!bcId && !!actorId,
     // 只在同一维度内（翻页、排序、筛选）沿用上一页数据避免闪烁；切换维度必须清空，
     // 否则新维度加载期间表格仍是上个维度的行（如素材页签显示剧名），看起来像数据错了。
     placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === tenantId &&
+      previousQuery?.queryKey[3] === bcId &&
+      previousQuery?.queryKey[6] === actorId &&
       (previousQuery?.queryKey[5] as AdsSearch | undefined)?.dimension ===
-      search.dimension
+        search.dimension
         ? previous
         : undefined,
     staleTime: 15_000,
     gcTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+    refetchIntervalInBackground: false,
     queryFn: async ({ signal }) =>
       (
         await AdsReportingService.queryAds({
@@ -57,8 +73,8 @@ export function useAdsQuery(search: AdsSearch, queryRevision = 0) {
       snapshot_id: _snapshot,
       ...filters
     } = search
-    return JSON.stringify({ tenantId, bcId, filters })
-  }, [tenantId, bcId, search])
+    return JSON.stringify({ tenantId, bcId, actorId, filters })
+  }, [tenantId, bcId, actorId, search])
   // 筛选/维度/BC 变化必须清空跨页冻结选择，避免 row_key 复用。
   useEffect(() => {
     if (!selectionKey) return

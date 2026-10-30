@@ -17,6 +17,16 @@ from app.modules.ads.models import AdObject
 from app.modules.tenants.models import Tenant, TenantMembership
 
 
+@pytest.fixture(autouse=True)
+def isolated_sync_quota(monkeypatch):
+    """调度现在必须显式核验真实额度合同；测试使用独立app域，绝不读取运行配置。"""
+    from app.core.config import settings
+    from app.integrations.tiktok.platform_quotas import quota_configuration
+
+    monkeypatch.setattr(settings, "TIKTOK_APP_ID", f"test-reporting-{uuid4()}")
+    monkeypatch.setattr(settings, "TIKTOK_CALL_POLICIES", quota_configuration("BASIC"))
+
+
 @pytest.fixture
 def other_context() -> SimpleNamespace:
     """第二租户用于确认同名目录对象不能越过租户边界。"""

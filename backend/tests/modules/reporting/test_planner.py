@@ -111,10 +111,21 @@ def test_screen_uses_bc_report_and_filters_candidates():
 
 
 @pytest.mark.parametrize("now", [NOW, NOW.replace(hour=20)])
-def test_hot_plan_uses_current_local_day_and_daily_excludes_it(session, sync_seed, now):
+def test_hot_plan_uses_current_local_day_and_daily_excludes_it(
+    session, sync_seed, monkeypatch, now
+):
     from zoneinfo import ZoneInfo
 
     from app.modules.reporting.planner import plan_material
+    from app.modules.sync_control import report_demand
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+    # planner窗口与需求归并必须使用同一测试时刻，避免固定日期被当成历史合并。
+    monkeypatch.setattr(report_demand, "datetime", Clock)
 
     # UTC 午前也只读当天；UTC 晚间香港已跨日，不能全账户直接用 UTC 日期。
     ensure_bc_plans(session, now=now)
@@ -591,12 +602,20 @@ def test_confirmed_empty_window_uses_bounded_database_round_trips(
 
 @pytest.mark.parametrize("account_count", [24, 586])
 def test_material_cycle_enqueues_accounts_with_bounded_database_round_trips(
-    session, sync_seed, account_count
+    session, sync_seed, monkeypatch, account_count
 ):
     from sqlalchemy import event
 
     from app.modules.accounts.models import AdvertiserAccount
     from app.modules.reporting.planner import plan_material
+    from app.modules.sync_control import report_demand
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(report_demand, "datetime", Clock)
 
     accounts = ["acc-1", "acc-2"] + [f"material-{i}" for i in range(account_count - 2)]
     session.add_all(

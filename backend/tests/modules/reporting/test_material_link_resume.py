@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+import pytest
 from sqlmodel import select
 
 from app.core.errors import DomainError
@@ -49,13 +50,13 @@ def seed_job(factory, seed):
 
 
 def step(factory, job_id, reader):
-    token = uuid4()
-    with factory() as session:
-        job = session.get(ReportSyncJob, job_id)
-        job.status, job.claim_token = "RUNNING", token
-        session.commit()
+    from tests.modules.reporting.test_material_resume import claim
+
+    job = claim(factory, job_id)
     reader.calls = 0
-    return execute_job(factory, job_id=job_id, claim_token=token, reader=reader)
+    return execute_job(
+        factory, job_id=job_id, claim_token=job.claim_token, reader=reader
+    )
 
 
 class SlowReader:
@@ -122,8 +123,14 @@ def test_slow_binary_search_and_pages_commit_across_worker_steps(committed_sync_
         assert (link.ad_remote_id, link.platform_material_id) == ("ad199", None)
 
 
+@pytest.mark.parametrize(
+    "error_code,status",
+    [("tiktok_response_error", "WAITING"), ("report_response_invalid", "FAILED")],
+)
 def test_completed_overview_and_query_page_survive_later_provider_error(
     committed_sync_seed,
+    error_code,
+    status,
 ):
     seed, factory = committed_sync_seed
     job_id, reader = seed_job(factory, seed), SlowReader()
@@ -133,11 +140,14 @@ def test_completed_overview_and_query_page_survive_later_provider_error(
     with factory() as session:
         saved = session.get(ReportSyncJob, job_id).progress
         assert saved["overview_complete"]
-    reader.error = DomainError("report_response_invalid", "平台错误必须保留")
-    assert step(factory, job_id, reader) == "FAILED"
+    reader.error = DomainError(error_code, "平台错误必须保留")
+    assert step(factory, job_id, reader) == status
     with factory() as session:
         job = session.get(ReportSyncJob, job_id)
-        assert job.progress == saved and job.error_code == "report_response_invalid"
+        assert job.progress == saved and job.error_code == error_code
+        assert job.status == status
+    if status == "FAILED":
+        return  # 终态不能由测试手改租约复活；只有暂时错误才续同一查询。
     reader.error = None
     assert step(factory, job_id, reader) == "WAITING"
     assert reader.history[-1][1] == 2

@@ -8,6 +8,7 @@ import pytest
 
 from app.core import diagnostics as runtime
 from app.modules.reporting import diagnostics
+from tests.modules.reporting.claiming import claim_jobs
 
 
 def records(caplog):
@@ -159,9 +160,7 @@ def test_real_job_summary_preserves_atomic_publication_and_one_call(
             actor_id=seed.actor_id,
         )
         db.commit()
-        job = jobs.claim_jobs(
-            db, now=datetime.now(UTC) + timedelta(seconds=1), limit=1
-        )[0]
+        job = claim_jobs(db, now=datetime.now(UTC) + timedelta(seconds=1), limit=1)[0]
         token = job.claim_token
         db.commit()
     reader = FakeReader(

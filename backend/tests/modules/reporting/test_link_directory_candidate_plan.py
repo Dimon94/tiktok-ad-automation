@@ -40,10 +40,20 @@ def _capture(session, job, now):
     return captured[0]
 
 
-def _seed(session, seed, count=100):
+def _seed(session, seed, count=100, material_type="VIDEO_SPARK_ADS"):
     now = datetime.now(UTC)
     publish(
-        session, seed, "acc-1", [material_row(f"mid-{i}", "1") for i in range(count)]
+        session,
+        seed,
+        "acc-1",
+        [
+            material_row(f"mid-{i}", "1")
+            | {
+                "dimensions": material_row(f"mid-{i}", "1")["dimensions"]
+                | {"main_material_type": material_type}
+            }
+            for i in range(count)
+        ],
     )
     session.add_all(
         MaterialPostLink(
@@ -51,7 +61,7 @@ def _seed(session, seed, count=100):
             advertiser_id="acc-1",
             main_material_id=f"mid-{i}",
             ad_remote_id=f"ad-{i % 20:02}",
-            main_material_type="VIDEO_NON_SPARK_ADS",
+            main_material_type=material_type,
             observed_at=now,
         )
         for i in range(count)
@@ -286,7 +296,12 @@ def test_spark_complete_directory_guard_is_unchanged(
     from app.modules.ads.models import AdMaterialReference, AdObject
 
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
-    job, now = _seed(session, sync_seed, count=1)
+    job, now = _seed(
+        session,
+        sync_seed,
+        count=1,
+        material_type="VIDEO_SPARK_ADS" if spark else "VIDEO_NON_SPARK_ADS",
+    )
     link = session.exec(
         select(MaterialPostLink).where(
             MaterialPostLink.tenant_id == sync_seed.tenant_id
@@ -372,7 +387,7 @@ def test_value_candidates_keep_exact_fact_scope_and_net_amounts(
                 advertiser_id="acc-2" if case == "other_account" else "acc-1",
                 stat_date=day,
                 main_material_id="extra-mid",
-                main_material_type="VIDEO_NON_SPARK_ADS",
+                main_material_type="VIDEO_SPARK_ADS",
                 currency="USD",
                 timezone="Asia/Hong_Kong",
                 fetched_at=now,
@@ -388,7 +403,7 @@ def test_value_candidates_keep_exact_fact_scope_and_net_amounts(
             main_material_id="extra-mid",
             ad_remote_id="extra-ad",
             platform_material_id="" if case == "empty_video" else None,
-            main_material_type="VIDEO_NON_SPARK_ADS",
+            main_material_type="VIDEO_SPARK_ADS",
             observed_at=now,
         )
     )
@@ -400,7 +415,7 @@ def test_value_candidates_keep_exact_fact_scope_and_net_amounts(
                 main_material_id="extra-mid",
                 ad_remote_id="other-ad",
                 platform_material_id="known-video",
-                main_material_type="VIDEO_NON_SPARK_ADS",
+                main_material_type="VIDEO_SPARK_ADS",
                 observed_at=now,
             )
         )

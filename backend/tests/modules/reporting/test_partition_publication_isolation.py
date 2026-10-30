@@ -1,16 +1,17 @@
-"""真实 PG：事实发布只准备本表分区，不能持另一父表锁形成交叉等待。"""
+"""真实 PG：发布不运行分区DDL，维护独立迁移DEFAULT且发布保持原子性。"""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from threading import Barrier, Event
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.modules.reporting import publish
+from app.modules.reporting.partitions import ensure_month_partitions_for_range
 from app.modules.reporting.store_models import AdReportDay, MaterialReportDay
 from tests.modules.reporting.sync_conftest import ad_row
 
@@ -109,12 +110,14 @@ def test_publish_does_not_wait_for_other_fact_table_reader(
             assert _publish(writer, seed, kind, missing_month) == 1
     with factory() as session:
         assert _facts(session, seed, kind, missing_month) == [
-            ("acc-1", Decimal("1"), f"{TABLES[kind]}_{missing_month:%Y_%m}")
+            ("acc-1", Decimal("1"), f"{TABLES[kind]}_default")
         ]
 
 
 @pytest.mark.parametrize("kind", ["ad", "material"])
-def test_publish_moves_only_its_default_rows(committed_sync_seed, missing_month, kind):
+def test_independent_maintenance_moves_only_selected_fact_default_rows(
+    committed_sync_seed, missing_month, kind
+):
     seed, factory = committed_sync_seed
     other = "material" if kind == "ad" else "ad"
     with factory() as session, session.begin():
@@ -122,6 +125,10 @@ def test_publish_moves_only_its_default_rows(committed_sync_seed, missing_month,
         _default_row(session, seed, other, missing_month)
     with factory() as session, session.begin():
         assert _publish(session, seed, kind, missing_month) == 1
+    with factory() as session, session.begin():
+        ensure_month_partitions_for_range(
+            session, missing_month, missing_month, tables=(TABLES[kind],)
+        )
     with factory() as session:
         partition = f"{TABLES[kind]}_{missing_month:%Y_%m}"
         assert _facts(session, seed, kind, missing_month) == [
@@ -133,81 +140,26 @@ def test_publish_moves_only_its_default_rows(committed_sync_seed, missing_month,
         ]
 
 
-def test_ad_creation_and_reverse_fact_reader_do_not_deadlock(
-    committed_sync_seed, missing_month
-):
-    seed, factory = committed_sync_seed
-    reader_ready, ad_locked, reader_continuing = Event(), Event(), Event()
-
-    def read_reverse():
-        with factory() as session, session.begin():
-            session.execute(text("SET LOCAL statement_timeout='5s'"))
-            session.execute(text("SELECT 1 FROM material_report_day LIMIT 1"))
-            reader_ready.set()
-            assert ad_locked.wait(3)
-            reader_continuing.set()
-            # 与建分区的ad→material顺序相反，旧双表helper会出现真实PG锁环。
-            return _facts(session, seed, "ad", missing_month)
-
-    def create_ad():
-        assert reader_ready.wait(3)
-        with factory() as session, session.begin():
-            session.execute(text("SET LOCAL statement_timeout='5s'"))
-
-            def after_lock(_conn, _cursor, statement, *_):
-                if statement == "LOCK TABLE ad_report_day IN ACCESS EXCLUSIVE MODE":
-                    ad_locked.set()
-                    assert reader_continuing.wait(3)
-
-            connection = session.connection()
-            event.listen(connection, "after_cursor_execute", after_lock)
-            try:
-                return _publish(session, seed, "ad", missing_month)
-            finally:
-                event.remove(connection, "after_cursor_execute", after_lock)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        reader = pool.submit(read_reverse)
-        writer = pool.submit(create_ad)
-        assert writer.result(timeout=10) == 1
-        assert reader.result(timeout=10) == [
-            ("acc-1", Decimal("1"), f"ad_report_day_{missing_month:%Y_%m}")
-        ]
-
-
 @pytest.mark.parametrize("kind", ["ad", "material"])
-def test_same_month_concurrent_publish_creates_once_without_losing_rows(
+def test_same_missing_month_concurrent_publish_keeps_both_accounts(
     committed_sync_seed, missing_month, kind
 ):
     seed, factory = committed_sync_seed
-    both_missing = Barrier(2)
+    ready = Barrier(2)
 
     def write(account):
         with factory() as session, session.begin():
             session.execute(text("SET LOCAL statement_timeout='5s'"))
-            reached = False
-
-            def before_lock(_conn, _cursor, statement, *_):
-                nonlocal reached
-                if statement.startswith("LOCK TABLE") and not reached:
-                    reached = True
-                    both_missing.wait(timeout=3)
-
-            connection = session.connection()
-            event.listen(connection, "before_cursor_execute", before_lock)
-            try:
-                return _publish(session, seed, kind, missing_month, account)
-            finally:
-                event.remove(connection, "before_cursor_execute", before_lock)
+            ready.wait(timeout=3)
+            return _publish(session, seed, kind, missing_month, account)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = [pool.submit(write, account) for account in ("acc-1", "acc-2")]
-        assert [result.result(timeout=10) for result in results] == [1, 1]
+        futures = [pool.submit(write, account) for account in ("acc-1", "acc-2")]
+        assert [f.result(timeout=10) for f in futures] == [1, 1]
     with factory() as session:
-        partition = f"{TABLES[kind]}_{missing_month:%Y_%m}"
         assert _facts(session, seed, kind, missing_month) == [
-            ("acc-1", Decimal("1"), partition),
-            ("acc-2", Decimal("1"), partition),
+            ("acc-1", Decimal("1"), f"{TABLES[kind]}_default"),
+            ("acc-2", Decimal("1"), f"{TABLES[kind]}_default"),
         ]
 
 
@@ -238,3 +190,19 @@ def test_partition_and_publication_rollback_then_retry(
         assert _publish(session, seed, kind, missing_month) == 1
     with factory() as session:
         assert len(_facts(session, seed, kind, missing_month)) == 2
+
+
+@pytest.mark.parametrize("kind", ["ad", "material"])
+def test_missing_month_publish_does_not_block_same_fact_table_reader(
+    committed_sync_seed, missing_month, kind
+):
+    seed, factory = committed_sync_seed
+    with factory() as reader, reader.begin():
+        reader.execute(text(f"SELECT 1 FROM {TABLES[kind]} LIMIT 1"))
+        with factory() as writer, writer.begin():
+            writer.execute(text("SET LOCAL lock_timeout='200ms'"))
+            assert _publish(writer, seed, kind, missing_month) == 1
+    with factory() as check:
+        assert _facts(check, seed, kind, missing_month) == [
+            ("acc-1", Decimal("1"), f"{TABLES[kind]}_default")
+        ]

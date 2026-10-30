@@ -515,7 +515,16 @@ def open_tiktok_gateway(
             authorize(advertiser_id, operation)
             with admit(advertiser_id, operation):
                 authorize(advertiser_id, operation)
+                from app.integrations.tiktok.attempt_observer import (
+                    current_attempt_observer,
+                    physical_attempt_scope,
+                )
+                from app.integrations.tiktok.platform_quotas import sdk_endpoint
+
                 with (
+                    physical_attempt_scope(official, sdk_endpoint(operation))
+                    if current_attempt_observer() is not None
+                    else nullcontext(),
                     trace_sdk_request(official, **fields)
                     if diagnostic
                     else nullcontext(),

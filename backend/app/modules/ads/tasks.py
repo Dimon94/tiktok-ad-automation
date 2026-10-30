@@ -8,10 +8,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from billiard.exceptions import SoftTimeLimitExceeded
+from billiard.exceptions import SoftTimeLimitExceeded  # type: ignore[import-untyped]
 from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -22,6 +22,7 @@ from app.core.context import TenantContext
 from app.core.db import engine
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.ads import DirectoryQuery
+from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.integrations.tiktok.gateway import open_tiktok_gateway
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
 from app.jobs.celery_app import celery_app
@@ -32,7 +33,6 @@ from app.modules.ads.directory_dispatch import (
     PUBLISH_TASK_NAME,
     TARGETED_TASK_NAME,
     TASK_NAME,
-    background_continuation_available,
     enqueue_directory_step,
     is_live_directory,
 )
@@ -48,8 +48,8 @@ from app.modules.ads.sync import (
 )
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 
-# 最大重试次数限制，防止死循环（数据库错误导致的重试）。
-MAX_CLAIM_GENERATION = 100
+# 本地发布失败预算与跨页/重领取代数分离；大目录分页不能消耗重试额度。
+MAX_PUBLISH_FAILURES = 100
 _LEASE_SECONDS = 90
 _PUBLISH_LEASE_SECONDS = 210
 _LOCK_TIMEOUT = "20s"
@@ -63,7 +63,7 @@ def _directory_session(
     database_engine: Any, *, publish_only: bool = False
 ) -> Iterator[Session]:
     """领取和发布均使用有界事务，异常时丢弃物理连接以释放服务器行锁。"""
-    with Session(database_engine) as session:
+    with Session(database_engine, expire_on_commit=False) as session:
         try:
             session.connection().execute(
                 text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'")
@@ -118,29 +118,33 @@ class _CommittedDirectoryWork:
 
     refill: bool = False
     deliver: bool = False
+    failure_fence: tuple[int, int, UUID | None] | None = None
+    reservation: tuple[str, dict[str, Any]] | None = None
 
 
-def _deliver_committed_work(database_engine, work: _CommittedDirectoryWork) -> None:
+def _deliver_committed_work(
+    database_engine: Any, work: _CommittedDirectoryWork
+) -> None:
     if not settings.ADS_SYNC_ENABLED:
         return
     deliver = work.deliver
     if work.refill:
         try:
-            from app.modules.reporting.job_tasks import _dispatch_directories
+            from app.modules.reporting import planner
+            from app.modules.reporting.job_tasks import _dispatch_pending
 
-            # 仅在释放目录槽后补位；后台页遇到事实竞争也释放借用槽。
-            # 同时考虑两池：全量主目录可能生成实时素材子运行。复用原窗口锁、
-            # 租户轮转和背景保底；慢查询回滚本次领取，Beat 后续仍可恢复。
-            with Session(database_engine) as session, session.begin():
-                session.connection().execute(text("SET LOCAL statement_timeout='2s'"))
-                session.connection().execute(text("SET LOCAL lock_timeout='100ms'"))
-                session.connection().execute(text("SET LOCAL transaction_timeout='3s'"))
-                from app.modules.reporting import planner
-
-                now = datetime.now(UTC)
-                with Redis.from_url(settings.REDIS_URL) as redis_client:
-                    allowed = planner.backfill_allowed(redis_client, now)
-                claimed = _dispatch_directories(session, now, allow_backfill=allowed)
+            # 每页提交后补位整个共享池，让下一获胜的历史/补链/余额类立即前进；
+            # 领取有总预算，失败只回滚补位事务，已暂存页和due仍可由Beat恢复。
+            now = datetime.now(UTC)
+            with Redis.from_url(settings.REDIS_URL) as redis_client:
+                allowed = planner.backfill_allowed(redis_client, now)
+            claimed = _dispatch_pending(
+                database_engine,
+                now,
+                allow_backfill=allowed,
+                include_directories=True,
+                budget_seconds=2,
+            )
             deliver = deliver or claimed > 0
         except Exception:
             logger.exception("directory direct refill deferred")
@@ -161,6 +165,9 @@ def _finish_superseded_directory(
     # 这是不可再发布的明确终态，不删除已暂存页或把旧数据伪装成成功发布。
     run.status, run.error_code = "STALE", "directory_run_stale"
     run.completed_at = datetime.now(UTC)
+    from app.modules.sync_control.directory_demand import directory_outcome
+
+    directory_outcome(session, run)
     run.claim_token = run.claimed_until = None
     session.commit()
     work.refill = True
@@ -176,17 +183,67 @@ def run_directory_step(
     claim_generation: int,
     publish_only: bool = False,
 ) -> str:
+    if not settings.ADS_SYNC_ENABLED:
+        return "WAIT"
+    from app.modules.sync_control.costs import execution_cost_context
+
     work = _CommittedDirectoryWork()
+    cost_registered = False
     try:
-        return _execute_directory_step(
-            database_engine=database_engine,
-            redis_client=redis_client,
-            context=context,
-            run_id=run_id,
-            claim_generation=claim_generation,
-            publish_only=publish_only,
-            work=work,
-        )
+        with execution_cost_context(
+            database_engine,
+            tenant_id=context.tenant_id,
+            execution_id=run_id,
+            generation=claim_generation,
+            kind="directory",
+        ):
+            cost_registered = True
+            return _execute_directory_step(
+                database_engine=database_engine,
+                redis_client=redis_client,
+                context=context,
+                run_id=run_id,
+                claim_generation=claim_generation,
+                publish_only=publish_only,
+                work=work,
+            )
+    except Exception:
+        if not cost_registered and not publish_only and redis_client is not None:
+            from app.modules.ads.directory_dispatch import directory_step_key
+            from app.modules.sync_control.directory_demand import directory_endpoint
+            from app.modules.sync_control.occupancy import release_dispatch
+
+            try:
+                # producer登记失败发生在HTTP领取之前；只清仍未被消费者领取的
+                # 本代queued占位。短行锁避免与同代A事务交错，不修改任何PG状态。
+                with Session(database_engine) as session, session.begin():
+                    queued = session.exec(
+                        select(AdDirectoryRun)
+                        .where(
+                            col(AdDirectoryRun.id) == run_id,
+                            col(AdDirectoryRun.tenant_id) == context.tenant_id,
+                            col(AdDirectoryRun.actor_id) == context.actor_id,
+                            col(AdDirectoryRun.claim_generation) == claim_generation,
+                            col(AdDirectoryRun.claim_token).is_(None),
+                            col(AdDirectoryRun.claimed_until).is_(None),
+                        )
+                        .with_for_update(skip_locked=True)
+                    ).one_or_none()
+                    if queued is not None:
+                        endpoint = directory_endpoint(queued)
+                        release_dispatch(
+                            redis_client,
+                            reservation_id=directory_step_key(queued),
+                            app_scope=settings.TIKTOK_APP_ID,
+                            endpoint=endpoint,
+                            rate_group=endpoint,
+                            tenant_id=queued.tenant_id,
+                            advertiser_id=queued.advertiser_id,
+                        )
+            except Exception:
+                # 原登记错误保持原样；DB/Redis同时不可用时交由原TTL和canonical恢复。
+                logger.warning("directory cost-registration queued cleanup deferred")
+        raise
     finally:
         _deliver_committed_work(database_engine, work)
 
@@ -211,6 +268,49 @@ def _execute_directory_step(
             publish_only=publish_only,
             work=work,
         )
+    except DomainError as error:
+        if work.failure_fence is None or error.code not in {
+            "route_binding_changed",
+            "route_authorization_changed",
+            "route_contract_changed",
+            "frozen_route_changed",
+            "account_access_denied",
+            "connection_bc_mismatch",
+            "connection_channel_mismatch",
+            "connection_tenant_mismatch",
+            "connection_not_found",
+            "account_not_in_bc",
+        }:
+            raise
+        # 永久授权失效结束这个冻结执行，需求仍未满足。错误可在网络外返回，
+        # 因此必须重新锁行并验证已提交的代数/所有者/令牌，不能终止后继领取。
+        with _directory_session(database_engine) as session:
+            run = session.exec(
+                select(AdDirectoryRun)
+                .where(
+                    AdDirectoryRun.id == run_id,
+                    AdDirectoryRun.tenant_id == context.tenant_id,
+                )
+                .with_for_update()
+            ).one_or_none()
+            if (
+                run is None
+                or run.actor_id != context.actor_id
+                or (run.claim_generation, run.owner_epoch, run.claim_token)
+                != work.failure_fence
+                or run.published_version is not None
+                or run.status in {"COMPLETE", "FAILED", "CANCELLED", "STALE"}
+            ):
+                return "FAILED"
+            from app.modules.sync_control.directory_demand import directory_outcome
+
+            run.status, run.error_code = "FAILED", error.code
+            run.completed_at = datetime.now(UTC)
+            directory_outcome(session, run)
+            run.claim_token = run.claimed_until = None
+            session.commit()
+            work.refill = True
+        return "FAILED"
     except (DBAPIError, SoftTimeLimitExceeded) as error:
         retryable = isinstance(error, SoftTimeLimitExceeded) or (
             isinstance(error, DBAPIError)
@@ -245,10 +345,13 @@ def _execute_directory_step(
             ):
                 return "FAILED"
 
-            # 检查重试次数上限，防止死循环
-            if run.claim_generation >= MAX_CLAIM_GENERATION:
+            run.publish_failures += 1
+            if run.publish_failures >= MAX_PUBLISH_FAILURES:
                 run.status, run.error_code = "FAILED", "max_retries_exceeded"
                 run.completed_at = now
+                from app.modules.sync_control.directory_demand import directory_outcome
+
+                directory_outcome(session, run)
                 run.claim_token = run.claimed_until = None
                 session.commit()
                 work.refill = True
@@ -259,10 +362,13 @@ def _execute_directory_step(
                 )
                 return "FAILED"
 
-            run.claim_generation += 1
-            run.claim_token = run.claimed_until = None
             run.status, run.error_code = "WAITING_REMOTE", "directory_publish_retry"
             run.next_attempt_at = now + timedelta(minutes=2)
+            from app.modules.sync_control.directory_demand import directory_outcome
+
+            directory_outcome(session, run)
+            run.claim_generation += 1
+            run.claim_token = run.claimed_until = None
             # 退避期间不预占目录窗口；scanner到期只发本地发布，其他账户可先执行。
             session.commit()
             work.refill = True
@@ -281,6 +387,19 @@ def _execute_directory_step(
             else None,
         )
         return "WAIT"
+
+    finally:
+        if work.reservation is not None and redis_client is not None:
+            from app.modules.sync_control.occupancy import release_dispatch
+
+            identity, scope = work.reservation
+            try:
+                # HTTP前撤权也归还本次queued占位；旧页不得释放新代，已发送配额不退款。
+                release_dispatch(redis_client, reservation_id=identity, **scope)
+            except Exception:
+                logger.warning(
+                    "directory queued reservation release deferred", exc_info=True
+                )
 
 
 def _run_directory_step(
@@ -322,6 +441,68 @@ def _run_directory_step(
         # after this lease expires.
         if run.claimed_until is not None and run.claimed_until > now:
             return "WAIT"
+        terminal_staged = session.exec(
+            select(AdDirectoryPage.page)
+            .where(
+                AdDirectoryPage.run_id == run.id,
+                col(AdDirectoryPage.complete).is_(True),
+            )
+            .limit(1)
+        ).first()
+        if not publish_only and terminal_staged is not None:
+            # 末页已提交后，旧读取消息不能越过canonical发布领取。
+            return "WAIT"
+        if not publish_only:
+            from app.modules.sync_control.models import (
+                SyncExecutionScope,
+                SyncSchedule,
+                SyncScope,
+            )
+
+            # 业务run锁在前，scope/child完整围栏在领取后核验；这里只验证
+            # canonical dispatcher持久授予本代HTTP资格，不能由旧消息自行续页。
+            authorized = session.exec(
+                select(SyncSchedule.scope_id)
+                .join(SyncScope, col(SyncScope.id) == col(SyncSchedule.scope_id))
+                .join(
+                    SyncExecutionScope,
+                    col(SyncExecutionScope.scope_id) == col(SyncScope.id),
+                )
+                .where(
+                    col(SyncSchedule.tenant_id) == run.tenant_id,
+                    col(SyncSchedule.active).is_(True),
+                    col(SyncSchedule.lease_execution_id) == run.id,
+                    col(SyncSchedule.lease_execution_generation)
+                    == run.claim_generation,
+                    col(SyncSchedule.lease_token).is_not(None),
+                    col(SyncSchedule.leased_until) > now,
+                    col(SyncExecutionScope.directory_run_id) == run.id,
+                    col(SyncExecutionScope.execution_generation)
+                    == run.claim_generation,
+                    col(SyncExecutionScope.status) == "PENDING",
+                    col(SyncExecutionScope.owner_epoch) == run.owner_epoch,
+                    col(SyncScope.owner_epoch) == run.owner_epoch,
+                )
+                .limit(1)
+            ).first()
+            if authorized is None:
+                return "WAIT"
+            from app.modules.ads.directory_dispatch import directory_step_key
+            from app.modules.sync_control.directory_demand import directory_endpoint
+
+            endpoint = directory_endpoint(run)
+            work.reservation = (
+                directory_step_key(run),
+                {
+                    "app_scope": settings.TIKTOK_APP_ID,
+                    "endpoint": endpoint,
+                    "rate_group": endpoint,
+                    "tenant_id": run.tenant_id,
+                    "advertiser_id": run.advertiser_id,
+                },
+            )
+
+        work.failure_fence = (run.claim_generation, run.owner_epoch, run.claim_token)
         run.claim_token = uuid4()
         claim_token = run.claim_token
         run.claimed_until = now + timedelta(
@@ -335,6 +516,15 @@ def _run_directory_step(
             advertiser_id=run.advertiser_id,
             capability="read",
         )
+        from app.modules.sync_control.directory_demand import (
+            directory_fence,
+            register_directory_run,
+        )
+
+        register_directory_run(session, run)
+        if run.next_page == 1:
+            run.observed_at = now
+        directory_fence(session, run, claim_token=claim_token, claim=True)
         if directory_run_superseded(session, run):
             return _finish_superseded_directory(session, run, work)
         terminal = session.exec(
@@ -378,19 +568,41 @@ def _run_directory_step(
             and run.kind == "ad"
             and run.ad_type == "SMART_PLUS"
         )
-        workload = "background" if run.workload == "background" else "live"
+        workload: Literal["live", "background"] = (
+            "background" if run.workload == "background" else "live"
+        )
         session.commit()
+        work.failure_fence = (run.claim_generation, run.owner_epoch, claim_token)
 
     deadline = datetime.now(UTC) + timedelta(seconds=45)
     try:
-        with open_tiktok_gateway(
-            database_engine=database_engine,
-            redis_client=redis_client,
-            context=context,
-            route=route,
-            task_deadline=deadline,
-            workload=workload,
-        ) as gateway:
+        from app.modules.ads.directory_dispatch import directory_step_key
+        from app.modules.sync_control.directory_demand import directory_endpoint
+        from app.modules.sync_control.occupancy import dispatch_context
+
+        endpoint = directory_endpoint(run)
+        budget = dispatch_context(
+            redis_client,
+            reservation_id=directory_step_key(run),
+            scope={
+                "app_scope": settings.TIKTOK_APP_ID,
+                "endpoint": endpoint,
+                "rate_group": endpoint,
+                "tenant_id": run.tenant_id,
+                "advertiser_id": run.advertiser_id,
+            },
+        )
+        with (
+            budget,
+            open_tiktok_gateway(
+                database_engine=database_engine,
+                redis_client=redis_client,
+                context=context,
+                route=route,
+                task_deadline=deadline,
+                workload=workload,
+            ) as gateway,
+        ):
             if material_scope is not None:
                 page = gateway.ads.read_material_page(
                     query, ads=material_scope[0], materials=material_scope[1]
@@ -415,6 +627,9 @@ def _run_directory_step(
             current.next_attempt_at = datetime.now(UTC) + timedelta(
                 milliseconds=max(1000, error.retry_after_ms)
             )
+            from app.modules.sync_control.directory_demand import directory_outcome
+
+            directory_outcome(session, current)
             current.claim_generation += 1
             current.claim_token = current.claimed_until = None
             if is_live_directory(current):
@@ -428,6 +643,26 @@ def _run_directory_step(
             session.commit()
         return "WAIT"
     with _directory_session(database_engine) as session:
+        current = session.get(AdDirectoryRun, run_id, with_for_update=True)
+        if (
+            current is None
+            or current.claim_generation != claim_generation
+            or current.claim_token != claim_token
+        ):
+            return "FAILED"
+        from app.modules.sync_control.directory_demand import (
+            directory_fence,
+            directory_outcome,
+        )
+
+        directory_fence(session, current, claim_token=claim_token)
+        verify_route(
+            session,
+            context=context,
+            route=route,
+            advertiser_id=current.advertiser_id,
+            capability="read",
+        )
         stage_directory_page(
             session,
             run_id=run_id,
@@ -448,25 +683,10 @@ def _run_directory_step(
         current.error_code = None
         current.next_attempt_at = datetime.now(UTC)
         current.claim_token = current.claimed_until = None
-        from app.modules.reporting import planner
-        from app.modules.reporting.lanes import has_background_facts
-
-        if (
-            not page.complete
-            and not is_live_directory(current)
-            and planner.backfill_allowed(redis_client, current.next_attempt_at)
-            and has_background_facts(session, current.next_attempt_at)
-            and not background_continuation_available(
-                session, current, current.next_attempt_at
-            )
-        ):
-            # 归还超额借用槽，等待当前在途目录结束/正常 Beat 补位。
-            # 保留已暂存页和游标；这里不再扫描完整目录积压。
-            pass
-        else:
-            # 实时页、独立发布以及无事实竞争的后台页保留直接续发。
-            enqueue_directory_step(session, current, publish_only=page.complete)
-            work.deliver = True
+        directory_outcome(session, current)
+        # 分页与末页均只持久due，再由同次全池补位统一领取新代数。
+        # 末页领取零HTTP成本、独立ads-publish队列，避免直投与扫描重复发布。
+        work.refill = True
         session.commit()
         return "CONTINUE"
 
@@ -478,7 +698,24 @@ def _run_directory_step(
     acks_late=True,
     reject_on_worker_lost=True,
 )
-def targeted_step(*, tenant_id: str, actor_id: str, payload: dict[str, Any]) -> str:
+def targeted_step(
+    *,
+    tenant_id: str,
+    actor_id: str,
+    payload: dict[str, Any],
+    dispatch: dict[str, Any] | None = None,
+) -> str:
+    from app.jobs.tasks import guard_sync_dispatch
+
+    if not guard_sync_dispatch(
+        database_engine=engine,
+        task_name=TARGETED_TASK_NAME,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    ):
+        return "IGNORED"
     run_id, generation = _payload(payload)
     context = _context(tenant_id, actor_id)
     with Session(engine) as session:
@@ -500,8 +737,7 @@ def targeted_step(*, tenant_id: str, actor_id: str, payload: dict[str, Any]) -> 
         )
 
 
-def _route(value: dict[str, Any]):
-    from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
+def _route(value: dict[str, Any]) -> FrozenTikTokRoute:
 
     try:
         return FrozenTikTokRoute.model_validate(value)
@@ -516,7 +752,24 @@ def _route(value: dict[str, Any]):
     acks_late=True,
     reject_on_worker_lost=True,
 )
-def sync_step(*, tenant_id: str, actor_id: str, payload: dict[str, Any]) -> str:
+def sync_step(
+    *,
+    tenant_id: str,
+    actor_id: str,
+    payload: dict[str, Any],
+    dispatch: dict[str, Any] | None = None,
+) -> str:
+    from app.jobs.tasks import guard_sync_dispatch
+
+    if not guard_sync_dispatch(
+        database_engine=engine,
+        task_name=TASK_NAME,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    ):
+        return "IGNORED"
     run_id, generation = _payload(payload)
     with Redis.from_url(settings.REDIS_URL) as redis_client:
         return run_directory_step(
@@ -535,7 +788,24 @@ def sync_step(*, tenant_id: str, actor_id: str, payload: dict[str, Any]) -> str:
     acks_late=True,
     reject_on_worker_lost=True,
 )
-def publish_step(*, tenant_id: str, actor_id: str, payload: dict[str, Any]) -> str:
+def publish_step(
+    *,
+    tenant_id: str,
+    actor_id: str,
+    payload: dict[str, Any],
+    dispatch: dict[str, Any] | None = None,
+) -> str:
+    from app.jobs.tasks import guard_sync_dispatch
+
+    if not guard_sync_dispatch(
+        database_engine=engine,
+        task_name=PUBLISH_TASK_NAME,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        payload=payload,
+        dispatch=dispatch,
+    ):
+        return "IGNORED"
     run_id, generation = _payload(payload)
     with Redis.from_url(settings.REDIS_URL) as redis_client:
         return run_directory_step(

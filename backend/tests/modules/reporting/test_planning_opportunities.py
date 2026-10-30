@@ -97,7 +97,7 @@ def test_tail_sql_budget_does_not_shrink_or_delay_batch(
 def test_fewer_than_two_seconds_ends_entry_without_starting_a_phase(
     monkeypatch, committed_sync_seed, redis_client
 ):
-    from app.modules.reporting import link_reconciliation
+    from app.modules.reporting import link_work
 
     seed, _ = committed_sync_seed
     now = datetime.now(UTC)
@@ -105,9 +105,9 @@ def test_fewer_than_two_seconds_ends_entry_without_starting_a_phase(
     clock = [0.0]
     monkeypatch.setattr(job_tasks.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
-        link_reconciliation,
-        "reconcile_link_work_batch",
-        lambda **_: clock.__setitem__(0, 8.5),
+        link_work,
+        "wake_link_dependencies",
+        lambda *_a, **_: clock.__setitem__(0, 8.5),
     )
     calls = []
     monkeypatch.setattr(job_tasks, "_plan_one", lambda *_a, **_kw: calls.append(True))
@@ -247,8 +247,9 @@ def test_four_bc_screens_rotate_after_maintenance_without_starving_facts(
 ):
     from collections import Counter
 
-    from app.modules.accounts.models import AdvertiserAccount, TenantBC
-    from app.modules.reporting import link_reconciliation
+    from app.modules.accounts.connection_models import BCConnectionBinding
+    from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess, TenantBC
+    from app.modules.reporting import link_work
     from app.modules.reporting.store_models import AdSyncAccount
 
     seed, factory = committed_sync_seed
@@ -269,6 +270,30 @@ def test_four_bc_screens_rotate_after_maintenance_without_starving_facts(
                 )
             )
             session.flush()
+            # 新规划入口真实核对冻结授权；新增BC必须有绑定及账户授权，不能只造owner。
+            session.add(
+                BCConnectionBinding(
+                    tenant_id=seed.tenant_id,
+                    bc_id=bc,
+                    connection_id=seed.connection.id,
+                    kind="OFFICIAL_API",
+                    status="ACTIVE",
+                    authorization_revision=0,
+                    revision=0,
+                )
+            )
+            session.add(
+                BCAccountAccess(
+                    tenant_id=seed.tenant_id,
+                    bc_id=bc,
+                    advertiser_id=f"acc-{i}",
+                    connection_id=seed.connection.id,
+                    in_bc=True,
+                    authorized=True,
+                    active=True,
+                    checked_at=now,
+                )
+            )
             session.add(
                 AdSyncAccount(
                     tenant_id=seed.tenant_id, advertiser_id=f"acc-{i}", owner_bc_id=bc
@@ -300,9 +325,9 @@ def test_four_bc_screens_rotate_after_maintenance_without_starving_facts(
     monkeypatch.setattr(planner, "ensure_bc_plans", lambda *_a, **_kw: None)
     monkeypatch.setattr(job_tasks, "_dispatch_pending", lambda *_a, **_kw: 0)
     monkeypatch.setattr(
-        link_reconciliation,
-        "reconcile_link_work_batch",
-        lambda **_: clock.__setitem__(0, clock[0] + 2),
+        link_work,
+        "wake_link_dependencies",
+        lambda *_a, **_: clock.__setitem__(0, clock[0] + 2),
     )
 
     def timed(_session, plan, state, phase, *_args):

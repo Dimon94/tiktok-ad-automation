@@ -182,7 +182,7 @@ def test_continuation_is_coalesced_durable_realtime_only_and_not_recursive(
     from sqlmodel import select
 
     from app.jobs.models import PendingDispatch
-    from app.modules.reporting import link_reconciliation, link_work
+    from app.modules.reporting import link_work
 
     seed, factory = committed_sync_seed
     now = datetime.now(UTC)
@@ -214,10 +214,8 @@ def test_continuation_is_coalesced_durable_realtime_only_and_not_recursive(
         pytest.fail("续点不得运行整轮维护/目录扫描")
 
     monkeypatch.setattr(planner, "ensure_bc_plans", forbidden)
-    monkeypatch.setattr(job_tasks, "ensure_month_partitions", forbidden)
     monkeypatch.setattr(job_tasks, "_dispatch_directories", forbidden)
     monkeypatch.setattr(link_work, "wake_link_dependencies", forbidden)
-    monkeypatch.setattr(link_reconciliation, "reconcile_link_work_batch", forbidden)
 
     class Reader:
         def bc_spend(self, **_):
@@ -336,16 +334,16 @@ def test_outbox_failure_releases_coalescing_marker_and_next_attempt_recovers(
     now = datetime.now(UTC)
     with factory() as session, session.begin():
         _prepared(session, seed, now, "hot")
-    enqueue = job_tasks.enqueue_many_after_commit
+    enqueue = job_tasks.enqueue_sync_dispatch
 
     def fail(*_a, **_kw):
         raise RuntimeError("outbox transaction cancelled")
 
-    monkeypatch.setattr(job_tasks, "enqueue_many_after_commit", fail)
+    monkeypatch.setattr(job_tasks, "enqueue_sync_dispatch", fail)
     with pytest.raises(RuntimeError, match="outbox transaction cancelled"):
         job_tasks._schedule_planning_continuation(engine, redis_client, now, now)
     assert not redis_client.exists(planning_keys[1])
-    monkeypatch.setattr(job_tasks, "enqueue_many_after_commit", enqueue)
+    monkeypatch.setattr(job_tasks, "enqueue_sync_dispatch", enqueue)
     job_tasks._schedule_planning_continuation(engine, redis_client, now, now)
     assert redis_client.exists(planning_keys[1])
 
@@ -384,24 +382,18 @@ def test_real_pg_slow_dispatch_preserves_maintenance_facts_and_continuation(
     from sqlmodel import select
 
     from app.jobs.models import PendingDispatch
-    from app.modules.reporting import link_reconciliation, link_work
+    from app.modules.reporting import link_work
     from app.modules.reporting.store_models import ReportSyncJob
 
     seed, factory = committed_sync_seed
     now = datetime.now(UTC)
     monkeypatch.setattr(job_tasks.settings, "ADS_SYNC_ENABLED", True)
-    monkeypatch.setattr(job_tasks, "ensure_month_partitions", lambda *_a, **_kw: None)
     monkeypatch.setattr(job_tasks, "_dispatch_directories", lambda *_a, **_kw: 0)
     maintenance = []
     monkeypatch.setattr(
         link_work,
         "wake_link_dependencies",
         lambda *_a, **_kw: maintenance.append("wake"),
-    )
-    monkeypatch.setattr(
-        link_reconciliation,
-        "reconcile_link_work_batch",
-        lambda **_: maintenance.append("reconcile"),
     )
     original_entry = job_tasks._run_planning_entry
 
@@ -429,7 +421,7 @@ def test_real_pg_slow_dispatch_preserves_maintenance_facts_and_continuation(
     job_tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
     assert len(calls) == 2
     assert time.monotonic() - started < 5
-    assert maintenance == ["wake", "reconcile"]
+    assert maintenance == ["wake"]
     with factory() as session:
         kinds = set(
             session.exec(
@@ -560,10 +552,14 @@ def test_four_bc_capacity_with_real_pg_pages_facts_and_slow_directory(
     from sqlalchemy import delete
     from sqlmodel import select
 
+    from app.core.context import TenantContext
     from app.core.errors import DomainError
+    from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
     from app.jobs.models import PendingDispatch
+    from app.modules.accounts.connection_models import BCConnectionBinding
     from app.modules.accounts.models import AdvertiserAccount, TenantBC
-    from app.modules.reporting import link_reconciliation, link_work
+    from app.modules.accounts.routing import verify_route
+    from app.modules.reporting import link_work
     from app.modules.reporting.query_budget import QueryBudgetExceeded
     from app.modules.reporting.store_models import AdSyncAccount, ReportSyncJob
 
@@ -586,6 +582,17 @@ def test_four_bc_capacity_with_real_pg_pages_facts_and_slow_directory(
             if bc in {"bc-c", "bc-d"}:
                 session.add(TenantBC(tenant_id=seed.tenant_id, bc_id=bc))
                 session.flush()
+                session.add(
+                    BCConnectionBinding(
+                        tenant_id=seed.tenant_id,
+                        bc_id=bc,
+                        connection_id=seed.connection.id,
+                        kind="OFFICIAL_API",
+                        status="ACTIVE",
+                        authorization_revision=route["authorization_revision"],
+                        revision=route["binding_revision"],
+                    )
+                )
                 session.add(
                     AdSyncBc(
                         tenant_id=seed.tenant_id,
@@ -624,6 +631,15 @@ def test_four_bc_capacity_with_real_pg_pages_facts_and_slow_directory(
             plan.next_daily_at = now + timedelta(days=1)
             plan.next_directory_at = now if bc == "bc-c" else now + timedelta(days=1)
             plan.bc_report_supported = not (fallback and bc == "bc-d")
+            # 合成BC也必须具备真实绑定，避免容量实验把鉴权拒绝误当调度饥饿。
+            session.flush()
+            verify_route(
+                session,
+                context=TenantContext(seed.tenant_id, seed.actor_id, "operator"),
+                route=FrozenTikTokRoute.model_validate(plan.frozen_route),
+                advertiser_id=None,
+                capability="read",
+            )
 
     clock = [0.0]
 
@@ -650,9 +666,6 @@ def test_four_bc_capacity_with_real_pg_pages_facts_and_slow_directory(
     monkeypatch.setattr(planner, "ensure_bc_plans", lambda *_a, **_kw: consume(2.0))
     monkeypatch.setattr(
         link_work, "wake_link_dependencies", lambda *_a, **_kw: consume(0.6)
-    )
-    monkeypatch.setattr(
-        link_reconciliation, "reconcile_link_work_batch", lambda **_: consume(0.6)
     )
     dispatch_costs = []
     dispatch_call = [0]

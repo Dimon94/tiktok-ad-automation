@@ -171,9 +171,10 @@ def test_targeted_outbox_single_call_is_not_commit(
         select(PendingDispatch).where(PendingDispatch.tenant_id == sync_seed.tenant_id)
     ).all()
     assert len(rows) == 1
-    assert rows[0].task_name == (
-        "ads.targeted_step" if immediate else "reporting.plan_due"
-    )
+    # 两种请求都先唤醒canonical调度；只有真实领取配额和head后才发业务步骤。
+    assert rows[0].task_name == "reporting.plan_due"
+    assert rows[0].payload == {"dispatch_only": True}
+    assert rows[0].dispatch_contract_version == 2
     (row,) = records(capture)
     assert row["stages"]["directory_flush"]["calls"] == 2
     assert row["stages"]["directory_outbox"]["calls"] == 1

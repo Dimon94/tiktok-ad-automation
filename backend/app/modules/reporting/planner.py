@@ -271,24 +271,21 @@ def owned_accounts(session, plan: AdSyncBc) -> list[str]:
 
 def owned_account_timezones(session, plan: AdSyncBc) -> dict[str, str | None]:
     """阶段事务内一次读取归属与时区；缺失元数据仍保留账户，交由规划隔离。"""
-    # 普通LEFT JOIN误估大池为一行时会反复扫租户前缀；LATERAL固定精确主键单点读取。
-    values = dict(
-        session.execute(
-            text("""
-            WITH planning_owned AS MATERIALIZED (
-              SELECT advertiser_id FROM ad_sync_account
-              WHERE tenant_id=:tenant AND owner_bc_id=:bc
-            )
-            SELECT o.advertiser_id,a.timezone FROM planning_owned o
-            LEFT JOIN LATERAL (
-              SELECT timezone FROM advertiser_account a
-              WHERE a.tenant_id=:tenant AND a.advertiser_id=o.advertiser_id
-              LIMIT 1
-            ) a ON true
-            """),
-            {"tenant": plan.tenant_id, "bc": plan.bc_id},
-        ).all()
-    )
+    # 先取得本BC的精确集合，再一次查询元数据。不要把每个账户参数化为
+    # LATERAL内层：稀疏/刚扩容的租户统计会误选(tenant,name,id)索引并重复扫前缀。
+    accounts = owned_accounts(session, plan)
+    values = dict.fromkeys(accounts)
+    if accounts:
+        values.update(
+            session.execute(
+                text("""
+                /* planning_owned_metadata */
+                SELECT advertiser_id,timezone FROM advertiser_account
+                WHERE tenant_id=:tenant AND advertiser_id=ANY(CAST(:accounts AS text[]))
+                """),
+                {"tenant": plan.tenant_id, "accounts": accounts},
+            ).all()
+        )
     # 只供本阶段事务内的子查询复用，提交/回滚后的新事务必须重新读取授权范围。
     session.info["reporting_phase_timezones"] = (
         session.get_transaction(),

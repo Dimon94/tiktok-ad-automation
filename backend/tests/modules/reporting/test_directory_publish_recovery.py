@@ -12,13 +12,19 @@ from app.core.db import engine
 from app.core.errors import DomainError
 from app.jobs.models import PendingDispatch
 from app.modules.ads import tasks
-from app.modules.ads.directory_dispatch import enqueue_directory_step
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 from app.modules.reporting import job_tasks
 from tests.modules.ads.test_directory_requests import _route
 
 
-def _terminal(factory, seed, now, *, lease=None):
+@pytest.fixture(autouse=True)
+def enabled(monkeypatch):
+    monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+
+
+def _terminal(
+    factory, seed, now, *, lease=None, dispatch_age=32, page_count=1, generation=0
+):
     with factory() as session, session.begin():
         run = AdDirectoryRun(
             tenant_id=seed.tenant_id,
@@ -34,32 +40,46 @@ def _terminal(factory, seed, now, *, lease=None):
             partition_key="a" * 64,
             query={"ids": [], "parent_ids": [], "include_deleted": True},
             status="RUNNING",
-            next_page=2,
-            claim_generation=1,
-            claimed_until=lease,
+            next_page=page_count + 1,
+            claim_generation=generation,
+            next_attempt_at=now - timedelta(minutes=dispatch_age),
         )
         session.add(run)
         session.flush()
-        session.add(
-            AdDirectoryPage(
-                run_id=run.id,
-                page=1,
-                tenant_id=seed.tenant_id,
-                advertiser_id="acc-1",
-                complete=True,
-                claim_generation=1,
-                items=[],
-                materials=[],
+        for index in range(1, page_count + 1):
+            session.add(
+                AdDirectoryPage(
+                    run_id=run.id,
+                    page=index,
+                    tenant_id=seed.tenant_id,
+                    advertiser_id="acc-1",
+                    complete=index == page_count,
+                    next_page=None if index == page_count else index + 1,
+                    claim_generation=index,
+                    items=[],
+                    materials=[],
+                )
             )
+        from app.modules.sync_control.directory_demand import register_directory_run
+        from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+
+        register_directory_run(session, run)
+        session.flush()
+        # 从真实派发取得调度头租约，再模拟该投递的经过时间。
+        assert (
+            dispatch_directories_due(
+                session, None, now=now - timedelta(minutes=dispatch_age), limit=1
+            )
+            == 1
         )
-        enqueue_directory_step(session, run, publish_only=True)
+        run.claimed_until = lease
         dispatch = session.exec(
             select(PendingDispatch).where(
                 PendingDispatch.tenant_id == seed.tenant_id,
                 PendingDispatch.task_name == "ads.publish_step",
             )
         ).one()
-        dispatch.published_at = now - timedelta(minutes=32)
+        dispatch.published_at = now - timedelta(minutes=dispatch_age)
         return run.id
 
 
@@ -104,18 +124,18 @@ def test_terminal_orphan_recovers_within_directory_cycle_but_not_during_lease(
 @pytest.mark.parametrize(
     "task_name,age_minutes,recovered",
     [
-        ("ads.publish_step", 12, False),
-        ("ads.publish_step", 32, True),
-        ("ads.sync_step", 12, True),
+        ("ads.publish_step", 2, False),
+        ("ads.publish_step", 5, True),
+        ("ads.sync_step", 5, True),
     ],
 )
-def test_publish_queue_wait_does_not_consume_read_orphan_recovery_budget(
+def test_recovery_uses_persisted_dispatch_lease_for_read_and_publish(
     committed_sync_seed, monkeypatch, task_name, age_minutes, recovered
 ):
     seed, factory = committed_sync_seed
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
     now = datetime.now(UTC)
-    run_id = _terminal(factory, seed, now)
+    run_id = _terminal(factory, seed, now, dispatch_age=age_minutes)
     with factory() as session, session.begin():
         dispatch = session.exec(
             select(PendingDispatch).where(
@@ -126,8 +146,6 @@ def test_publish_queue_wait_does_not_consume_read_orphan_recovery_budget(
         dispatch.task_name = task_name
         dispatch.published_at = now - timedelta(minutes=age_minutes)
     with factory() as session, session.begin():
-        row = session.get(AdDirectoryRun, run_id)
-        assert job_tasks._message_lost(session, row, now) is recovered
         assert job_tasks._dispatch_directories(session, now) == int(recovered)
     with factory() as session:
         assert session.get(AdDirectoryRun, run_id).claim_generation == (
@@ -280,3 +298,61 @@ def test_non_retryable_or_remote_phase_failures_are_not_hidden(
         run = session.get(AdDirectoryRun, run_id)
         assert run.claim_generation == 1 and run.status == "RUNNING"
         assert run.error_code is None
+
+
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_many_pages_do_not_consume_local_publish_failure_budget(
+    committed_sync_seed, monkeypatch, exhausted
+):
+    seed, factory = committed_sync_seed
+    monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+    monkeypatch.setattr(tasks, "_deliver_committed_work", lambda *_args: None)
+    run_id = _terminal(factory, seed, datetime.now(UTC), page_count=101, generation=200)
+    if exhausted:
+        with factory() as db, db.begin():
+            db.get(AdDirectoryRun, run_id).publish_failures = 99
+    original = tasks.publish_directory
+
+    def timeout(db, **_kwargs):
+        # 真PG取消语句，随后整事务回滚；不是把普通Python异常伪装为平台失败。
+        db.connection().execute(text("SET LOCAL statement_timeout='1ms'"))
+        db.connection().execute(text("SELECT pg_sleep(0.05)"))
+
+    monkeypatch.setattr(tasks, "publish_directory", timeout)
+    assert tasks.run_directory_step(
+        database_engine=engine,
+        redis_client=None,
+        context=seed.context,
+        run_id=run_id,
+        claim_generation=201,
+        publish_only=True,
+    ) == ("FAILED" if exhausted else "WAIT")
+    with factory() as db:
+        run = db.get(AdDirectoryRun, run_id)
+        assert run.publish_failures == (100 if exhausted else 1)
+        assert run.status == ("FAILED" if exhausted else "WAITING_REMOTE")
+        assert run.published_version is None
+        assert (
+            len(
+                db.exec(
+                    select(AdDirectoryPage).where(AdDirectoryPage.run_id == run_id)
+                ).all()
+            )
+            == 101
+        )
+        next_generation = run.claim_generation
+    if not exhausted:
+        monkeypatch.setattr(tasks, "publish_directory", original)
+        assert (
+            tasks.run_directory_step(
+                database_engine=engine,
+                redis_client=None,
+                context=seed.context,
+                run_id=run_id,
+                claim_generation=next_generation,
+                publish_only=True,
+            )
+            == "READY"
+        )
+        with factory() as db:
+            assert db.get(AdDirectoryRun, run_id).publish_failures == 1

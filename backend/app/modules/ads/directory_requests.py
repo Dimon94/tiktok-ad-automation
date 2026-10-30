@@ -14,7 +14,6 @@ from app.core.context import TenantContext
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.ads import EntityRef
 from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
-from app.jobs.outbox import enqueue_after_commit
 from app.modules.accounts.routing import verify_route
 from app.modules.ads.directory_calibration import (
     PERIODIC_KEY,
@@ -30,6 +29,7 @@ from app.modules.ads.directory_services import (
 )
 from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.reporting import diagnostics
+from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 
 DIRECTORY_AD_TYPES = ("REGULAR", "LEGACY_SMART_PLUS", "SMART_PLUS")
 # 每个目录层级与广告类型一个运行：(层级, 广告类型, 每页条数)。
@@ -151,10 +151,16 @@ def directory_unblocked_accounts(
         .execute(
             text("""
             WITH pending AS MATERIALIZED (
-              SELECT advertiser_id FROM ad_directory_run
+              SELECT advertiser_id FROM ad_directory_run r
               WHERE tenant_id=:tenant AND bc_id=:bc AND actor_id=:actor
                 AND advertiser_id=ANY(:ids)
                 AND frozen_route=CAST(:route AS jsonb)
+                AND NOT EXISTS (
+                  SELECT 1 FROM sync_execution_scope child
+                  JOIN sync_scope scope ON scope.id=child.scope_id
+                  WHERE child.directory_run_id=r.id
+                    AND (child.owner_epoch<>scope.owner_epoch OR r.owner_epoch<>scope.owner_epoch)
+                )
                 AND status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
                 AND NOT (
                   COALESCE(query->'periodic_directory_v1'='true'::jsonb,false)
@@ -301,6 +307,7 @@ def request_directory(
             text("SELECT pg_advisory_xact_lock(:key)"), {"key": slot_id.int % (2**63)}
         )
     created = 0
+    new_runs = []
     refill_run = None
     for advertiser_id in advertiser_ids:
         account_refs = tuple(ref for ref in refs if ref.advertiser_id == advertiser_id)
@@ -385,39 +392,8 @@ def request_directory(
                         continue
                     # 调度元数据不进入查询摘要，也不发送给平台。显式请求保持独立。
                     query[PERIODIC_KEY] = True
-                with diagnostics.stage("directory_existing"):
-                    existing = session.exec(
-                        select(AdDirectoryRun)
-                        .where(
-                            AdDirectoryRun.tenant_id == tenant_id,
-                            AdDirectoryRun.advertiser_id == advertiser_id,
-                            AdDirectoryRun.partition_key == partition,
-                            AdDirectoryRun.bc_id == bc_id,
-                            AdDirectoryRun.actor_id == actor_id,
-                            AdDirectoryRun.frozen_route == frozen_route,
-                            col(AdDirectoryRun.query).op("?")(PERIODIC_KEY) == periodic,
-                            # 已被领取的运行可能已读过首页，不能代替本次刷新。
-                            (col(AdDirectoryRun.request_id) == request_id)
-                            | and_(
-                                scope == "directory",
-                                col(AdDirectoryRun.status) == "QUEUED",
-                                col(AdDirectoryRun.claim_token).is_(None),
-                            ),
-                        )
-                        .limit(1)
-                        .with_for_update()
-                    ).first()
-                if existing is not None:
-                    # 冷转热后校准间隔缩短：复用原身份提前未开始的延期任务。
-                    if (
-                        periodic
-                        and existing.next_attempt_at is not None
-                        and existing.next_attempt_at > now
-                        and unstarted_without_delivery(session, existing)
-                    ):
-                        existing.next_attempt_at = now
-                        existing.error_code = None
-                    continue
+                from app.modules.sync_control.directory_demand import directory_scope
+
                 run = AdDirectoryRun(
                     tenant_id=tenant_id,
                     advertiser_id=advertiser_id,
@@ -438,7 +414,50 @@ def request_directory(
                     kind=kind,
                     ad_type=ad_type,
                 )
+                control_scope = directory_scope(session, run)
+                session.refresh(control_scope, with_for_update=True)
+                # 同一半小时槽内owner换代也必须能创建后继；仅新执行继承代数。
+                execution_request_id = uuid5(
+                    request_id, f"{control_scope.id}:{control_scope.owner_epoch}"
+                )
+                with diagnostics.stage("directory_existing"):
+                    existing = session.exec(
+                        select(AdDirectoryRun)
+                        .where(
+                            AdDirectoryRun.tenant_id == tenant_id,
+                            AdDirectoryRun.advertiser_id == advertiser_id,
+                            AdDirectoryRun.partition_key == partition,
+                            AdDirectoryRun.owner_epoch == control_scope.owner_epoch,
+                            AdDirectoryRun.bc_id == bc_id,
+                            AdDirectoryRun.actor_id == actor_id,
+                            AdDirectoryRun.frozen_route == frozen_route,
+                            col(AdDirectoryRun.query).op("?")(PERIODIC_KEY) == periodic,
+                            # 已被领取的运行可能已读过首页，不能代替本次刷新。
+                            (col(AdDirectoryRun.request_id) == execution_request_id)
+                            | and_(
+                                scope == "directory",
+                                col(AdDirectoryRun.status) == "QUEUED",
+                                col(AdDirectoryRun.claim_token).is_(None),
+                            ),
+                        )
+                        .limit(1)
+                        .with_for_update()
+                    ).first()
+                if existing is not None:
+                    # 冷转热后校准间隔缩短：复用原身份提前未开始的延期任务。
+                    if (
+                        periodic
+                        and existing.next_attempt_at is not None
+                        and existing.next_attempt_at > now
+                        and unstarted_without_delivery(session, existing)
+                    ):
+                        existing.next_attempt_at = now
+                        existing.error_code = None
+                    continue
+                run.request_id = execution_request_id
+                run.owner_epoch = control_scope.owner_epoch
                 session.add(run)
+                new_runs.append(run)
                 if scope == "targeted":
                     with diagnostics.stage("directory_flush"):
                         session.flush()
@@ -450,15 +469,20 @@ def request_directory(
                 created += 1
     with diagnostics.stage("directory_flush"):
         session.flush()
+    from app.modules.sync_control.directory_demand import register_directory_run
+
+    for run in new_runs:
+        register_directory_run(session, run, new_execution=True)
     if refill_run is not None:
         # 整批只发一次同事务唤醒，空槽无需等待 Beat；统一派发器先服务已有积压。
         # 使用请求专属键，不能吞掉同一运行完成后的补位信号。
         with diagnostics.stage("directory_outbox"):
-            enqueue_after_commit(
+            enqueue_sync_dispatch(
                 session,
                 context=context,
+                now=now,
                 task_name="reporting.plan_due",
-                task_key=f"directory-request-refill:{refill_run.id}:{refill_run.claim_generation}",
+                task_key=f"sync-directory-wake:request:{refill_run.id}:{refill_run.claim_generation}",
                 payload={"dispatch_only": True},
             )
     return created

@@ -10,6 +10,7 @@ from sqlmodel import select
 from app.modules.reporting import job_tasks
 from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob
+from tests.modules.reporting.claiming import claim_jobs
 from tests.modules.reporting.test_jobs import _route
 
 
@@ -34,7 +35,7 @@ def test_history_has_capacity_during_continuous_current_arrivals(
 ):
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    monkeypatch.setattr(job_tasks, "LINK_DISPATCH_WINDOW", 4)
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 4)
     old = request(
         session, sync_seed, today - timedelta(days=5), due_at=now - timedelta(hours=2)
     )
@@ -50,17 +51,16 @@ def test_history_has_capacity_during_continuous_current_arrivals(
     assert session.get(ReportSyncJob, old).status == "RUNNING"
 
 
-def test_history_dates_merge_but_current_day_and_routes_stay_separate(
-    session, sync_seed
-):
+def test_history_dates_have_separate_buckets_and_frozen_routes(session, sync_seed):
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
     first = request(session, sync_seed, today - timedelta(days=5))
-    assert request(session, sync_seed, today - timedelta(days=3)) is None
+    second = request(session, sync_seed, today - timedelta(days=3))
+    assert second is not None and second != first
     job = session.get(ReportSyncJob, first)
     assert (job.start_date, job.end_date) == (
         today - timedelta(days=5),
-        today - timedelta(days=3),
+        today - timedelta(days=5),
     )
     assert request(session, sync_seed, today) is not None
     route = _route(sync_seed) | {"binding_revision": 1}
@@ -74,11 +74,20 @@ def test_running_work_keeps_a_successor_for_new_same_day_demand(session, sync_se
     day = date(2026, 10, 5)
     first = request(session, sync_seed, day)
     job = session.get(ReportSyncJob, first)
-    job.status, job.claim_token = "RUNNING", uuid4()
-    job.claimed_until = datetime.now(UTC) + timedelta(minutes=4)
-    session.flush()
+    assert (
+        claim_jobs(session, now=datetime.now(UTC) + timedelta(seconds=1), limit=1)[0].id
+        == first
+    )
+    from app.modules.sync_control.models import SyncExecutionScope
+
+    child = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == first)
+    ).one()
+    frozen = (child.frozen_revision, child.frozen_requested_after)
     successor = request(session, sync_seed, day)
     assert successor is not None and successor != first
+    session.refresh(child)
+    assert (child.frozen_revision, child.frozen_requested_after) == frozen
     assert request(session, sync_seed, day) is None
     job.status, job.finished_at = "COMPLETE", datetime.now(UTC)
     session.flush()
@@ -128,6 +137,8 @@ def test_missing_video_waits_for_directory_without_recreating_work(committed_syn
         assert job.error_code == "material_directory_pending"
         assert job.due_at > datetime.now(UTC) + timedelta(minutes=9)
         due = job.due_at
+        successor = request(session, seed, D)
+        assert successor is not None and successor != job_id
         for _ in range(10):
             assert request(session, seed, D) is None
         assert job.due_at == due
@@ -141,7 +152,7 @@ def test_missing_video_waits_for_directory_without_recreating_work(committed_syn
                     )
                 ).all()
             )
-            == 1
+            == 2
         )
 
 
@@ -164,7 +175,9 @@ def test_new_post_wakes_waiting_work_without_losing_existing_demand(session, syn
         "acc-1",
         [material_row("old", "5"), material_row("new", "2")],
     )
-    assert request(session, sync_seed, D) is None
+    from app.modules.reporting.link_work import wake_link_dependencies
+
+    assert wake_link_dependencies(session, now=datetime.now(UTC)) == 1
     assert job.due_at <= datetime.now(UTC)
     assert job.error_code is None
 
@@ -204,18 +217,15 @@ def test_concurrent_requests_merge_and_do_not_wait_for_running_reader(
                 ReportSyncJob.tenant_id == seed.tenant_id,
                 ReportSyncJob.status == "QUEUED",
             )
-        ).one()
-        assert (queued.start_date, queued.end_date) == (
-            date(2026, 10, 3),
-            date(2026, 10, 4),
-        )
+        ).all()
+        assert {(job.start_date, job.end_date) for job in queued} == {
+            (date(2026, 10, 3), date(2026, 10, 4)),
+        }
         assert session.get(ReportSyncJob, original).start_date == day
 
 
-def test_legacy_merge_preserves_audit_and_resets_incompatible_page_scope(
-    session, sync_seed
-):
-    from app.modules.reporting.link_work import reconcile_link_work
+def test_legacy_adoption_preserves_each_frozen_scope_and_checkpoint(session, sync_seed):
+    from app.modules.sync_control.report_demand import adopt_report_job
 
     base = {
         "tenant_id": sync_seed.tenant_id,
@@ -243,14 +253,15 @@ def test_legacy_merge_preserves_audit_and_resets_incompatible_page_scope(
     )
     session.add_all([old, second])
     session.flush()
-    assert reconcile_link_work(session, now=datetime.now(UTC)) == 1
-    assert old.end_date == date(2026, 9, 3)
-    assert "next_page" not in old.progress and "overview_ad_ids" not in old.progress
-    assert second.status == "CANCELLED" and second.progress["merged_into"] == str(
-        old.id
-    )
-    assert second.start_date == date(2026, 9, 3)
-    assert reconcile_link_work(session, now=datetime.now(UTC)) == 0
+    assert adopt_report_job(session, old) > 0
+    assert adopt_report_job(session, second) > 0
+    assert old.end_date == old.start_date == date(2026, 9, 1)
+    assert old.progress["next_page"] == 3
+    assert old.progress["overview_ad_ids"] == ["a1"]
+    assert second.status == "QUEUED"
+    assert second.start_date == second.end_date == date(2026, 9, 3)
+    assert "merged_into" not in second.progress
+    assert adopt_report_job(session, old) == 0
 
 
 @pytest.mark.parametrize("complete", [True, False])
@@ -302,7 +313,9 @@ def test_directory_evidence_wakes_same_work_and_completes_without_api(
             )
         )
         session.flush()
-        assert request(session, seed, D) is None
+        from app.modules.reporting.link_work import wake_link_dependencies
+
+        assert wake_link_dependencies(session, now=datetime.now(UTC)) == 1
         job = session.get(ReportSyncJob, job_id)
         assert job.due_at <= datetime.now(UTC) and job.error_code is None
         session.commit()
@@ -394,9 +407,10 @@ def test_history_keeps_progress_when_every_round_adds_more_current_work(
 ):
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    monkeypatch.setattr(job_tasks, "LINK_DISPATCH_WINDOW", 4)
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 4)
     old = request(session, sync_seed, today - timedelta(days=3), due_at=now)
-    for turn in range(8):
+    seen = set()
+    for turn in range(12):
         for index in range(6):
             request(
                 session,
@@ -405,22 +419,18 @@ def test_history_keeps_progress_when_every_round_adds_more_current_work(
                 campaign_ids=[f"live-{turn}-{index}"],
                 due_at=now,
             )
-        job_tasks._dispatch_report_jobs(session, now)
-        historical = session.get(ReportSyncJob, old)
-        assert historical.status == "RUNNING", "持续新增当天需求也必须逐轮推进历史"
-        running = session.exec(
-            select(ReportSyncJob).where(
-                ReportSyncJob.tenant_id == sync_seed.tenant_id,
-                ReportSyncJob.status == "RUNNING",
-            )
-        ).all()
-        assert any(j.start_date == today for j in running), "历史也不能饿死当天关联"
-        now += timedelta(seconds=1)
+        running = claim_jobs(session, now=now, limit=4)
         for row in running:
+            seen.add("history" if row.id == old else "current")
             row.status = "WAITING" if row.id == old else "COMPLETE"
+            row.due_at = now + timedelta(seconds=1)
+            from app.modules.sync_control.schedule import record_report_outcome
+
+            record_report_outcome(session, row)
             row.claim_token = row.claimed_until = None
-            row.due_at = now
         session.flush()
+        now += timedelta(seconds=1)
+    assert seen == {"history", "current"}
 
 
 def test_dependency_probe_uses_name_identity_index_in_large_account(session, sync_seed):
@@ -479,8 +489,7 @@ def test_historical_links_use_backfill_pool_and_share_with_facts(
 
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    monkeypatch.setattr(job_tasks, "LINK_DISPATCH_WINDOW", 2)
-    monkeypatch.setattr(job_tasks, "BACKFILL_DISPATCH_WINDOW", 3)
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 3)
     for index in range(6):
         request(session, sync_seed, today, campaign_ids=[str(index)], due_at=now)
         request(
@@ -499,32 +508,30 @@ def test_historical_links_use_backfill_pool_and_share_with_facts(
             tier="history",
             due_at=now,
         )
-    assert job_tasks._dispatch_report_jobs(session, now) == 5
-    running = session.exec(
-        select(ReportSyncJob).where(
-            ReportSyncJob.tenant_id == sync_seed.tenant_id,
-            ReportSyncJob.status == "RUNNING",
-        )
-    ).all()
-    history = [row for row in running if row.start_date < today]
-    assert len(history) == 3
-    assert any(row.kind == "material_links" for row in history)
+    seen = set()
+    for turn in range(16):
+        running = claim_jobs(session, now=now + timedelta(seconds=turn), limit=5)
+        for row in running:
+            seen.add((row.kind, row.start_date < today))
+            dispatch = session.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.task_key.startswith(f"report-job:{row.id}:")
+                )
+            ).one()
+            assert dispatch.task_name == (
+                "reporting.backfill_step"
+                if row.kind == "ad_day" or row.start_date < today
+                else "reporting.job_step"
+            )
+            row.status = "COMPLETE"
+            from app.modules.sync_control.schedule import record_report_outcome
+
+            record_report_outcome(session, row)
+            row.claim_token = row.claimed_until = None
+        session.flush()
+    assert {("material_links", False), ("material_links", True)} <= seen
     if facts:
-        assert any(row.kind == "ad_day" for row in history)
-    dispatch = session.exec(
-        select(PendingDispatch).where(
-            PendingDispatch.tenant_id == sync_seed.tenant_id,
-        )
-    ).all()
-    for row in running:
-        task = next(
-            d for d in dispatch if d.task_key.startswith(f"report-job:{row.id}:")
-        )
-        assert task.task_name == (
-            "reporting.backfill_step"
-            if row.start_date < today
-            else "reporting.job_step"
-        )
+        assert ("ad_day", True) in seen
 
 
 @pytest.mark.parametrize("origin_tier", ["daily", "history", "manual"])
@@ -533,7 +540,7 @@ def test_backfill_link_continuations_cannot_starve_other_origin_priorities(
 ):
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    monkeypatch.setattr(job_tasks, "BACKFILL_DISPATCH_WINDOW", 2)
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 2)
     old = request(
         session,
         sync_seed,

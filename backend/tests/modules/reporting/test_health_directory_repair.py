@@ -131,10 +131,10 @@ def test_dense_directory_repair_preserves_progress_inside_two_seconds(
         text("""
       INSERT INTO ad_directory_run(id,tenant_id,advertiser_id,bc_id,actor_id,connection_id,channel,
         frozen_route,request_id,partition_key,query,status,claim_generation,next_page,coverage,
-        created_at,kind,ad_type,workload)
+        created_at,kind,ad_type,workload,publish_failures)
       SELECT gen_random_uuid(),:tenant,'dense-'||lpad((1+i%50)::text,3,'0'),'bc-a',:actor,:connection,
         'OFFICIAL_API',CAST(:route AS jsonb),gen_random_uuid(),lpad(i::text,64,'0'),'{}',
-        'COMPLETE',1,1,'COMPLETE',:now,'ad','SMART_PLUS','live'
+        'COMPLETE',1,1,'COMPLETE',:now,'ad','SMART_PLUS','live',0
       FROM generate_series(1,200000)i
     """),
         params,

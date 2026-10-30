@@ -6,7 +6,7 @@ from time import monotonic
 from uuid import uuid4
 
 from alembic import command
-from sqlalchemy import text
+from sqlalchemy import MetaData, Table, text
 from sqlmodel import Session
 
 from app.modules.ads.sync_models import AdDirectoryRun
@@ -67,7 +67,7 @@ def test_sync_probe_indexes_roundtrip_and_reduce_scans(monkeypatch, record_prope
                 """),
                     {"tenant": seed.tenant_id, "now": now, "job": uuid4()},
                 )
-            session.add_all(
+            runs = [
                 AdDirectoryRun(
                     tenant_id=seed.tenant_id,
                     advertiser_id="acc-2",
@@ -84,6 +84,21 @@ def test_sync_probe_indexes_roundtrip_and_reduce_scans(monkeypatch, record_prope
                     ad_type="SMART_PLUS",
                 )
                 for index in range(1001)
+            ]
+            # 明确验证0043历史结构，不能把最新ORM的owner/publish等新列写入旧表。
+            historical = Table(
+                "ad_directory_run", MetaData(), autoload_with=session.connection()
+            )
+            session.execute(
+                historical.insert(),
+                [
+                    {
+                        key: value
+                        for key, value in run.model_dump().items()
+                        if key in historical.c and key != "request_sequence"
+                    }
+                    for run in runs
+                ],
             )
             session.flush()
             for table in INDEXES:

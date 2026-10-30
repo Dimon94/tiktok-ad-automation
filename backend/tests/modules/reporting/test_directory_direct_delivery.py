@@ -3,10 +3,10 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from billiard.exceptions import SoftTimeLimitExceeded
@@ -25,6 +25,8 @@ from app.modules.ads.directory_requests import request_directory
 from app.modules.ads.sync import stage_directory_page
 from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.reporting import job_tasks
+from app.modules.sync_control.directory_demand import register_directory_run
+from app.modules.sync_control.directory_dispatch import dispatch_directories_due
 from tests.modules.ads.test_material_directory_children import _source_page
 from tests.modules.reporting.test_jobs import _route
 
@@ -80,6 +82,32 @@ def enabled(monkeypatch, redis_client):
     monkeypatch.setattr(settings, "REDIS_URL", os.environ["TEST_REDIS_URL"])
 
 
+def register_pending(db, seed):
+    for run in db.exec(
+        select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == seed.tenant_id)
+    ).all():
+        register_directory_run(db, run)
+
+
+def claim_current(factory, seed, redis_client, identity, monkeypatch):
+    with factory() as db, db.begin():
+        register_pending(db, seed)
+        assert (
+            dispatch_directories_due(
+                db, redis_client, now=datetime.now(UTC) + timedelta(seconds=1), limit=1
+            )
+            == 1
+        )
+        run = db.get(AdDirectoryRun, identity)
+        generation = run.claim_generation
+        assert generation > 1
+    # 通过真实outbox发送入口消费首条；仅broker transport替身，不能伪造领取。
+    with monkeypatch.context() as patch:
+        patch.setattr(outbox.celery_app, "send_task", lambda *_a, **_kw: None)
+        outbox.flush_dispatch()
+    return generation
+
+
 @pytest.mark.parametrize("broker_fails", [False, True])
 def test_completed_directory_claims_and_sends_next_without_control(
     committed_sync_seed, monkeypatch, redis_client, broker_fails
@@ -88,6 +116,7 @@ def test_completed_directory_claims_and_sends_next_without_control(
     with factory() as db, db.begin():
         finished = directory(db, seed, terminal=True).id
         waiting = directory(db, seed).id
+        register_pending(db, seed)
     sent = []
 
     def publish(name, **kwargs):
@@ -115,6 +144,7 @@ def test_completed_directory_claims_and_sends_next_without_control(
         "context": seed.context,
         "run_id": finished,
         "claim_generation": 1,
+        "publish_only": True,
     }
     assert tasks.run_directory_step(**args) == "READY"
     with factory() as db:
@@ -131,7 +161,7 @@ def test_completed_directory_claims_and_sends_next_without_control(
 
 
 @pytest.mark.parametrize("background_facts", [False, True])
-def test_nonterminal_page_sends_its_continuation_without_scanning_backlog(
+def test_nonterminal_page_refills_through_canonical_dispatcher(
     committed_sync_seed, monkeypatch, redis_client, background_facts
 ):
     seed, factory = committed_sync_seed
@@ -144,8 +174,10 @@ def test_nonterminal_page_sends_its_continuation_without_scanning_backlog(
 
             from tests.modules.reporting.test_background_execution_share import pending
 
-            current.workload = "background"
             pending(db, seed, "material_day", 0, datetime.now(UTC))
+
+        register_pending(db, seed)
+    generation = claim_current(factory, seed, redis_client, identity, monkeypatch)
 
     @contextmanager
     def gateway(**_kwargs):
@@ -172,18 +204,24 @@ def test_nonterminal_page_sends_its_continuation_without_scanning_backlog(
             redis_client=redis_client,
             context=seed.context,
             run_id=identity,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "CONTINUE"
     )
-    assert not scans
-    assert len(sent) == 1 and sent[0][0] == (
-        "ads.sync_step" if background_facts else "ads.targeted_step"
+    assert scans and len(scans) <= 8
+    directory_sent = [item for item in sent if item[0] == "ads.targeted_step"]
+    assert len(directory_sent) == 1
+    assert sum(name == "reporting.backfill_step" for name, _ in sent) == int(
+        background_facts
     )
     with factory() as db:
         row = db.exec(
-            select(PendingDispatch).where(PendingDispatch.tenant_id == seed.tenant_id)
+            select(PendingDispatch).where(
+                PendingDispatch.tenant_id == seed.tenant_id,
+                PendingDispatch.task_key.endswith(":page:2"),
+            )
         ).one()
+        assert row.payload["claim_generation"] > generation
         assert row.task_key.endswith(":page:2") and row.published_at is not None
 
 
@@ -206,6 +244,9 @@ def test_periodic_marker_stays_local_when_reading_and_continuing(
         identity = db.exec(
             select(AdDirectoryRun.id).where(AdDirectoryRun.tenant_id == seed.tenant_id)
         ).one()
+        register_pending(db, seed)
+    generation = claim_current(factory, seed, redis_client, identity, monkeypatch)
+
     queries = []
 
     def read(query):
@@ -228,7 +269,7 @@ def test_periodic_marker_stays_local_when_reading_and_continuing(
             redis_client=redis_client,
             context=seed.context,
             run_id=identity,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "CONTINUE"
     )
@@ -254,6 +295,7 @@ def test_full_directory_publication_immediately_sends_targeted_material_child(
             page=_source_page(page_seed, 1, [("ad-a", "group-a")], terminal=True),
         )
         identity = source.id
+        register_pending(db, seed)
     sent = []
     monkeypatch.setattr(
         outbox.celery_app, "send_task", lambda name, **kw: sent.append((name, kw))
@@ -306,6 +348,9 @@ def test_admission_wait_keeps_delayed_continuation_without_refilling(
         identity = directory(db, seed).id
         directory(db, seed)
 
+        register_pending(db, seed)
+    generation = claim_current(factory, seed, redis_client, identity, monkeypatch)
+
     @contextmanager
     def deferred(**_kwargs):
         raise AccountAdmissionDeferred(30000)
@@ -320,20 +365,39 @@ def test_admission_wait_keeps_delayed_continuation_without_refilling(
             redis_client=redis_client,
             context=seed.context,
             run_id=identity,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "WAIT"
     )
-    assert not sent
+    assert sent == [("reporting.plan_due",)]
     with factory() as db:
         rows = db.exec(
             select(PendingDispatch).where(PendingDispatch.tenant_id == seed.tenant_id)
         ).all()
-        assert len(rows) == 1
-        assert rows[0].payload == {"run_id": str(identity), "claim_generation": 2}
+        assert len(rows) == 2
+        assert len([row for row in rows if row.task_name == "reporting.plan_due"]) == 1
+        assert (
+            len([row for row in rows if row.payload.get("run_id") == str(identity)])
+            == 1
+        )
         run = db.get(AdDirectoryRun, identity)
-        assert run.error_code == "admission_deferred"
-        assert rows[0].available_at == run.next_attempt_at
+        assert (
+            run.error_code == "admission_deferred"
+            and run.next_attempt_at > datetime.now(UTC)
+        )
+        from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
+
+        head = db.exec(
+            select(SyncSchedule)
+            .join(
+                SyncExecutionScope, SyncExecutionScope.scope_id == SyncSchedule.scope_id
+            )
+            .where(SyncExecutionScope.directory_run_id == identity)
+        ).one()
+        assert (
+            head.next_eligible_at <= run.next_attempt_at
+        )  # 另一个未延期执行仍可竞争同头。
+        assert head.lease_token is None
 
 
 def test_failed_publication_commit_does_not_claim_or_send_other_work(
@@ -343,6 +407,7 @@ def test_failed_publication_commit_does_not_claim_or_send_other_work(
     with factory() as db, db.begin():
         identity = directory(db, seed, terminal=True).id
         directory(db, seed)
+        register_pending(db, seed)
     publish = tasks.publish_directory
 
     def rollback(db, **kwargs):
@@ -359,6 +424,7 @@ def test_failed_publication_commit_does_not_claim_or_send_other_work(
             context=seed.context,
             run_id=identity,
             claim_generation=1,
+            publish_only=True,
         )
     assert not sent
     with factory() as db:
@@ -376,11 +442,12 @@ def test_refill_failure_keeps_publication_and_beat_can_resume(
     with factory() as db, db.begin():
         identity = directory(db, seed, terminal=True).id
         directory(db, seed)
+        register_pending(db, seed)
     original = job_tasks._dispatch_directories
 
-    def unavailable(db, now):
+    def unavailable(db, now, **kwargs):
         # 先真实领取，再中断，验证领取事务回滚而业务发布提交不受影响。
-        original(db, now)
+        original(db, now, **kwargs)
         raise failure("temporary local query failure")
 
     monkeypatch.setattr(job_tasks, "_dispatch_directories", unavailable)
@@ -391,6 +458,7 @@ def test_refill_failure_keeps_publication_and_beat_can_resume(
             context=seed.context,
             run_id=identity,
             claim_generation=1,
+            publish_only=True,
         )
         == "READY"
     )
@@ -407,10 +475,11 @@ def test_concurrent_completions_preserve_global_directory_window(
     committed_sync_seed, monkeypatch, redis_client
 ):
     seed, factory = committed_sync_seed
-    monkeypatch.setattr(directory_dispatch, "TARGETED_DISPATCH_WINDOW", 8)
+    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", 8)
     with factory() as db, db.begin():
         completed = [directory(db, seed, terminal=True).id for _ in range(2)]
         waiting = {directory(db, seed).id for _ in range(20)}
+        register_pending(db, seed)
     monkeypatch.setattr(outbox.celery_app, "send_task", lambda *a, **k: None)
     barrier = Barrier(2)
 
@@ -422,6 +491,7 @@ def test_concurrent_completions_preserve_global_directory_window(
             context=seed.context,
             run_id=identity,
             claim_generation=1,
+            publish_only=True,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -430,7 +500,7 @@ def test_concurrent_completions_preserve_global_directory_window(
         rows = db.exec(
             select(PendingDispatch).where(PendingDispatch.tenant_id == seed.tenant_id)
         ).all()
-        assert len(rows) == 8
+        assert len(rows) == 1  # 同scope当前只有一个有效头；并发补位不能重复领取。
         assert {row.task_name for row in rows} == {"ads.targeted_step"}
         assert {row.payload["run_id"] for row in rows} <= {str(i) for i in waiting}
 
@@ -439,21 +509,36 @@ def test_concurrent_completions_preserve_global_directory_window(
 def test_background_continuation_returns_borrowed_slot_to_facts(
     committed_sync_seed, monkeypatch, redis_client, deferred
 ):
-    from datetime import UTC, datetime
-
     from app.modules.reporting.jobs import enqueue_job
+    from app.modules.sync_control.models import SyncSchedule
 
     seed, factory = committed_sync_seed
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) + timedelta(seconds=1)
     with factory() as db, db.begin():
-        current = directory(db, seed)
-        current.workload = "background"
-        identity = current.id
-        held = directory(db, seed)
-        held.workload = "background"
-        held.claimed_until = now + timedelta(minutes=2)
+        identities = []
+        for index in range(4):
+            run = directory(db, seed)
+            run.workload = "background"
+            run.query = run.query | {"page_size": 100 + index}
+            identities.append(run.id)
+        register_pending(db, seed)
+        assert dispatch_directories_due(db, redis_client, now=now, limit=40) == 4
+        identity = identities[0]
+        generation = db.get(AdDirectoryRun, identity).claim_generation
+        held = {
+            head.lease_execution_id: head.lease_token
+            for head in db.exec(
+                select(SyncSchedule).where(SyncSchedule.tenant_id == seed.tenant_id)
+            ).all()
+            if head.lease_execution_id != identity
+        }
+    with monkeypatch.context() as patch:
+        patch.setattr(outbox.celery_app, "send_task", lambda *_a, **_kw: None)
+        outbox.flush_dispatch()
+    # 满池后才到达历史事实；当前页成功或准入延期释放一个槽，均应即时补给事实。
+    with factory() as db, db.begin():
         day = now.date() - timedelta(days=3)
-        enqueue_job(
+        fact_id = enqueue_job(
             db,
             tenant_id=seed.tenant_id,
             bc_id="bc-a",
@@ -464,7 +549,7 @@ def test_background_continuation_returns_borrowed_slot_to_facts(
             advertiser_ids=["acc-1"],
             start=day,
             end=day,
-            due_at=now,
+            due_at=datetime.now(UTC),
         )
 
     def read(_query):
@@ -486,18 +571,34 @@ def test_background_continuation_returns_borrowed_slot_to_facts(
         redis_client=redis_client,
         context=seed.context,
         run_id=identity,
-        claim_generation=1,
+        claim_generation=generation,
     )
     assert result == ("WAIT" if deferred else "CONTINUE")
-    assert not sent
+    assert sent == ["reporting.backfill_step"]
     with factory() as db:
         current = db.get(AdDirectoryRun, identity)
         assert current.next_page == (1 if deferred else 2)
-        assert current.claimed_until is None
-        assert current.status in ("RUNNING", "WAITING_REMOTE")
-        assert not db.exec(
+        assert current.claimed_until is None and current.status in (
+            "RUNNING",
+            "WAITING_REMOTE",
+        )
+        rows = db.exec(
             select(PendingDispatch).where(PendingDispatch.tenant_id == seed.tenant_id)
         ).all()
+        assert (
+            len([row for row in rows if row.payload.get("job_id") == str(fact_id)]) == 1
+        )
+        assert (
+            len([row for row in rows if row.payload.get("run_id") == str(identity)])
+            == 1
+        )
+        actual = {
+            head.lease_execution_id: head.lease_token
+            for head in db.exec(
+                select(SyncSchedule).where(SyncSchedule.tenant_id == seed.tenant_id)
+            ).all()
+        }
+        assert all(actual.get(identity) == token for identity, token in held.items())
 
 
 def test_concurrent_borrowed_pages_preserve_progress_and_single_successor(
@@ -505,16 +606,33 @@ def test_concurrent_borrowed_pages_preserve_progress_and_single_successor(
 ):
     from datetime import UTC, datetime
 
-    from tests.modules.reporting.test_background_execution_share import pending
+    from tests.modules.reporting.test_background_execution_share import (
+        dispatch_pool,
+        pending,
+    )
 
     seed, factory = committed_sync_seed
     with factory() as db, db.begin():
         identities = []
-        for _ in range(2):
+        for i in range(2):
             row = directory(db, seed)
             row.workload = "background"
+            row.query = row.query | {"page_size": 100 + i}
             identities.append(row.id)
         pending(db, seed, "material_day", 0, datetime.now(UTC))
+        register_pending(db, seed)
+    with factory() as db, db.begin():
+        assert (
+            dispatch_pool(db, redis_client, datetime.now(UTC) + timedelta(seconds=1))
+            >= 2
+        )
+        generations = {
+            identity: db.get(AdDirectoryRun, identity).claim_generation
+            for identity in identities
+        }
+    with monkeypatch.context() as patch:
+        patch.setattr(outbox.celery_app, "send_task", lambda *_a, **_kw: None)
+        outbox.flush_dispatch()
     barrier = Barrier(2)
 
     def read(_query):
@@ -534,7 +652,7 @@ def test_concurrent_borrowed_pages_preserve_progress_and_single_successor(
             redis_client=redis_client,
             context=seed.context,
             run_id=identity,
-            claim_generation=1,
+            claim_generation=generations[identity],
         )
 
     with ThreadPoolExecutor(2) as executor:
@@ -545,16 +663,18 @@ def test_concurrent_borrowed_pages_preserve_progress_and_single_successor(
         messages = db.exec(
             select(PendingDispatch).where(PendingDispatch.tenant_id == seed.tenant_id)
         ).all()
-        assert len(messages) <= 1
-        if not messages:
-            # 两边都让出也可由普通Beat派发恢复，不重读上一页。
-            assert job_tasks._dispatch_directories(db, datetime.now(UTC)) == 1
-        assert (
-            db.exec(
+        successors = [row for row in messages if row.task_key.endswith(":page:2")]
+        if not successors:
+            assert job_tasks._dispatch_directories(db, datetime.now(UTC)) > 0
+            successors = db.exec(
                 select(PendingDispatch).where(
-                    PendingDispatch.tenant_id == seed.tenant_id
+                    PendingDispatch.tenant_id == seed.tenant_id,
+                    PendingDispatch.task_key.endswith(":page:2"),
                 )
-            )
-            .one()
-            .task_key.endswith(":page:2")
+            ).all()
+        assert 1 <= len(successors) <= 2
+        assert len({row.payload["run_id"] for row in successors}) == len(successors)
+        assert all(
+            row.payload["claim_generation"] > generations[UUID(row.payload["run_id"])]
+            for row in successors
         )

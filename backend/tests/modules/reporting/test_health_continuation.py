@@ -55,8 +55,8 @@ def test_second_chunk_failure_resumes_without_partial_success(
         original = health.measure_coverage
 
         def failed(session, *_args, **_kwargs):
-            session.execute(text("SET LOCAL statement_timeout='50ms'"))
-            session.execute(text("SELECT pg_sleep(0.1)"))
+            with health.query_budget(session, seconds=0.05):
+                session.execute(text("SELECT pg_sleep(1)"))
 
         monkeypatch.setattr(health, "measure_coverage", failed)
         assert health.run_bc_health(**args, cycle=progress["cycle"]) == "FAILED"

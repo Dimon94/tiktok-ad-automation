@@ -8,7 +8,6 @@ from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.report_reader import RawReportPage
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
 from app.modules.reporting.jobs import (
-    claim_jobs,
     enqueue_job,
     execute_job,
     request_time,
@@ -18,6 +17,7 @@ from app.modules.reporting.store_models import (
     ReportSyncJob,
     ReportSyncState,
 )
+from tests.modules.reporting.claiming import claim_jobs
 from tests.modules.reporting.sync_conftest import ad_row
 
 D = date(2026, 10, 5)
@@ -201,9 +201,8 @@ def _enqueue_and_claim(factory, seed, advertisers=None):
 def _reclaim(factory, job_id):
     with factory() as s:
         job = s.get(ReportSyncJob, job_id)
-        job.due_at = datetime.now(UTC) - timedelta(seconds=1)
-        s.commit()
-        result = claim_jobs(s, now=datetime.now(UTC), limit=1)[0]
+        due = max(datetime.now(UTC), job.due_at) + timedelta(seconds=1)
+        result = claim_jobs(s, now=due, limit=1)[0]
         s.commit()
         return result
 
@@ -305,9 +304,8 @@ def test_expired_lease_is_reclaimed_and_old_token_cannot_publish(committed_sync_
     old = _enqueue_and_claim(factory, seed)
     with factory() as s:
         job = s.get(ReportSyncJob, old.id)
-        job.claimed_until = datetime.now(UTC) - timedelta(seconds=1)
-        s.commit()
-        claimed = claim_jobs(s, now=datetime.now(UTC), limit=1)
+        due = job.claimed_until + timedelta(seconds=1)
+        claimed = claim_jobs(s, now=due, limit=1)
         assert len(claimed) == 1 and claimed[0].claim_token != old.claim_token
         s.commit()
     reader = FakeReader()
@@ -332,7 +330,9 @@ def test_same_accounts_in_different_tenants_do_not_share_job_key(session, sync_s
         "actor_id": sync_seed.actor_id,
     }
     assert enqueue_job(session, tenant_id=sync_seed.tenant_id, **args)
-    assert enqueue_job(session, tenant_id=uuid4(), **args)
+    # V2在需求入口验证租户/账户，不能接受将A租户冻结路由搬到不存在的B租户。
+    with pytest.raises(ValueError):
+        enqueue_job(session, tenant_id=uuid4(), **args)
 
 
 def test_timeout_retry_reads_campaign_batches_instead_of_same_large_request(
@@ -660,10 +660,11 @@ def test_hot_report_queues_missing_ad_and_parent_directory(
     )
 
 
-def test_old_cross_day_hot_job_cannot_deduplicate_or_occupy_current_day_lane(
-    session, sync_seed
+@pytest.mark.parametrize("new_head_after_claim", [False, True])
+def test_current_day_keeps_distinct_frozen_execution_from_cross_day_work(
+    session, sync_seed, new_head_after_claim
 ):
-    """旧版昨天至今天任务转冷后，新的当天请求必须仍能独立规划和领取。"""
+    """当天需求不能被旧跨日执行吞掉；同scope领取期间不并发重读同一账户。"""
     from zoneinfo import ZoneInfo
 
     now = datetime.now(UTC)
@@ -680,12 +681,15 @@ def test_old_cross_day_hot_job_cannot_deduplicate_or_occupy_current_day_lane(
         "due_at": now,
     }
     old_id = enqueue_job(session, start=today - timedelta(days=1), **kwargs)
+    first = claim_jobs(session, now=now, limit=10) if new_head_after_claim else []
     current_id = enqueue_job(session, start=today, **kwargs)
     assert old_id is not None and current_id is not None
-    current = claim_jobs(session, now=now, limit=10, lane="live")
-    old = claim_jobs(session, now=now, limit=10, lane="backfill")
-    assert [job.id for job in current] == [current_id]
-    assert [job.id for job in old] == [old_id]
+    if not new_head_after_claim:
+        first = claim_jobs(session, now=now, limit=10)
+    assert len(first) == 1 and first[0].id in {old_id, current_id}
+    assert claim_jobs(session, now=now, limit=10) == []
+    assert session.get(ReportSyncJob, old_id).start_date == today - timedelta(days=1)
+    assert session.get(ReportSyncJob, current_id).start_date == today
 
 
 @pytest.mark.parametrize("fresh_rows", [[], [ad_row("a1", D, spend="1")]])
@@ -778,364 +782,17 @@ def test_admission_retry_keeps_original_fact_place_but_obeys_not_before(
     session.get(ReportSyncJob, old).created_at = now - timedelta(minutes=5)
     session.get(ReportSyncJob, old).status = "WAITING"
     session.flush()
-    assert [job.id for job in claim_jobs(session, now=now, limit=1, lane="live")] == [
-        new
-    ]
+    assert [job.id for job in claim_jobs(session, now=now, limit=1)] == [new]
     session.get(ReportSyncJob, new).status = "QUEUED"
     session.get(ReportSyncJob, new).claim_token = None
     session.get(ReportSyncJob, new).claimed_until = None
     session.flush()
     # 到准入时间后，老素材请求先于新广告领取，不因修改 due_at 被反复推后。
     assert [
-        job.id
-        for job in claim_jobs(
-            session, now=now + timedelta(seconds=6), limit=1, lane="live"
-        )
+        job.id for job in claim_jobs(session, now=now + timedelta(seconds=6), limit=1)
     ] == [old]
 
 
-def _live_kind_backlog(
-    session, seed, now, kinds=("ad_day", "material_day"), widths=None
-):
-    from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
-
-    widths = widths or {kind: [1] * 8 for kind in kinds}
-    accounts = [
-        f"kind-account-{index}"
-        for index in range(max(sum(widths[kind]) for kind in kinds))
-    ]
-    for advertiser in accounts:
-        session.add(
-            AdvertiserAccount(
-                tenant_id=seed.tenant_id,
-                advertiser_id=advertiser,
-                currency="USD",
-                timezone="UTC",
-                name=advertiser,
-            )
-        )
-    session.flush()
-    for advertiser in accounts:
-        session.add(
-            BCAccountAccess(
-                tenant_id=seed.tenant_id,
-                bc_id="bc-a",
-                advertiser_id=advertiser,
-                connection_id=seed.connection.id,
-                in_bc=True,
-                authorized=True,
-                active=True,
-                checked_at=now,
-            )
-        )
-    session.flush()
-    result = {}
-    for rank, kind in enumerate(kinds):
-        result[kind] = []
-        offset = 0
-        for index, width in enumerate(widths[kind]):
-            batch = accounts[offset : offset + width]
-            offset += width
-            job_id = enqueue_job(
-                session,
-                tenant_id=seed.tenant_id,
-                bc_id="bc-a",
-                kind=kind,
-                tier="hot",
-                advertiser_ids=batch,
-                start=now.date(),
-                end=now.date(),
-                frozen_route=_route(seed),
-                actor_id=seed.actor_id,
-                due_at=now,
-            )
-            # 整批广告比全部素材都老，复现跨kind FIFO成波领取。
-            session.get(ReportSyncJob, job_id).created_at = now - timedelta(
-                minutes=20 - rank, seconds=8 - index
-            )
-            result[kind].append(job_id)
-    session.flush()
-    return result
-
-
-def test_live_batch_balances_kinds_with_virtual_inflight(session, sync_seed):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(session, sync_seed, now)
-    claimed = claim_jobs(session, now=now, limit=8, lane="live")
-    assert [job.kind for job in claimed] == ["ad_day", "material_day"] * 4
-    for kind in ids:
-        assert [job.id for job in claimed if job.kind == kind] == ids[kind][:4]
-
-
-def test_single_fact_refill_replenishes_fast_kind_before_older_other_kind(
-    session, sync_seed
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(session, sync_seed, now)
-    initial = claim_jobs(session, now=now, limit=8, lane="live")
-    assert sum(job.kind == "material_day" for job in initial) == 4
-    for index in range(4):
-        finished = session.get(ReportSyncJob, ids["material_day"][index])
-        finished.status, finished.claim_token, finished.claimed_until = (
-            "COMPLETE",
-            None,
-            None,
-        )
-        session.flush()
-        claimed = claim_jobs(session, now=now, limit=1, lane="live")
-        assert [job.id for job in claimed] == [ids["material_day"][index + 4]]
-        assert (
-            sum(
-                session.get(ReportSyncJob, job_id).status == "RUNNING"
-                for job_id in ids["ad_day"]
-            )
-            == 4
-        )
-
-
-@pytest.mark.parametrize("kind", ["ad_day", "material_day"])
-def test_single_available_fact_kind_borrows_entire_window(session, sync_seed, kind):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(session, sync_seed, now, kinds=(kind,))
-    assert [
-        job.id for job in claim_jobs(session, now=now, limit=8, lane="live")
-    ] == ids[kind]
-
-
-def test_expired_fact_claims_do_not_count_as_kind_inflight(session, sync_seed):
-    from uuid import uuid4
-
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(session, sync_seed, now)
-    old_claim = uuid4()
-    for job_id in ids["material_day"]:
-        row = session.get(ReportSyncJob, job_id)
-        row.status, row.claim_token, row.claimed_until = (
-            "RUNNING",
-            old_claim,
-            now - timedelta(seconds=1),
-        )
-    session.flush()
-    claimed = claim_jobs(session, now=now, limit=8, lane="live")
-    assert [job.kind for job in claimed] == ["ad_day", "material_day"] * 4
-    assert all(
-        job.claim_token != old_claim and job.claimed_until > now for job in claimed
-    )
-
-
-@pytest.mark.parametrize("batch_size", [2, 5])
-def test_live_kind_weight_balances_accounts_instead_of_batch_counts(
-    session, sync_seed, batch_size
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session,
-        sync_seed,
-        now,
-        widths={"ad_day": [batch_size] * 8, "material_day": [1] * (batch_size * 8)},
-    )
-    claimed = claim_jobs(session, now=now, limit=(batch_size + 1) * 2, lane="live")
-    assert [job.id for job in claimed if job.kind == "ad_day"] == ids["ad_day"][:2]
-    assert [job.id for job in claimed if job.kind == "material_day"] == ids[
-        "material_day"
-    ][: batch_size * 2]
-    assert sum(
-        len(job.advertiser_ids) for job in claimed if job.kind == "ad_day"
-    ) == sum(len(job.advertiser_ids) for job in claimed if job.kind == "material_day")
-
-
-def test_live_kind_weight_single_slot_does_not_penalize_large_first_batch(
-    session, sync_seed
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session,
-        sync_seed,
-        now,
-        widths={"ad_day": [5, 5], "material_day": [1] * 10},
-    )
-    # 没有在途时比较零起点，旧广告批必须先服务；inclusive prefix会总选成本1的素材。
-    first = claim_jobs(session, now=now, limit=1, lane="live")
-    assert [job.id for job in first] == ids["ad_day"][:1]
-    first[0].status, first[0].claim_token, first[0].claimed_until = (
-        "COMPLETE",
-        None,
-        None,
-    )
-    session.flush()
-    assert [
-        job.id for job in claim_jobs(session, now=now, limit=1, lane="live")
-    ] == ids["ad_day"][1:2]
-
-
-def test_live_kind_weight_single_refill_uses_running_accounts_not_jobs(
-    session, sync_seed
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session,
-        sync_seed,
-        now,
-        widths={"ad_day": [5] * 4, "material_day": [1] * 12},
-    )
-    first = claim_jobs(session, now=now, limit=6, lane="live")
-    assert [job.kind for job in first] == ["ad_day"] + ["material_day"] * 5
-    for index in range(5):
-        done = session.get(ReportSyncJob, ids["material_day"][index])
-        done.status, done.claim_token, done.claimed_until = "COMPLETE", None, None
-        session.flush()
-        assert [
-            job.id for job in claim_jobs(session, now=now, limit=1, lane="live")
-        ] == ids["material_day"][index + 5 : index + 6]
-    done = session.get(ReportSyncJob, ids["ad_day"][0])
-    done.status, done.claim_token, done.claimed_until = "COMPLETE", None, None
-    session.flush()
-    assert [
-        job.id for job in claim_jobs(session, now=now, limit=1, lane="live")
-    ] == ids["ad_day"][1:2]
-
-
-def test_live_kind_weight_variable_scopes_use_exclusive_prefix_and_fifo(
-    session, sync_seed
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session,
-        sync_seed,
-        now,
-        widths={"ad_day": [2, 5, 1], "material_day": [1] * 10},
-    )
-    # 广告虚拟起点为0/2/7，不能固定权重5，也不能把第二批5计入自己的排序成本。
-    claimed = claim_jobs(session, now=now, limit=10, lane="live")
-    expected = [
-        ids["ad_day"][0],
-        *ids["material_day"][:2],
-        ids["ad_day"][1],
-        *ids["material_day"][2:7],
-        ids["ad_day"][2],
-    ]
-    assert [job.id for job in claimed] == expected
-
-
-@pytest.mark.parametrize("missing_lease", [False, True])
-def test_live_kind_weight_expired_large_claims_do_not_inflate_load(
-    session, sync_seed, missing_lease
-):
-    from uuid import uuid4
-
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session,
-        sync_seed,
-        now,
-        widths={"ad_day": [5] * 4, "material_day": [1] * 12},
-    )
-    old_token = uuid4()
-    for job_id in ids["ad_day"]:
-        job = session.get(ReportSyncJob, job_id)
-        job.status, job.claim_token = "RUNNING", old_token
-        job.claimed_until = None if missing_lease else now - timedelta(seconds=1)
-    session.flush()
-    claimed = claim_jobs(session, now=now, limit=6, lane="live")
-    assert [job.id for job in claimed] == [ids["ad_day"][0], *ids["material_day"][:5]]
-    assert all(
-        job.claim_token != old_token and job.claimed_until > now for job in claimed
-    )
-
-
-def test_live_kind_weight_preserves_tenant_rotation(session):
-    from tests.modules.reporting.sync_conftest import sync_seed as seed_fixture
-
-    now = datetime.now(UTC)
-    seeds = [seed_fixture.__wrapped__(session), seed_fixture.__wrapped__(session)]
-    ids = [
-        _live_kind_backlog(
-            session, seed, now, widths={"ad_day": [5] * 4, "material_day": [1] * 20}
-        )
-        for seed in seeds
-    ]
-    claimed = claim_jobs(session, now=now, limit=12, lane="live")
-    for seed, backlog in zip(seeds, ids, strict=True):
-        tenant_jobs = [job for job in claimed if job.tenant_id == seed.tenant_id]
-        assert len(tenant_jobs) == 6
-        assert [job.id for job in tenant_jobs] == [
-            backlog["ad_day"][0],
-            *backlog["material_day"][:5],
-        ]
-
-
-@pytest.mark.parametrize("kind", ["ad_day", "campaign_hour"])
-def test_live_kind_weight_single_batched_kind_borrows_whole_job_window(
-    session, sync_seed, kind
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session, sync_seed, now, kinds=(kind,), widths={kind: [5] * 8}
-    )
-    assert [
-        job.id for job in claim_jobs(session, now=now, limit=8, lane="live")
-    ] == ids[kind]
-
-
-def test_live_kind_weight_hourly_batches_share_account_units(session, sync_seed):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(
-        session,
-        sync_seed,
-        now,
-        kinds=("campaign_hour", "material_day"),
-        widths={"campaign_hour": [5] * 4, "material_day": [1] * 12},
-    )
-    assert [job.id for job in claim_jobs(session, now=now, limit=6, lane="live")] == [
-        ids["campaign_hour"][0],
-        *ids["material_day"][:5],
-    ]
-
-
-def test_live_kind_weight_legacy_empty_scope_still_has_positive_cost(
-    session, sync_seed
-):
-    now = datetime.now(UTC)
-    ids = _live_kind_backlog(session, sync_seed, now)
-    # 正常hot enqueue拒绝空scope；遗留行没有DB数组非空约束，不能获得零成本。
-    for job_id in ids["ad_day"]:
-        session.get(ReportSyncJob, job_id).advertiser_ids = []
-    session.flush()
-    claimed = claim_jobs(session, now=now, limit=6, lane="live")
-    assert [job.kind for job in claimed] == ["ad_day", "material_day"] * 3
-
-
-def test_current_link_reservation_preserves_separate_historical_work(
-    session, sync_seed
-):
-    from zoneinfo import ZoneInfo
-
-    now = datetime.now(UTC)
-    today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    common = {
-        "tenant_id": sync_seed.tenant_id,
-        "bc_id": "bc-a",
-        "kind": "material_links",
-        "tier": "material",
-        "advertiser_ids": ["acc-1"],
-        "frozen_route": _route(sync_seed),
-        "actor_id": sync_seed.actor_id,
-        "due_at": now,
-    }
-    old = enqueue_job(
-        session,
-        start=today - timedelta(days=1),
-        end=today - timedelta(days=1),
-        **common,
-    )
-    current = enqueue_job(session, start=today, end=today, **common)
-    session.get(ReportSyncJob, old).created_at = now - timedelta(hours=1)
-    session.get(ReportSyncJob, old).due_at = now - timedelta(hours=1)
-    session.flush()
-    claimed = claim_jobs(session, now=now, limit=1, lane="links")
-    assert [j.id for j in claimed] == [current]
-    claimed[0].status = "COMPLETE"
-    session.flush()
-    assert [j.id for j in claim_jobs(session, now=now, limit=1, lane="backfill")] == [
-        old
-    ]
+# 旧lane固定kind槽、按虚拟账户数分配和LINK独占窗口已退役。
+# 新工作类借槽/饥饿保证由test_backfill_priority_age的真实发布回归、
+# sync_control/test_fairness及test_dispatcher覆盖；此处保留执行/发布/租约合同。

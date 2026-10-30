@@ -40,7 +40,7 @@ def test_material_timeout_does_not_remeasure_successful_directory(
         if "WITH posts AS MATERIALIZED" in str(statement) and not failures:
             failures.append(True)
             with health.query_budget(db, seconds=0.05):
-                original_execute(db, text("SELECT pg_sleep(0.1)"))
+                original_execute(db, text("SELECT pg_sleep(1)"))
         return original_execute(db, statement, *args, **kwargs)
 
     monkeypatch.setattr(health, "_missing_directory_ads", directory)

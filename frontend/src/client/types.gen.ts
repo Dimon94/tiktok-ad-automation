@@ -396,6 +396,20 @@ export type AdsQueryPage = {
      * Next Cursor
      */
     next_cursor?: string | null;
+    /**
+     * Metrics Observed At
+     */
+    metrics_observed_at?: string | null;
+    /**
+     * Ordering Basis
+     */
+    ordering_basis?: 'snapshot';
+    /**
+     * Metrics Coverage
+     */
+    metrics_coverage?: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -7013,6 +7027,10 @@ export type QuerySnapshotPublic = {
      * Snapshot Id
      */
     snapshot_id: string;
+    /**
+     * Snapshot At
+     */
+    snapshot_at: string;
     /**
      * Expires At
      */

@@ -108,7 +108,8 @@ def test_same_transaction_mapping_insert_visible_to_second_call(
             advertiser_id="acc-1",
             main_material_id="mid-0",
             ad_remote_id="late-ad",
-            main_material_type="VIDEO_NON_SPARK_ADS",
+            # 与已发布事实的类型一致；同MID的其它类型不能借用该事实金额。
+            main_material_type="VIDEO_SPARK_ADS",
             observed_at=now,
         )
     )

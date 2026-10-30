@@ -1,0 +1,330 @@
+"""目录到期头派发；本地发布独立续步，不与平台读取争取发送次数。"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from uuid import UUID, uuid4
+
+from redis import Redis
+from sqlalchemy import or_, text, update
+from sqlmodel import Session, col, select
+
+from app.core.config import settings
+from app.jobs.admission import admission_policy
+from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
+from app.modules.sync_control.costs import cost_classes, reserve_execution_cost
+from app.modules.sync_control.directory_demand import directory_endpoint
+from app.modules.sync_control.fairness import (
+    WEIGHTS,
+    choose_work_class,
+    due_tenants,
+    lock_tenant_cursor,
+)
+from app.modules.sync_control.models import (
+    SyncExecutionScope,
+    SyncSchedule,
+)
+from app.modules.sync_control.occupancy import release_dispatch, reserve_dispatch
+from app.modules.sync_control.worker_pool import (
+    lock_background_pool,
+    reserve_background_turn,
+)
+
+
+def dispatch_directories_due(
+    session: Session,
+    redis: Redis,
+    *,
+    now: datetime,
+    limit: int = 8,
+    allow_backfill: bool = True,
+) -> int:
+    from app.modules.ads.directory_dispatch import (
+        directory_step_key,
+        enqueue_directory_step,
+        is_live_directory,
+    )
+
+    # 所有派发入口统一pool→tenant cursor→执行/头的锁顺序，避免跨租户交错死锁。
+    if not lock_background_pool(session):
+        return 0
+    if (
+        not session.connection()
+        .execute(
+            text(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended('tkada:sync-v2-directory',0))"
+            )
+        )
+        .scalar_one()
+    ):
+        return 0
+    # limit是跨扫描共享的总窗口。租约可能同时挂在晋升前后的两个工作类头上，
+    # 仍只计一个执行；终态、旧owner/旧代数及已超时Worker不继续占槽。
+    # 本地发布也占执行窗口，只是不消耗平台接口额度。
+    session.flush()
+    inflight = (
+        session.connection()
+        .execute(
+            text("""
+        SELECT count(DISTINCT r.id)
+        FROM sync_schedule h
+        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
+        JOIN ad_directory_run r ON r.id=h.lease_execution_id AND r.tenant_id=h.tenant_id
+        WHERE h.work_class IN ('realtime','directory') AND h.lease_token IS NOT NULL
+            AND h.lease_execution_generation=r.claim_generation
+            AND r.owner_epoch=s.owner_epoch
+            AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
+            AND (r.claimed_until>:now OR (r.claimed_until IS NULL AND h.leased_until>:now))
+        """),
+            {"now": now},
+        )
+        .scalar_one()
+    )
+    limit = max(0, limit - int(inflight))
+    if not limit:
+        return 0
+    due = [
+        col(SyncSchedule.active).is_(True),
+        col(SyncSchedule.work_class).in_(["realtime", "directory"]),
+        col(SyncSchedule.next_eligible_at) <= now,
+        or_(
+            col(SyncSchedule.leased_until).is_(None),
+            col(SyncSchedule.leased_until) <= now,
+        ),
+        # 报表关联也有directory类，但由报表dispatcher持有；这里只选目录scope。
+        col(SyncSchedule.scope_id).in_(
+            select(col(SyncExecutionScope.scope_id)).where(
+                col(SyncExecutionScope.directory_run_id).is_not(None)
+            )
+        ),
+    ]
+    tenants = due_tenants(session, due, limit=min(64, limit))
+    count = 0
+    background_blocked = False
+    # 共享池拒绝后台候选后，额外一轮直接SQL筛选独立live/publisher；
+    # 不能逐条跳过历史积压，也不能让最老后台头遮住有空闲执行池的候选。
+    for _ in range(limit + 1):
+        progressed = False
+        blocked_before = background_blocked
+        for tenant_id in tenants:
+            if count >= limit:
+                break
+            cursor = lock_tenant_cursor(session, tenant_id)
+            candidates = []
+            for work_class in ("realtime", "directory"):
+                row = _candidate(
+                    session,
+                    tenant_id=tenant_id,
+                    work_class=work_class,
+                    now=now,
+                    independent_only=background_blocked,
+                )
+                if row is not None:
+                    candidates.append(row)
+            if not candidates:
+                continue
+            # 每物理接口维持独立工作类预算；只在该接口同时存在的类间比较。
+            endpoint = min(
+                candidates,
+                key=lambda row: (
+                    row[0].last_dispatched_at is not None,
+                    row[0].last_dispatched_at or now,
+                ),
+            )[0].physical_endpoint
+            eligible = [
+                row for row in candidates if row[0].physical_endpoint == endpoint
+            ]
+            retained, inflight_classes = cost_classes(
+                session, tenant_id=tenant_id, endpoint=endpoint, now=now
+            )
+            accounting_classes = {
+                row[0].work_class for row in eligible
+            } | inflight_classes
+            chosen_class, state = choose_work_class(
+                cursor.fairness_state.get(endpoint, {}),
+                [row[0].work_class for row in eligible],
+                retained=retained,
+                accounting=accounting_classes,
+            )
+            head, run = next(
+                row for row in eligible if row[0].work_class == chosen_class
+            )
+            # 领取前沿用原完整覆盖/周期校准复验；唤醒不是已投递执行，
+            # 真正有页、租约或本代消息的运行仍由原保护拒绝改写。
+            from app.modules.ads.directory_backlog import review_unstarted_directory
+            from app.modules.sync_control.directory_demand import directory_outcome
+
+            if review_unstarted_directory(session, run, now):
+                directory_outcome(session, run)
+                session.flush()
+                progressed = True
+                continue
+            terminal = session.exec(
+                select(col(AdDirectoryPage.page))
+                .where(
+                    col(AdDirectoryPage.run_id) == run.id,
+                    col(AdDirectoryPage.complete).is_(True),
+                )
+                .limit(1)
+            ).first()
+            # 每次正式领取都换代；成功页释放头后，旧页消息不得读取下一页。
+            # 先用候选新代预留Redis，准入失败不能推进持久执行身份。
+            next_generation = run.claim_generation + 1
+            if terminal is None:
+                endpoint = directory_endpoint(run)
+                reservation_id = directory_step_key(run).replace(
+                    f":{run.claim_generation}:page:", f":{next_generation}:page:"
+                )
+                ready = reserve_dispatch(
+                    redis,
+                    reservation_id=reservation_id,
+                    policy=admission_policy(
+                        "reports.integrated",
+                        channel="OFFICIAL_API",
+                        physical_endpoint=endpoint,
+                    ),
+                    app_scope=settings.TIKTOK_APP_ID,
+                    endpoint=endpoint,
+                    rate_group=endpoint,
+                    tenant_id=run.tenant_id,
+                    advertiser_id=run.advertiser_id,
+                )
+                if ready.capacity_hint == 0:
+                    head.next_eligible_at = now + timedelta(
+                        milliseconds=max(1, ready.retry_after_ms)
+                    )
+                    head.wait_reason = ready.reason
+                    continue
+                if not is_live_directory(run) and not reserve_background_turn(
+                    session,
+                    redis,
+                    category="directory",
+                    now=now,
+                    allow_backfill=allow_backfill,
+                ):
+                    # 共享Worker池与平台发送账本是两个边界；未获本地槽只撤销queued
+                    # 占位，不消费代数/改due，也不退还任何已发送的平台额度。
+                    background_blocked = True
+                    release_dispatch(
+                        redis,
+                        reservation_id=reservation_id,
+                        app_scope=settings.TIKTOK_APP_ID,
+                        endpoint=endpoint,
+                        rate_group=endpoint,
+                        tenant_id=run.tenant_id,
+                        advertiser_id=run.advertiser_id,
+                    )
+                    continue
+            run.claim_generation = next_generation
+            session.execute(
+                update(SyncExecutionScope)
+                .where(
+                    col(SyncExecutionScope.directory_run_id) == run.id,
+                    col(SyncExecutionScope.owner_epoch) == run.owner_epoch,
+                    col(SyncExecutionScope.status) == "PENDING",
+                )
+                .values(execution_generation=run.claim_generation)
+            )
+            run.claim_token = run.claimed_until = None
+            head.leased_until = now + timedelta(seconds=240)
+            head.lease_token = uuid4()
+            head.lease_execution_id, head.lease_execution_generation = (
+                run.id,
+                run.claim_generation,
+            )
+            head.generation += 1
+            head.last_dispatched_at, head.wait_reason = now, None
+            enqueue_directory_step(
+                session,
+                run,
+                publish_only=terminal is not None,
+                dispatch_ready=True,
+                dispatched_at=now,
+            )
+            count += 1
+            progressed = True
+            cursor.last_dispatched_at = now
+            reserve_execution_cost(
+                session,
+                cursor=cursor,
+                execution=run,
+                kind="directory",
+                endpoint=endpoint,
+                work_class=head.work_class,
+                eligible_weights={key: WEIGHTS[key] for key in accounting_classes},
+                state_after_unit_charge=state,
+                reserved_units=1 if terminal is None else 0,
+                lease_until=head.leased_until,
+            )
+        if not progressed and (blocked_before or not background_blocked):
+            break
+    return count
+
+
+def _candidate(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    work_class: str,
+    now: datetime,
+    independent_only: bool,
+) -> tuple[SyncSchedule, AdDirectoryRun] | None:
+    # 先在到期头的账户有序索引中找可锁的窄ID；锁跳过发生在LIMIT之前。
+    # EXISTS保留精确scope/需求类/owner围栏，绝不把同账户其他范围当成本头执行。
+    # 宽query/frozen_route只在确定一条ID后通过主键回读，避免全积压宽行排序落盘。
+    session.flush()
+    row = (
+        session.connection()
+        .execute(
+            text("""
+        SELECT h.scope_id, h.work_class, picked.id
+        FROM sync_schedule h
+        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
+        CROSS JOIN LATERAL (
+            SELECT r.id, r.created_at
+            FROM ad_directory_run r
+            WHERE r.tenant_id=h.tenant_id AND r.advertiser_id=s.advertiser_id
+                AND r.owner_epoch=s.owner_epoch
+                AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
+                AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
+                AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
+                AND (NOT :independent_only OR (
+                    r.workload='live' AND (
+                        coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR
+                        coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)
+                    ) OR EXISTS (SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
+                AND EXISTS (
+                    SELECT 1 FROM sync_execution_scope e
+                    JOIN sync_requirement q ON q.id=e.requirement_id
+                    WHERE e.directory_run_id=r.id AND e.scope_id=h.scope_id
+                        AND e.tenant_id=h.tenant_id AND e.status='PENDING'
+                        AND e.owner_epoch=s.owner_epoch AND q.source=h.work_class
+                    LIMIT 1 FOR UPDATE OF e,q SKIP LOCKED
+                )
+            ORDER BY r.created_at,r.id
+            LIMIT 1 FOR UPDATE OF r SKIP LOCKED
+        ) picked
+        WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class
+            AND h.active IS TRUE AND h.next_eligible_at<=:now
+            AND (h.leased_until IS NULL OR h.leased_until<=:now)
+        ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,
+            picked.created_at,picked.id
+        LIMIT 1 FOR UPDATE OF h,s SKIP LOCKED
+    """),
+            {
+                "tenant_id": tenant_id,
+                "work_class": work_class,
+                "now": now,
+                "independent_only": independent_only,
+            },
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    head = session.get(
+        SyncSchedule, (row.scope_id, row.work_class), populate_existing=True
+    )
+    run = session.get(AdDirectoryRun, row.id, populate_existing=True)
+    assert head is not None and run is not None
+    return head, run

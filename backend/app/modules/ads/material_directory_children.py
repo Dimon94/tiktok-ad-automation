@@ -3,8 +3,10 @@
 import json
 from datetime import datetime
 from hashlib import sha256
-from uuid import UUID, uuid5
+from types import SimpleNamespace
+from uuid import UUID, uuid4, uuid5
 
+from sqlalchemy import text
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
@@ -81,6 +83,8 @@ def _usage(value: dict) -> AdMaterialUsage:
 def material_child_scope(
     session: Session,
     run: AdDirectoryRun,
+    *,
+    include_materials: bool = True,
 ) -> tuple[tuple[AdEntity, ...], tuple[AdMaterialUsage, ...]] | None:
     """从子运行自身还原冻结父链，源页按原保留期清理后仍可续读。"""
     if not is_material_child(run):
@@ -95,7 +99,26 @@ def material_child_scope(
             raise _invalid()
         # 校验范围之前不把调用方尚未核验的运行变更刷入数据库。
         with session.no_autoflush:
-            context = session.get(AdDirectoryPage, (run.id, MATERIAL_CONTEXT_PAGE))
+            if include_materials:
+                context = session.get(AdDirectoryPage, (run.id, MATERIAL_CONTEXT_PAGE))
+            else:
+                # 发布只需冻结父链。大素材桥逐500行校验，不把整个context JSON解码。
+                row = (
+                    session.connection()
+                    .execute(
+                        text("""
+                    SELECT tenant_id,advertiser_id,coverage,complete,next_page,published_version,
+                        items <> '[]'::jsonb AS items,materials <> '[]'::jsonb AS materials,
+                        evidence #- '{material_child_v1,materials}' AS evidence,
+                        jsonb_typeof(evidence->'material_child_v1'->'materials')='array' AS valid_materials
+                    FROM ad_directory_page WHERE run_id=:run AND page=:page
+                """),
+                        {"run": run.id, "page": MATERIAL_CONTEXT_PAGE},
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                context = SimpleNamespace(**row) if row is not None else None
         if (
             context is None
             or context.tenant_id != run.tenant_id
@@ -107,6 +130,8 @@ def material_child_scope(
             or context.items
             or context.materials
         ):
+            raise _invalid()
+        if not include_materials and not context.valid_materials:
             raise _invalid()
         state = context.evidence[MATERIAL_CHILD_KEY]
         if (
@@ -137,7 +162,24 @@ def material_child_scope(
             for ad, group, observed in state["owners"]
         )
         refs = {ad.ref for ad in ads}
-        materials = tuple(_usage(value) for value in state["materials"])
+        if include_materials:
+            materials = tuple(_usage(value) for value in state["materials"])
+        else:
+            result = session.connection().execute(
+                text("""
+                SELECT value FROM ad_directory_page p CROSS JOIN LATERAL
+                    jsonb_array_elements(p.evidence->'material_child_v1'->'materials') x(value)
+                WHERE p.run_id=:run AND p.page=:page
+            """).execution_options(yield_per=500),
+                {"run": run.id, "page": MATERIAL_CONTEXT_PAGE},
+            )
+            try:
+                for row in result:
+                    if _usage(row[0]).use_ref.ad_ref not in refs:
+                        raise _invalid()
+            finally:
+                result.close()
+            materials = ()
         if (
             not ads
             or len(refs) != len(ads)
@@ -158,7 +200,7 @@ def material_child_provider_pages(
     """只有核验过自身上下文的子运行可剥离保留页，普通分页仍须完整连通。"""
     if not is_material_child(run):
         return pages
-    material_child_scope(session, run)
+    material_child_scope(session, run, include_materials=False)
     if not any(page.page == MATERIAL_CONTEXT_PAGE for page in pages):
         raise _invalid()
     return [page for page in pages if page.page != MATERIAL_CONTEXT_PAGE]
@@ -175,11 +217,27 @@ def ensure_material_directory_children(
         or source.ad_type != "SMART_PLUS"
     ):
         return 0
-    owners: dict[str, tuple[str, str]] = {}
-    missing_groups: set[str] = set()
-    bridges: dict[tuple, dict] = {}
-    for page in pages:
-        for item in page.items:
+    # source_run_id在JSON里没有外键；与归档DELETE共享父行锁防止悬空引用。
+    if (
+        session.exec(
+            select(AdDirectoryRun.id)
+            .where(
+                AdDirectoryRun.id == source.id,
+                AdDirectoryRun.tenant_id == source.tenant_id,
+            )
+            .with_for_update(read=True, key_share=True)
+        ).first()
+        is None
+    ):
+        raise _invalid()
+    from app.modules.ads.sync import _complete_chain, _directory_payload_batches
+
+    if any(page.run_id != source.id for page in pages):
+        raise _invalid()
+    _complete_chain(pages)
+    # 校验流与SQL聚合共用持锁的完整源页；宽桥不再随着全部页堆在Python字典中。
+    for batch in _directory_payload_batches(session, source, "items"):
+        for item in batch:
             if item["ref"]["kind"] != "ad":
                 continue
             ref = _ref(item["ref"])
@@ -189,45 +247,93 @@ def ensure_material_directory_children(
                 or ref.advertiser_id != source.advertiser_id
             ):
                 raise _invalid()
-            if parent is None:
-                continue  # 没有真实父组时保留缺口，不能猜测筛选身份。
-            if (
+            if parent is not None and (
                 parent.kind != "adgroup"
                 or parent.tenant_id != ref.tenant_id
                 or parent.advertiser_id != ref.advertiser_id
             ):
                 raise _invalid()
-            value = (parent.remote_id, item["observed_at"])
-            if ref.remote_id in owners and owners[ref.remote_id][0] != value[0]:
-                raise _invalid()
-            owners[ref.remote_id] = value
-            if page.coverage in {"PARTIAL_MATERIALS", "MATERIALS_INCOMPLETE"}:
-                missing_groups.add(parent.remote_id)
-        for data in page.materials:
-            if not data.get("creative_ids"):
-                continue
-            material = _usage(data)
-            use = material.use_ref
-            key = (
-                use.ad_ref,
-                use.platform_material_id,
-                use.ad_material_id,
-                use.material_type,
+    for batch in _directory_payload_batches(session, source, "materials"):
+        for data in batch:
+            if data.get("creative_ids"):
+                use = _usage(data).use_ref.ad_ref
+                if (
+                    use.tenant_id != source.tenant_id
+                    or use.advertiser_id != source.advertiser_id
+                    or use.kind != "ad"
+                ):
+                    raise _invalid()
+    owners_table = f"child_owners_{uuid4().hex}"
+    bridges_table = f"child_bridges_{uuid4().hex}"
+    connection = session.connection()
+    connection.execute(
+        text(f"""
+        CREATE TEMP TABLE {owners_table} ON COMMIT DROP AS
+        SELECT x.value->'ref'->>'remote_id' AS ad,
+            x.value->'parent_ref'->>'remote_id' AS parent,
+            x.value->>'observed_at' AS observed, p.page, x.position,
+            p.coverage IN ('PARTIAL_MATERIALS','MATERIALS_INCOMPLETE') AS missing
+        FROM ad_directory_page p
+        CROSS JOIN LATERAL jsonb_array_elements(p.items) WITH ORDINALITY x(value,position)
+        WHERE p.run_id=:run AND x.value->'ref'->>'kind'='ad'
+            AND jsonb_typeof(x.value->'parent_ref')='object'
+    """),
+        {"run": source.id},
+    )
+    if connection.execute(
+        text(f"""
+        SELECT 1 FROM {owners_table} GROUP BY ad HAVING count(DISTINCT parent)>1 LIMIT 1
+    """)
+    ).first():
+        raise _invalid()
+    connection.execute(text(f"CREATE INDEX ON {owners_table} (parent,ad)"))
+    connection.execute(
+        text(f"""
+        CREATE TEMP TABLE {bridges_table} ON COMMIT DROP AS
+        WITH raw AS (
+            SELECT x.value AS payload,p.page,x.position,
+                jsonb_build_array(x.value->'use_ref'->'ad_ref',
+                    x.value->'use_ref'->'platform_material_id',
+                    x.value->'use_ref'->'ad_material_id',x.value->'use_ref'->'material_type') AS identity
+            FROM ad_directory_page p
+            CROSS JOIN LATERAL jsonb_array_elements(p.materials) WITH ORDINALITY x(value,position)
+            WHERE p.run_id=:run AND jsonb_array_length(COALESCE(x.value->'creative_ids','[]'::jsonb))>0
+        ), first_payload AS (
+            SELECT DISTINCT ON (identity) identity,payload FROM raw ORDER BY identity,page,position
+        ), ids AS (
+            SELECT identity,jsonb_agg(DISTINCT cid.value ORDER BY cid.value) AS creative_ids
+            FROM raw CROSS JOIN LATERAL jsonb_array_elements(payload->'creative_ids') cid(value)
+            GROUP BY identity
+        )
+        SELECT f.payload->'use_ref'->'ad_ref'->>'remote_id' AS ad,
+            jsonb_set(f.payload,'{{creative_ids}}',ids.creative_ids) AS payload
+        FROM first_payload f JOIN ids USING(identity)
+    """),
+        {"run": source.id},
+    )
+    connection.execute(text(f"CREATE INDEX ON {bridges_table} (ad)"))
+    created = 0
+    # 这里只保留窄组身份，context中的全部素材由PG按子范围直接形成持久JSON。
+    groups = (
+        connection.execute(
+            text(
+                f"SELECT DISTINCT parent FROM {owners_table} WHERE missing ORDER BY parent"
             )
-            previous = bridges.get(key)
-            if previous is None:
-                bridges[key] = dict(data)
-            else:
-                previous["creative_ids"] = sorted(
-                    set(previous["creative_ids"]) | set(data["creative_ids"])
-                )
-    created = []
-    groups = sorted(missing_groups)
+        )
+        .scalars()
+        .all()
+    )
     for offset in range(0, len(groups), _MAX_GROUPS):
         selected_groups = set(groups[offset : offset + _MAX_GROUPS])
-        selected = {
-            ad: value for ad, value in owners.items() if value[0] in selected_groups
-        }
+        selected = dict(
+            connection.execute(
+                text(f"""
+            SELECT DISTINCT ON (ad) ad,jsonb_build_array(parent,observed)
+            FROM {owners_table} WHERE parent=ANY(:groups) ORDER BY ad,page DESC,position DESC
+        """),
+                {"groups": sorted(selected_groups)},
+            ).all()
+        )
         # 每个组只属于一个子运行；request/id确定性绑定源运行，事务重试不会重复展开。
         child_id = uuid5(source.id, json.dumps(sorted(selected_groups)))
         if session.get(AdDirectoryRun, child_id) is not None:
@@ -263,42 +369,45 @@ def ensure_material_directory_children(
             query=query,
             partition_key=_partition_key(query),
             claim_generation=1,
+            # 归档只需观察时间上界；精确owner身份已在query，不重复保存宽素材桥。
+            material_owner_observed_through=max(
+                datetime.fromisoformat(value[1]) for value in selected.values()
+            ),
             # 补读是原请求的未完成部分，沿用排队年龄，避免每次拆分重新落到队尾。
             created_at=source.created_at,
         )
         session.add(child)
         session.flush()
-        # 大冻结桥只在执行/发布时加载；热调度查询不应反复解压整份素材上下文。
-        session.add(
-            AdDirectoryPage(
-                run_id=child.id,
-                page=MATERIAL_CONTEXT_PAGE,
-                tenant_id=child.tenant_id,
-                advertiser_id=child.advertiser_id,
-                claim_generation=1,
-                complete=False,
-                coverage="MATERIAL_CONTEXT",
-                items=[],
-                materials=[],
-                evidence={
-                    MATERIAL_CHILD_KEY: {
-                        "child_run_id": str(child.id),
-                        "source_run_id": str(source.id),
-                        "scope_signature": _scope_signature(source),
-                        "owners": [[ad, *selected[ad]] for ad in sorted(selected)],
-                        "materials": [
-                            data
-                            for key, data in bridges.items()
-                            if key[0].remote_id in selected
-                        ],
-                    },
-                },
-            )
+        from app.modules.sync_control.directory_demand import register_directory_run
+
+        register_directory_run(session, child, new_execution=True)
+        connection.execute(
+            text(f"""
+            INSERT INTO ad_directory_page
+                (run_id,page,tenant_id,advertiser_id,claim_generation,complete,coverage,
+                 items,materials,evidence,observed_at)
+            SELECT :child,:page,:tenant,:advertiser,1,false,'MATERIAL_CONTEXT','[]'::jsonb,'[]'::jsonb,
+                jsonb_build_object(CAST(:key AS text),jsonb_build_object(
+                    'child_run_id',CAST(:child AS text),'source_run_id',CAST(:source AS text),
+                    'scope_signature',CAST(:signature AS text),
+                    'owners',CAST(:owners AS jsonb),
+                    'materials',COALESCE((SELECT jsonb_agg(payload) FROM {bridges_table} WHERE ad=ANY(:ads)),'[]'::jsonb)
+                )),clock_timestamp()
+        """),
+            {
+                "child": child.id,
+                "page": MATERIAL_CONTEXT_PAGE,
+                "tenant": child.tenant_id,
+                "advertiser": child.advertiser_id,
+                "key": MATERIAL_CHILD_KEY,
+                "source": source.id,
+                "signature": _scope_signature(source),
+                "owners": json.dumps([[ad, *selected[ad]] for ad in sorted(selected)]),
+                "ads": sorted(selected),
+            },
         )
-        session.flush()
-        material_child_scope(session, child)
-        created.append(child)
-    return len(created)
+        created += 1
+    return created
 
 
 def filter_current_child_materials(
@@ -308,19 +417,27 @@ def filter_current_child_materials(
     materials: list[dict],
     version: int,
     published_objects: list[AdObject],
+    owner_cache: dict | None = None,
 ) -> tuple[list[dict], bool]:
     """旧主桥及旧子页不能以晚发布版本覆盖新观察，缺口仍留在运行审计。"""
-    scope = material_child_scope(session, run)
-    if scope is None:
+    if owner_cache is None:
+        owner_cache = {}
+    if "current_owners" not in owner_cache:
+        scope = material_child_scope(session, run, include_materials=False)
+        if scope is None:
+            owner_cache["current_owners"] = None
+        else:
+            ads, _bridges = scope
+            expected = {ad.ref.remote_id: ad.observed_at for ad in ads}
+            observed = _owner_observations(session, run, list(expected))
+            owner_cache["current_owners"] = {
+                remote_id
+                for remote_id, value in observed.items()
+                if value <= expected[remote_id]
+            }
+    current_owners = owner_cache["current_owners"]
+    if current_owners is None:
         return materials, False
-    ads, _bridges = scope
-    expected = {ad.ref.remote_id: ad.observed_at for ad in ads}
-    observed = _owner_observations(session, run, list(expected))
-    current_owners = {
-        remote_id
-        for remote_id, value in observed.items()
-        if value <= expected[remote_id]
-    }
     # 发布已窄回读实际胜出的对象及版本；复用结果，避免每500创意重复触盘。
     # published_version必须在发布回读中显式加载，不能改成逐对象懒加载。
     current_creatives = {
@@ -364,7 +481,7 @@ def _owner_observations(
 
 def material_child_superseded(session: Session, run: AdDirectoryRun) -> bool:
     """全体冻结主观察确已被替换时提前让出；缺失事实不能视为较新证据。"""
-    scope = material_child_scope(session, run)
+    scope = material_child_scope(session, run, include_materials=False)
     if scope is None:
         return False
     ads, _bridges = scope

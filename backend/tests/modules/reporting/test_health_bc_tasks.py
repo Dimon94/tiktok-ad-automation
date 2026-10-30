@@ -82,8 +82,8 @@ def test_failed_bc_keeps_metrics_and_next_bc_gets_full_budget(
     def observe(session, plan, *, now, deadline=None, measurement=None, **kwargs):
         seen.append((plan.bc_id, deadline))
         if plan.bc_id == "bc-a":
-            session.execute(text("SET LOCAL statement_timeout='50ms'"))
-            session.execute(text("SELECT pg_sleep(0.1)"))
+            with health.query_budget(session, seconds=0.05):
+                session.execute(text("SELECT pg_sleep(1)"))
         return original(
             session, plan, now=now, deadline=deadline, measurement=measurement, **kwargs
         )
@@ -218,8 +218,8 @@ def test_scheduler_failed_bc_does_not_block_later_bc(committed_sync_seed, monkey
             kwargs["context"].tenant_id == seed.tenant_id
             and kwargs["payload"]["bc_id"] == "bc-a"
         ):
-            session.execute(text("SET LOCAL statement_timeout='50ms'"))
-            session.execute(text("SELECT pg_sleep(0.1)"))
+            with health.query_budget(session, seconds=0.05):
+                session.execute(text("SELECT pg_sleep(1)"))
         return enqueue(session, **kwargs)
 
     monkeypatch.setattr(health, "enqueue_after_commit", enqueue_with_timeout)

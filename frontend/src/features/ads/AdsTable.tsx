@@ -258,6 +258,7 @@ export function AdsTable({
   sortDirection,
   onSort,
   loading,
+  emptyMessage,
 }: {
   rows: ReportRow[]
   dimension: AdsDimension
@@ -281,6 +282,7 @@ export function AdsTable({
   sortDirection: "asc" | "desc"
   onSort: (sortBy: string) => void
   loading: boolean
+  emptyMessage?: string
 }) {
   const config = configColumns(dimension)
   const pageSelected =
@@ -412,7 +414,9 @@ export function AdsTable({
                     className="h-32 px-8 text-muted-foreground"
                   >
                     <span role="status">
-                      {loading ? "正在加载当前报表…" : "没有匹配的广告"}
+                      {loading
+                        ? "正在加载当前报表…"
+                        : (emptyMessage ?? "没有匹配的广告")}
                     </span>
                   </TableCell>
                 </TableRow>

@@ -231,7 +231,17 @@ def test_full_64_account_batch_enqueues_all_types_within_budget(
             )
     session.flush()
     plan.last_active_advertiser_ids = accounts
-    job_tasks._plan_directory_step(session, plan, accounts=accounts, now=now)
+    # scope/requirement登记加入后，每次仍遵守原预算；64户必须经有限续点全部完成，
+    # 不能把“单入口完成”当作业务合同，也不能放宽每入口SQL/墙钟期限。
+    prefixes = []
+    for turn in range(8):
+        job_tasks._plan_directory_step(
+            session, plan, accounts=accounts, now=now + timedelta(seconds=turn)
+        )
+        prefixes.append(len(_advertisers(session, plan)))
+        if job_tasks.DIRECTORY_PLAN_PROGRESS not in plan.screening_progress:
+            break
+    assert prefixes == sorted(prefixes) and all(count > 0 for count in prefixes)
     assert job_tasks.DIRECTORY_PLAN_PROGRESS not in plan.screening_progress
     assert _advertisers(session, plan) == set(accounts)
     runs = session.exec(

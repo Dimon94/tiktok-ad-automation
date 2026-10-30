@@ -15,8 +15,17 @@ from app.modules.ads.material_directory_children import is_material_child
 from app.modules.ads.sync import publish_directory, stage_directory_page
 from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.reporting import job_tasks
+from app.modules.reporting.store_models import ReportDispatchCursor
+from app.modules.sync_control.directory_demand import (
+    directory_outcome,
+    register_directory_run,
+)
 from tests.modules.ads.test_directory_sync import _authority, _run
 from tests.modules.ads.test_material_directory_children import _source_page
+from tests.modules.reporting.directory_claiming import finish
+from tests.modules.sync_control.conftest import (
+    isolated_sync_quota as isolated_sync_quota,
+)
 
 
 def _child(session, seed, *, age, ad="ad-a"):
@@ -46,6 +55,7 @@ def _finish_other_runs(session):
     for run in session.exec(select(AdDirectoryRun)).all():
         if not is_material_child(run):
             run.status = "COMPLETE"
+            directory_outcome(session, run)
     session.flush()
 
 
@@ -55,12 +65,14 @@ def _sent(session):
     ).all()
 
 
-def test_child_keeps_source_age_before_later_objects_and_legacy_creative_last(
-    session, directory_seed, monkeypatch
+def test_child_keeps_source_age_within_canonical_due_order(
+    session, directory_seed, monkeypatch, redis_client
 ):
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "REDIS_URL", __import__("os").environ["TEST_REDIS_URL"]
+    )
     monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", 1)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", 1)
     _authority(session, directory_seed)
     now = datetime.now(UTC)
     source, child = _child(session, directory_seed, age=now - timedelta(hours=1))
@@ -73,26 +85,40 @@ def test_child_keeps_source_age_before_later_objects_and_legacy_creative_last(
     younger.created_at = now - timedelta(minutes=30)
     legacy.created_at = now - timedelta(hours=2)
     session.flush()
+    for row in (earlier, younger, legacy):
+        register_directory_run(session, row, new_execution=True)
     assert child.created_at == source.created_at
-    for expected in (earlier, child, younger, legacy):
+    # 创意不再是独立保底子队列；统一类按头年龄，子范围仍继承原请求年龄。
+    for expected in (legacy, earlier, child, younger):
         before = {row.id for row in _sent(session)}
-        assert job_tasks._dispatch_directories(session, now) == 1
+        assert (
+            job_tasks._dispatch_directories(
+                session, datetime.now(UTC) + timedelta(seconds=1)
+            )
+            == 1
+        )
         sent = [row for row in _sent(session) if row.id not in before]
         assert [row.payload["run_id"] for row in sent] == [str(expected.id)]
         # 一个槽位未释放前不能继续发送。
-        assert job_tasks._dispatch_directories(session, now) == 0
-        expected.status = "COMPLETE"
-        session.flush()
+        assert (
+            job_tasks._dispatch_directories(
+                session, datetime.now(UTC) + timedelta(seconds=1)
+            )
+            == 0
+        )
+        finish(session, redis_client, expected, now=datetime.now(UTC))
 
 
-def test_child_age_does_not_override_cross_tenant_cursor(monkeypatch):
+def test_child_age_does_not_override_cross_tenant_cursor(monkeypatch, redis_client):
     from tests.modules.reporting.sync_conftest import (
         committed_sync_seed as seed_fixture,
     )
 
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", 2)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", 1)
+    monkeypatch.setattr(
+        settings, "REDIS_URL", __import__("os").environ["TEST_REDIS_URL"]
+    )
+    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", 1)
     with ExitStack() as stack:
         seeds = [
             stack.enter_context(contextmanager(unwrap(seed_fixture))())
@@ -115,24 +141,48 @@ def test_child_age_does_not_override_cross_tenant_cursor(monkeypatch):
                         ad=f"ad-{index}",
                     )
                 session.add(
-                    job_tasks.DirectoryDispatchCursor(
+                    ReportDispatchCursor(
                         tenant_id=seed.tenant_id,
                         last_dispatched_at=now - timedelta(minutes=1 + rank),
                     )
                 )
             _finish_other_runs(session)
         with factory() as session, session.begin():
-            assert job_tasks._dispatch_directories(session, now) == 1
-            assert {row.tenant_id for row in _sent(session)} == {seeds[1][0].tenant_id}
+            assert (
+                job_tasks._dispatch_directories(
+                    session, datetime.now(UTC) + timedelta(seconds=1)
+                )
+                == 1
+            )
+            messages = _sent(session)
+            assert {row.tenant_id for row in messages} == {seeds[1][0].tenant_id}
+            assert (
+                job_tasks._dispatch_directories(
+                    session, datetime.now(UTC) + timedelta(seconds=1)
+                )
+                == 0
+            )
+            from uuid import UUID
+
+            finish(
+                session,
+                redis_client,
+                session.get(AdDirectoryRun, UUID(messages[0].payload["run_id"])),
+                now=datetime.now(UTC),
+            )
         with factory() as session, session.begin():
             assert (
-                job_tasks._dispatch_directories(session, now + timedelta(seconds=1))
+                job_tasks._dispatch_directories(
+                    session, datetime.now(UTC) + timedelta(seconds=1)
+                )
                 == 1
             )
             assert {row.tenant_id for row in _sent(session)} == {
                 seed.tenant_id for seed, _ in seeds
             }
             assert (
-                job_tasks._dispatch_directories(session, now + timedelta(seconds=2))
+                job_tasks._dispatch_directories(
+                    session, datetime.now(UTC) + timedelta(seconds=1)
+                )
                 == 0
             )

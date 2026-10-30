@@ -417,3 +417,23 @@ def test_round_limit_is_clamped_to_one_hundred(outbox_db, context, sent):
         session.commit()
     assert flush_dispatch(limit=1000) == 100
     assert len(sent) == 100
+
+
+def test_superseded_dispatch_is_not_sent_or_recreated(outbox_db, context, sent):
+    """离线切换可退役已替代的未发送消息，但不能伪造broker发送或丢幂等身份。"""
+    with Session(outbox_db) as session:
+        identity = enqueue(session, context, key="retired-cutover", item_id="old")
+        row = session.get(PendingDispatch, identity)
+        row.superseded_at = datetime.now(UTC)
+        digest = row.payload_digest
+        session.commit()
+    assert flush_dispatch() == 0
+    assert sent == []
+    with Session(outbox_db) as session:
+        assert (
+            enqueue(session, context, key="retired-cutover", item_id="old") == identity
+        )
+        row = session.get(PendingDispatch, identity)
+        assert row.published_at is None
+        assert row.superseded_at is not None
+        assert row.payload == {"item_id": "old"} and row.payload_digest == digest

@@ -118,15 +118,14 @@ def test_primary_publish_creates_deduplicated_child_without_retaining_source_pag
         )
         == 1
     )
-    assert (
-        session.exec(
-            select(PendingDispatch).where(
-                PendingDispatch.tenant_id == source.tenant_id,
-                PendingDispatch.task_name == "reporting.plan_due",
-            )
-        ).first()
-        is None
-    )
+    # 子运行进入统一需求头；同范围只发合并调度唤醒，由quota readiness再派发。
+    wakes = session.exec(
+        select(PendingDispatch).where(
+            PendingDispatch.tenant_id == source.tenant_id,
+            PendingDispatch.task_name == "reporting.plan_due",
+        )
+    ).all()
+    assert len(wakes) == 1
     session.connection().execute(
         delete(AdDirectoryPage).where(col(AdDirectoryPage.run_id) == source.id)
     )
@@ -288,19 +287,48 @@ def test_second_child_page_admission_resumes_without_replaying_primary_or_first_
         session.add(source)
         session.flush()
         source_id = source.id
+        from app.modules.sync_control.directory_demand import register_directory_run
 
-    def run(identity, generation=1):
+        register_directory_run(session, source, new_execution=True)
+
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
+
+    # 分开执行正式canonical领取，便于断言限流期间没有创建下一页消息。
+    monkeypatch.setattr(tasks, "_deliver_committed_work", lambda *_: None)
+
+    def claim(identity, *, now=None):
+        with Session(database_engine) as session, session.begin():
+            run = session.get(AdDirectoryRun, identity)
+            previous = run.claim_generation
+            assert (
+                dispatch_directories_due(
+                    session,
+                    redis_client,
+                    now=now or datetime.now(UTC) + timedelta(seconds=1),
+                    limit=40,
+                )
+                >= 1
+            )
+            session.refresh(run)
+            assert (
+                run.claim_generation > previous
+            )  # 父目录补读也可同轮领取，目标执行必须换代。
+            return run.claim_generation
+
+    def run(identity, generation, *, publish_only=False):
         return tasks.run_directory_step(
             database_engine=database_engine,
             redis_client=redis_client,
             context=context,
             run_id=identity,
             claim_generation=generation,
+            publish_only=publish_only,
         )
 
-    assert run(source_id) == "CONTINUE"
+    assert run(source_id, claim(source_id)) == "CONTINUE"
     assert len(business_calls(gateway_wire, "OFFICIAL_API")) == 1
-    assert run(source_id) == "READY"
+    assert run(source_id, claim(source_id), publish_only=True) == "READY"
     with Session(database_engine) as session, session.begin():
         source = session.get(AdDirectoryRun, source_id)
         assert source is not None
@@ -315,26 +343,44 @@ def test_second_child_page_admission_resumes_without_replaying_primary_or_first_
         session.connection().execute(
             delete(AdDirectoryPage).where(col(AdDirectoryPage.run_id) == source_id)
         )
+    child_generation = claim(child_id)
+    assert run(child_id, child_generation) == "CONTINUE"
+    assert len(business_calls(gateway_wire, "OFFICIAL_API")) == 2
     limited = policy.model_copy(update={"app_calls_per_window": 1, "window_ms": 60_000})
     monkeypatch.setattr(
         settings, "TIKTOK_CALL_POLICIES", {"base": limited.model_dump()}
     )
-    assert run(child_id) == "CONTINUE"
-    assert len(business_calls(gateway_wire, "OFFICIAL_API")) == 2
-    assert run(child_id) == "WAIT"
+    with Session(database_engine) as session, session.begin():
+        assert (
+            dispatch_directories_due(
+                session,
+                redis_client,
+                now=datetime.now(UTC) + timedelta(seconds=1),
+                limit=40,
+            )
+            == 0
+        )
+        head = session.exec(
+            select(SyncSchedule)
+            .join(
+                SyncExecutionScope, SyncExecutionScope.scope_id == SyncSchedule.scope_id
+            )
+            .where(SyncExecutionScope.directory_run_id == child_id)
+        ).one()
+        assert head.next_eligible_at > datetime.now(UTC)
+        resume_at = head.next_eligible_at + timedelta(seconds=1)
     with Session(database_engine) as session:
         child = session.get(AdDirectoryRun, child_id)
         assert child is not None
-        assert child.next_page == 2 and child.status == "WAITING_REMOTE"
-        assert child.error_code == "admission_deferred"
-        assert child.next_attempt_at is not None
-        assert child.next_attempt_at > datetime.now(UTC)
-        assert child.claimed_until is None and child.claim_generation == 2
+        assert child.next_page == 2 and child.status == "RUNNING"
+        assert (
+            child.claimed_until is None and child.claim_generation == child_generation
+        )
         assert session.get(AdDirectoryPage, (child_id, 1)) is not None
         assert session.get(AdDirectoryPage, (child_id, 2)) is None
     monkeypatch.setattr(settings, "TIKTOK_CALL_POLICIES", {"base": policy.model_dump()})
-    assert run(child_id, 2) == "CONTINUE"
-    assert run(child_id, 2) == "READY"
+    assert run(child_id, claim(child_id, now=resume_at)) == "CONTINUE"
+    assert run(child_id, claim(child_id), publish_only=True) == "READY"
     calls = business_calls(gateway_wire, "OFFICIAL_API")
     assert len(calls) == 3
     with Session(database_engine) as session:

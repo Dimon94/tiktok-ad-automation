@@ -16,10 +16,20 @@ def test_legacy_tables_are_removed_by_migration(session):
         "report_coverage",
         "report_staged_page",
         "report_sync_run",
-        "sync_schedule",
     }
     assert not old.intersection(inspect(session.connection()).get_table_names())
     assert not old.intersection(SQLModel.metadata.tables)
+    # sync_schedule旧名被新规范需求头复用，校验新结构而非禁止合法表名。
+    columns = {
+        column["name"]
+        for column in inspect(session.connection()).get_columns("sync_schedule")
+    }
+    assert {
+        "scope_id",
+        "physical_endpoint",
+        "work_class",
+        "lease_execution_generation",
+    } <= columns
     assert {
         "ad_report_day",
         "material_report_day",

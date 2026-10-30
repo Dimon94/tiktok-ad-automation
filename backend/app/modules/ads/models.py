@@ -180,11 +180,15 @@ class AdMaterialReference(SQLModel, table=True):
             "jsonb_typeof(creative_ids) = 'array'", name="ck_ad_material_creatives"
         ),
         Index("ix_ad_material_ad", "tenant_id", "advertiser_id", "ad_remote_id"),
-        # 素材报表按视频跨账户读取使用位置（只读当天有数据的视频）。
+        # 同时支持视频反查及完整使用身份。保留两列短索引时，估计每视频一行的
+        # 缓存计划会选短索引，在热门视频上逐广告过滤4万引用；不能只再加长索引。
         Index(
             "ix_ad_material_video",
             "tenant_id",
             "platform_material_id",
+            "advertiser_id",
+            "ad_remote_id",
+            "material_type",
             postgresql_where=text("complete"),
         ),
         # 文件名无固定长度上限：哈希索引只用于缩小候选，查询仍以原文相等复核。

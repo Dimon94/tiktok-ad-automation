@@ -12,10 +12,10 @@ from app.integrations.tiktok.contracts.carousel import (
 )
 from app.modules.ads.models import AdMaterialReference, AdObject
 from app.modules.reporting.ad_materials import list_ad_materials
-from app.modules.reporting.dimension_query import build_rows
 from app.modules.reporting.publish import AccountMeta, publish_ad_day
 from app.modules.reporting.schemas import ReportingFilter
 from tests.modules.builds.test_carousel_execution import carousel_case as carousel_case
+from tests.modules.reporting.query_helpers import build_rows
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.test_material_query import D
 from tests.modules.strategies.test_concurrency import (

@@ -1,6 +1,88 @@
 import { expect, test } from "@playwright/test"
 import { adsBoundary, BC_A, TENANT } from "./utils/adsBoundary"
 
+test("区分冻结汇总和页指标时点，并如实显示投影等待", async ({ page }) => {
+  await adsBoundary(page, { projectionStatus: "BUILDING" })
+  await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await expect(page.getByTestId("report-query-times")).toContainText(
+    "顺序和汇总固定于",
+  )
+  await expect(
+    page.getByText("素材数据正在整理，尚未完成的金额暂不显示。"),
+  ).toBeVisible()
+})
+
+test("首次素材投影未完成不能显示没有匹配广告", async ({ page }) => {
+  await adsBoundary(page, {
+    projectionStatus: "BUILDING",
+    emptyRows: true,
+    total: 0,
+  })
+  await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await page.getByRole("tab", { name: "素材", exact: true }).click()
+  await expect(
+    page.getByText("素材数据正在整理，完成后显示查询结果。", { exact: true }),
+  ).toBeVisible()
+  await expect(page.getByText("没有匹配的广告", { exact: true })).toHaveCount(0)
+})
+
+test("空闲首屏自动重建快照的间隔不少于60秒", async ({ page }) => {
+  await page.clock.install()
+  const options = { lastSuccess: "2026-10-01T05:00:00Z" }
+  await adsBoundary(page, options)
+  let queries = 0
+  page.on("request", (request) => {
+    if (request.url().includes(`/api/tenants/${TENANT}/ads?`)) queries += 1
+  })
+  await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await expect(page.getByRole("heading", { name: "广告报表" })).toBeVisible()
+  await page.getByRole("tab", { name: "系列", exact: true }).click()
+  await expect(
+    page.getByText("嘉书-总裁归来-测试", { exact: true }),
+  ).toBeVisible()
+  const initial = queries
+  options.lastSuccess = "2026-10-01T05:01:00Z"
+  await page.clock.fastForward(30_000)
+  await expect(page.getByText("有新数据，点击加载")).toBeVisible()
+  expect(queries).toBe(initial)
+  await page.clock.fastForward(31_000)
+  await expect.poll(() => queries).toBe(initial + 1)
+})
+
+test("隐藏页停止轮询，勾选期间不自动替换快照", async ({ page }) => {
+  await page.clock.install()
+  const options = { lastSuccess: "2026-10-01T05:00:00Z" }
+  await adsBoundary(page, options)
+  let queries = 0
+  let polls = 0
+  page.on("request", (request) => {
+    if (request.url().includes(`/api/tenants/${TENANT}/ads?`)) queries += 1
+    if (request.url().includes("/ad-sync-status?")) polls += 1
+  })
+  await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await page.getByRole("checkbox", { name: "选择 甲账户" }).check()
+  const initial = queries
+  options.lastSuccess = "2026-10-01T05:01:00Z"
+  await page.clock.fastForward(61_000)
+  await expect(page.getByText("有新数据，点击加载")).toBeVisible()
+  expect(queries).toBe(initial)
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    })
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    })
+    document.dispatchEvent(new Event("visibilitychange"))
+  })
+  const beforeHidden = polls
+  await page.clock.fastForward(120_000)
+  expect(polls).toBe(beforeHidden)
+  expect(queries).toBe(initial)
+})
+
 test("报表状态提示且不再拼接 TikTok 后台链接", async ({ page }) => {
   await adsBoundary(page)
   await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
@@ -237,6 +319,8 @@ test("空闲页面后台发布自动更新汇总且同版本不循环刷新", as
   options.lastSuccess = "2026-10-05T05:01:00Z"
   options.reportSpend = "240"
   await page.clock.fastForward(31_000)
+  await expect(page.getByTestId("summary-spend")).toContainText("100.00")
+  await page.clock.fastForward(31_000)
   await expect(page.getByTestId("summary-spend")).toContainText("240.00")
   expect(requests.length).toBe(before + 1)
   expect(new URL(requests.at(-1)!).searchParams.get("snapshot_id")).toBeNull()
@@ -263,6 +347,7 @@ test("第一页勾选保留汇总，取消选择后自动加载已发布数据",
     page.getByRole("button", { name: "有新数据，点击加载" }),
   ).toBeVisible()
   await checkbox.uncheck()
+  await page.clock.fastForward(31_000)
   await expect(page.getByTestId("summary-spend")).toContainText("240.00")
 })
 
@@ -357,6 +442,7 @@ for (const busy of ["详情", "第二页"] as const) {
       ).toBeVisible()
       await page.getByRole("button", { name: "上一页" }).click()
     }
+    await page.clock.fastForward(31_000)
     await expect(page.getByTestId("summary-spend")).toContainText("240.00")
   })
 }

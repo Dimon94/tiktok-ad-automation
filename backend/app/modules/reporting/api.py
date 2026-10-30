@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -14,7 +15,7 @@ from typing import Annotated, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from redis import Redis, RedisError
 from sqlalchemy import bindparam, func, text
@@ -56,6 +57,7 @@ from app.modules.reporting.preferences import (
     update_view,
 )
 from app.modules.reporting.queries import query_ads
+from app.modules.reporting.query_reuse import QueryCancellation
 from app.modules.reporting.schemas import (
     AdMaterialSelectionRequest,
     AdsQueryPage,
@@ -159,7 +161,8 @@ def _context(
 
 
 @router.get("/ads", response_model=AdsQueryPage, name="query_ads")
-def query_ads_route(
+async def query_ads_route(
+    request: Request,
     tenant_id: UUID,
     session: SessionDep,
     user: CurrentUser,
@@ -190,7 +193,6 @@ def query_ads_route(
     cursor: Annotated[str | None, Query(max_length=8192)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> AdsQueryPage:
-    context = _context(session, user, tenant_id)
     # 默认日期必须按请求时刻计算；写在参数默认值里会固定为服务启动当天。
     today = date.today()
     filters = _filters(
@@ -217,19 +219,51 @@ def query_ads_route(
         sort_direction=sort_direction,
         include_empty=include_empty,
     )
-    result = query_ads(
-        session,
-        context=context,
-        bc_id=bc_id,
-        filters=filters,
-        snapshot_id=snapshot_id,
-        cursor=cursor,
-        limit=limit,
-    )
-    # SessionDep rolls back on request teardown; persist the local snapshot so a
-    # later cursor/selection request can read the same frozen rows.
-    session.commit()
-    return result
+    cancellation = QueryCancellation()
+
+    def execute_query():
+        context = _context(session, user, tenant_id)
+        result = query_ads(
+            session,
+            context=context,
+            bc_id=bc_id,
+            filters=filters,
+            snapshot_id=snapshot_id,
+            cursor=cursor,
+            limit=limit,
+            cancellation=cancellation,
+        )
+        session.commit()
+        return result
+
+    task = asyncio.create_task(asyncio.to_thread(execute_query))
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                from app.core.db import engine
+
+                await asyncio.to_thread(cancellation.cancel, engine)
+                break
+            await asyncio.wait({task}, timeout=0.1)
+        try:
+            result = await asyncio.shield(task)
+        except Exception:
+            if cancellation.event.is_set():
+                raise HTTPException(499, detail="query_cancelled") from None
+            raise
+        if cancellation.event.is_set():
+            raise HTTPException(499, detail="query_cancelled")
+        return result
+    except asyncio.CancelledError:
+        # 保持Session依赖存活直到执行线程退出，不能在SQL仍运行时把连接还给池。
+        from app.core.db import engine
+
+        await asyncio.to_thread(cancellation.cancel, engine)
+        try:
+            await asyncio.shield(task)
+        except Exception:
+            pass
+        raise
 
 
 @router.get(

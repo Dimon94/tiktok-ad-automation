@@ -48,7 +48,9 @@ def _job(session, seed, *, identifier, expired=True, pages=0):
     return job.id
 
 
-def test_job_pages_are_bounded_before_parent_deletion(session, sync_seed, monkeypatch):
+def test_job_pages_are_bounded_while_summary_stays_online(
+    session, sync_seed, monkeypatch
+):
     monkeypatch.setattr(job_tasks, "CLEANUP_BATCH_ROWS", 2, raising=False)
     old = _job(session, sync_seed, identifier=1, pages=5)
     active = _job(session, sync_seed, identifier=2, expired=False, pages=3)
@@ -68,7 +70,7 @@ def test_job_pages_are_bounded_before_parent_deletion(session, sync_seed, monkey
     job_tasks.cleanup_store(session, now=now)
     job_tasks.cleanup_store(session, now=now)
     session.expire_all()
-    assert session.get(ReportSyncJob, old) is None
+    assert session.get(ReportSyncJob, old) is not None
     assert (
         len(
             session.exec(
@@ -82,14 +84,18 @@ def test_job_pages_are_bounded_before_parent_deletion(session, sync_seed, monkey
 def test_bounded_scan_advances_past_live_jobs(session, sync_seed, monkeypatch):
     monkeypatch.setattr(job_tasks, "CLEANUP_SCAN_ROWS", 2, raising=False)
     for identifier in (10, 11, 12):
-        _job(session, sync_seed, identifier=identifier, expired=False)
-    old = _job(session, sync_seed, identifier=13)
+        _job(session, sync_seed, identifier=identifier, expired=False, pages=1)
+    old = _job(session, sync_seed, identifier=13, pages=1)
     cursors = {}
     now = datetime.now(UTC)
     for _ in range(4):
-        job_tasks.cleanup_store(session, now=now, categories=("jobs",), cursors=cursors)
+        job_tasks.cleanup_store(
+            session, now=now, categories=("material_pages",), cursors=cursors
+        )
     session.expire_all()
-    assert session.get(ReportSyncJob, old) is None
+    assert session.get(ReportSyncJob, old) is not None
+
+    assert session.get(ReportSyncPage, (old, 1)) is None
 
 
 def test_category_timeout_does_not_starve_other_cleanup(
@@ -136,15 +142,16 @@ def test_task_commits_each_category_before_later_failure(
 
     seed, factory = committed_sync_seed
     with factory() as session:
-        old = _job(session, seed, identifier=101)
+        old = _job(session, seed, identifier=101, pages=1)
         session.commit()
     original = job_tasks._cleanup_category
 
     def fail_later(session, *, category, **kwargs):
         if category == "hours":
-            # 本批失败之前，其他连接已能看见旧任务删除，不依赖最终统一提交。
+            # 本批失败之前，其他连接已能看见旧暂存页删除，不依赖最终统一提交。
             with factory() as observer:
-                assert observer.get(ReportSyncJob, old) is None
+                assert observer.get(ReportSyncPage, (old, 1)) is None
+                assert observer.get(ReportSyncJob, old) is not None
             raise RuntimeError("later category failed")
         return original(session, category=category, **kwargs)
 
@@ -153,7 +160,8 @@ def test_task_commits_each_category_before_later_failure(
     with pytest.raises(RuntimeError, match="later category failed"):
         job_tasks.cleanup_store_task.run()
     with factory() as observer:
-        assert observer.get(ReportSyncJob, old) is None
+        assert observer.get(ReportSyncPage, (old, 1)) is None
+        assert observer.get(ReportSyncJob, old) is not None
 
 
 def test_concurrent_task_does_not_advance_cleanup_cursor(redis_client, monkeypatch):
@@ -199,7 +207,7 @@ def test_locked_job_does_not_block_other_categories(committed_sync_seed):
                 cleaner, now=now, categories=("jobs", "snapshots"), cursors=cursors
             )
             cleaner.commit()
-        assert result == {"jobs": 1, "snapshots": 1}
+        assert result == {"jobs": 0, "snapshots": 1}
         assert cursors.get("jobs") is None
         with factory() as observer:
             assert observer.get(QuerySnapshot, snapshot_id) is None
@@ -209,7 +217,7 @@ def test_locked_job_does_not_block_other_categories(committed_sync_seed):
             job_tasks.cleanup_store(
                 cleaner, now=now, categories=("jobs",), cursors=cursors
             )["jobs"]
-            == 1
+            == 0
         )
         cleaner.commit()
 
@@ -234,7 +242,7 @@ def test_terminal_cleanup_never_deletes_active_job_with_old_finished_at(
     )
 
 
-def test_task_drains_multiple_job_batches_and_persists_cursor(
+def test_task_keeps_large_summary_history_for_archive(
     committed_sync_seed, monkeypatch, redis_client, record_property
 ):
     import os
@@ -259,15 +267,20 @@ def test_task_drains_multiple_job_batches_and_persists_cursor(
     try:
         result = job_tasks.cleanup_store_task.run()
         elapsed = time.monotonic() - started
-        assert result["jobs"] == 10000
+        assert result["jobs"] == 0
         assert 0 < redis_client.ttl(cursor_key) <= 7 * 24 * 3600
         with factory() as observer:
-            assert not observer.exec(
-                select(ReportSyncJob.id).where(
-                    ReportSyncJob.tenant_id == seed.tenant_id
+            assert (
+                len(
+                    observer.exec(
+                        select(ReportSyncJob.id).where(
+                            ReportSyncJob.tenant_id == seed.tenant_id
+                        )
+                    ).all()
                 )
-            ).all()
-        record_property("cleanup_10000_jobs_seconds", round(elapsed, 3))
+                == 10000
+            )
+        record_property("retention_10000_jobs_seconds", round(elapsed, 3))
     finally:
         redis_client.delete(cursor_key)
 
@@ -323,9 +336,7 @@ def _hour_rows(session, seed, *, now, include_boundary=False):
     session.flush()
 
 
-def test_hour_cleanup_resumes_composite_cursor_and_preserves_retention(
-    session, sync_seed, monkeypatch
-):
+def test_hour_cleanup_keeps_all_ages_and_timezone(session, sync_seed, monkeypatch):
     from app.modules.reporting.store_models import CampaignReportHour
 
     now = datetime.now(UTC)
@@ -339,8 +350,7 @@ def test_hour_cleanup_resumes_composite_cursor_and_preserves_retention(
         )["hours"]
         for _ in range(8)
     ]
-    assert sum(removed) == 2
-    assert max(removed) == 1
+    assert removed == [0] * 8
     remaining = session.exec(
         select(CampaignReportHour).where(
             CampaignReportHour.tenant_id == sync_seed.tenant_id
@@ -351,13 +361,15 @@ def test_hour_cleanup_resumes_composite_cursor_and_preserves_retention(
         "recent-1",
         "recent-2",
         "boundary",
+        "expired-0",
+        "expired-1",
     }
     boundary = next(row for row in remaining if row.campaign_id == "boundary")
     assert boundary.stat_hour == now - timedelta(days=30)
     assert boundary.stat_hour.utcoffset() is not None
 
 
-def test_hour_cleanup_restores_redis_cursor_across_task_invocations(
+def test_legacy_hour_cursor_never_resumes_fact_deletion(
     committed_sync_seed, redis_client, monkeypatch
 ):
     import json
@@ -376,15 +388,16 @@ def test_hour_cleanup_restores_redis_cursor_across_task_invocations(
     monkeypatch.setattr(job_tasks, "DIRECTORY_PAGE_CLEANUP_SECONDS", 0)
     monkeypatch.setattr(job_tasks, "CLEANUP_SCAN_ROWS", 2)
     monkeypatch.setattr(job_tasks, "CLEANUP_BATCH_ROWS", 1)
+    # 升级前残留的复合游标不能使新消费者恢复30天事实删除。
+    redis_client.hset(
+        cursor_key,
+        "hours",
+        json.dumps(
+            [str(seed.tenant_id), "acc-1", datetime.now(UTC).isoformat(), "recent-1"]
+        ),
+    )
     try:
-        assert job_tasks.cleanup_store_task.run()["hours"] == 0
-        cursor = json.loads(redis_client.hget(cursor_key, "hours"))
-        assert cursor[1] == "acc-1"
-        assert datetime.fromisoformat(cursor[2]).utcoffset() is not None
-        # 每次调用新建 Session，并重新读取真实 Redis，不借用上次内存状态。
-        assert job_tasks.cleanup_store_task.run()["hours"] == 1
-        assert job_tasks.cleanup_store_task.run()["hours"] == 1
-        for _ in range(3):
+        for _ in range(5):
             assert job_tasks.cleanup_store_task.run()["hours"] == 0
         with factory() as observer:
             assert set(
@@ -393,6 +406,6 @@ def test_hour_cleanup_restores_redis_cursor_across_task_invocations(
                         CampaignReportHour.tenant_id == seed.tenant_id
                     )
                 ).all()
-            ) == {"recent-0", "recent-1", "recent-2"}
+            ) == {"recent-0", "recent-1", "recent-2", "expired-0", "expired-1"}
     finally:
         redis_client.delete(cursor_key)

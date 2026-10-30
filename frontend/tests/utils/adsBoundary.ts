@@ -11,6 +11,8 @@ export const ADVERTISER = "adv-1"
 const token = "ads-workspace-test-token"
 
 export type AdsBoundaryOptions = {
+  emptyRows?: boolean
+  projectionStatus?: "CURRENT" | "STALE" | "BUILDING"
   lastSuccess?: string
   reportSpend?: string
   syncAccounts?: Array<{
@@ -269,6 +271,7 @@ export async function adsBoundary(
         json: {
           snapshot: {
             snapshot_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            snapshot_at: "2026-10-01T05:00:00Z",
             expires_at: "2099-01-01T00:00:00Z",
             filters: {
               dimension: dimension ?? "campaign",
@@ -277,6 +280,9 @@ export async function adsBoundary(
             },
             publication_versions: {},
           },
+          metrics_observed_at: "2026-10-01T05:05:00Z",
+          ordering_basis: "snapshot",
+          metrics_coverage: { status: options.projectionStatus ?? "CURRENT" },
           items: [
             {
               row_key: `${bc}-campaign-1`,
@@ -417,7 +423,7 @@ export async function adsBoundary(
                 updated_at: "2026-10-01T00:00:00Z",
               },
             },
-          ],
+          ].filter(() => !options.emptyRows),
           total: options.total ?? 1,
           summary: {
             row_count: 1,

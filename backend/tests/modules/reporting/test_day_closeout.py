@@ -9,7 +9,7 @@ import pytest
 from sqlmodel import select
 
 from app.modules.reporting import job_tasks, planner
-from app.modules.reporting.jobs import claim_jobs, enqueue_job, execute_job
+from app.modules.reporting.jobs import enqueue_job, execute_job
 from app.modules.reporting.lanes import report_workload
 from app.modules.reporting.store_models import (
     AdReportDay,
@@ -18,6 +18,7 @@ from app.modules.reporting.store_models import (
     ReportSyncJob,
     ReportSyncState,
 )
+from tests.modules.reporting.claiming import claim_jobs
 
 NOW = datetime(2026, 10, 21, 16, 1, tzinfo=UTC)
 
@@ -147,10 +148,19 @@ def test_closeout_is_planned_by_due_hot_even_without_today_activity(
         assert all(j.start_date == NOW.date() for j in jobs)  # 香港已经进入次日。
 
 
-def test_closeout_capacity_does_not_consume_today_slots(
+def test_closeout_leaves_available_physical_capacity_for_today(
     session, sync_seed, monkeypatch
 ):
     from app.modules.reporting.jobs import LEASE
+    from app.modules.sync_control import report_demand
+
+    class PlanningClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    # 该用例模拟香港零点；任务分类也必须观察同一时钟，不能用执行测试当天分类旧日。
+    monkeypatch.setattr(report_demand, "datetime", PlanningClock)
 
     plan = plan_for(session, sync_seed)
     seed_yesterday(session, sync_seed)
@@ -169,9 +179,11 @@ def test_closeout_capacity_does_not_consume_today_slots(
         start=today,
         end=today,
         due_at=NOW,
+        requested_at=NOW,
         **planner._common(plan),
     )
-    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 1)
+    # 统一物理窗口包括已有closeout；仍有一槽时当天任务必须取得进展。
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", len(closeouts) + 1)
     assert job_tasks._dispatch_report_jobs(session, NOW, allow_backfill=False) == 1
     session.refresh(session.get(ReportSyncJob, live_id))
     assert session.get(ReportSyncJob, live_id).status == "RUNNING"
@@ -189,9 +201,7 @@ def test_closeout_publishes_success_and_daily_refresh_can_replace_it(
         plan = plan_for(session, seed, now)
         day, midnight = seed_yesterday(session, seed, now=now, advertiser="acc-2")
         planner.plan_day_closeout(session, plan, now=now)
-        claimed = claim_jobs(
-            session, now=now + timedelta(seconds=1), limit=10, lane="closeout"
-        )
+        claimed = claim_jobs(session, now=now + timedelta(seconds=1), limit=10)
         assert len(claimed) == 2
 
     class Reader:
@@ -246,8 +256,8 @@ def test_closeout_publishes_success_and_daily_refresh_can_replace_it(
 
 def test_pre_midnight_hot_job_does_not_swallow_closeout(session, sync_seed):
     plan = plan_for(session, sync_seed)
-    day, _ = seed_yesterday(session, sync_seed)
-    enqueue_job(
+    day, midnight = seed_yesterday(session, sync_seed)
+    old_id = enqueue_job(
         session,
         kind="ad_day",
         tier="hot",
@@ -255,13 +265,23 @@ def test_pre_midnight_hot_job_does_not_swallow_closeout(session, sync_seed):
         start=day,
         end=day,
         due_at=NOW - timedelta(minutes=10),
+        requested_at=NOW - timedelta(minutes=10),
         **planner._common(plan),
     )
-    assert planner.plan_day_closeout(session, plan, now=NOW) == 2
+    # 未开始的同范围ad任务可以承接更晚收尾需求；新增material任务，不能靠重复job证明覆盖。
+    assert planner.plan_day_closeout(session, plan, now=NOW) == 1
+    from app.modules.sync_control.models import SyncExecutionScope
+
+    children = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == old_id)
+    ).all()
+    assert children and all(
+        child.frozen_requested_after >= midnight for child in children
+    )
     assert (
         planner.plan_day_closeout(session, plan, now=NOW + timedelta(minutes=15)) == 0
     )
-    claimed = claim_jobs(session, now=NOW, limit=10, lane="closeout")
+    claimed = claim_jobs(session, now=NOW, limit=10)
     assert len(claimed) == 2
 
 

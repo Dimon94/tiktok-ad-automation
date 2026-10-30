@@ -7,12 +7,13 @@ from sqlmodel import select
 
 from app.integrations.tiktok.contracts.report_reader import RawReportPage
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
-from app.modules.reporting.jobs import claim_jobs, enqueue_job, execute_job
+from app.modules.reporting.jobs import enqueue_job, execute_job
 from app.modules.reporting.store_models import (
     AdReportDay,
     ReportSyncJob,
     ReportSyncPage,
 )
+from tests.modules.reporting.claiming import claim_jobs
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.test_jobs import D, _route
 
@@ -56,7 +57,9 @@ def test_admission_after_first_page_resumes_second_without_repeating_remote_read
         == "WAITING"
     )
     with factory() as session:
-        assert not session.exec(select(AdReportDay)).all()
+        assert not session.exec(
+            select(AdReportDay).where(AdReportDay.tenant_id == seed.tenant_id)
+        ).all()
         assert (
             len(
                 session.exec(
@@ -78,7 +81,12 @@ def test_admission_after_first_page_resumes_second_without_repeating_remote_read
     )
     assert reader.calls == [1, 2, 2]
     with factory() as session:
-        assert {r.ad_id for r in session.exec(select(AdReportDay)).all()} == {
+        assert {
+            r.ad_id
+            for r in session.exec(
+                select(AdReportDay).where(AdReportDay.tenant_id == seed.tenant_id)
+            ).all()
+        } == {
             "a1",
             "a2",
         }
@@ -148,7 +156,9 @@ def test_changed_snapshot_restarts_and_changed_scope_never_reuses_pages(
     assert result == ("FAILED" if change in {"scope", "duplicate"} else "WAITING")
     with factory() as session:
         job = session.get(ReportSyncJob, job_id)
-        assert not session.exec(select(AdReportDay)).all()
+        assert not session.exec(
+            select(AdReportDay).where(AdReportDay.tenant_id == seed.tenant_id)
+        ).all()
         assert job.error_code == (
             "report_query_invalid"
             if change == "scope"
@@ -175,7 +185,16 @@ def test_changed_snapshot_restarts_and_changed_scope_never_reuses_pages(
         )
         assert reader.calls == [1, 2, 2, 1, 2]
         with factory() as session:
-            assert len(session.exec(select(AdReportDay)).all()) == 2
+            assert (
+                len(
+                    session.exec(
+                        select(AdReportDay).where(
+                            AdReportDay.tenant_id == seed.tenant_id
+                        )
+                    ).all()
+                )
+                == 2
+            )
 
 
 def test_campaign_split_resumes_without_repeating_discovery_or_prior_batch(
@@ -233,7 +252,9 @@ def test_campaign_split_resumes_without_repeating_discovery_or_prior_batch(
     )
     before = len(reader.calls)
     with factory() as session:
-        assert not session.exec(select(AdReportDay)).all()
+        assert not session.exec(
+            select(AdReportDay).where(AdReportDay.tenant_id == seed.tenant_id)
+        ).all()
         token = claim_jobs(
             session, now=datetime.now(UTC) + timedelta(seconds=2), limit=1
         )[0].claim_token
@@ -245,5 +266,12 @@ def test_campaign_split_resumes_without_repeating_discovery_or_prior_batch(
     )
     assert reader.calls[before:] == [("c30",)]
     with factory() as session:
-        assert len(session.exec(select(AdReportDay)).all()) == 31
+        assert (
+            len(
+                session.exec(
+                    select(AdReportDay).where(AdReportDay.tenant_id == seed.tenant_id)
+                ).all()
+            )
+            == 31
+        )
         assert not session.exec(select(ReportSyncPage)).all()

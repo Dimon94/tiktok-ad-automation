@@ -46,6 +46,7 @@ from app.modules.reporting.store_models import (
     ReportSyncHealth,
     ReportSyncHealthEvent,
 )
+from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 from app.modules.tenants.permissions import require_tenant
 
 logger = logging.getLogger(__name__)
@@ -901,11 +902,12 @@ def _repair_health(session, plan, row, repairs, now, *, screen_unknown=False):
     if count:
         row.last_repair_at = now
     # 调度唤醒与恢复计划同事务，不发外部广告操作、不篡改上次成功时间。
-    enqueue_after_commit(
+    enqueue_sync_dispatch(
         session,
         context=TenantContext(plan.tenant_id, plan.actor_id, "operator"),
+        now=now,
         task_name="reporting.plan_due",
-        task_key=f"sync-health:{plan.bc_id}:{now.replace(second=0, microsecond=0).isoformat()}",
+        task_key=f"sync-directory-wake:health:{plan.bc_id}:{now.replace(second=0, microsecond=0).isoformat()}",
         payload={"dispatch_only": True},
     )
 

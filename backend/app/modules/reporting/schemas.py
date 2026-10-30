@@ -171,6 +171,7 @@ class QuerySnapshotPublic(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     snapshot_id: UUID
+    snapshot_at: datetime
     expires_at: datetime
     filters: ReportingFilter
     publication_versions: dict[str, int] = Field(default_factory=dict)
@@ -185,6 +186,9 @@ class AdsQueryPage(BaseModel):
     summary: dict[str, object] = Field(default_factory=dict)
     coverage: dict[str, object] = Field(default_factory=dict)
     next_cursor: str | None = None
+    metrics_observed_at: datetime | None = None
+    ordering_basis: Literal["snapshot"] = "snapshot"
+    metrics_coverage: dict[str, object] = Field(default_factory=dict)
 
 
 class SelectionRequest(BaseModel):

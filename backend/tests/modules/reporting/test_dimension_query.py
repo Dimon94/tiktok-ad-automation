@@ -3,9 +3,9 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
-from app.modules.reporting.dimension_query import build_rows
 from app.modules.reporting.publish import AccountMeta, publish_ad_day
 from app.modules.reporting.schemas import ReportingFilter
+from tests.modules.reporting.query_helpers import build_rows
 from tests.modules.reporting.sync_conftest import ad_row
 
 D = date(2026, 10, 5)

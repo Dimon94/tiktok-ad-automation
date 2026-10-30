@@ -223,9 +223,19 @@ def _eligible(state, phase, plan, now, allow_backfill, accounts):
 
 
 def _execute(
-    session, plan, state, phase, accounts, now, database_engine, redis_client, budget
+    session,
+    plan,
+    state,
+    phase,
+    accounts,
+    now,
+    database_engine,
+    redis_client,
+    budget,
 ):
     from app.modules.reporting import job_tasks
+
+    del database_engine  # 平台读取由plan_step在此事务退出后执行。
 
     if phase == "directory":
         before = plan.screening_progress.get("directory_cycle_v1", {}).get("after", "")
@@ -242,15 +252,11 @@ def _execute(
         days = 1 if phase == "screen_hot" else 32
         counted = None
         try:
-            with job_tasks._reader_for(
-                database_engine=database_engine,
-                redis_client=redis_client,
-                plan=plan,
-                deadline=datetime.now(UTC) + timedelta(seconds=budget),
-            ) as reader:
-                if reader is None:
-                    plan.enabled, plan.disabled_reason = False, "api_binding_required"
-                    return
+            from contextlib import nullcontext
+
+            from app.modules.sync_control.screening import ScreeningReader
+
+            with nullcontext(ScreeningReader(plan)) as reader:
                 counted = _CountingReader(reader)
                 try:
                     active = job_tasks._active(
@@ -400,7 +406,7 @@ def _finish_phase(plan, state, now, timezones, valid_accounts):
     _save(plan, state)
 
 
-def plan_step(
+def _plan_step(
     database_engine,
     redis_client,
     key,
@@ -426,6 +432,19 @@ def plan_step(
         ).one_or_none()
         if plan is None or not plan.enabled:
             return False
+        from app.core.context import TenantContext
+        from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
+        from app.modules.accounts.routing import verify_route
+
+        verify_route(
+            session,
+            context=TenantContext(
+                tenant_id=plan.tenant_id, actor_id=plan.actor_id, role="operator"
+            ),
+            route=FrozenTikTokRoute.model_validate(plan.frozen_route),
+            advertiser_id=None,
+            capability="read",
+        )
         previous = plan.screening_progress.get(KEY, {})
         if (
             previous.get("retry_at")
@@ -655,6 +674,47 @@ def plan_step(
         budget,
     )
     return True
+
+
+def plan_step(database_engine, redis_client, key, **options):
+    from app.modules.reporting import job_tasks
+    from app.modules.sync_control.screening import (
+        ScreeningReadRequired,
+        screening_responses,
+    )
+
+    responses = {}
+    try:
+        with screening_responses(responses):
+            return _plan_step(database_engine, redis_client, key, **options)
+    except ScreeningReadRequired as request:
+        # 原阶段全部回滚退出；没有业务session/行锁跨过SDK请求。
+        counted = None
+        try:
+            with job_tasks._reader_for(
+                database_engine=database_engine,
+                redis_client=redis_client,
+                plan=request.plan,
+                deadline=datetime.now(UTC)
+                + timedelta(seconds=max(1, options.get("budget", 8) - 0.2)),
+            ) as reader:
+                if reader is None:
+                    return False
+                counted = _CountingReader(reader)
+                response = getattr(counted, request.method)(**request.arguments)
+        except (DomainError, AccountAdmissionDeferred) as error:
+            # 网关建立同样可能额度退避；回放进原阶段保存筛查退避，仍让已知活跃需求继续。
+            response = error
+        finally:
+            if counted is not None:
+                planner.record_calls(redis_client, options["now"], counted.count)
+        responses[request.fingerprint] = response
+    try:
+        # 重新锁计划、重算同一phase；状态或冻结授权改变会生成不同指纹，旧回包作废。
+        with screening_responses(responses):
+            return _plan_step(database_engine, redis_client, key, **options)
+    except ScreeningReadRequired:
+        return False
 
 
 def run_plan(

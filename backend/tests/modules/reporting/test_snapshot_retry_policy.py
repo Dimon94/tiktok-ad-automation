@@ -115,15 +115,47 @@ def test_snapshot_retry_delay_uses_actual_local_day_only(
 def test_exhausted_today_snapshot_allows_new_periodic_job(committed_sync_seed):
     seed, factory = committed_sync_seed
     original = enqueue(factory, seed, start=LOCAL_TODAY, end=LOCAL_TODAY)
-    with factory() as session:
-        job = session.get(ReportSyncJob, original.id)
-        error = DomainError("report_snapshot_changed", "synthetic")
-        for _ in range(5):
-            assert jobs._handle_error(session, job, error) == "WAITING"
-        assert jobs._handle_error(session, job, error) == "FAILED"
-        session.commit()
+    from sqlmodel import select
+
+    from app.modules.sync_control.models import (
+        SyncExecutionScope,
+        SyncRequirement,
+        SyncSchedule,
+    )
+    from tests.modules.reporting.test_material_resume import claim
+
+    class ChangingReader:
+        def material_day(self, **_kwargs):
+            raise DomainError("report_snapshot_changed", "synthetic")
+
+    current = original
+    for attempt in range(6):
+        assert jobs.execute_job(
+            factory,
+            job_id=current.id,
+            claim_token=current.claim_token,
+            reader=ChangingReader(),
+        ) == ("FAILED" if attempt == 5 else "WAITING")
+        if attempt < 5:
+            current = claim(factory, original.id)
     replacement = enqueue(factory, seed, start=LOCAL_TODAY, end=LOCAL_TODAY)
     assert replacement.id != original.id and replacement.attempts == 0
+    with factory() as session:
+        failed = session.get(ReportSyncJob, original.id)
+        assert failed.status == "FAILED" and failed.attempts == 5
+        assert failed.claim_token is None and failed.claimed_until is None
+        old_child = session.exec(
+            select(SyncExecutionScope).where(
+                SyncExecutionScope.report_job_id == original.id
+            )
+        ).one()
+        assert old_child.status == "SUPERSEDED"
+        requirement = session.get(SyncRequirement, old_child.requirement_id)
+        assert requirement.desired_revision > old_child.frozen_revision
+        head = session.exec(
+            select(SyncSchedule).where(SyncSchedule.scope_id == old_child.scope_id)
+        ).one()
+        assert head.active and head.lease_execution_id == replacement.id
 
 
 @pytest.mark.usefixtures("retry_clock")

@@ -1,5 +1,9 @@
 """领取前重新评估尚未开始的目录，既有分页与消息身份不参与降频。"""
 
+from datetime import datetime
+
+from sqlmodel import Session
+
 from app.modules.ads.directory_calibration import (
     PERIODIC_KEY,
     calibration_interval,
@@ -7,10 +11,13 @@ from app.modules.ads.directory_calibration import (
     unstarted_without_delivery,
 )
 from app.modules.ads.sync import directory_run_superseded
+from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.reporting.store_models import AdSyncBc
 
 
-def review_unstarted_directory(session, run, now):
+def review_unstarted_directory(
+    session: Session, run: AdDirectoryRun, now: datetime
+) -> bool:
     """返回 True 表示本轮不派发；所有状态修改由调用方同一领取事务提交。"""
     if run.query.get("ids") or run.query.get("parent_ids"):
         return False

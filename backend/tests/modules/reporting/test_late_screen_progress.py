@@ -50,14 +50,34 @@ def _seed(factory, seed, accounts, now, *, after, covered, done, advanced):
 
 
 def _run(factory, seed, accounts, now, phase, redis_client):
-    with factory() as session, session.begin():
-        plan = session.get(AdSyncBc, (seed.tenant_id, "bc-a"))
-        state = deepcopy(plan.screening_progress[steps.KEY])
-        steps._execute(
-            session, plan, state, phase, accounts, now, engine, redis_client, 8
-        )
-        steps._save(plan, state)
-        return state
+    from app.modules.sync_control.screening import (
+        ScreeningReadRequired,
+        screening_responses,
+    )
+
+    responses = {}
+    for _ in range(2):
+        try:
+            with screening_responses(responses), factory() as session, session.begin():
+                plan = session.get(AdSyncBc, (seed.tenant_id, "bc-a"))
+                state = deepcopy(plan.screening_progress[steps.KEY])
+                steps._execute(
+                    session, plan, state, phase, accounts, now, engine, redis_client, 8
+                )
+                steps._save(plan, state)
+                return state
+        except ScreeningReadRequired as request:
+            # 和正式plan_step一样，完整退出业务事务后读取，再凭指纹重放。
+            with job_tasks._reader_for(
+                database_engine=engine,
+                redis_client=redis_client,
+                plan=request.plan,
+                deadline=now + timedelta(seconds=8),
+            ) as reader:
+                responses[request.fingerprint] = getattr(reader, request.method)(
+                    **request.arguments
+                )
+    raise AssertionError("冻结筛查响应未在第二次事务被消费")
 
 
 def _reader(monkeypatch, active):

@@ -43,6 +43,9 @@ celery_app.conf.update(
         "app.modules.reporting.job_tasks",
         "app.modules.reporting.health",
         "app.modules.reporting.balance_tasks",
+        "app.modules.reporting.read_models.tasks",
+        "app.modules.sync_control.tasks",
+        "app.modules.sync_control.archive_tasks",
         "app.modules.reporting.export_tasks",
         "app.modules.ad_management.tasks",
         "app.modules.ad_management.submissions",
@@ -70,6 +73,8 @@ celery_app.conf.update(
         "jobs.flush_dispatch": {"queue": "builds", "priority": 0},
         "jobs.compact_dispatches": {"queue": "control"},
         "reporting.plan_due": {"queue": "control"},
+        "sync_control.dispatch": {"queue": "control"},
+        "sync.archive_runs": {"queue": "control", "priority": 9},
         "reporting.plan_continue": {"queue": "control"},
         "reporting.check_health": {"queue": "control"},
         "reporting.check_bc_health": {"queue": "control"},
@@ -77,6 +82,7 @@ celery_app.conf.update(
         "reporting.backfill_step": {"queue": "ads-backfill"},
         "reporting.plan_balances": {"queue": "control"},
         "reporting.balance_step": {"queue": "ads-directory"},
+        "reporting.project_read_models": {"queue": "ads-publish"},
         "reporting.cleanup_store": {"queue": "ads-reporting"},
         "ads.sync_step": {"queue": "ads-directory"},
         "ads.publish_step": {"queue": "ads-publish"},
@@ -93,6 +99,23 @@ celery_app.conf.update(
         "automation.send_summary": {"queue": "control"},
     },
     beat_schedule={
+        # 冷审计最多占一个control进程；过期唤醒不堆积，未配置私有桶时不删除源。
+        "archive-terminal-sync-runs": {
+            "task": "sync.archive_runs",
+            "schedule": 5.0,
+            "kwargs": {"max_runs": 5, "time_budget_seconds": 3},
+            "options": {"queue": "control", "priority": 9, "expires": 4.0},
+        },
+        "dispatch-due-sync-heads": {
+            "task": "sync_control.dispatch",
+            "schedule": 1.0,
+            "options": {"queue": "control"},
+        },
+        "project-report-read-models": {
+            "task": "reporting.project_read_models",
+            "schedule": 5.0,
+            "options": {"queue": "ads-publish"},
+        },
         "recover-material-production": {
             "task": "material_production.recover",
             "schedule": 60.0,
@@ -105,7 +128,8 @@ celery_app.conf.update(
         },
         "compact-published-dispatches": {
             "task": "jobs.compact_dispatches",
-            "schedule": 3600.0,
+            "schedule": 60.0,
+            "kwargs": {"limit": 5000},
             "options": {"queue": "control"},
         },
         "repair-source-cover-starts": {
@@ -268,6 +292,10 @@ celery_app.conf.update(
 )
 
 # 周期消息只负责唤醒持久状态扫描；过期 tick 不应挤占新的业务调度。
-# 业务 outbox 消息不设置 expires，积压或重启后仍必须执行/核查原操作。
+# 广告写入 outbox不套周期TTL；V2同步outbox独立遵循持久消息寿命合同。
+# 已显式设置的更短周期寿命应保留，不能被默认schedule覆盖。
 for periodic_entry in celery_app.conf.beat_schedule.values():
-    periodic_entry["options"]["expires"] = periodic_entry["schedule"]
+    periodic_entry["options"]["expires"] = min(
+        periodic_entry["schedule"],
+        periodic_entry["options"].get("expires", periodic_entry["schedule"]),
+    )

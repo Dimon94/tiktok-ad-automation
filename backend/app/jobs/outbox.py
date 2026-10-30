@@ -118,10 +118,14 @@ def enqueue_after_commit(
     task_name: str,
     task_key: str,
     payload: dict[str, Any],
+    _sync_contract: bool = False,
 ) -> UUID:
     """Write in the caller's transaction. Never commit or publish here."""
     return enqueue_many_after_commit(
-        session, context=context, entries=[(task_name, task_key, payload, None)]
+        session,
+        context=context,
+        entries=[(task_name, task_key, payload, None)],
+        _sync_contract=_sync_contract,
     )[0]
 
 
@@ -130,6 +134,7 @@ def enqueue_many_after_commit(
     *,
     context: TenantContext,
     entries: list[tuple[str, str, dict[str, Any], datetime | None]],
+    _sync_contract: bool = False,
 ) -> list[UUID]:
     """同一事务内批量写入 (task_name, task_key, payload, available_at)，按输入顺序返回 ID。
 
@@ -145,6 +150,21 @@ def enqueue_many_after_commit(
         payload = validate_dispatch_payload(payload)
         if not isinstance(task_key, str) or not task_key.strip() or len(task_key) > 255:
             raise DomainError("dispatch_payload_invalid", "任务标识无效")
+        if not _sync_contract:
+            from app.modules.sync_control.dispatch_envelope import (
+                legacy_enqueue_allowed,
+            )
+
+            if not legacy_enqueue_allowed(
+                session,
+                context=context,
+                task_name=task_name,
+                task_key=task_key,
+                payload=payload,
+            ):
+                raise DomainError(
+                    "dispatch_payload_invalid", "V2同步必须由canonical领取签发消息"
+                )
         rows.append(
             {
                 "id": uuid4(),
@@ -210,6 +230,14 @@ def compact_published_dispatches(
         raise ValueError("Dispatch compaction limit must be between 1 and 5000")
     if type(retention_days) is not int or retention_days < 7:
         raise ValueError("Dispatch retention must be at least seven days")
+    from app.modules.sync_control.retention import compact_sync_dispatches
+
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    sync_compacted = compact_sync_dispatches(
+        session, limit=max(1, limit // 2), cutoff=cutoff
+    )
+    if sync_compacted == limit:
+        return sync_compacted
     # 延迟导入避免 outbox 与构建模型在应用启动时形成环；只有会在结算后清空
     # dispatch_id 的两类高频消息可压缩，素材核查消息仍保留完整恢复参数。
     from app.modules.builds.execution_models import ExecutionStep, SubmissionUnit
@@ -242,7 +270,7 @@ def compact_published_dispatches(
             ),
         )
         .order_by(col(PendingDispatch.published_at), col(PendingDispatch.id))
-        .limit(limit)
+        .limit(limit - sync_compacted)
         .with_for_update(skip_locked=True)
     ).all()
     now = datetime.now(UTC)
@@ -251,7 +279,7 @@ def compact_published_dispatches(
         row.payload = {}
         row.compacted_at = now
     session.flush()
-    return len(rows)
+    return sync_compacted + len(rows)
 
 
 def _candidate_tenants(
@@ -262,6 +290,12 @@ def _candidate_tenants(
         .where(
             PendingDispatch.tenant_id == col(DispatchTenantCursor.tenant_id),
             col(PendingDispatch.published_at).is_(None),
+            col(PendingDispatch.superseded_at).is_(None),
+            col(PendingDispatch.retired_at).is_(None),
+            or_(
+                col(PendingDispatch.valid_until).is_(None),
+                col(PendingDispatch.valid_until) > now,
+            ),
             col(PendingDispatch.available_at) <= now,
         )
         .exists()
@@ -324,6 +358,12 @@ def flush_dispatch(limit: int = 100) -> int:
                 .where(
                     PendingDispatch.tenant_id == cursor.tenant_id,
                     col(PendingDispatch.published_at).is_(None),
+                    col(PendingDispatch.superseded_at).is_(None),
+                    col(PendingDispatch.retired_at).is_(None),
+                    or_(
+                        col(PendingDispatch.valid_until).is_(None),
+                        col(PendingDispatch.valid_until) > now,
+                    ),
                     col(PendingDispatch.available_at) <= now,
                 )
                 .order_by(col(PendingDispatch.available_at), col(PendingDispatch.id))
@@ -359,6 +399,13 @@ def flush_dispatch(limit: int = 100) -> int:
                         "actor_id": str(record.actor_id),
                         "payload": payload,
                     }
+                    from app.modules.sync_control.dispatch_envelope import (
+                        dispatch_envelope,
+                    )
+
+                    envelope = dispatch_envelope(record)
+                    if envelope is not None:
+                        kwargs["dispatch"] = envelope
                     if not queued.contains(
                         queue=queue,
                         name=record.task_name,
@@ -371,6 +418,11 @@ def flush_dispatch(limit: int = 100) -> int:
                             kwargs=kwargs,
                             task_id=str(record.id),
                             queue=queue,
+                            **(
+                                {"expires": record.valid_until}
+                                if envelope is not None
+                                else {}
+                            ),
                             headers={
                                 "diagnostic_due_at": record.available_at.timestamp()
                             },

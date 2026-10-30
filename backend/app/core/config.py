@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     OBJECT_STORAGE_PROVIDER: Literal["s3", "r2"] = "s3"
     S3_ENDPOINT_URL: str = ""
     S3_BUCKET: str = ""
+    # 运行审计必须显式选择独立私有桶；不能继承可能公开分发素材的默认桶。
+    SYNC_ARCHIVE_BUCKET: str = ""
     S3_REGION: str = "us-east-1"
     S3_ACCESS_KEY_ID: str = Field(default="", repr=False)
     S3_SECRET_ACCESS_KEY: str = Field(default="", repr=False)

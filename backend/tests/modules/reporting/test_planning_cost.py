@@ -121,13 +121,7 @@ def test_4859_account_phase_reads_metadata_once(committed_sync_seed, redis_clien
     inspected = []
 
     def explain(conn, _cursor, statement, parameters, *_):
-        if (
-            (
-                statement.startswith("SELECT ad_sync_account.advertiser_id")
-                and "JOIN" in statement
-            )
-            or "WITH planning_owned AS MATERIALIZED" in statement
-        ) and not inspected:
+        if "/* planning_owned_metadata */" in statement and not inspected:
             inspected.append(True)
             tree = conn.exec_driver_sql(
                 "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) " + statement, parameters
@@ -148,14 +142,10 @@ def test_4859_account_phase_reads_metadata_once(committed_sync_seed, redis_clien
             visit(tree)
 
     def count(_conn, cursor, statement, *_):
-        if (
-            "WITH planning_owned AS MATERIALIZED" in statement
-            and not statement.startswith("EXPLAIN")
-        ) or statement.startswith(
-            (
-                "SELECT ad_sync_account.advertiser_id",
-                "SELECT advertiser_account.advertiser_id, advertiser_account.timezone",
-            )
+        # 归属集合和元数据已分成两条窄查询；本断言追踪实际元数据读取，
+        # 不能继续匹配旧CTE而把归属行数冒充时区查询成本。
+        if "/* planning_owned_metadata */" in statement and not statement.startswith(
+            "EXPLAIN"
         ):
             rows.append(cursor.rowcount)
 

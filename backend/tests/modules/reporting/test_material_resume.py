@@ -18,6 +18,7 @@ from app.modules.reporting.store_models import (
     ReportSyncPage,
     ReportSyncState,
 )
+from tests.modules.reporting.claiming import claim_jobs
 from tests.modules.reporting.test_jobs import _route
 
 DAY = date(2026, 10, 5)
@@ -36,7 +37,7 @@ def row(index, *, day=DAY, spend="1", advertiser="acc-1"):
         "dimensions": {
             "stat_time_day": str(day),
             "main_material_id": f"m{index}",
-            "main_material_type": "VIDEO",
+            "main_material_type": "VIDEO_SPARK_ADS",
         },
         "metrics": {"advertiser_id": advertiser, "spend": spend},
     }
@@ -74,13 +75,51 @@ def enqueue(factory, seed, *, start=DAY, end=DAY):
     return claim(factory, job_id)
 
 
+def add_third_account(session, seed):
+    from app.modules.accounts.models import AdvertiserAccount
+
+    session.add(
+        AdvertiserAccount(
+            tenant_id=seed.tenant_id,
+            advertiser_id="acc-3",
+            currency="USD",
+            timezone="UTC",
+        )
+    )
+    session.flush()
+
+
 def claim(factory, job_id):
     with factory() as session:
         target = session.get(ReportSyncJob, job_id)
-        target.due_at = datetime.now(UTC) - timedelta(seconds=1)
-        session.commit()
-        candidates = jobs.claim_jobs(session, now=datetime.now(UTC), limit=100)
-        result = next(job for job in candidates if job.id == job_id)
+        candidates = claim_jobs(
+            session,
+            now=max(datetime.now(UTC), target.due_at) + timedelta(seconds=1),
+            limit=100,
+        )
+        result = next((job for job in candidates if job.id == job_id), None)
+        if result is None:
+            from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
+
+            heads = session.exec(
+                select(SyncSchedule)
+                .join(
+                    SyncExecutionScope,
+                    SyncExecutionScope.scope_id == SyncSchedule.scope_id,
+                )
+                .where(SyncExecutionScope.report_job_id == job_id)
+            ).all()
+            raise AssertionError(
+                {
+                    "target": (
+                        target.status,
+                        target.due_at,
+                        target.claimed_until,
+                        target.error_code,
+                    ),
+                    "heads": [h.model_dump() for h in heads],
+                }
+            )
         session.commit()
         return result
 
@@ -148,19 +187,11 @@ def test_later_failure_preserves_prior_step_and_only_replays_current_step(
     reader = Pages(count=8, failure=(7, failure))
     assert run(factory, job, reader) == "WAITING"
     assert run(factory, claim(factory, job.id), reader) == "WAITING"
-    assert [page.page for page in pages(factory, job.id)] == (
-        [1, 2, 3, 4, 5, 6]
-        if isinstance(failure, AccountAdmissionDeferred)
-        else [1, 2, 3, 4, 5]
-    )
+    assert [page.page for page in pages(factory, job.id)] == [1, 2, 3, 4, 5, 6]
     assert facts(factory, seed.tenant_id) == []
     reader.failure = None
     assert run(factory, claim(factory, job.id), reader) == "COMPLETE"
-    assert reader.calls == (
-        [1, 2, 3, 4, 5, 6, 7, 7, 8]
-        if isinstance(failure, AccountAdmissionDeferred)
-        else [1, 2, 3, 4, 5, 6, 7, 6, 7, 8]
-    )
+    assert reader.calls == [1, 2, 3, 4, 5, 6, 7, 7, 8]
     assert len(facts(factory, seed.tenant_id)) == 8
     with factory() as session:
         job = session.get(ReportSyncJob, job.id)
@@ -283,7 +314,54 @@ def test_large_cross_day_splits_after_first_page_without_losing_dates(
             for i in range((child.end_date - child.start_date).days + 1)
         ]
         assert sorted(covered) == [DAY + timedelta(days=i) for i in range(13)]
-        assert all((child.end_date - child.start_date).days < 7 for child in children)
+        assert all((child.end_date - child.start_date).days < 5 for child in children)
+        assert all(child.progress["execution_window_days"] == 5 for child in children)
+        # 后继相邻需求仍不可扩回已由响应证明过大的执行窗口。
+        jobs.enqueue_job(
+            session,
+            tenant_id=seed.tenant_id,
+            bc_id="bc-a",
+            kind="material_day",
+            tier="history",
+            advertiser_ids=["acc-1"],
+            start=end + timedelta(days=1),
+            end=end + timedelta(days=1),
+            frozen_route=_route(seed),
+            actor_id=seed.actor_id,
+        )
+        session.flush()
+        assert all((child.end_date - child.start_date).days < 5 for child in children)
+        child_ids = [
+            child.id for child in sorted(children, key=lambda value: value.start_date)
+        ]
+        session.commit()
+
+    class SplitReader:
+        def __init__(self):
+            self.ranges = []
+
+        def material_day(self, *, start, end, page, **_kwargs):
+            self.ranges.append((start, end, page))
+            return RawReportPage(
+                tuple(
+                    row(i, day=start + timedelta(days=i))
+                    for i in range((end - start).days + 1)
+                ),
+                page,
+                1,
+                (end - start).days + 1,
+            )
+
+    split_reader = SplitReader()
+    # 同账户scope逐个完成后补位；每个子范围只发一次，不能再发原13日范围。
+    for identity in child_ids:
+        assert run(factory, claim(factory, identity), split_reader) == "COMPLETE"
+    assert len(split_reader.ranges) == 3
+    assert all(
+        (last - first).days < 5 and page == 1
+        for first, last, page in split_reader.ranges
+    )
+    assert len(facts(factory, seed.tenant_id)) == 13
 
 
 def test_large_single_day_uses_all_pages_instead_of_ad_truncation_guard(
@@ -412,11 +490,9 @@ def test_live_material_and_link_jobs_are_not_starved_by_new_ad_jobs(session, syn
     ad_id = jobs.enqueue_job(
         session, kind="ad_day", tier="hot", due_at=now - timedelta(minutes=1), **common
     )
-    claimed = jobs.claim_jobs(session, now=now, limit=3, lane="live")
-    assert [job.id for job in claimed] == [material_id, ad_id]
-    assert [
-        job.id for job in jobs.claim_jobs(session, now=now, limit=3, lane="links")
-    ] == [links_id]
+    claimed = claim_jobs(session, now=now, limit=3)
+    assert {job.id for job in claimed} == {material_id, ad_id, links_id}
+    assert claim_jobs(session, now=now, limit=3) == []
 
 
 def test_day_old_history_is_admitted_before_new_daily_work(session, sync_seed):
@@ -440,8 +516,10 @@ def test_day_old_history_is_admitted_before_new_daily_work(session, sync_seed):
         session, tier="daily", due_at=now - timedelta(minutes=1), **common
     )
     session.flush()
-    claimed = jobs.claim_jobs(session, now=now, limit=2, lane="backfill")
-    assert [job.id for job in claimed] == [history_id, daily_id]
+    claimed = claim_jobs(session, now=now, limit=2)
+    assert daily_id is None  # 同桶尚未启动，提升需求版本而非复制任务。
+    assert [job.id for job in claimed] == [history_id]
+    assert claimed[0].due_at <= now - timedelta(hours=25)
 
 
 def test_concurrent_overlapping_live_batches_have_one_owner_per_account(
@@ -454,6 +532,9 @@ def test_concurrent_overlapping_live_batches_have_one_owner_per_account(
     from sqlalchemy import text
 
     seed, factory = committed_sync_seed
+    with factory() as session:
+        add_third_account(session, seed)
+        session.commit()
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
     common = {
@@ -497,7 +578,7 @@ def test_concurrent_overlapping_live_batches_have_one_owner_per_account(
                         .execute(
                             text("""
                         SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid
-                        WHERE a.application_name='material-resume-producer' AND l.locktype='advisory' AND NOT l.granted)
+                        WHERE a.application_name='material-resume-producer' AND NOT l.granted)
                     """)
                         )
                         .scalar_one()
@@ -561,17 +642,33 @@ def test_staging_cleanup_only_removes_old_terminal_jobs(committed_sync_seed):
     assert pages(factory, old.id) == []
 
 
-def test_duplicate_claim_tokens_cannot_concurrently_stage_twice(committed_sync_seed):
+def test_duplicate_claim_tokens_cannot_concurrently_stage_twice(
+    committed_sync_seed, redis_client, monkeypatch
+):
     from concurrent.futures import ThreadPoolExecutor
+    from contextlib import nullcontext
     from threading import Barrier
+
+    from app.core.config import settings
+    from app.modules.reporting import job_tasks
 
     seed, factory = committed_sync_seed
     job = enqueue(factory, seed)
     reader, barrier = Pages(), Barrier(2)
+    monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+    monkeypatch.setattr(job_tasks, "_reader_for", lambda **_: nullcontext(reader))
+    monkeypatch.setattr(job_tasks, "_report_refill_after", lambda *_: nullcontext())
+    with factory() as session:
+        engine = session.get_bind()
 
     def execute(_index):
         barrier.wait(timeout=5)
-        return run(factory, job, reader)
+        return job_tasks.run_job_step(
+            database_engine=engine,
+            redis_client=redis_client,
+            job_id=job.id,
+            claim_token=job.claim_token,
+        )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(execute, range(2)))
@@ -631,7 +728,7 @@ def test_final_publish_database_failure_rolls_back_delete_and_partial_inserts(
             (item.main_material_id, item.spend)
             for item in facts(factory, seed.tenant_id)
         ] == [("mold", Decimal("9"))]
-        assert len(pages(factory, job.id)) == 5
+        assert len(pages(factory, job.id)) == 6
         with factory() as session:
             assert (
                 session.get(
@@ -737,7 +834,7 @@ def test_material_publish_only_queues_real_link_gaps(
                 advertiser_id="acc-2" if scenario == "other_account_map" else "acc-1",
                 main_material_id="m0",
                 ad_remote_id="a0",
-                main_material_type="VIDEO",
+                main_material_type="VIDEO_SPARK_ADS",
                 platform_material_id=None if scenario == "null_vid" else "v0",
                 observed_at=datetime.now(UTC),
             )
@@ -795,6 +892,7 @@ def test_material_publish_only_queues_real_link_gaps(
 def test_bulk_enqueue_preserves_coverage_and_unique_job_fallback(
     session, sync_seed, tier
 ):
+    add_third_account(session, sync_seed)
     day = datetime.now(UTC).date()
     common = {
         "tenant_id": sync_seed.tenant_id,

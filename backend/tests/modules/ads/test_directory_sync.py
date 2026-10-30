@@ -93,6 +93,23 @@ def _run(session, seed, *, kind="campaign", ad_type="REGULAR"):
     return run
 
 
+def _claim_directory(session, run, redis_client, monkeypatch):
+    from app.integrations.tiktok.platform_quotas import quota_configuration
+    from app.modules.sync_control.directory_demand import register_directory_run
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+
+    monkeypatch.setattr(settings, "TIKTOK_CALL_POLICIES", quota_configuration("BASIC"))
+    monkeypatch.setattr(settings, "TIKTOK_APP_ID", f"directory-worker-{uuid4()}")
+    register_directory_run(session, run)
+    assert (
+        dispatch_directories_due(
+            session, redis_client, now=datetime.now(UTC) + timedelta(seconds=1), limit=1
+        )
+        == 1
+    )
+    return run.claim_generation
+
+
 def _page(
     seed,
     *,
@@ -489,9 +506,8 @@ def test_publish_preserves_newer_objects_and_complete_materials(
     assert first.coverage == second.coverage == "MATERIALS_INCOMPLETE"
 
 
-@pytest.mark.parametrize("publish_only", [False, True])
 def test_staged_terminal_page_publishes_without_another_provider_call(
-    session, directory_seed, monkeypatch, publish_only
+    session, directory_seed, monkeypatch
 ):
     from app.modules.ads import tasks
 
@@ -513,7 +529,7 @@ def test_staged_terminal_page_publishes_without_another_provider_call(
             context=directory_seed.context,
             run_id=run.id,
             claim_generation=1,
-            publish_only=publish_only,
+            publish_only=True,
         )
         == "READY"
     )
@@ -527,7 +543,7 @@ def test_staged_terminal_page_publishes_without_another_provider_call(
             context=directory_seed.context,
             run_id=run.id,
             claim_generation=1,
-            publish_only=publish_only,
+            publish_only=True,
         )
         == "READY"
     )
@@ -562,7 +578,7 @@ def test_directory_version_allocation_does_not_scan_business_tables(session):
 @pytest.mark.parametrize("targeted", [False, True])
 @pytest.mark.parametrize("workload", ["live", "background"])
 def test_terminal_fetch_commits_page_and_durable_publish_successor(
-    session, directory_seed, monkeypatch, targeted, workload
+    session, directory_seed, monkeypatch, redis_client, targeted, workload
 ):
 
     from app.modules.ads import tasks
@@ -576,6 +592,8 @@ def test_terminal_fetch_commits_page_and_durable_publish_successor(
         run.query = {**run.query, "ids": ["campaign-1"], "include_deleted": False}
         session.flush()
     page = _page(directory_seed)
+
+    generation = _claim_directory(session, run, redis_client, monkeypatch)
 
     class Reader:
         def read_page(self, query):
@@ -591,10 +609,10 @@ def test_terminal_fetch_commits_page_and_durable_publish_successor(
     assert (
         tasks.run_directory_step(
             database_engine=session.connection(),
-            redis_client=None,
+            redis_client=redis_client,
             context=directory_seed.context,
             run_id=run.id,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "CONTINUE"
     )
@@ -602,16 +620,16 @@ def test_terminal_fetch_commits_page_and_durable_publish_successor(
     assert run.published_version is None and run.claimed_until is None
     assert run.next_page == 2
     assert session.get(AdDirectoryPage, (run.id, 1)).complete
+    assert run.claim_generation > generation  # 同次refill已持久领取本地publisher。
+    generation = run.claim_generation
     dispatch = session.exec(
         select(PendingDispatch).where(
             PendingDispatch.task_key
-            == f"{'ads.targeted_step' if targeted and workload == 'live' else 'ads.sync_step'}:{run.id}:1:page:2"
+            == f"{'ads.targeted_step' if targeted and workload == 'live' else 'ads.sync_step'}:{run.id}:{generation}:page:2"
         )
     ).one()
-    assert dispatch.task_name == (
-        "ads.targeted_step" if targeted and workload == "live" else "ads.publish_step"
-    )
-    assert dispatch.payload == {"run_id": str(run.id), "claim_generation": 1}
+    assert dispatch.task_name == "ads.publish_step"
+    assert dispatch.payload == {"run_id": str(run.id), "claim_generation": generation}
 
     def unexpected_gateway(**_kwargs):
         raise AssertionError("本地发布续步不得请求不存在的远端第二页")
@@ -620,10 +638,11 @@ def test_terminal_fetch_commits_page_and_durable_publish_successor(
     assert (
         tasks.run_directory_step(
             database_engine=session.connection(),
-            redis_client=None,
+            redis_client=redis_client,
             context=directory_seed.context,
             run_id=run.id,
-            claim_generation=1,
+            claim_generation=generation,
+            publish_only=True,
         )
         == "READY"
     )
@@ -664,7 +683,7 @@ def test_invalid_material_rolls_back_the_entire_bulk_publish(session, directory_
 
 
 def test_old_page_response_cannot_clear_a_new_generation_lease(
-    session, directory_seed, monkeypatch
+    session, directory_seed, monkeypatch, redis_client
 ):
 
     from app.modules.ads import tasks
@@ -677,9 +696,11 @@ def test_old_page_response_cannot_clear_a_new_generation_lease(
     new_token = uuid4()
     new_until = datetime.now(UTC) + timedelta(minutes=2)
 
+    generation = _claim_directory(session, run, redis_client, monkeypatch)
+
     class Reader:
         def read_page(self, _query):
-            run.claim_generation = 2
+            run.claim_generation = generation + 1
             run.claim_token = new_token
             run.claimed_until = new_until
             session.flush()
@@ -693,15 +714,15 @@ def test_old_page_response_cannot_clear_a_new_generation_lease(
     assert (
         tasks.run_directory_step(
             database_engine=session.connection(),
-            redis_client=None,
+            redis_client=redis_client,
             context=directory_seed.context,
             run_id=run.id,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "FAILED"
     )
     session.refresh(run)
-    assert run.claim_generation == 2 and run.claim_token == new_token
+    assert run.claim_generation == generation + 1 and run.claim_token == new_token
     assert run.claimed_until == new_until and run.next_page == 1
 
 
@@ -813,6 +834,7 @@ def test_superseded_directory_task_finishes_without_poisoning_window(
             context=directory_seed.context,
             run_id=older.id,
             claim_generation=1,
+            publish_only=True,
         )
         == "READY"
     )
@@ -835,6 +857,7 @@ def test_superseded_directory_task_finishes_without_poisoning_window(
             context=directory_seed.context,
             run_id=older.id,
             claim_generation=1,
+            publish_only=True,
         )
         == "READY"
     )
@@ -855,7 +878,7 @@ def test_superseded_directory_task_finishes_without_poisoning_window(
 @pytest.mark.parametrize("targeted", [False, True])
 @pytest.mark.parametrize("retry_ms", [50, 2500])
 def test_directory_admission_wait_releases_lease_and_persists_due_successor(
-    session, directory_seed, monkeypatch, targeted, retry_ms
+    session, directory_seed, monkeypatch, redis_client, targeted, retry_ms
 ):
 
     from app.integrations.tiktok.sdk import AccountAdmissionDeferred
@@ -875,6 +898,8 @@ def test_directory_admission_wait_releases_lease_and_persists_due_successor(
     )
     session.flush()
 
+    generation = _claim_directory(session, run, redis_client, monkeypatch)
+
     class Reader:
         def read_page(self, query):
             assert query.page == 2
@@ -889,43 +914,51 @@ def test_directory_admission_wait_releases_lease_and_persists_due_successor(
     assert (
         tasks.run_directory_step(
             database_engine=session.connection(),
-            redis_client=None,
+            redis_client=redis_client,
             context=directory_seed.context,
             run_id=run.id,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "WAIT"
     )
     session.refresh(run)
     assert run.claim_token is None and run.claimed_until is None
-    assert run.claim_generation == 2 and run.next_page == 2
+    assert run.claim_generation == generation + 1 and run.next_page == 2
     assert run.status == "WAITING_REMOTE" and run.error_code == "admission_deferred"
     assert run.next_attempt_at >= before + timedelta(milliseconds=max(1000, retry_ms))
     assert run.published_version is None and run.observed_at is None
     assert session.get(AdDirectoryPage, (run.id, 1)) is not None
-    dispatch = session.exec(
+    from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
+
+    head = session.exec(
+        select(SyncSchedule)
+        .join(SyncExecutionScope, SyncExecutionScope.scope_id == SyncSchedule.scope_id)
+        .where(SyncExecutionScope.directory_run_id == run.id)
+    ).one()
+    assert head.active and head.next_eligible_at == run.next_attempt_at
+    assert head.leased_until is None
+    # 等待只保留到期头；不再为每个限流scope写一条读取重试消息。
+    assert not session.exec(
         select(PendingDispatch).where(
             PendingDispatch.task_key
-            == f"{'ads.targeted_step' if targeted else 'ads.sync_step'}:{run.id}:2:page:2"
+            == f"{'ads.targeted_step' if targeted else 'ads.sync_step'}:{run.id}:{generation + 1}:page:2"
         )
-    ).one()
-    assert dispatch.available_at == run.next_attempt_at
-    assert dispatch.payload == {"run_id": str(run.id), "claim_generation": 2}
+    ).all()
     # 旧消息不能再次读远端，也不能取消新代数的恢复消息。
     assert (
         tasks.run_directory_step(
             database_engine=session.connection(),
-            redis_client=None,
+            redis_client=redis_client,
             context=directory_seed.context,
             run_id=run.id,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "FAILED"
     )
 
 
 def test_admission_wait_cannot_release_a_replaced_directory_claim(
-    session, directory_seed, monkeypatch
+    session, directory_seed, monkeypatch, redis_client
 ):
 
     from app.integrations.tiktok.sdk import AccountAdmissionDeferred
@@ -936,10 +969,12 @@ def test_admission_wait_cannot_release_a_replaced_directory_claim(
     run = _run(session, directory_seed)
     new_token = uuid4()
 
+    generation = _claim_directory(session, run, redis_client, monkeypatch)
+
     class Reader:
         def read_page(self, query):
             session.refresh(run)
-            run.claim_generation = 2
+            run.claim_generation = generation + 1
             run.claim_token = new_token
             run.claimed_until = datetime.now(UTC) + timedelta(minutes=2)
             session.flush()
@@ -953,21 +988,30 @@ def test_admission_wait_cannot_release_a_replaced_directory_claim(
     assert (
         tasks.run_directory_step(
             database_engine=session.connection(),
-            redis_client=None,
+            redis_client=redis_client,
             context=directory_seed.context,
             run_id=run.id,
-            claim_generation=1,
+            claim_generation=generation,
         )
         == "WAIT"
     )
     session.refresh(run)
-    assert run.claim_generation == 2 and run.claim_token == new_token
+    assert run.claim_generation == generation + 1 and run.claim_token == new_token
     assert run.claimed_until > datetime.now(UTC)
-    assert session.exec(select(PendingDispatch)).all() == []
+    assert (
+        len(
+            session.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.tenant_id == directory_seed.context.tenant_id
+                )
+            ).all()
+        )
+        == 1
+    )
 
 
 def test_directory_recovers_after_admission_wait_from_the_same_page(
-    session, directory_seed, monkeypatch
+    session, directory_seed, monkeypatch, redis_client
 ):
 
     from app.modules.ads import tasks
@@ -987,6 +1031,8 @@ def test_directory_recovers_after_admission_wait_from_the_same_page(
     )
     session.flush()
 
+    generation = _claim_directory(session, run, redis_client, monkeypatch)
+
     class Reader:
         def read_page(self, query):
             assert query.page == 2
@@ -999,14 +1045,16 @@ def test_directory_recovers_after_admission_wait_from_the_same_page(
     monkeypatch.setattr(tasks, "open_tiktok_gateway", gateway)
     args = {
         "database_engine": session.connection(),
-        "redis_client": None,
+        "redis_client": redis_client,
         "context": directory_seed.context,
         "run_id": run.id,
-        "claim_generation": 2,
+        "claim_generation": generation,
     }
     assert tasks.run_directory_step(**args) == "CONTINUE"
     session.refresh(run)
     assert run.next_page == 3 and run.error_code is None
-    assert tasks.run_directory_step(**args) == "READY"
+    assert run.claim_generation > generation
+    args["claim_generation"] = run.claim_generation
+    assert tasks.run_directory_step(**args, publish_only=True) == "READY"
     session.refresh(run)
     assert run.status == "COMPLETE" and run.published_version is not None

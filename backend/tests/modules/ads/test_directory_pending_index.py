@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 from alembic import command
-from sqlalchemy import text
+from sqlalchemy import MetaData, Table, text
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session
 
@@ -80,8 +80,19 @@ def test_pending_account_index_roundtrip_preserves_runs(monkeypatch, record_prop
                 kind="campaign",
                 ad_type="SMART_PLUS",
             )
-            session.add(run)
-            session.flush()
+            # 0045只写当时真实列；当前ORM新增owner/发布合同字段不能渗入历史。
+            table = Table(
+                "ad_directory_run", MetaData(), autoload_with=session.connection()
+            )
+            session.execute(
+                table.insert().values(
+                    **{
+                        key: value
+                        for key, value in run.model_dump().items()
+                        if key in table.c and key != "request_sequence"
+                    }
+                )
+            )
             session.connection().execute(
                 text("""
                 INSERT INTO ad_directory_run OVERRIDING USER VALUE

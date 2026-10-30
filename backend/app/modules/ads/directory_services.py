@@ -5,6 +5,8 @@ import json
 from sqlalchemy import text
 from sqlalchemy.orm.attributes import set_committed_value
 
+from app.modules.ads.sync_models import AdDirectoryRun
+
 SERVICE_KEY = "directory_service_v1"
 STATUS_SERVICE = "status"
 MISSING_STATUS_SERVICE = "status_missing"
@@ -21,7 +23,7 @@ def pending_directory_condition():
     )
 
 
-def directory_service(run):
+def directory_service(run: AdDirectoryRun) -> str | None:
     # 子页只补素材身份；即使源广告服务当前状态，也不继承它的保底槽。
     from app.modules.ads.material_directory_children import is_material_child
 
@@ -123,5 +125,8 @@ def promote_status_requests(session, runs, *, missing_run_ids=()):
         )
         for identity, query in rows:
             set_committed_value(candidates[identity], "query", query)
+        from app.modules.sync_control.directory_demand import promote_directory_heads
+
+        promote_directory_heads(session, [identity for identity, _ in rows])
         changed += len(rows)
     return changed

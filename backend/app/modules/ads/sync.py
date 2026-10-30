@@ -11,12 +11,12 @@ import json
 from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import inspect, text, tuple_
-from sqlalchemy.orm import QueryableAttribute, load_only
-from sqlalchemy.orm.util import identity_key
+from sqlalchemy import and_, inspect, or_, text, update
+from sqlalchemy.orm import load_only
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -386,42 +386,26 @@ def _entity_values(
     }
 
 
-def _publish_entities(
-    session: Session,
-    entities: list[dict[str, Any]],
-    *,
-    run: AdDirectoryRun,
-    version: int,
-    fallback: datetime,
-) -> list[AdObject]:
-    # 跨页重复对象先合并；旧观察不能覆盖新观察，同时间沿用最后一条。
-    values: dict[tuple[str, str], dict[str, Any]] = {}
-    for data in entities:
-        value = _entity_values(data, run=run, version=version, fallback=fallback)
-        key = (value["kind"], value["remote_id"])
-        previous = values.get(key)
-        if previous is None or previous["observed_at"] <= value["observed_at"]:
-            values[key] = value
-    result: list[AdObject] = []
-    for batch in _batches(list(values.values())):
-        # 对象配置可能很大；固定SQL避免每500条重新编译8000个参数，发布仍原子。
-        session.connection().execute(
-            text("""
-            INSERT INTO ad_object (
-              tenant_id,advertiser_id,kind,remote_id,parent_kind,parent_remote_id,
-              ad_type,name,configuration,operation_status,review_status,delivery_status,
-              observed_at,published_version,source_connection_id,source_channel
-            )
-            SELECT tenant_id,advertiser_id,kind,remote_id,parent_kind,parent_remote_id,
-              ad_type,name,configuration,operation_status,review_status,delivery_status,
-              observed_at,published_version,source_connection_id,source_channel
-            FROM jsonb_to_recordset(CAST(:rows AS jsonb)) AS incoming (
-              tenant_id uuid,advertiser_id text,kind text,remote_id text,
-              parent_kind text,parent_remote_id text,ad_type text,name text,
-              configuration jsonb,operation_status text,review_status text,
-              delivery_status text,observed_at timestamptz,published_version integer,
-              source_connection_id uuid,source_channel text
-            )
+def _object_identity_filter(identities):
+    # 同kind的ID用ANY/IN集合比较，避免数百个二元组展开成逐行OR链。
+    grouped = {}
+    for kind, remote_id in identities:
+        grouped.setdefault(kind, []).append(remote_id)
+    return or_(
+        *(
+            and_(AdObject.kind == kind, col(AdObject.remote_id).in_(ids))
+            for kind, ids in sorted(grouped.items())
+        )
+    )
+
+
+_ENTITY_COLUMNS = "tenant_id,advertiser_id,kind,remote_id,parent_kind,parent_remote_id,ad_type,name,configuration,operation_status,review_status,delivery_status,observed_at,published_version,source_connection_id,source_channel"
+
+
+def _entity_upsert_sql(source):
+    return (
+        f"INSERT INTO ad_object ({_ENTITY_COLUMNS}) {source} "
+        + """
             ON CONFLICT (tenant_id,advertiser_id,kind,remote_id) DO UPDATE SET
               parent_kind=EXCLUDED.parent_kind,parent_remote_id=EXCLUDED.parent_remote_id,
               ad_type=EXCLUDED.ad_type,name=EXCLUDED.name,
@@ -431,47 +415,23 @@ def _publish_entities(
               source_connection_id=EXCLUDED.source_connection_id,
               source_channel=EXCLUDED.source_channel
             WHERE ad_object.observed_at<=EXCLUDED.observed_at
-            """),
-            {"rows": json.dumps(batch, default=str, ensure_ascii=False)},
-        )
-        for item in batch:
-            loaded = session.identity_map.get(
-                identity_key(
-                    AdObject,
-                    (
-                        item["tenant_id"],
-                        item["advertiser_id"],
-                        item["kind"],
-                        item["remote_id"],
-                    ),
-                )
-            )
-            if loaded is not None:
-                # 原已加载配置也必须失效；窄回读不应留下同事务中的旧完整对象。
-                session.expire(loaded)
-        # 被较新事实挡住的对象仍参与父目录及名称审计，保持原有发布语义。
-        result.extend(
-            session.exec(
-                select(AdObject)
-                .where(
-                    AdObject.tenant_id == run.tenant_id,
-                    AdObject.advertiser_id == run.advertiser_id,
-                    tuple_(col(AdObject.kind), col(AdObject.remote_id)).in_(
-                        [(item["kind"], item["remote_id"]) for item in batch]
-                    ),
-                )
-                .options(
-                    load_only(
-                        cast(QueryableAttribute[Any], AdObject.parent_kind),
-                        cast(QueryableAttribute[Any], AdObject.parent_remote_id),
-                        cast(QueryableAttribute[Any], AdObject.name),
-                        cast(QueryableAttribute[Any], AdObject.published_version),
-                    )
-                )
-                .execution_options(populate_existing=True)
-            ).all()
-        )
-    return result
+    """
+    )
+
+
+def _publish_entities(
+    session: Session,
+    entities: list[dict[str, Any]],
+    *,
+    run: AdDirectoryRun,
+    version: int,
+    fallback: datetime,
+) -> list[AdObject]:
+    # 小范围调用也复用同一规范暂存/集合发布，不保留第二套UPSERT合同。
+    staged = _stage_entities(session, run, version, fallback, _batches(entities))
+    return [
+        obj for batch in _publish_staged_entities(session, run, staged) for obj in batch
+    ]
 
 
 def _material_values(
@@ -510,6 +470,92 @@ def _material_values(
     }
 
 
+_MATERIAL_COLUMNS = "id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,ad_material_id,material_type,name,creative_ids,local_material_id,operation_status,complete,published_version"
+_MATERIAL_IDENTITY = (
+    "tenant_id",
+    "advertiser_id",
+    "ad_remote_id",
+    "platform_material_id",
+    "ad_material_id",
+    "material_type",
+)
+
+
+def _material_upsert_sql(target, source):
+    return f"""
+        INSERT INTO {target} ({_MATERIAL_COLUMNS}) {source}
+        ON CONFLICT ({",".join(_MATERIAL_IDENTITY)}) DO UPDATE SET
+            name=EXCLUDED.name,creative_ids=EXCLUDED.creative_ids,
+            local_material_id=EXCLUDED.local_material_id,
+            operation_status=EXCLUDED.operation_status,
+            complete=EXCLUDED.complete,published_version=EXCLUDED.published_version
+        WHERE EXCLUDED.complete
+    """
+
+
+def _material_stage(session):
+    name = f"directory_materials_{uuid4().hex}"
+    # 继承NULLS NOT DISTINCT身份唯一键，跨批相同缺省ad_material_id也正确合并。
+    session.connection().execute(
+        text(f"""
+        CREATE TEMP TABLE {name} (LIKE ad_material_reference INCLUDING DEFAULTS
+            INCLUDING CONSTRAINTS, PRIMARY KEY(id),
+            UNIQUE NULLS NOT DISTINCT ({",".join(_MATERIAL_IDENTITY)})) ON COMMIT DROP
+    """)
+    )
+    return name
+
+
+def _stage_material_batch(session, staged, materials, *, run, version):
+    values = {}
+    for data in materials:
+        value = _material_values(data, run=run, version=version)
+        key = tuple(value[field] for field in _MATERIAL_IDENTITY)
+        # 不完整观察只保留首条；完整观察始终以最后一条为准，跨批由同一冲突规则保证。
+        if key not in values or value["complete"]:
+            values[key] = value
+    if values:
+        session.connection().execute(
+            text(
+                _material_upsert_sql(
+                    staged,
+                    f"""
+            SELECT {_MATERIAL_COLUMNS} FROM
+                jsonb_populate_recordset(NULL::ad_material_reference,CAST(:rows AS jsonb)) incoming
+        """,
+                )
+            ),
+            {
+                "rows": json.dumps(
+                    list(values.values()), default=str, ensure_ascii=False
+                )
+            },
+        )
+
+
+def _publish_staged_materials(session, run, staged):
+    session.connection().execute(text(f"ANALYZE {staged}"))
+    # 每个完整运行仅一次canonical集合写；非空INSERT/UPDATE触发器保留历史候选，
+    # 不能直接以incoming替代历史候选，否则会把正确的完整素材关系覆盖为部分观察。
+    session.connection().execute(
+        text(
+            _material_upsert_sql(
+                "ad_material_reference", f"SELECT {_MATERIAL_COLUMNS} FROM {staged}"
+            )
+        )
+    )
+    for obj in list(session.identity_map.values()):
+        if isinstance(obj, AdMaterialReference):
+            state = inspect(obj).dict
+            if (
+                "tenant_id" not in state
+                or "advertiser_id" not in state
+                or (state["tenant_id"], state["advertiser_id"])
+                == (run.tenant_id, run.advertiser_id)
+            ):
+                session.expire(obj)
+
+
 def _publish_materials(
     session: Session,
     materials: list[dict[str, Any]],
@@ -517,61 +563,10 @@ def _publish_materials(
     run: AdDirectoryRun,
     version: int,
 ) -> None:
-    identity = (
-        "tenant_id",
-        "advertiser_id",
-        "ad_remote_id",
-        "platform_material_id",
-        "ad_material_id",
-        "material_type",
-    )
-    values: dict[tuple, dict[str, Any]] = {}
-    for data in materials:
-        value = _material_values(data, run=run, version=version)
-        key = tuple(value[field] for field in identity)
-        # 不完整响应既不能覆盖数据库已有记录，也不能清空本批更完整的观察。
-        if key not in values or value["complete"]:
-            values[key] = value
-    for batch in _batches(list(values.values())):
-        # 素材无需返回ORM对象。固定SQL+单个JSON参数避免每500行重新编译6500个
-        # 绑定参数；仍在目录原子事务内写入，完整性与版本冲突规则保持一致。
-        session.connection().execute(
-            text("""
-            INSERT INTO ad_material_reference (
-              id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,
-              ad_material_id,material_type,name,creative_ids,local_material_id,
-              operation_status,complete,published_version
-            )
-            SELECT id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,
-              ad_material_id,material_type,name,creative_ids,local_material_id,
-              operation_status,complete,published_version
-            FROM jsonb_to_recordset(CAST(:rows AS jsonb)) AS incoming (
-              id uuid,tenant_id uuid,advertiser_id text,ad_remote_id text,
-              platform_material_id text,ad_material_id text,material_type text,
-              name text,creative_ids jsonb,local_material_id uuid,
-              operation_status text,complete boolean,published_version integer
-            )
-            ON CONFLICT ON CONSTRAINT uq_ad_material_usage DO UPDATE SET
-              name=EXCLUDED.name,creative_ids=EXCLUDED.creative_ids,
-              local_material_id=EXCLUDED.local_material_id,
-              operation_status=EXCLUDED.operation_status,
-              complete=EXCLUDED.complete,published_version=EXCLUDED.published_version
-            WHERE EXCLUDED.complete
-            """),
-            {"rows": json.dumps(batch, default=str, ensure_ascii=False)},
-        )
-    # Core批量写不自动刷新identity map；只失效本批已加载的素材，避免后续同事务
-    # 查询读到旧完整性/版本。身份列未加载时保守失效，不能为识别身份逐行查库。
-    for obj in list(session.identity_map.values()):
-        if isinstance(obj, AdMaterialReference):
-            mapped = inspect(obj)
-            assert mapped is not None
-            state = mapped.dict
-            if (
-                not all(field in state for field in identity)
-                or tuple(state[field] for field in identity) in values
-            ):
-                session.expire(obj)
+    staged = _material_stage(session)
+    for batch in _batches(materials):
+        _stage_material_batch(session, staged, batch, run=run, version=version)
+    _publish_staged_materials(session, run, staged)
 
 
 def _queue_missing_parents(
@@ -591,7 +586,7 @@ def _queue_missing_parents(
                 select(AdObject.kind, AdObject.remote_id).where(
                     AdObject.tenant_id == run.tenant_id,
                     AdObject.advertiser_id == run.advertiser_id,
-                    tuple_(col(AdObject.kind), col(AdObject.remote_id)).in_(batch),
+                    _object_identity_filter(batch),
                 )
             ).all()
         )
@@ -686,6 +681,160 @@ def directory_run_superseded(session: Session, run: AdDirectoryRun) -> bool:
     )
 
 
+def _directory_payload_batches(session, run, field):
+    # JSON数组在PG展开，驱动每次只拉500条；单个巨大平台页也不会整体解压进Python。
+    if field not in {"items", "materials"}:
+        raise ValueError("invalid directory payload")
+    result = session.connection().execute(
+        text(f"""
+        SELECT item.value FROM ad_directory_page p
+        CROSS JOIN LATERAL jsonb_array_elements(p.{field}) WITH ORDINALITY item(value, position)
+        WHERE p.run_id=:run AND p.coverage <> 'MATERIAL_CONTEXT'
+        ORDER BY p.page, item.position
+    """).execution_options(yield_per=_PUBLISH_BATCH_SIZE),
+        {"run": run.id},
+    )
+    try:
+        for batch in result.partitions(_PUBLISH_BATCH_SIZE):
+            yield [row[0] for row in batch]
+    finally:
+        result.close()
+
+
+def _stage_directory_entities(session, run, version, fallback):
+    return _stage_entities(
+        session,
+        run,
+        version,
+        fallback,
+        _directory_payload_batches(session, run, "items"),
+    )
+
+
+def _stage_entities(session, run, version, fallback, batches):
+    name = f"directory_entities_{uuid4().hex}"
+    session.connection().execute(
+        text(f"""
+        CREATE TEMP TABLE {name} (kind text, remote_id text, observed_at timestamptz,
+            payload jsonb NOT NULL, parent_kind text, parent_remote_id text,
+            published_version integer, PRIMARY KEY(kind,remote_id)) ON COMMIT DROP
+    """)
+    )
+    for batch in batches:
+        values = {}
+        for item in batch:
+            value = _entity_values(item, run=run, version=version, fallback=fallback)
+            key = (value["kind"], value["remote_id"])
+            if key not in values or values[key]["observed_at"] <= value["observed_at"]:
+                values[key] = {
+                    "kind": key[0],
+                    "remote_id": key[1],
+                    "observed_at": value["observed_at"],
+                    "payload": value,
+                }
+        session.connection().execute(
+            text(f"""
+            INSERT INTO {name} (kind,remote_id,observed_at,payload)
+            SELECT * FROM jsonb_to_recordset(CAST(:rows AS jsonb))
+            AS x(kind text,remote_id text,observed_at timestamptz,payload jsonb)
+            ON CONFLICT (kind,remote_id) DO UPDATE SET
+                observed_at=EXCLUDED.observed_at,payload=EXCLUDED.payload
+            WHERE {name}.observed_at <= EXCLUDED.observed_at
+        """),
+            {
+                "rows": json.dumps(
+                    list(values.values()), default=str, ensure_ascii=False
+                )
+            },
+        )
+    return name
+
+
+def _publish_staged_entities(session, run, staged):
+    # 全集已完成身份/类型/观察去重；一次父表集合写保留statement触发器，避免
+    # 每500条反复规划/扫描投影。宽数据始终留在PG，Python仅消费500条窄审计。
+    connection = session.connection()
+    connection.execute(text(f"ANALYZE {staged}"))
+    connection.execute(
+        text(
+            _entity_upsert_sql(f"""
+        SELECT {",".join("incoming." + name for name in _ENTITY_COLUMNS.split(","))}
+        FROM {staged} s CROSS JOIN LATERAL
+            jsonb_populate_record(NULL::ad_object,s.payload) incoming
+    """)
+        )
+    )
+    for obj in list(session.identity_map.values()):
+        if isinstance(obj, AdObject):
+            identity = inspect(obj).identity
+            if identity and identity[:2] == (run.tenant_id, run.advertiser_id):
+                session.expire(obj)
+    connection.execute(
+        text(f"""
+        UPDATE {staged} s SET parent_kind=o.parent_kind,parent_remote_id=o.parent_remote_id,
+            published_version=o.published_version FROM ad_object o
+        WHERE o.tenant_id=:tenant AND o.advertiser_id=:advertiser
+            AND o.kind=s.kind AND o.remote_id=s.remote_id
+    """),
+        {"tenant": run.tenant_id, "advertiser": run.advertiser_id},
+    )
+    result = session.exec(
+        select(AdObject)
+        .where(
+            AdObject.tenant_id == run.tenant_id,
+            AdObject.advertiser_id == run.advertiser_id,
+            text(
+                f"EXISTS (SELECT 1 FROM {staged} s WHERE s.kind=ad_object.kind AND s.remote_id=ad_object.remote_id)"
+            ),
+        )
+        .options(
+            load_only(
+                AdObject.parent_kind,
+                AdObject.parent_remote_id,
+                AdObject.name,
+                AdObject.published_version,
+            )
+        )
+        .execution_options(populate_existing=True, yield_per=_PUBLISH_BATCH_SIZE)
+    )
+    try:
+        yield from result.partitions(_PUBLISH_BATCH_SIZE)
+    finally:
+        result.close()
+
+
+def _material_owner_objects(session, run, materials, staged):
+    if run.kind not in {"ad", "creative"}:
+        return []
+    identities = set()
+    for data in materials:
+        if run.kind == "ad":
+            use = data.get("use_ref")
+            ref = _parse_ref(use.get("ad_ref")) if isinstance(use, dict) else None
+            if ref:
+                identities.add(ref[3])
+        else:
+            identities.update(data.get("creative_ids", []))
+    if not identities:
+        return []
+    # 复用本次发布真实回读的胜出版本；暂存主键查找不重复触碰宽目录及其历史索引。
+    rows = (
+        session.connection()
+        .execute(
+            text(f"""
+        SELECT kind,remote_id,parent_kind,parent_remote_id,published_version
+        FROM {staged} WHERE kind=:kind AND remote_id=ANY(:ids)
+    """),
+            {"kind": run.kind, "ids": sorted(identities)},
+        )
+        .mappings()
+    )
+    return [
+        SimpleNamespace(**row, tenant_id=run.tenant_id, advertiser_id=run.advertiser_id)
+        for row in rows
+    ]
+
+
 def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) -> int:
     """验证完整分页后原子发布；返回本运行使用的单一 published_version。"""
     if type(claim_generation) is not int or claim_generation < 1:
@@ -696,6 +845,12 @@ def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) 
         ).one_or_none()
         if run is None:
             raise _domain("directory_run_not_found", "目录同步运行不存在")
+        from app.modules.sync_control.directory_demand import (
+            directory_fence,
+            directory_outcome,
+        )
+
+        directory_fence(session, run)
         if run.published_version is not None:
             if run.claim_generation != claim_generation:
                 raise _domain("directory_claim_lost", "目录同步 claim 已被替换")
@@ -708,6 +863,16 @@ def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) 
             select(AdDirectoryPage)
             .where(AdDirectoryPage.run_id == run.id)
             .order_by(col(AdDirectoryPage.page))
+            .options(
+                load_only(
+                    AdDirectoryPage.page,
+                    AdDirectoryPage.complete,
+                    AdDirectoryPage.next_page,
+                    AdDirectoryPage.coverage,
+                    AdDirectoryPage.missing_reason,
+                    AdDirectoryPage.observed_at,
+                )
+            )
             .with_for_update()
         ).all()
         from app.modules.ads.material_directory_children import (
@@ -733,77 +898,85 @@ def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) 
             raise _domain("directory_run_stale", "较早目录运行不能晚于新运行发布")
         version = _next_directory_version(session)
         fallback = datetime.now(UTC)
-        entities: list[dict[str, Any]] = []
-        materials: list[dict[str, Any]] = []
-        for page in ordered:
-            entities.extend(page.items)
-            materials.extend(page.materials)
-        published_objects = _publish_entities(
-            session, entities, run=run, version=version, fallback=fallback
-        )
+        staged = _stage_directory_entities(session, run, version, fallback)
+        for published_objects in _publish_staged_entities(session, run, staged):
+            _queue_missing_parents(session, run=run, objects=published_objects)
+            append_campaign_name_projections(
+                session,
+                campaigns=tuple(
+                    (obj.ref, obj.name)
+                    for obj in published_objects
+                    if obj.kind == "campaign"
+                ),
+                parser_revision=1,
+            )
         from app.modules.ads.material_directory_children import (
             filter_current_child_materials,
         )
 
-        materials, stale_materials = filter_current_child_materials(
-            session,
-            run=run,
-            materials=materials,
-            version=version,
-            published_objects=published_objects,
-        )
-        stale_owner_materials = False
-        if run.kind in {"ad", "creative"}:
-            # 部分重叠查询可以晚发布未覆盖的广告；但输给新观察的广告素材不能
-            # 借本次更大发布版本覆盖新事实。复用已回读版本，不增加逐广告查询。
-            winning_ads = {
-                obj.remote_id
-                for obj in published_objects
-                if obj.kind == "ad" and obj.published_version == version
-            }
-            # 普通 creative 也携带素材；只接受本轮真实获胜且归属相符的创意。
-            # child 已先经过冻结广告观察保护，此处同样不能放宽其创意身份。
-            winning_creatives = {
-                obj.remote_id: obj.parent_remote_id
-                for obj in published_objects
-                if obj.kind == "creative"
-                and obj.parent_kind == "ad"
-                and obj.published_version == version
-            }
-            accepted = []
+        stale_materials = stale_owner_materials = False
+        owner_cache = {}
+        staged_materials = _material_stage(session)
+        for materials in _directory_payload_batches(session, run, "materials"):
+            # 即使后续所有权筛选丢弃该观察，也必须先拒绝非法身份。
             for material in materials:
-                use = material.get("use_ref")
-                ref = _parse_ref(use.get("ad_ref")) if isinstance(use, dict) else None
-                creative_ids = material.get("creative_ids")
-                current = ref is not None and (
-                    ref[3] in winning_ads
-                    if run.kind == "ad"
-                    else isinstance(creative_ids, list)
-                    and bool(creative_ids)
-                    and all(
-                        winning_creatives.get(creative_id) == ref[3]
-                        for creative_id in creative_ids
+                _material_values(material, run=run, version=version)
+            published_objects = _material_owner_objects(session, run, materials, staged)
+            materials, stale_batch = filter_current_child_materials(
+                session,
+                run=run,
+                materials=materials,
+                version=version,
+                published_objects=published_objects,
+                owner_cache=owner_cache,
+            )
+            stale_materials = stale_materials or stale_batch
+            if run.kind in {"ad", "creative"}:
+                # 部分重叠查询可以晚发布未覆盖的广告；但输给新观察的广告素材不能
+                # 借本次更大发布版本覆盖新事实。复用已回读版本，不增加逐广告查询。
+                winning_ads = {
+                    obj.remote_id
+                    for obj in published_objects
+                    if obj.kind == "ad" and obj.published_version == version
+                }
+                # 普通 creative 也携带素材；只接受本轮真实获胜且归属相符的创意。
+                # child 已先经过冻结广告观察保护，此处同样不能放宽其创意身份。
+                winning_creatives = {
+                    obj.remote_id: obj.parent_remote_id
+                    for obj in published_objects
+                    if obj.kind == "creative"
+                    and obj.parent_kind == "ad"
+                    and obj.published_version == version
+                }
+                accepted = []
+                for material in materials:
+                    use = material.get("use_ref")
+                    ref = (
+                        _parse_ref(use.get("ad_ref")) if isinstance(use, dict) else None
                     )
-                )
-                if current:
-                    accepted.append(material)
-                else:
-                    # 失效观察也不能掩盖原本应报错的非法暂存身份。
-                    _material_values(material, run=run, version=version)
-                    stale_owner_materials = True
-            materials = accepted
-            stale_materials = stale_materials or stale_owner_materials
-        _publish_materials(session, materials, run=run, version=version)
-        _queue_missing_parents(session, run=run, objects=published_objects)
-        append_campaign_name_projections(
-            session,
-            campaigns=tuple(
-                (obj.ref, obj.name)
-                for obj in published_objects
-                if obj.kind == "campaign"
-            ),
-            parser_revision=1,
-        )
+                    creative_ids = material.get("creative_ids")
+                    current = ref is not None and (
+                        ref[3] in winning_ads
+                        if run.kind == "ad"
+                        else isinstance(creative_ids, list)
+                        and bool(creative_ids)
+                        and all(
+                            winning_creatives.get(creative_id) == ref[3]
+                            for creative_id in creative_ids
+                        )
+                    )
+                    if current:
+                        accepted.append(material)
+                    else:
+                        # 失效观察也不能掩盖原本应报错的非法暂存身份。
+                        _material_values(material, run=run, version=version)
+                        stale_owner_materials = True
+                materials = accepted
+                stale_materials = stale_materials or stale_owner_materials
+            _stage_material_batch(
+                session, staged_materials, materials, run=run, version=version
+            )
+        _publish_staged_materials(session, run, staged_materials)
         material_incomplete = stale_materials or any(
             page.coverage in {"PARTIAL_MATERIALS", "MATERIALS_INCOMPLETE"}
             for page in ordered
@@ -811,7 +984,7 @@ def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) 
         run.status = "COMPLETE"
         # 分页已经完整不代表素材子查询完整；运行摘要保留这两个覆盖维度。
         run.coverage = "MATERIALS_INCOMPLETE" if material_incomplete else "COMPLETE"
-        run.observed_at = fallback
+        run.observed_at = run.observed_at or min(page.observed_at for page in ordered)
         run.published_version = version
         run.completed_at = fallback
         run.missing_reason = next(
@@ -830,9 +1003,28 @@ def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) 
             )
         session.add(run)
         session.flush()
+        session.connection().execute(
+            update(AdDirectoryPage)
+            .where(
+                AdDirectoryPage.run_id == run.id,
+                AdDirectoryPage.coverage != "MATERIAL_CONTEXT",
+            )
+            .values(published_version=version)
+        )
         for page in ordered:
-            page.published_version = version
-            session.add(page)
+            session.expire(page, ["published_version"])
+        from app.modules.sync_control.contracts import ExecutionFence
+        from app.modules.sync_control.requirements import satisfy_requirements
+
+        satisfy_requirements(
+            session,
+            fence=ExecutionFence(
+                run.id, "directory", run.claim_generation, run.owner_epoch
+            ),
+            observed_at=run.observed_at,
+            publication_version=version,
+        )
+        directory_outcome(session, run)
         session.flush()
         # 子运行与主目录同事务提交；执行入口在提交后直接补位，避免累积 Control 唤醒。
         from app.modules.ads.material_directory_children import (

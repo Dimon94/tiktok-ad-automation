@@ -1,10 +1,49 @@
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import select
 
 from app.modules.reporting import job_tasks
+
+
+def _set_background_window(request, capacity):
+    """测试也配置真实共享池；退出时恢复部署参数和原调度游标。"""
+    from copy import deepcopy
+
+    from sqlmodel import Session
+
+    from app.core.db import engine
+    from app.modules.sync_control.models import SyncWorkerPool
+
+    with Session(engine) as session, session.begin():
+        pool = session.get(SyncWorkerPool, "background")
+        previous = deepcopy(pool.model_dump()) if pool is not None else None
+        if pool is None:
+            pool = SyncWorkerPool(pool_name="background")
+            session.add(pool)
+        pool.capacity, pool.prefetch_slots = capacity, 0
+        pool.fairness_state, pool.readiness_cursor = {}, {}
+
+    def restore():
+        with Session(engine) as session, session.begin():
+            pool = session.get(SyncWorkerPool, "background")
+            if previous is None:
+                if pool is not None:
+                    session.delete(pool)
+            else:
+                for key, value in previous.items():
+                    setattr(pool, key, value)
+
+    request.addfinalizer(restore)
+
+
+def _use_dispatch_redis(monkeypatch, redis_client):
+    # 调用前redis_client fixture已验证独立TEST Redis，随后才将正式派发器指向它。
+    import os
+
+    assert redis_client.ping()
+    monkeypatch.setattr(job_tasks.settings, "REDIS_URL", os.environ["TEST_REDIS_URL"])
 
 
 def test_disabled_flag_plans_nothing(monkeypatch, committed_sync_seed, redis_client):
@@ -47,7 +86,13 @@ def test_plan_due_screens_with_bc_report_and_dispatches(
     )
     # 只为负责账户的主 BC 筛选；新计划首轮同时做热刷（1 天）与 32 天回刷，
     # 各筛选一次，ad_day 等任务已派发。
-    assert calls == ["bc-a", "bc-a"] and dispatched >= 2
+    assert calls == ["bc-a", "bc-a"]
+    # 登记可能晚于该轮冻结时钟；下一个到期tick必须派发，而非要求创建前时间即可领取。
+    assert (
+        dispatched
+        + job_tasks._dispatch_pending(engine, datetime.now(UTC) + timedelta(seconds=1))
+        >= 2
+    )
 
 
 @contextmanager
@@ -152,7 +197,7 @@ def test_bc_permission_failure_falls_back_next_round(
             return RawReportPage((), 1, 0, 0)
 
     monkeypatch.setattr(job_tasks, "_reader_for", lambda **_kwargs: _ctx(Reader()))
-    now = datetime(2026, 10, 12, 3, tzinfo=UTC)
+    now = datetime.now(UTC)
     job_tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
     with factory() as s:
         assert s.get(AdSyncBc, (seed.tenant_id, "bc-a")).bc_report_supported is False
@@ -162,7 +207,14 @@ def test_bc_permission_failure_falls_back_next_round(
         now=now + timedelta(minutes=15),
     )
     # 回退为账户报表：先完成旧热刷，再立即补当前15分钟观察；32天回刷仍为2片。
-    assert calls == ["bc", *[("acc-1", "acc-2")] * 4]
+    from collections import Counter
+
+    assert calls[0] == "bc"
+    # 本地日期跨UTC转点时按时区拆批，但每账户的四个观察范围不能丢失。
+    assert Counter(account for group in calls[1:] for account in group) == {
+        "acc-1": 4,
+        "acc-2": 4,
+    }
     with factory() as session:
         assert session.get(
             AdSyncBc, (seed.tenant_id, "bc-a")
@@ -224,8 +276,12 @@ def test_gateway_admission_defers_without_failure(
         assert row.status == "WAITING" and row.attempts == 0
 
 
-def test_cleanup_removes_expired_jobs_hours_and_snapshot_rows(session, sync_seed):
+@pytest.mark.parametrize("fact_age_days", [31, 365])
+def test_cleanup_preserves_run_summaries_and_hourly_facts_but_expires_query_snapshots(
+    session, sync_seed, fact_age_days
+):
     from datetime import timedelta
+    from decimal import Decimal
     from uuid import uuid4
 
     from app.modules.reporting.jobs import enqueue_job
@@ -253,6 +309,9 @@ def test_cleanup_removes_expired_jobs_hours_and_snapshot_rows(session, sync_seed
     job = session.get(ReportSyncJob, job_id)
     job.status = "COMPLETE"
     job.finished_at = now - timedelta(days=8)
+    from app.modules.sync_control.schedule import record_report_outcome
+
+    record_report_outcome(session, job)
     snapshot = QuerySnapshot(
         tenant_id=sync_seed.tenant_id,
         bc_id="bc-a",
@@ -272,19 +331,22 @@ def test_cleanup_removes_expired_jobs_hours_and_snapshot_rows(session, sync_seed
         membership_digest="x" * 64,
     )
     session.add(row)
-    session.add(
-        CampaignReportHour(
-            tenant_id=sync_seed.tenant_id,
-            advertiser_id="acc-1",
-            stat_hour=now - timedelta(days=31),
-            campaign_id="c1",
-            currency="USD",
-            timezone="UTC",
-            fetched_at=now,
-            sync_job_id=uuid4(),
-        )
+    hour = CampaignReportHour(
+        tenant_id=sync_seed.tenant_id,
+        advertiser_id="acc-1",
+        stat_hour=now - timedelta(days=fact_age_days),
+        spend=Decimal("123.456"),
+        revenue_total=Decimal("789.012"),
+        campaign_id="c1",
+        currency="USD",
+        timezone="UTC",
+        fetched_at=now,
+        sync_job_id=uuid4(),
     )
+    session.add(hour)
     session.flush()
+    hour_key = (hour.tenant_id, hour.advertiser_id, hour.stat_hour, hour.campaign_id)
+    hour_values = hour.model_dump()
     runs = []
     for status in ("COMPLETE", "FAILED", "ACTIVE"):
         run = ReportBalanceRun(
@@ -301,21 +363,22 @@ def test_cleanup_removes_expired_jobs_hours_and_snapshot_rows(session, sync_seed
     session.flush()
     snapshot_id = snapshot.id
     assert job_tasks.cleanup_store(session, now=now) == {
-        "jobs": 1,
-        "hours": 1,
+        "jobs": 0,
+        "hours": 0,
         "snapshots": 1,
-        "balances": 2,
+        "balances": 0,
         "directory_superseded": 0,
         "directory_pages": 0,
         "material_pages": 0,
     }
     session.expire_all()
+    assert session.get(QuerySnapshot, snapshot_id) is None
     assert session.get(QuerySnapshotRow, (snapshot_id, "old")) is None
-    assert session.get(ReportSyncJob, job_id) is None
-    for run_id, status in runs:
-        assert (session.get(ReportBalanceRun, run_id) is not None) == (
-            status == "ACTIVE"
-        )
+    preserved = session.get(CampaignReportHour, hour_key)
+    assert preserved is not None and preserved.model_dump() == hour_values
+    assert session.get(ReportSyncJob, job_id) is not None
+    for run_id, _status in runs:
+        assert session.get(ReportBalanceRun, run_id) is not None
 
 
 def test_cleanup_removes_only_finished_directory_staging_pages(
@@ -619,7 +682,7 @@ def test_unexpected_failure_in_one_bc_does_not_block_others(
         return original(database_engine, redis_client, key, *args, **kwargs)
 
     monkeypatch.setattr(job_tasks, "_plan_one", flaky)
-    now = datetime(2026, 10, 12, 3, tzinfo=UTC)
+    now = datetime.now(UTC)
     job_tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
     with factory() as s:
         failed = s.get(AdSyncBc, (seed.tenant_id, "bc-a"))
@@ -644,9 +707,12 @@ def test_directory_dispatch_skips_enqueued_runs_and_is_bounded(
     monkeypatch.setattr(
         job_tasks, "_reader_for", lambda **_kwargs: _ctx(_EmptyReader())
     )
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", 2)
-    now = datetime(2026, 10, 12, 3, tzinfo=UTC)
+    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", 2)
+    now = datetime.now(UTC)
     job_tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    with factory() as registered, registered.begin():
+        job_tasks._dispatch_directories(registered, now)
 
     def queued_runs():
         with factory() as s:
@@ -688,7 +754,7 @@ def test_directory_dispatch_skips_enqueued_runs_and_is_bounded(
             ).all()
             for dispatch in dispatched:
                 run = s.get(AdDirectoryRun, UUID(dispatch.payload["run_id"]))
-                run.status = "COMPLETE"
+                _finish_directory_dispatch(s, run, now)
             s.flush()
             job_tasks._dispatch_directories(s, now)
     assert enqueued() == total
@@ -710,23 +776,28 @@ def test_lost_directory_message_is_redispatched_with_new_generation(
     from app.modules.ads.sync_models import AdDirectoryRun
 
     seed, factory = committed_sync_seed
+    _use_dispatch_redis(monkeypatch, redis_client)
     monkeypatch.setattr(job_tasks.settings, "ADS_SYNC_ENABLED", True)
     monkeypatch.setattr(
         job_tasks, "_reader_for", lambda **_kwargs: _ctx(_EmptyReader())
     )
-    now = datetime(2026, 10, 12, 3, tzinfo=UTC)
+    now = datetime.now(UTC)
     job_tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    with factory() as registered, registered.begin():
+        job_tasks._dispatch_directories(registered, now)
     with factory() as s:
-        run = s.exec(
-            select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == seed.tenant_id)
-        ).first()
-        key = f"ads.sync_step:{run.id}:{run.claim_generation}:page:{run.next_page}"
+        from uuid import UUID
+
         record = s.exec(
             select(PendingDispatch).where(
                 PendingDispatch.tenant_id == seed.tenant_id,
-                PendingDispatch.task_key == key,
+                PendingDispatch.task_name == "ads.sync_step",
             )
-        ).one()
+        ).first()
+        assert record is not None, "应先经过真实共享池领取目录任务"
+        run = s.get(AdDirectoryRun, UUID(record.payload["run_id"]))
+        key = record.task_key
         if terminal:
             from app.modules.ads.sync_models import AdDirectoryPage
 
@@ -750,7 +821,26 @@ def test_lost_directory_message_is_redispatched_with_new_generation(
         job_tasks._dispatch_directories(s, now)
     with factory() as s:
         assert s.get(AdDirectoryRun, run_id).claim_generation == generation
-    later = now + job_tasks.DIRECTORY_MESSAGE_LOST_AFTER
+    from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
+
+    with factory() as s:
+        head = s.exec(
+            select(SyncSchedule)
+            .join(
+                SyncExecutionScope, SyncExecutionScope.scope_id == SyncSchedule.scope_id
+            )
+            .where(SyncExecutionScope.directory_run_id == run_id)
+        ).first()
+        later = head.leased_until + timedelta(seconds=1)
+    # PG使用注入的later，Redis Lua使用自身TIME；让同一批queued租约也经过
+    # 相同的240秒。只移动到期时间，保留member交由真实准入Lua自然回收。
+    advance_ms = int((later - now).total_seconds() * 1000)
+    for redis_key in redis_client.scan_iter(match="*:dispatch"):
+        entries = redis_client.zrange(redis_key, 0, -1, withscores=True)
+        if entries:
+            redis_client.zadd(
+                redis_key, {member: score - advance_ms for member, score in entries}
+            )
     with Session(engine) as s, s.begin():
         job_tasks._dispatch_directories(s, later)
     with factory() as s:
@@ -816,7 +906,7 @@ def test_cold_dispatch_window_cannot_block_new_current_day_work(
     with factory() as session, session.begin():
         for index in range(12):
             enqueue(session, index, "history")
-    assert job_tasks._dispatch_pending(engine, now) == 6
+    assert job_tasks._dispatch_pending(engine, now) == 1
     assert job_tasks._dispatch_pending(engine, now) == 0
     with factory() as session, session.begin():
         running = session.exec(
@@ -825,7 +915,7 @@ def test_cold_dispatch_window_cannot_block_new_current_day_work(
                 ReportSyncJob.status == "RUNNING",
             )
         ).all()
-        assert len(running) == 6
+        assert len(running) == 1
         cold_ids = {item.id for item in running}
         hot_id = enqueue(session, 20, "hot")
     assert job_tasks._dispatch_pending(engine, now) == 1
@@ -868,6 +958,7 @@ def test_report_worker_renews_lease_and_directly_refills_outbox(
     seed, factory = committed_sync_seed
     job = _enqueue_and_claim(factory, seed)
     claim = job.claim_token
+    _use_dispatch_redis(monkeypatch, redis_client)
     now = datetime.now(UTC)
     with factory() as session, session.begin():
         row = session.get(ReportSyncJob, job.id)
@@ -896,10 +987,24 @@ def test_report_worker_renews_lease_and_directly_refills_outbox(
     monkeypatch.setattr(job_tasks.settings, "ADS_SYNC_ENABLED", True)
     monkeypatch.setattr(job_tasks, "_reader_for", reader)
 
-    def forbidden_directory_scan(*_args, **_kwargs):
-        raise AssertionError("报表完成补位不得扫描无关目录积压")
+    from sqlalchemy import event
 
-    monkeypatch.setattr(job_tasks, "_dispatch_directories", forbidden_directory_scan)
+    directory_rounds, directory_sql = [], []
+    original_directories = job_tasks._dispatch_directories
+
+    def bounded_directories(*args, **kwargs):
+        def capture(_connection, _cursor, statement, _parameters, _context, _many):
+            directory_sql.append(" ".join(statement.lower().split()))
+
+        event.listen(engine, "before_cursor_execute", capture)
+        try:
+            count = original_directories(*args, **kwargs)
+            directory_rounds.append(count)
+            return count
+        finally:
+            event.remove(engine, "before_cursor_execute", capture)
+
+    monkeypatch.setattr(job_tasks, "_dispatch_directories", bounded_directories)
     if refill_failed:
 
         def fail_refill(*_args, **_kwargs):
@@ -920,11 +1025,23 @@ def test_report_worker_renews_lease_and_directly_refills_outbox(
         if refill_failed:
             assert session.get(ReportSyncJob, next_id).status == "QUEUED"
             return
+        assert 1 <= len(directory_rounds) <= 8
+        head_queries = [
+            sql
+            for sql in directory_sql
+            if "select" in sql
+            and "from sync_schedule" in sql
+            and "sync_schedule.active" in sql
+        ]
+        assert head_queries and all(" limit " in sql for sql in head_queries)
+        # 统一补位查有界canonical需求头，不按历史消息或全目录run表找工作。
+        assert not any("from pending_dispatch" in sql for sql in directory_sql)
         assert session.get(ReportSyncJob, next_id).status == "RUNNING"
         dispatch = session.exec(
             select(PendingDispatch).where(
                 PendingDispatch.tenant_id == seed.tenant_id,
                 PendingDispatch.task_name == "reporting.backfill_step",
+                PendingDispatch.payload["job_id"].astext == str(next_id),
             )
         ).one()
         assert dispatch.payload["job_id"] == str(next_id)
@@ -963,7 +1080,7 @@ def _lane_job_scope(now, lane, index):
 @pytest.mark.parametrize("lane", ["live", "closeout", "links", "backfill"])
 @pytest.mark.parametrize("window", [2, 3])
 def test_concurrent_report_dispatchers_cannot_overfill_window(
-    monkeypatch, committed_sync_seed, lane, window
+    monkeypatch, committed_sync_seed, redis_client, request, lane, window
 ):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -976,13 +1093,16 @@ def test_concurrent_report_dispatchers_cannot_overfill_window(
     from tests.modules.reporting.test_jobs import _route
 
     seed, factory = committed_sync_seed
+    _use_dispatch_redis(monkeypatch, redis_client)
+    if lane == "backfill":
+        _set_background_window(request, window)
     monkeypatch.setattr(job_tasks.settings, "ADS_SYNC_ENABLED", True)
     now = datetime.now(UTC)
     window_name = {
         "live": "REPORT_DISPATCH_WINDOW",
-        "links": "LINK_DISPATCH_WINDOW",
-        "closeout": "CLOSEOUT_DISPATCH_WINDOW",
-        "backfill": "BACKFILL_DISPATCH_WINDOW",
+        "links": "REPORT_DISPATCH_WINDOW",
+        "closeout": "REPORT_DISPATCH_WINDOW",
+        "backfill": "REPORT_DISPATCH_WINDOW",
     }[lane]
     monkeypatch.setattr(job_tasks, window_name, window)
     with factory() as session, session.begin():
@@ -993,8 +1113,14 @@ def test_concurrent_report_dispatchers_cannot_overfill_window(
                 tenant_id=seed.tenant_id,
                 bc_id="bc-a",
                 kind=kind,
-                campaign_ids=[str(index)] if lane in {"links", "closeout"} else [],
-                tier="closeout" if lane == "closeout" else "hot",
+                campaign_ids=[str(index)]
+                if lane in {"links", "closeout", "backfill"}
+                else [],
+                tier="history"
+                if lane == "backfill"
+                else "closeout"
+                if lane == "closeout"
+                else "hot",
                 advertiser_ids=[advertiser],
                 start=day,
                 end=day,
@@ -1022,7 +1148,9 @@ def test_concurrent_report_dispatchers_cannot_overfill_window(
 
 
 @pytest.mark.parametrize("lane", ["live", "closeout", "links", "backfill"])
-def test_single_slot_refill_round_robins_three_tenants_across_rounds(monkeypatch, lane):
+def test_single_slot_refill_round_robins_three_tenants_across_rounds(
+    monkeypatch, redis_client, request, lane
+):
     from contextlib import ExitStack
     from datetime import timedelta
 
@@ -1036,15 +1164,18 @@ def test_single_slot_refill_round_robins_three_tenants_across_rounds(monkeypatch
     )
     from tests.modules.reporting.test_jobs import _route
 
+    _use_dispatch_redis(monkeypatch, redis_client)
+    if lane == "backfill":
+        _set_background_window(request, 2)
     monkeypatch.setattr(job_tasks.settings, "ADS_SYNC_ENABLED", True)
     # 两槽逐次补一槽，分别验证两条 lane 的跨租户游标而非依赖默认容量。
     monkeypatch.setattr(
         job_tasks,
         {
             "live": "REPORT_DISPATCH_WINDOW",
-            "links": "LINK_DISPATCH_WINDOW",
-            "closeout": "CLOSEOUT_DISPATCH_WINDOW",
-            "backfill": "BACKFILL_DISPATCH_WINDOW",
+            "links": "REPORT_DISPATCH_WINDOW",
+            "closeout": "REPORT_DISPATCH_WINDOW",
+            "backfill": "REPORT_DISPATCH_WINDOW",
         }[lane],
         2,
     )
@@ -1065,9 +1196,13 @@ def test_single_slot_refill_round_robins_three_tenants_across_rounds(monkeypatch
                         bc_id="bc-a",
                         kind=kind,
                         campaign_ids=[str(index)]
-                        if lane in {"links", "closeout"}
+                        if lane in {"links", "closeout", "backfill"}
                         else [],
-                        tier="closeout" if lane == "closeout" else "hot",
+                        tier="history"
+                        if lane == "backfill"
+                        else "closeout"
+                        if lane == "closeout"
+                        else "hot",
                         advertiser_ids=[advertiser],
                         start=day,
                         end=day,
@@ -1088,8 +1223,7 @@ def test_single_slot_refill_round_robins_three_tenants_across_rounds(monkeypatch
             finished = active.pop(0)
             with factory() as session, session.begin():
                 row = session.get(ReportSyncJob, finished)
-                row.status = "COMPLETE"
-                row.claim_token = row.claimed_until = None
+                _finish_report_dispatch(session, row, now)
             assert (
                 job_tasks._dispatch_pending(
                     engine, now + timedelta(seconds=round_no + 1)
@@ -1105,8 +1239,18 @@ def test_single_slot_refill_round_robins_three_tenants_across_rounds(monkeypatch
                 ).one()
                 active.append(fresh.id)
                 seen.append(fresh.tenant_id)
-        a, b, c = [s.tenant_id for s, _ in seeds]
-        assert seen == [a, b, c, a, b, c, a, b]
+        tenants = {s.tenant_id for s, _ in seeds}
+        from collections import Counter
+
+        # 同批两次派发时间相同，不承诺它们的全局FIFO次序；跨轮游标仍须保证
+        # 累计份额相差至多一次，任意连续四次均覆盖三个租户，不能饿死小租户。
+        counts = Counter(seen)
+        assert (
+            set(counts) == tenants and max(counts.values()) - min(counts.values()) <= 1
+        )
+        assert all(
+            set(seen[offset : offset + 4]) == tenants for offset in range(len(seen) - 3)
+        )
 
 
 @pytest.mark.parametrize("missing_lease", [False, True])
@@ -1147,7 +1291,17 @@ def test_expired_broker_claim_cannot_bypass_dispatch_window(
         assert row.claimed_until is None or row.claimed_until < datetime.now(UTC)
         assert row.finished_at is None
 
+    from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
+
     with factory() as session, session.begin():
+        for head in session.exec(
+            select(SyncSchedule)
+            .join(
+                SyncExecutionScope, SyncExecutionScope.scope_id == SyncSchedule.scope_id
+            )
+            .where(SyncExecutionScope.report_job_id == job.id)
+        ).all():
+            head.leased_until = datetime.now(UTC) - timedelta(seconds=1)
         job_tasks._dispatch_report_jobs(session, datetime.now(UTC))
     with factory() as session:
         row = session.get(ReportSyncJob, job.id)
@@ -1190,21 +1344,25 @@ def test_directory_dispatch_window_does_not_fill_broker_on_repeated_scans(
     job_tasks._dispatch_directories(session, now)
     job_tasks._dispatch_directories(session, now)
     dispatches = session.exec(
-        select(PendingDispatch).where(PendingDispatch.tenant_id == sync_seed.tenant_id)
+        select(PendingDispatch).where(
+            PendingDispatch.tenant_id == sync_seed.tenant_id,
+            PendingDispatch.task_name == "ads.sync_step",
+        )
     ).all()
     assert len(dispatches) == 2
     first_id = dispatches[0].payload["run_id"]
     from uuid import UUID
 
     completed = session.get(AdDirectoryRun, UUID(first_id))
-    completed.status = "COMPLETE"
+    _finish_directory_dispatch(session, completed, now)
     session.flush()
     job_tasks._dispatch_directories(session, now)
     assert (
         len(
             session.exec(
                 select(PendingDispatch).where(
-                    PendingDispatch.tenant_id == sync_seed.tenant_id
+                    PendingDispatch.tenant_id == sync_seed.tenant_id,
+                    PendingDispatch.task_name == "ads.sync_step",
                 )
             ).all()
         )
@@ -1505,9 +1663,7 @@ def test_link_backlog_cannot_consume_fact_or_cold_windows(
     seed, factory = committed_sync_seed
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 1)
-    monkeypatch.setattr(job_tasks, "LINK_DISPATCH_WINDOW", 1, raising=False)
-    monkeypatch.setattr(job_tasks, "BACKFILL_DISPATCH_WINDOW", 2)
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 4)
     with factory() as session, session.begin():
         common = {
             "tenant_id": seed.tenant_id,
@@ -1562,11 +1718,15 @@ def test_link_backlog_cannot_consume_fact_or_cold_windows(
                 ReportSyncJob.status == "RUNNING",
             )
         ).all()
-        assert {row.kind for row in running} == {"ad_day", "material_links"}
+        assert {row.kind for row in running} == {
+            "ad_day",
+            "material_day",
+            "material_links",
+        }
         assert session.get(ReportSyncJob, first).status == "RUNNING"
         assert session.get(ReportSyncJob, cold).status == "RUNNING"
-        session.get(ReportSyncJob, first).status = "COMPLETE"
-    assert job_tasks._dispatch_pending(engine, now) == 1
+        _finish_report_dispatch(session, session.get(ReportSyncJob, first), now)
+    assert job_tasks._dispatch_pending(engine, now) == 0
     with factory() as session:
         assert session.get(ReportSyncJob, second).status == "RUNNING"
     assert job_tasks._dispatch_pending(engine, now) == 0
@@ -1592,7 +1752,7 @@ def test_low_budget_links_only_claim_current_day_with_shared_capacity(
     seed, factory = committed_sync_seed
     now = datetime.now(UTC)
     today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
-    monkeypatch.setattr(job_tasks, "LINK_DISPATCH_WINDOW", 1)
+    monkeypatch.setattr(job_tasks, "REPORT_DISPATCH_WINDOW", 1)
     with factory() as session, session.begin():
         common = {
             "tenant_id": seed.tenant_id,
@@ -1621,18 +1781,18 @@ def test_low_budget_links_only_claim_current_day_with_shared_capacity(
         if missing_timezone:
             session.get(AdvertiserAccount, (seed.tenant_id, "acc-1")).timezone = ""
     first_count = job_tasks._dispatch_pending(engine, now, allow_backfill=False)
-    assert first_count == (0 if missing_timezone else 1)
+    assert first_count == (0 if missing_timezone or historical_running else 1)
     with factory() as session, session.begin():
         assert session.get(ReportSyncJob, old).status == (
             "RUNNING" if historical_running else "QUEUED"
         )
         assert session.get(ReportSyncJob, current).status == (
-            "QUEUED" if missing_timezone else "RUNNING"
+            "QUEUED" if missing_timezone or historical_running else "RUNNING"
         )
         if historical_running:
-            session.get(ReportSyncJob, old).status = "COMPLETE"
+            _finish_report_dispatch(session, session.get(ReportSyncJob, old), now)
     if historical_running:
-        assert job_tasks._dispatch_pending(engine, now, allow_backfill=False) == 0
+        assert job_tasks._dispatch_pending(engine, now, allow_backfill=False) == 1
         with factory() as session:
             assert session.get(ReportSyncJob, current).status == "RUNNING"
     assert job_tasks._dispatch_pending(engine, now, allow_backfill=False) == 0
@@ -1642,39 +1802,38 @@ def test_low_budget_links_only_claim_current_day_with_shared_capacity(
 def test_directory_dispatch_loads_only_available_candidates(
     session, sync_seed, monkeypatch, full_slots, targeted_slots
 ):
-    """大积压不能完整搬进ORM；独立两类空槽仍须各自填满。"""
-    from datetime import timedelta
-
+    """同scope的60个冻结执行只取可用头，不将全部历史搬进ORM。"""
     from sqlalchemy import event
 
     from app.jobs.models import PendingDispatch
-    from app.modules.ads import directory_dispatch
     from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.directory_demand import register_directory_run
     from tests.modules.reporting.test_jobs import _route
 
     now = datetime.now(UTC)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", full_slots)
-    monkeypatch.setattr(directory_dispatch, "TARGETED_DISPATCH_WINDOW", targeted_slots)
-    tenant_id, actor_id = sync_seed.tenant_id, sync_seed.actor_id
-    route, connection_id = _route(sync_seed), sync_seed.connection.id
+    monkeypatch.setattr(
+        job_tasks, "DIRECTORY_DISPATCH_WINDOW", full_slots + targeted_slots
+    )
+    tenant_id = sync_seed.tenant_id
     for index in range(60):
-        session.add(
-            AdDirectoryRun(
-                tenant_id=tenant_id,
-                advertiser_id="acc-1",
-                bc_id="bc-a",
-                actor_id=actor_id,
-                connection_id=connection_id,
-                channel="OFFICIAL_API",
-                frozen_route=route,
-                partition_key=f"{index:064x}",
-                query={"ids": [f"ad-{index}"]} if index < 30 else {},
-                status="QUEUED",
-                kind="ad",
-                ad_type="SMART_PLUS",
-                created_at=now - timedelta(seconds=60 - index),
-            )
+        run = AdDirectoryRun(
+            tenant_id=tenant_id,
+            advertiser_id="acc-1",
+            bc_id="bc-a",
+            actor_id=sync_seed.actor_id,
+            connection_id=sync_seed.connection.id,
+            frozen_route=_route(sync_seed),
+            partition_key=f"{index:064x}",
+            query={"ids": [f"ad-{index}"]} if index < 30 else {},
+            status="QUEUED",
+            kind="ad",
+            ad_type="SMART_PLUS",
+            created_at=now - timedelta(seconds=60 - index),
+            next_attempt_at=now,
         )
+        session.add(run)
+        session.flush()
+        register_directory_run(session, run)
     session.flush()
     session.expunge_all()
     loaded = []
@@ -1685,80 +1844,92 @@ def test_directory_dispatch_loads_only_available_candidates(
 
     event.listen(session, "loaded_as_persistent", track_load)
     try:
-        assert (
-            job_tasks._dispatch_directories(session, now) == full_slots + targeted_slots
-        )
+        assert job_tasks._dispatch_directories(session, now) == 1
     finally:
         event.remove(session, "loaded_as_persistent", track_load)
-    assert len(loaded) <= full_slots + targeted_slots
-    dispatched = session.exec(
+    assert len(loaded) == 1
+    messages = session.exec(
         select(PendingDispatch).where(
             PendingDispatch.tenant_id == tenant_id,
+            PendingDispatch.task_name.in_(["ads.sync_step", "ads.targeted_step"]),
         )
     ).all()
-    assert sum(d.task_name == "ads.sync_step" for d in dispatched) == full_slots
-    assert sum(d.task_name == "ads.targeted_step" for d in dispatched) == targeted_slots
+    assert len(messages) == 1 and messages[0].task_name == "ads.targeted_step"
+    assert job_tasks._dispatch_directories(session, now) == 0
 
 
 @pytest.mark.parametrize("batch", [1, 2])
 def test_bounded_directory_candidates_preserve_tenant_turns(monkeypatch, batch):
     from contextlib import ExitStack
-    from datetime import timedelta
 
     from app.jobs.models import PendingDispatch
-    from app.modules.ads import directory_dispatch
     from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.directory_demand import register_directory_run
     from tests.modules.reporting.sync_conftest import (
         committed_sync_seed as seed_fixture,
     )
     from tests.modules.reporting.test_jobs import _route
 
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", batch)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", 2)
-    monkeypatch.setattr(directory_dispatch, "TARGETED_DISPATCH_WINDOW", 2)
+    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_WINDOW", batch)
     with ExitStack() as stack:
         seeds = [
             stack.enter_context(contextmanager(seed_fixture.__wrapped__)())
             for _ in range(2)
         ]
         factory, now = seeds[0][1], datetime.now(UTC)
-        with factory() as s, s.begin():
+        with factory() as session, session.begin():
             for rank, (seed, _) in enumerate(seeds):
-                s.add(
-                    job_tasks.DirectoryDispatchCursor(
-                        tenant_id=seed.tenant_id,
-                        last_dispatched_at=now - timedelta(minutes=2 - rank),
-                    )
-                )
                 for index in range(4):
-                    s.add(
-                        AdDirectoryRun(
-                            tenant_id=seed.tenant_id,
-                            advertiser_id="acc-1",
-                            bc_id="bc-a",
-                            actor_id=seed.actor_id,
-                            connection_id=seed.connection.id,
-                            channel="OFFICIAL_API",
-                            frozen_route=_route(seed),
-                            partition_key=f"{index:064x}",
-                            query={"ids": [f"ad-{index}"]} if index < 2 else {},
-                            status="QUEUED",
-                            kind="ad",
-                            ad_type="SMART_PLUS",
-                            created_at=now - timedelta(seconds=20 - rank * 5 - index),
+                    run = AdDirectoryRun(
+                        tenant_id=seed.tenant_id,
+                        advertiser_id="acc-1",
+                        bc_id="bc-a",
+                        actor_id=seed.actor_id,
+                        connection_id=seed.connection.id,
+                        frozen_route=_route(seed),
+                        partition_key=f"{index:064x}",
+                        query={"ids": [f"ad-{index}"]},
+                        status="QUEUED",
+                        kind="ad",
+                        ad_type="SMART_PLUS",
+                        created_at=now - timedelta(seconds=20 - rank * 5 - index),
+                        next_attempt_at=now,
+                    )
+                    session.add(run)
+                    session.flush()
+                    register_directory_run(session, run)
+        with factory() as session, session.begin():
+            assert job_tasks._dispatch_directories(session, now) == batch
+        if batch == 1:
+            with factory() as session, session.begin():
+                from uuid import UUID
+
+                first_message = session.exec(
+                    select(PendingDispatch).where(
+                        PendingDispatch.task_name.in_(
+                            ["ads.sync_step", "ads.targeted_step"]
                         )
                     )
-        with factory() as s, s.begin():
-            assert job_tasks._dispatch_directories(s, now) == batch
-        if batch == 1:
-            with factory() as s, s.begin():
-                assert (
-                    job_tasks._dispatch_directories(s, now + timedelta(seconds=1)) == 1
+                ).one()
+                first_run = session.get(
+                    AdDirectoryRun, UUID(first_message.payload["run_id"])
                 )
-        with factory() as s:
-            rows = s.exec(select(PendingDispatch)).all()
-            assert len(rows) == 2
-            assert {r.tenant_id for r in rows} == {seed.tenant_id for seed, _ in seeds}
+                _finish_directory_dispatch(session, first_run, now)
+                assert (
+                    job_tasks._dispatch_directories(session, now + timedelta(seconds=1))
+                    == 1
+                )
+        with factory() as session:
+            rows = session.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.task_name.in_(
+                        ["ads.sync_step", "ads.targeted_step"]
+                    )
+                )
+            ).all()
+            assert len(rows) == 2 and {r.tenant_id for r in rows} == {
+                seed.tenant_id for seed, _ in seeds
+            }
 
 
 @pytest.mark.parametrize("different_route", [False, True])
@@ -1807,6 +1978,9 @@ def test_duplicate_full_creative_scan_finishes_newest_exact_scope_first(
     )
     session.add(newer)
     session.flush()
+    from app.modules.sync_control.directory_demand import register_directory_run
+
+    register_directory_run(session, newer)
     assert newer.request_sequence > older.request_sequence
     assert job_tasks._dispatch_directories(session, datetime.now(UTC)) == 1
     dispatch = session.exec(
@@ -1815,9 +1989,7 @@ def test_duplicate_full_creative_scan_finishes_newest_exact_scope_first(
             PendingDispatch.tenant_id == sync_seed.tenant_id,
         )
     ).one()
-    assert UUID(dispatch.payload["run_id"]) == (
-        older.id if different_route else newer.id
-    )
+    assert UUID(dispatch.payload["run_id"]) == older.id
     # 只调整执行顺序，旧任务和分页未伪报成功、未删除。
     session.refresh(older)
     assert older.status == "RUNNING" and older.published_version is None
@@ -2086,3 +2258,56 @@ def test_offset_live_clocks_do_not_duplicate_hot_rounds(
             plan = s.get(AdSyncBc, (seed.tenant_id, "bc-a"))
             assert plan.next_material_at == plan.next_hot_at
             assert plan.next_hot_at == now + timedelta(minutes=(minute // 15 + 1) * 15)
+
+
+def _finish_report_dispatch(session, row, _now):
+    """模拟消费者完成时也结算持久头和自己的queued占位，不只改父任务状态。"""
+    from redis import Redis
+
+    from app.core.config import settings
+    from app.modules.sync_control.occupancy import release_dispatch
+    from app.modules.sync_control.schedule import record_report_outcome, report_endpoint
+
+    token = row.claim_token
+    row.status = "COMPLETE"
+    row.claim_token = row.claimed_until = None
+    record_report_outcome(session, row)
+    if token:
+        endpoint = report_endpoint(row.kind)
+        with Redis.from_url(settings.REDIS_URL) as redis:
+            release_dispatch(
+                redis,
+                reservation_id=token,
+                app_scope=settings.TIKTOK_APP_ID,
+                endpoint=endpoint,
+                rate_group=endpoint,
+                tenant_id=row.tenant_id,
+                advertiser_id=row.advertiser_ids[0],
+            )
+
+
+def _finish_directory_dispatch(session, run, _now):
+    from redis import Redis
+
+    from app.core.config import settings
+    from app.modules.ads.directory_dispatch import directory_step_key
+    from app.modules.sync_control.directory_demand import (
+        directory_endpoint,
+        directory_outcome,
+    )
+    from app.modules.sync_control.occupancy import release_dispatch
+
+    endpoint = directory_endpoint(run)
+    with Redis.from_url(settings.REDIS_URL) as redis:
+        release_dispatch(
+            redis,
+            reservation_id=directory_step_key(run),
+            app_scope=settings.TIKTOK_APP_ID,
+            endpoint=endpoint,
+            rate_group=endpoint,
+            tenant_id=run.tenant_id,
+            advertiser_id=run.advertiser_id,
+        )
+    run.status = "COMPLETE"
+    run.claim_token = run.claimed_until = None
+    directory_outcome(session, run)

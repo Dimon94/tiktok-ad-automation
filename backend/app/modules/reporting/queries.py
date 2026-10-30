@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -21,6 +22,7 @@ from sqlmodel import Session, col, select
 from app.core.context import TenantContext
 from app.core.db import engine
 from app.modules.accounts.models import TenantBC
+from app.modules.reporting import query_diagnostics
 from app.modules.reporting.dimension_query import (
     materialize_rows,
     metric_vector,
@@ -31,7 +33,16 @@ from app.modules.reporting.query_models import (
     QuerySnapshotRow,
     read_snapshot,
     read_snapshot_rows,
-    snapshot_transaction,
+)
+from app.modules.reporting.query_reuse import (
+    QueryCancellation,
+    find_or_build_snapshot,
+    query_key,
+    reuse_in_transaction,
+)
+from app.modules.reporting.read_models.coverage import (
+    projected_states,
+    projection_coverage,
 )
 from app.modules.reporting.row_set import (
     MATERIAL_UNSUPPORTED,
@@ -119,6 +130,7 @@ def _summary(totals: SnapshotTotals, *, dimension: str) -> dict[str, Any]:
 def _snapshot_public(snapshot: QuerySnapshot) -> QuerySnapshotPublic:
     return QuerySnapshotPublic(
         snapshot_id=snapshot.id,
+        snapshot_at=snapshot.created_at,
         expires_at=snapshot.expires_at,
         filters=ReportingFilter.model_validate(snapshot.filters),
         publication_versions=snapshot.publication_versions,
@@ -151,6 +163,7 @@ def _check_cursor(
     return sequence
 
 
+@query_diagnostics.timed("snapshot")
 def _build_snapshot(
     session: Session,
     *,
@@ -167,6 +180,7 @@ def _build_snapshot(
     ):
         raise HTTPException(403, detail="report_scope_forbidden")
     allowed_ids = sorted({item.advertiser_id for item in grants})
+    query_diagnostics.count("account_count", len(allowed_ids))
     now = datetime.now(UTC)
     publication_versions = {"reporting": 1}
     updated = session.exec(
@@ -217,11 +231,28 @@ def _build_snapshot(
         else ("COMPLETE" if totals.complete else "INCOMPLETE"),
         "rows": totals.total,
     }
+    if filters.dimension == "material":
+        _, states = projected_states(
+            session,
+            tenant_id=context.tenant_id,
+            advertisers=allowed_ids,
+            start=filters.start_date,
+            end=filters.end_date,
+        )
+        projected = projection_coverage(states)
+        snapshot.coverage = {
+            **snapshot.coverage,
+            "projection": projected,
+            "status": "BUILDING"
+            if projected["unavailable_bucket_count"]
+            else snapshot.coverage["status"],
+        }
     session.add(snapshot)
     session.flush()
     return snapshot
 
 
+@query_diagnostics.timed("page")
 def _read_page(
     session: Session,
     *,
@@ -273,6 +304,34 @@ def _read_page(
                 "sequence": rows[-1].stable_sequence,
             }
         )
+    metrics_coverage = {}
+    if filters.dimension == "material":
+        _, states = projected_states(
+            session,
+            tenant_id=context.tenant_id,
+            advertisers=snapshot.advertiser_ids,
+            start=filters.start_date,
+            end=filters.end_date,
+        )
+        metrics_coverage = projection_coverage(states)
+        raw_observed = metrics_coverage["metrics_observed_at"]
+        observed = datetime.fromisoformat(raw_observed) if raw_observed else None
+    else:
+        observed = session.exec(
+            select(
+                func.max(
+                    func.coalesce(
+                        ReportSyncState.observed_at, ReportSyncState.last_success_at
+                    )
+                )
+            ).where(
+                ReportSyncState.tenant_id == context.tenant_id,
+                col(ReportSyncState.advertiser_id).in_(snapshot.advertiser_ids),
+                ReportSyncState.report_kind == "ad_day",
+                ReportSyncState.stat_date >= filters.start_date,
+                ReportSyncState.stat_date <= filters.end_date,
+            )
+        ).one()
     return AdsQueryPage(
         snapshot=_snapshot_public(snapshot),
         items=items,
@@ -280,9 +339,12 @@ def _read_page(
         summary=snapshot.summary,
         coverage=snapshot.coverage,
         next_cursor=next_cursor,
+        metrics_observed_at=observed,
+        metrics_coverage=metrics_coverage,
     )
 
 
+@query_diagnostics.trace_query
 def query_ads(
     session: Session,
     *,
@@ -292,6 +354,7 @@ def query_ads(
     snapshot_id: UUID | None = None,
     cursor: str | None = None,
     limit: int = 50,
+    cancellation: QueryCancellation | None = None,
 ) -> AdsQueryPage:
     """查询本地快照，分页游标始终绑定租户、BC、用户和筛选摘要。"""
     if not 1 <= limit <= 100:
@@ -318,14 +381,33 @@ def query_ads(
         if not grants:
             raise HTTPException(404, detail="query_scope_not_found")
         if session.get_bind() is engine:
-            with snapshot_transaction(engine) as snapshot_session:
-                snapshot = _build_snapshot(
-                    snapshot_session, context=context, bc_id=bc_id, filters=filters
+            # API查询会话到此只有授权读取；等待共享构建前释放其连接，避免20个
+            # 等待者占满连接池，反过来阻止唯一构建者取得RR连接。
+            if session.new or session.dirty or session.deleted:
+                raise RuntimeError(
+                    "snapshot query requires a read-only request session"
                 )
-        else:
-            snapshot = _build_snapshot(
-                session, context=context, bc_id=bc_id, filters=filters
+            session.rollback()
+            if cancellation:
+                cancellation.key = query_key(context, bc_id, filters)
+            snapshot = find_or_build_snapshot(
+                engine,
+                context=context,
+                bc_id=bc_id,
+                filters=filters,
+                builder=_build_snapshot,
+                cancelled=cancellation.event.is_set if cancellation else lambda: False,
+                waiter_id=cancellation.waiter_id if cancellation else None,
             )
+        else:
+            with cancellation.private_query(session) if cancellation else nullcontext():
+                snapshot = reuse_in_transaction(
+                    session,
+                    context=context,
+                    bc_id=bc_id,
+                    filters=filters,
+                    builder=_build_snapshot,
+                )
         snapshot = read_snapshot(
             session, context=context, bc_id=bc_id, snapshot_id=snapshot.id
         )
@@ -337,15 +419,16 @@ def query_ads(
             raise HTTPException(404, detail="query_snapshot_not_found")
         if snapshot.filter_digest != filter_digest(filters):
             raise HTTPException(409, detail="query_snapshot_filter_mismatch")
-    return _read_page(
-        session,
-        context=context,
-        bc_id=bc_id,
-        filters=filters,
-        snapshot=snapshot,
-        cursor=cursor,
-        limit=limit,
-    )
+    with cancellation.private_query(session) if cancellation else nullcontext():
+        return _read_page(
+            session,
+            context=context,
+            bc_id=bc_id,
+            filters=filters,
+            snapshot=snapshot,
+            cursor=cursor,
+            limit=limit,
+        )
 
 
 def snapshot_naming_versions(
@@ -368,7 +451,7 @@ def snapshot_naming_versions(
                 p.advertiser_id, p.campaign_remote_id, p.name_revision
             FROM unnest(CAST(:advertisers AS text[]), CAST(:campaigns AS text[]))
                 AS k(advertiser_id, campaign_remote_id)
-            JOIN campaign_name_projection p
+            JOIN campaign_name_current p
               ON p.tenant_id = :tenant_id
              AND p.advertiser_id = k.advertiser_id
              AND p.campaign_remote_id = k.campaign_remote_id

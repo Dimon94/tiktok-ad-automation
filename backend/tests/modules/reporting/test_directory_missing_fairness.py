@@ -1,57 +1,79 @@
-"""缺失与普通状态刷新沿同一服务持久轮转，不改变平台请求。"""
+"""统一需求合同：缺口范围不能被旧观察吞掉，scope与成本公平不依赖旧32槽。"""
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from sqlmodel import select
+
 from app.modules.ads import directory_dispatch
 from app.modules.ads.directory_services import directory_service
-from app.modules.reporting import job_tasks
-from tests.modules.reporting.test_directory_service_share import pending, sent
+from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
+from app.modules.reporting.store_models import ReportDispatchCursor
+from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+from app.modules.sync_control.models import (
+    SyncExecutionScope,
+    SyncRequirement,
+    SyncSchedule,
+)
+from tests.modules.reporting.directory_claiming import finish, pending, sent
+from tests.modules.sync_control.conftest import (
+    isolated_sync_quota as isolated_sync_quota,
+)
 
 
-def test_batch_one_remembers_last_completed_status_class(
-    session, sync_seed, monkeypatch
+def tick(session, redis, *, limit=1):
+    return dispatch_directories_due(
+        session, redis, now=datetime.now(UTC) + timedelta(seconds=1), limit=limit
+    )
+
+
+def test_completed_old_range_keeps_new_missing_requirement_and_reclaims(
+    session, sync_seed, redis_client
 ):
-    now = datetime.now(UTC)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", 1)
-    for _ in range(4):
-        pending(session, sync_seed, "status", now, old=True)
-        pending(session, sync_seed, "status_missing", now)
-    session.flush()
-    classes = []
-    for turn in range(6):
-        assert (
-            job_tasks._dispatch_directories(session, now + timedelta(seconds=turn)) == 1
+    old = pending(session, sync_seed, age=60)
+    missing = pending(session, sync_seed, "status_missing")
+    assert session.exec(select(SyncSchedule)).one().active
+    assert tick(session, redis_client) == 1
+    assert [r.id for r in sent(session)] == [old.id]
+    finish(session, redis_client, old, now=datetime.now(UTC))
+    ref = session.exec(
+        select(SyncExecutionScope).where(
+            SyncExecutionScope.directory_run_id == missing.id
         )
-        active = [r for r in sent(session) if r.status == "QUEUED"]
+    ).one()
+    demand = session.get(SyncRequirement, ref.requirement_id)
+    assert demand.satisfied_revision < demand.desired_revision
+    assert session.exec(select(SyncSchedule)).one().active
+    assert tick(session, redis_client) == 1
+    assert {r.id for r in sent(session)} == {old.id, missing.id}
+    finish(session, redis_client, missing, now=datetime.now(UTC))
+    assert not session.exec(select(SyncSchedule)).one().active
+
+
+def test_cost_classes_both_progress_with_single_available_slot(
+    session, sync_seed, redis_client
+):
+    for i in range(16):
+        pending(session, sync_seed, "identity", advertiser="acc-2", age=60)
+        pending(session, sync_seed, "status_missing" if i % 2 else "status")
+    classes = []
+    for _ in range(13):
+        assert tick(session, redis_client) == 1
+        active = [r for r in sent(session) if r.status != "COMPLETE"]
         assert len(active) == 1
-        classes.append(active[0].query["directory_service_v1"])
-        active[0].status = "COMPLETE"
-        session.flush()
-    assert classes == ["status_missing", "status"] * 3
+        classes.append(directory_service(active[0]))
+        finish(session, redis_client, active[0], now=datetime.now(UTC))
+    # 相同endpoint的实际单次发送成本50:15，13次应为10:3；不以调用次数伪装成本。
+    assert classes.count("status") == 10 and classes.count("identity") == 3
 
 
-def test_missing_and_regular_share_status_half_of_32(session, sync_seed):
-    now = datetime.now(UTC)
-    for _ in range(40):
-        for kind in ("status", "status_missing", "identity"):
-            pending(session, sync_seed, kind, now, old=kind != "status_missing")
-    session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 32
-    classes = [r.query["directory_service_v1"] for r in sent(session)]
-    assert {kind: classes.count(kind) for kind in set(classes)} == {
-        "status": 8,
-        "status_missing": 8,
-        "identity": 16,
-    }
-
-
-def test_initial_status_cannot_jump_other_class_turn(session, sync_seed):
-    now = datetime.now(UTC)
-    pending(session, sync_seed, "status_missing", now)
-    newcomer = pending(session, sync_seed, "status", now, old=True)
-    session.flush()
-    directory_dispatch.enqueue_directory_step(session, newcomer, initial=True)
+def test_initial_producer_only_wakes_canonical_head(session, sync_seed, redis_client):
+    old = pending(session, sync_seed, age=60)
+    new = pending(session, sync_seed, "status_missing")
+    directory_dispatch.enqueue_directory_step(session, new, initial=True)
     assert sent(session) == []
+    assert tick(session, redis_client) == 1
+    assert [r.id for r in sent(session)] == [old.id]
 
 
 def test_missing_class_is_status_and_keeps_partition():
@@ -65,139 +87,93 @@ def test_missing_class_is_status_and_keeps_partition():
     assert _partition_key(marked) == _partition_key(query)
 
 
-def test_immediate_admission_remembers_turn_but_page_continuation_does_not(
-    session, sync_seed
+def test_page_continuation_wakes_but_cannot_bypass_fair_claim(
+    session, sync_seed, redis_client
 ):
-    from app.modules.reporting.store_models import DirectoryDispatchCursor
-
-    now = datetime.now(UTC)
-    regular = pending(session, sync_seed, "status", now)
-    missing = pending(session, sync_seed, "status_missing", now)
-    other_missing = pending(session, sync_seed, "status_missing", now)
-    session.flush()
-    directory_dispatch.enqueue_directory_step(session, missing, initial=True)
-    assert {r.id for r in sent(session)} == {missing.id}
-    assert (
-        session.get(DirectoryDispatchCursor, sync_seed.tenant_id).last_status_missing
-        is True
-    )
-    directory_dispatch.enqueue_directory_step(session, other_missing, initial=True)
-    assert {r.id for r in sent(session)} == {missing.id}
-    directory_dispatch.enqueue_directory_step(session, regular, initial=True)
-    session.expire_all()
-    assert (
-        session.get(DirectoryDispatchCursor, sync_seed.tenant_id).last_status_missing
-        is False
-    )
-    missing.next_page = 2
-    session.flush()
-    directory_dispatch.enqueue_directory_step(session, missing)
-    session.expire_all()
-    assert (
-        session.get(DirectoryDispatchCursor, sync_seed.tenant_id).last_status_missing
-        is False
-    )
+    run = pending(session, sync_seed, "status_missing")
+    assert tick(session, redis_client) == 1
+    first_generation = run.claim_generation
+    run.next_page = 2
+    directory_dispatch.enqueue_directory_step(session, run)
+    assert len(sent(session)) == 1
+    assert tick(session, redis_client) == 1
+    assert run.claim_generation == first_generation + 1
+    assert len(sent(session)) == 2
 
 
-def test_rollback_does_not_consume_status_turn(session, sync_seed, monkeypatch):
-    from app.modules.reporting.store_models import DirectoryDispatchCursor
-
-    now = datetime.now(UTC)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", 1)
-    pending(session, sync_seed, "status", now, old=True)
-    missing = pending(session, sync_seed, "status_missing", now)
-    session.flush()
+def test_rollback_preserves_requirements_and_fairness(session, sync_seed, redis_client):
+    run = pending(session, sync_seed, "status_missing")
+    before = run.claim_generation
     savepoint = session.begin_nested()
-    assert job_tasks._dispatch_directories(session, now) == 1
-    assert (
-        session.get(DirectoryDispatchCursor, sync_seed.tenant_id).last_status_missing
-        is True
-    )
+    assert tick(session, redis_client) == 1
     savepoint.rollback()
     session.expire_all()
-    assert session.get(DirectoryDispatchCursor, sync_seed.tenant_id) is None
-    assert sent(session) == []
-    assert job_tasks._dispatch_directories(session, now) == 1
-    assert [r.id for r in sent(session)] == [missing.id]
+    assert sent(session) == [] and run.claim_generation == before
+    assert session.get(ReportDispatchCursor, sync_seed.tenant_id) is None
+    assert session.exec(select(SyncSchedule)).one().lease_token is None
+    # Redis短期预留不回滚，因此本断言不把再次发送当作数据库回滚成功的必要条件。
+    ref = session.exec(select(SyncExecutionScope)).one()
+    demand = session.get(SyncRequirement, ref.requirement_id)
+    assert demand.satisfied_revision < demand.desired_revision
 
 
-def test_three_status_classes_preserve_tenant_shares(session, sync_seed):
+def test_cross_tenant_scope_rotation_is_not_swallowed_by_backlog(
+    session, sync_seed, redis_client
+):
     from tests.modules.reporting.sync_conftest import sync_seed as seed_fixture
 
     other = seed_fixture.__wrapped__(session)
-    now = datetime.now(UTC)
     for seed in (sync_seed, other):
-        for _ in range(24):
-            for kind in ("status", "status_missing", "identity"):
-                pending(session, seed, kind, now, old=kind != "status_missing")
-    session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 32
-    for seed in (sync_seed, other):
-        classes = [
-            r.query["directory_service_v1"]
-            for r in sent(session)
-            if r.tenant_id == seed.tenant_id
-        ]
-        assert {kind: classes.count(kind) for kind in set(classes)} == {
-            "status": 4,
-            "status_missing": 4,
-            "identity": 8,
-        }
+        for i in range(8):
+            pending(session, seed, "status_missing", advertiser=f"scope-{i}")
+    assert tick(session, redis_client, limit=4) == 4
+    assert sum(r.tenant_id == sync_seed.tenant_id for r in sent(session)) == 2
+    assert sum(r.tenant_id == other.tenant_id for r in sent(session)) == 2
+    assert tick(session, redis_client, limit=4) == 0
 
 
-def test_only_missing_class_borrows_entire_window(session, sync_seed):
-    from app.modules.reporting.store_models import DirectoryDispatchCursor
-
-    now = datetime.now(UTC)
-    for _ in range(33):
-        pending(session, sync_seed, "status_missing", now)
-    session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 32
-    assert job_tasks._dispatch_directories(session, now) == 0
-    assert (
-        session.get(DirectoryDispatchCursor, sync_seed.tenant_id).last_status_missing
-        is True
-    )
+def test_single_work_class_uses_entire_execution_window(
+    session, sync_seed, redis_client
+):
+    for i in range(6):
+        pending(session, sync_seed, "status_missing", advertiser=f"scope-{i}")
+    assert tick(session, redis_client, limit=4) == 4
+    assert tick(session, redis_client, limit=4) == 0
+    assert len(sent(session)) == 4
 
 
-def test_locked_missing_head_yields_to_regular_and_refills(committed_sync_seed):
-    from sqlmodel import select
-
-    from app.modules.ads.sync_models import AdDirectoryRun
-
+def test_locked_head_does_not_block_other_scope(committed_sync_seed, redis_client):
     seed, factory = committed_sync_seed
-    now = datetime.now(UTC)
     with factory() as db, db.begin():
-        missing = pending(db, seed, "status_missing", now).id
-        regular_ids = [pending(db, seed, "status", now).id for _ in range(32)]
-    with factory() as blocker, blocker.begin():
-        blocker.exec(
-            select(AdDirectoryRun).where(AdDirectoryRun.id == missing).with_for_update()
+        first = pending(db, seed, "status_missing").id
+        second = pending(db, seed, advertiser="acc-2").id
+    with factory() as lock, lock.begin():
+        lock.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.id == first).with_for_update()
         ).one()
         with factory() as db, db.begin():
-            assert job_tasks._dispatch_directories(db, now) == 32
-            assert {r.id for r in sent(db)} == set(regular_ids)
+            assert tick(db, redis_client) == 1
+            assert [r.id for r in sent(db)] == [second]
 
 
-def test_initial_ignores_locked_other_class(committed_sync_seed):
-    from sqlmodel import select
-
-    from app.modules.ads.sync_models import AdDirectoryRun
-
+def test_locked_other_scope_does_not_make_producer_send_directly(
+    committed_sync_seed, redis_client
+):
     seed, factory = committed_sync_seed
-    now = datetime.now(UTC)
     with factory() as db, db.begin():
-        missing = pending(db, seed, "status_missing", now).id
-        regular = pending(db, seed, "status", now).id
-    with factory() as blocker, blocker.begin():
-        blocker.exec(
-            select(AdDirectoryRun).where(AdDirectoryRun.id == missing).with_for_update()
+        first = pending(db, seed, "status_missing").id
+        second = pending(db, seed, advertiser="acc-2").id
+    with factory() as lock, lock.begin():
+        lock.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.id == first).with_for_update()
         ).one()
         with factory() as db, db.begin():
             directory_dispatch.enqueue_directory_step(
-                db, db.get(AdDirectoryRun, regular), initial=True
+                db, db.get(AdDirectoryRun, second), initial=True
             )
-            assert [r.id for r in sent(db)] == [regular]
+            assert sent(db) == []
+            assert tick(db, redis_client) == 1
+            assert [r.id for r in sent(db)] == [second]
 
 
 def test_missing_service_serialized_task_uses_existing_metadata_strip(
@@ -212,75 +188,37 @@ def test_missing_service_serialized_task_uses_existing_metadata_strip(
     )
 
 
-def test_scanner_page_and_local_publish_recovery_preserve_turn(
-    session, sync_seed, monkeypatch
+@pytest.mark.parametrize("terminal", [False, True])
+def test_recovery_claim_preserves_page_and_uses_correct_delivery(
+    session, sync_seed, redis_client, terminal
 ):
-    from app.modules.ads.sync_models import AdDirectoryPage
-    from app.modules.reporting.store_models import DirectoryDispatchCursor
+    from app.jobs.models import PendingDispatch
 
-    now = datetime.now(UTC)
-    monkeypatch.setattr(job_tasks, "DIRECTORY_DISPATCH_BATCH", 1)
-    session.add(
-        DirectoryDispatchCursor(
-            tenant_id=sync_seed.tenant_id,
-            last_dispatched_at=now,
-            last_status_missing=False,
-        )
-    )
-    for terminal in (False, True):
-        run = pending(session, sync_seed, "status_missing", now)
-        run.next_page = 1 if terminal else 2
-        if terminal:
-            session.add(
-                AdDirectoryPage(
-                    run_id=run.id,
-                    page=1,
-                    tenant_id=run.tenant_id,
-                    advertiser_id=run.advertiser_id,
-                    claim_generation=1,
-                    complete=True,
-                    items=[],
-                    materials=[],
-                    evidence={},
-                )
+    run = pending(session, sync_seed, "status_missing")
+    run.next_page = 1 if terminal else 2
+    if terminal:
+        session.add(
+            AdDirectoryPage(
+                run_id=run.id,
+                page=1,
+                tenant_id=run.tenant_id,
+                advertiser_id=run.advertiser_id,
+                claim_generation=run.claim_generation,
+                complete=True,
+                items=[],
+                materials=[],
+                evidence={},
             )
-        session.flush()
-        assert job_tasks._dispatch_directories(session, now) == 1
-        session.expire_all()
-        assert (
-            session.get(
-                DirectoryDispatchCursor, sync_seed.tenant_id
-            ).last_status_missing
-            is False
         )
-        run.status = "COMPLETE"
-        session.flush()
-
-
-def test_initial_flag_cannot_advance_recovery_turn(session, sync_seed):
-    from app.modules.reporting.store_models import DirectoryDispatchCursor
-
-    now = datetime.now(UTC)
-    session.add(
-        DirectoryDispatchCursor(
-            tenant_id=sync_seed.tenant_id,
-            last_dispatched_at=now,
-            last_status_missing=False,
+    session.flush()
+    assert tick(session, redis_client) == 1
+    delivery = session.exec(
+        select(PendingDispatch).where(
+            PendingDispatch.task_name.in_(["ads.targeted_step", "ads.publish_step"])
         )
+    ).one()
+    assert delivery.task_name == (
+        "ads.publish_step" if terminal else "ads.targeted_step"
     )
-    for publish_only in (False, True):
-        run = pending(session, sync_seed, "status_missing", now)
-        run.next_page = 1 if publish_only else 2
-        session.flush()
-        directory_dispatch.enqueue_directory_step(
-            session, run, initial=True, publish_only=publish_only
-        )
-        session.expire_all()
-        assert (
-            session.get(
-                DirectoryDispatchCursor, sync_seed.tenant_id
-            ).last_status_missing
-            is False
-        )
-        run.status = "COMPLETE"
-        session.flush()
+    assert run.next_page == (1 if terminal else 2)
+    assert tick(session, redis_client) == 0

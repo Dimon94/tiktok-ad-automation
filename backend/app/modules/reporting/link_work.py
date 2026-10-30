@@ -1,75 +1,21 @@
 """关联需求按账户归并；运行中的读取保持冻结，新需求进入独立后继。"""
 
-import hashlib
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import aliased
 from sqlmodel import col, select
 
-from app.modules.accounts.models import AdvertiserAccount
 from app.modules.reporting.query_budget import QueryBudgetExceeded, query_budget
 from app.modules.reporting.store_models import ReportSyncJob
 
-ACTIVE = ("QUEUED", "WAITING")
 logger = logging.getLogger(__name__)
 
 # 先对活动索引键分页，再读取本页 progress；已标记的大 JSON 不能每轮全部
 # 解 TOAST。id 补齐唯一顺序，同一账户跨页不会遗漏；Redis 保存跨轮位置。
-RECONCILE_CANDIDATES_SQL = """
-WITH active_links AS MATERIALIZED (
-    SELECT id, tenant_id, bc_id, actor_id, advertiser_ids
-    FROM report_sync_job
-    WHERE kind='material_links' AND status IN ('QUEUED','WAITING')
-      {after}
-    ORDER BY tenant_id, bc_id, actor_id, advertiser_ids, id
-    LIMIT :limit
-)
-SELECT page.id, page.tenant_id, page.bc_id, page.actor_id, page.advertiser_ids,
-       (SELECT job.progress ? 'coalesced_v1' FROM report_sync_job job
-        WHERE job.id=page.id) AS coalesced
-FROM active_links page
-ORDER BY tenant_id, bc_id, actor_id, advertiser_ids, id
-"""
-
-
-def reconciliation_page(session, *, cursor, limit):
-    after = ""
-    params = {"limit": limit}
-    if cursor is not None:
-        tenant, bc, actor, advertisers, job_id = cursor
-        after = """AND (tenant_id,bc_id,actor_id,advertiser_ids,id) >
-          (CAST(:tenant AS uuid),:bc,CAST(:actor AS uuid),
-           CAST(:advertisers AS jsonb),CAST(:job_id AS uuid))"""
-        params.update(
-            tenant=tenant,
-            bc=bc,
-            actor=actor,
-            advertisers=json.dumps(advertisers),
-            job_id=job_id,
-        )
-    return (
-        session.connection()
-        .execute(text(RECONCILE_CANDIDATES_SQL.format(after=after)), params)
-        .mappings()
-        .all()
-    )
-
-
-def _scan_position(row):
-    return [
-        str(row["tenant_id"]),
-        row["bc_id"],
-        str(row["actor_id"]),
-        row["advertiser_ids"],
-        str(row["id"]),
-    ]
 
 
 WAKE_CANDIDATES_SQL = """
@@ -83,267 +29,6 @@ WITH active_links AS MATERIALIZED (
 SELECT id FROM active_links
 ORDER BY probed_at NULLS FIRST, created_at, id LIMIT :limit
 """
-
-
-def _current(session, tenant_id, advertiser, start, end, now):
-    account = session.get(AdvertiserAccount, (tenant_id, advertiser))
-    return bool(
-        account
-        and account.timezone
-        and start == end == now.astimezone(ZoneInfo(account.timezone)).date()
-    )
-
-
-def _scope(tenant_id, bc_id, actor_id, route, advertiser, campaigns):
-    return hashlib.sha256(
-        json.dumps(
-            [
-                str(tenant_id),
-                bc_id,
-                str(actor_id),
-                route,
-                advertiser,
-                sorted(campaigns),
-            ],
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-
-
-def _pending(
-    session, *, tenant_id, bc_id, actor_id, frozen_route, advertiser, campaign_ids, now
-):
-    # SKIP LOCKED 避免事实发布等待正在执行网络读取的任务；有效租约也不可改变。
-    return session.exec(
-        select(ReportSyncJob)
-        .where(
-            ReportSyncJob.tenant_id == tenant_id,
-            ReportSyncJob.bc_id == bc_id,
-            ReportSyncJob.actor_id == actor_id,
-            ReportSyncJob.frozen_route == frozen_route,
-            ReportSyncJob.advertiser_ids == [advertiser],
-            ReportSyncJob.campaign_ids == sorted(campaign_ids),
-            ReportSyncJob.kind == "material_links",
-            col(ReportSyncJob.status).in_(ACTIVE),
-            (
-                col(ReportSyncJob.claimed_until).is_(None)
-                | (col(ReportSyncJob.claimed_until) <= now)
-            ),
-        )
-        .order_by(col(ReportSyncJob.created_at), col(ReportSyncJob.id))
-        .with_for_update(skip_locked=True)
-    ).all()
-
-
-def _extend(job, start, end):
-    first, last = min(start, job.start_date), max(end, job.end_date)
-    if (first, last) != (job.start_date, job.end_date):
-        # 日期扩大后广告筛选可能改变；只丢弃查询游标，已经验证的映射仍在事实表中。
-        job.progress = {
-            "coalesced_v1": True,
-            "initial_window": job.progress.get(
-                "initial_window", [job.start_date.isoformat(), job.end_date.isoformat()]
-            ),
-        }
-        job.start_date, job.end_date = first, last
-    else:
-        job.progress = job.progress | {"coalesced_v1": True}
-
-
-def _merge(root, others, now):
-    for row in others:
-        _extend(root, row.start_date, row.end_date)
-        root.priority = min(root.priority, row.priority)
-        root.due_at = min(root.due_at, row.due_at)
-        row.status, row.finished_at, row.error_code = (
-            "CANCELLED",
-            now,
-            "report_work_coalesced",
-        )
-        row.claim_token = row.claimed_until = None
-        row.progress = row.progress | {"merged_into": str(root.id)}
-    _extend(root, root.start_date, root.end_date)
-
-
-def enqueue_link_jobs(
-    session,
-    *,
-    tenant_id,
-    bc_id,
-    actor_id,
-    frozen_route,
-    advertiser_groups,
-    campaign_ids,
-    start,
-    end,
-    priority,
-    due_at=None,
-    requested_at=None,
-):
-    now = datetime.now(UTC)
-    created = []
-    advertisers = sorted({a for group in advertiser_groups for a in group})
-    for advertiser in advertisers:
-        scope = _scope(
-            tenant_id, bc_id, actor_id, frozen_route, advertiser, campaign_ids
-        )
-        session.connection().execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
-            {"scope": f"report-links:{scope}"},
-        )
-        current = _current(session, tenant_id, advertiser, start, end, now)
-        candidates = [
-            row
-            for row in _pending(
-                session,
-                tenant_id=tenant_id,
-                bc_id=bc_id,
-                actor_id=actor_id,
-                frozen_route=frozen_route,
-                advertiser=advertiser,
-                campaign_ids=campaign_ids,
-                now=now,
-            )
-            if _current(
-                session, tenant_id, advertiser, row.start_date, row.end_date, now
-            )
-            == current
-        ]
-        if candidates:
-            root = candidates[0]
-            _merge(root, candidates[1:], now)
-            expanded = start < root.start_date or end > root.end_date
-            _extend(root, start, end)
-            root.priority = min(priority, root.priority)
-            from app.modules.reporting.material_links import (
-                DEPENDENCY_ERRORS,
-                dependency_changed,
-            )
-
-            changed = root.error_code in DEPENDENCY_ERRORS and dependency_changed(
-                session, root
-            )
-            if expanded or changed:
-                root.due_at = min(root.due_at, due_at or now)
-                root.error_code = None
-                root.progress = root.progress | {"dependency_attempts": -1}
-            session.flush()
-            continue
-        job_id = uuid4()
-        # 键绑定本次工作实例：在途任务与后继可以同日期，但规划锁保证至多一个待领后继。
-        session.add(
-            ReportSyncJob(
-                id=job_id,
-                tenant_id=tenant_id,
-                bc_id=bc_id,
-                actor_id=actor_id,
-                frozen_route=frozen_route,
-                kind="material_links",
-                priority=priority,
-                advertiser_ids=[advertiser],
-                campaign_ids=sorted(campaign_ids),
-                start_date=start,
-                end_date=end,
-                due_at=due_at or now,
-                job_key=f"links:{scope}:{job_id.hex}",
-                progress={"coalesced_v1": True}
-                | ({"requested_at": requested_at.isoformat()} if requested_at else {}),
-            )
-        )
-        session.flush()
-        created.append(job_id)
-    return created
-
-
-def _reconcile_candidate(session, candidate_id, *, now):
-    merged = 0
-    candidate = session.get(ReportSyncJob, candidate_id)
-    if candidate is None:
-        return 0
-    if len(candidate.advertiser_ids) != 1:
-        return 0
-    advertiser = candidate.advertiser_ids[0]
-    scope = _scope(
-        candidate.tenant_id,
-        candidate.bc_id,
-        candidate.actor_id,
-        candidate.frozen_route,
-        advertiser,
-        candidate.campaign_ids,
-    )
-    if (
-        not session.connection()
-        .execute(
-            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:scope, 0))"),
-            {"scope": f"report-links:{scope}"},
-        )
-        .scalar_one()
-    ):
-        return 0
-    rows = _pending(
-        session,
-        tenant_id=candidate.tenant_id,
-        bc_id=candidate.bc_id,
-        actor_id=candidate.actor_id,
-        frozen_route=candidate.frozen_route,
-        advertiser=advertiser,
-        campaign_ids=candidate.campaign_ids,
-        now=now,
-    )
-    for current in (True, False):
-        group = [
-            r
-            for r in rows
-            if _current(session, r.tenant_id, advertiser, r.start_date, r.end_date, now)
-            == current
-        ]
-        if group:
-            _merge(group[0], group[1:], now)
-            merged += len(group) - 1
-    session.flush()
-    return merged
-
-
-def reconcile_link_work(session, *, now, limit=50, deadline=None, scan=None):
-    """逐页归并；scan 仅记录审查位置，调用方在 PG 提交后持久保存。"""
-    scan = {} if scan is None else scan
-    session.flush()
-    page = reconciliation_page(session, cursor=scan.get("cursor"), limit=limit)
-    if not page:
-        scan["cursor"] = None
-        return 0
-    merged = 0
-    for row in page:
-        if deadline is not None and datetime.now(UTC) >= deadline:
-            break
-        if not row["coalesced"]:
-            remaining = (
-                1.0
-                if deadline is None
-                else (deadline - datetime.now(UTC)).total_seconds()
-            )
-            if remaining <= 0:
-                break
-            try:
-                # 单个慢账户回滚自己的归并；轮转只是尝试位置，不是成功标记，
-                # 回绕后仍会重试，且不撤销此前账户已完成的工作。
-                with (
-                    session.begin_nested(),
-                    query_budget(session, seconds=min(1.0, remaining)),
-                ):
-                    merged += _reconcile_candidate(session, row["id"], now=now)
-            except (DBAPIError, QueryBudgetExceeded) as error:
-                if (
-                    isinstance(error, DBAPIError)
-                    and getattr(error.orig, "sqlstate", None) != "57014"
-                ):
-                    raise
-                logger.info(
-                    "report link reconciliation probe deferred: job=%s", row["id"]
-                )
-        scan["cursor"] = _scan_position(row)
-    return merged
 
 
 def _orphaned_directory_sequence(session, job, *, now):
@@ -510,11 +195,14 @@ def wake_link_dependencies(session, *, now, limit=50, deadline=None):
                 )
                 if probe_seconds <= 0:
                     break
+                # 尝试位置属于外层项，证据变化属于内层探针。先保存尝试位置，
+                # PG取消与收尾即使耗尽余量，也不需要再发SQL才能避免失败队首饥饿。
+                job.progress = job.progress | {"dependency_probed_at": now.isoformat()}
+                session.flush()
                 changed = False
                 recovery_sequence = None
                 try:
-                    # 探针失败只撤销本条证据读取；预留时间写入尝试位置，
-                    # 不能用尽外层期限后再flush而反复重读相同队首。
+                    # 失败只撤销探针的写入，不能抹去上面的纯尝试标记。
                     with (
                         session.begin_nested(),
                         query_budget(session, seconds=min(1.0, probe_seconds)),
@@ -527,8 +215,8 @@ def wake_link_dependencies(session, *, now, limit=50, deadline=None):
                 except (DBAPIError, QueryBudgetExceeded) as error:
                     if not _wake_retryable(error):
                         raise
-                    changed, recovery_sequence = False, None
                     logger.info("report link dependency probe deferred: job=%s", job_id)
+                    continue
                 if recovery_sequence is not None:
                     # 只提前原任务，正常执行仍重验授权及缺口；不改变恢复签名。
                     job.due_at = now
@@ -546,7 +234,10 @@ def wake_link_dependencies(session, *, now, limit=50, deadline=None):
                     job.progress = job.progress | {"dependency_attempts": -1}
                     woke = True
                 # 超时只标记尝试过，不更新真实证据签名或伪造依赖已经变化。
-                job.progress = job.progress | {"dependency_probed_at": now.isoformat()}
+                if woke:
+                    from app.modules.sync_control.schedule import wake_report_job
+
+                    wake_report_job(session, job)
                 session.flush()
         except (DBAPIError, QueryBudgetExceeded) as error:
             if not _wake_retryable(error):

@@ -345,8 +345,8 @@ def test_failed_minute_still_schedules_complete_coverage_without_claiming_freshn
         )
 
     def failed(db, *_args, **_kwargs):
-        db.execute(text("SET LOCAL statement_timeout='50ms'"))
-        db.execute(text("SELECT pg_sleep(0.1)"))
+        with health.query_budget(db, seconds=0.05):
+            db.execute(text("SELECT pg_sleep(1)"))
 
     monkeypatch.setattr(health, "measure_freshness", failed)
     try:
@@ -372,8 +372,8 @@ def test_failed_coverage_scheduling_does_not_roll_back_minute_failure_record(
     key = health._health_progress_key(seed.tenant_id, "bc-a")
 
     def failed(db, *_args, **_kwargs):
-        db.execute(text("SET LOCAL statement_timeout='50ms'"))
-        db.execute(text("SELECT pg_sleep(0.1)"))
+        with health.query_budget(db, seconds=0.05):
+            db.execute(text("SELECT pg_sleep(1)"))
 
     called = []
 
@@ -430,8 +430,8 @@ def test_later_freshness_batch_failure_preserves_previous_complete_metrics(
             parameters = kwargs.get("params", args[0] if args else {})
             batches.append(len(parameters["ids"]))
             if len(batches) == 2:
-                original(db, text("SET LOCAL statement_timeout='50ms'"))
-                original(db, text("SELECT pg_sleep(0.1)"))
+                with health.query_budget(db, seconds=0.05):
+                    original(db, text("SELECT pg_sleep(1)"))
         return original(db, statement, *args, **kwargs)
 
     monkeypatch.setattr(Session, "execute", fail_second)

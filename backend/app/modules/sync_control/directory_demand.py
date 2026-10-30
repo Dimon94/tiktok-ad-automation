@@ -1,0 +1,284 @@
+"""目录分区也使用同一需求/到期头；页正文仍留在ad_directory_page。"""
+
+from __future__ import annotations
+
+from collections.abc import Collection
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlmodel import Session, col, select
+
+from app.integrations.tiktok.platform_quotas import sdk_endpoint
+from app.modules.accounts.models import AdvertiserAccount
+from app.modules.ads.sync_models import AdDirectoryRun
+from app.modules.sync_control.models import (
+    SyncExecutionScope,
+    SyncRequirement,
+    SyncSchedule,
+    SyncScope,
+)
+from app.modules.sync_control.requirements import (
+    freeze_execution_scope,
+    merge_requirement,
+)
+from app.modules.sync_control.schedule import wake_scope
+from app.modules.sync_control.scopes import ensure_scope
+
+
+def promote_directory_heads(session: Session, run_ids: Collection[UUID]) -> None:
+    """状态入口批量晋升已证明未开始的目录需求，SQL往返不随对象数增长。"""
+    from sqlalchemy import func, update
+    from sqlalchemy.dialects.postgresql import insert
+
+    if not run_ids:
+        return
+    references = select(col(SyncExecutionScope.requirement_id)).where(
+        col(SyncExecutionScope.directory_run_id).in_(run_ids),
+        col(SyncExecutionScope.status) == "PENDING",
+    )
+    session.execute(
+        update(SyncRequirement)
+        .where(
+            col(SyncRequirement.id).in_(references),
+            col(SyncRequirement.satisfied_revision)
+            < col(SyncRequirement.desired_revision),
+        )
+        .values(source="realtime")
+    )
+    heads = session.exec(
+        select(SyncSchedule)
+        .join(
+            SyncExecutionScope,
+            col(SyncExecutionScope.scope_id) == col(SyncSchedule.scope_id),
+        )
+        .where(
+            col(SyncExecutionScope.directory_run_id).in_(run_ids),
+            col(SyncSchedule.work_class) == "directory",
+        )
+    ).all()
+    values = []
+    for head in {row.scope_id: row for row in heads}.values():
+        values.append(
+            SyncSchedule(
+                scope_id=head.scope_id,
+                tenant_id=head.tenant_id,
+                work_class="realtime",
+                physical_endpoint=head.physical_endpoint,
+                next_eligible_at=head.next_eligible_at,
+                oldest_pending_at=head.oldest_pending_at,
+            ).model_dump()
+        )
+    if values:
+        statement = insert(SyncSchedule)
+        session.connection().execute(
+            statement.on_conflict_do_update(
+                index_elements=["scope_id", "work_class"],
+                set_={
+                    "active": True,
+                    "next_eligible_at": func.least(
+                        col(SyncSchedule.next_eligible_at),
+                        statement.excluded.next_eligible_at,
+                    ),
+                },
+            ),
+            values,
+        )
+        remaining = (
+            select(col(SyncExecutionScope.id))
+            .join(
+                SyncRequirement,
+                col(SyncRequirement.id) == col(SyncExecutionScope.requirement_id),
+            )
+            .where(
+                col(SyncExecutionScope.scope_id) == col(SyncSchedule.scope_id),
+                col(SyncExecutionScope.status) == "PENDING",
+                col(SyncRequirement.source) == "directory",
+                col(SyncRequirement.satisfied_revision)
+                < col(SyncRequirement.desired_revision),
+            )
+            .correlate(SyncSchedule)
+            .exists()
+        )
+        session.execute(
+            update(SyncSchedule)
+            .where(
+                col(SyncSchedule.scope_id).in_([row["scope_id"] for row in values]),
+                col(SyncSchedule.work_class) == "directory",
+            )
+            .values(active=remaining)
+        )
+
+
+def directory_endpoint(run: AdDirectoryRun) -> str:
+    if run.kind == "creative":
+        return sdk_endpoint("build.get_ads")
+    if run.ad_type == "SMART_PLUS":
+        return sdk_endpoint(
+            {
+                "campaign": "build.get_campaigns",
+                "adgroup": "build.get_adgroups",
+                "ad": "build.get_ads",
+            }[run.kind]
+        )
+    return sdk_endpoint(
+        {
+            "campaign": "ads.get_campaigns",
+            "adgroup": "build.get_regular_adgroups",
+            "ad": "ads.get_ads",
+        }[run.kind]
+    )
+
+
+def directory_scope(session: Session, run: AdDirectoryRun) -> SyncScope:
+    from app.modules.ads.directory_calibration import PERIODIC_KEY
+    from app.modules.ads.directory_services import SERVICE_KEY
+
+    account = session.get(AdvertiserAccount, (run.tenant_id, run.advertiser_id))
+    if account is None:
+        raise ValueError("directory requirement account is outside tenant scope")
+    query = {
+        key: value
+        for key, value in run.query.items()
+        if key not in {"page", "ids", "parent_ids", PERIODIC_KEY, SERVICE_KEY}
+    }
+    return ensure_scope(
+        session,
+        route=run.frozen_route,
+        actor_id=run.actor_id,
+        advertiser_id=run.advertiser_id,
+        resource=f"directory:{run.kind}:{run.ad_type}",
+        query=query,
+        timezone=account.timezone or "not-applicable",
+        metric_contract="directory-v2",
+    )
+
+
+def register_directory_run(
+    session: Session, run: AdDirectoryRun, *, new_execution: bool = False
+) -> None:
+    from app.modules.ads.directory_services import directory_service
+
+    existing = session.exec(
+        select(SyncExecutionScope).where(
+            col(SyncExecutionScope.directory_run_id) == run.id
+        )
+    ).first()
+    if existing is not None:
+        requirement = session.get(SyncRequirement, existing.requirement_id)
+        assert requirement is not None  # execution FK保证引用存在
+        if (
+            directory_service(run) == "status"
+            and requirement.source != "realtime"
+            and requirement.satisfied_revision < requirement.desired_revision
+        ):
+            from app.modules.sync_control.schedule import has_pending_execution
+
+            requirement.source = "realtime"
+            scope = session.get(SyncScope, existing.scope_id)
+            assert scope is not None
+            wake_scope(
+                session,
+                scope=scope,
+                work_class="realtime",
+                endpoint=directory_endpoint(run),
+                due_at=run.next_attempt_at or datetime.now(UTC),
+                oldest_pending_at=requirement.oldest_pending_at,
+            )
+            old_head = session.get(SyncSchedule, (scope.id, "directory"))
+            if old_head is not None:
+                old_head.active = has_pending_execution(session, old_head)
+        return
+    scope = directory_scope(session, run)
+    if new_execution:
+        # 仅创建入口可继承当前owner；恢复、离线迁移和旧消息绝不改写已冻结代数。
+        session.refresh(scope, with_for_update=True)
+        run.owner_epoch = scope.owner_epoch
+    work_class = "realtime" if directory_service(run) == "status" else "directory"
+    revision = merge_requirement(
+        session,
+        scope,
+        {"key": run.partition_key, "query": run.query},
+        requested_after=run.created_at,
+        source=work_class,
+    )
+    requirement = session.get(SyncRequirement, revision.requirement_id)
+    assert requirement is not None
+    work_class = requirement.source
+    freeze_execution_scope(
+        session, execution=run, execution_kind="directory", requirements=[revision]
+    )
+    wake_scope(
+        session,
+        scope=scope,
+        work_class=work_class,
+        endpoint=directory_endpoint(run),
+        due_at=run.next_attempt_at or datetime.now(UTC),
+        oldest_pending_at=run.created_at,
+    )
+
+
+def directory_fence(
+    session: Session,
+    run: AdDirectoryRun,
+    *,
+    claim_token: UUID | None = None,
+    claim: bool = False,
+) -> None:
+    from app.core.errors import DomainError
+
+    if claim_token is not None and run.claim_token != claim_token:
+        raise DomainError("directory_claim_lost", "目录执行租约已更换")
+    for child, scope in session.exec(
+        select(SyncExecutionScope, SyncScope)
+        .join(SyncScope, col(SyncScope.id) == col(SyncExecutionScope.scope_id))
+        .where(col(SyncExecutionScope.directory_run_id) == run.id)
+        .with_for_update()
+    ).all():
+        if scope.owner_epoch != run.owner_epoch or child.owner_epoch != run.owner_epoch:
+            raise DomainError("directory_claim_lost", "目录scope执行所有权已更换")
+        if claim:
+            child.execution_generation = run.claim_generation
+            child.observed_at = (
+                child.observed_at or run.observed_at or datetime.now(UTC)
+            )
+        elif child.execution_generation != run.claim_generation:
+            raise DomainError("directory_claim_lost", "目录子桶执行代数已失效")
+
+
+def directory_outcome(session: Session, run: AdDirectoryRun) -> None:
+    from app.modules.sync_control.schedule import (
+        pending_execution_dues,
+        retire_execution_children,
+    )
+
+    terminal = retire_execution_children(session, run, "directory")
+    heads = session.exec(
+        select(SyncSchedule)
+        .join(
+            SyncExecutionScope,
+            col(SyncExecutionScope.scope_id) == col(SyncSchedule.scope_id),
+        )
+        .where(col(SyncExecutionScope.directory_run_id) == run.id)
+        .order_by(col(SyncSchedule.scope_id), col(SyncSchedule.work_class))
+        .with_for_update(of=SyncSchedule)
+        .execution_options(populate_existing=True)
+    ).all()
+    due_by_head = pending_execution_dues(
+        session, heads, "directory", now=datetime.now(UTC)
+    )
+    for head in heads:
+        if head.lease_execution_id is not None and (
+            head.lease_execution_id != run.id
+            or head.lease_execution_generation != run.claim_generation
+        ):
+            continue
+        head.lease_token = head.leased_until = head.lease_execution_id = (
+            head.lease_execution_generation
+        ) = None
+        due = due_by_head.get((head.scope_id, head.work_class))
+        head.active = due is not None
+        if due is not None:
+            head.next_eligible_at = due
+        head.wait_reason = "QUOTA" if run.error_code == "admission_deferred" else None
+        if terminal and not head.active:
+            head.wait_reason = terminal

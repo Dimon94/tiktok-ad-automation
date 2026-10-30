@@ -114,14 +114,70 @@ class SyncRunFields(FrozenScope):
 
 
 class AdDirectoryRun(SyncRunFields, table=True):
+    owner_epoch: int = Field(default=1, sa_type=BigInteger)
+    contract_version: int = 2
+    # 分页领取代数用于隔离旧消息；发布失败预算独立累计，不能把页数当失败数。
+    publish_failures: int = 0
+    # 素材子范围冻结owner观察的保守上界，页回收后仍可证明旧子已被新观察替换。
+    material_owner_observed_through: datetime | None = Field(
+        default=None, sa_type=AwareDateTime
+    )
     __tablename__ = "ad_directory_run"
     __table_args__ = (
+        # 归档只查同范围或完整快照的充分覆盖证据；避免逐历史运行扫描JSON。
+        Index(
+            "ix_directory_archive_partition_cover",
+            "tenant_id",
+            "advertiser_id",
+            "bc_id",
+            "actor_id",
+            "kind",
+            "ad_type",
+            text("md5(frozen_route::text)"),
+            "partition_key",
+            "request_sequence",
+            postgresql_where=text(
+                "published_version IS NOT NULL AND NOT (query ? 'material_child_v1')"
+            ),
+        ),
+        Index(
+            "ix_directory_archive_full_cover",
+            "tenant_id",
+            "advertiser_id",
+            "bc_id",
+            "actor_id",
+            "kind",
+            "ad_type",
+            text("md5(frozen_route::text)"),
+            "request_sequence",
+            postgresql_where=text(
+                "published_version IS NOT NULL AND NOT (query ? 'material_child_v1') AND coalesce(query->'ids','[]'::jsonb)='[]'::jsonb AND coalesce(query->'parent_ids','[]'::jsonb)='[]'::jsonb AND query->>'include_deleted'='true'"
+            ),
+        ),
+        Index(
+            "ix_directory_material_source_run",
+            "tenant_id",
+            text("((query -> 'material_child_v1'::text) ->> 'source_run_id'::text)"),
+            postgresql_where=text("query ? 'material_child_v1'"),
+        ),
+        Index(
+            "ix_directory_summary_archive",
+            "tenant_id",
+            "completed_at",
+            "id",
+            postgresql_where=text(
+                "status IN ('COMPLETE','FAILED','CANCELLED','STALE')"
+            ),
+        ),
+        CheckConstraint("publish_failures >= 0", name="ck_directory_publish_failures"),
         *run_constraints("ad_directory_run"),
         # 单户在途探测不应为证明“没有积压”读取该户全部终态历史。
         Index(
             "ix_ad_directory_pending_account",
             "tenant_id",
             "advertiser_id",
+            "created_at",
+            "id",
             postgresql_where=text(
                 "status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')"
             ),

@@ -4,10 +4,10 @@ from decimal import Decimal
 from uuid import uuid4
 
 from app.modules.ads.models import AdMaterialReference, AdObject
-from app.modules.reporting.dimension_query import build_rows
 from app.modules.reporting.publish import AccountMeta, publish_material_day
 from app.modules.reporting.schemas import ReportingFilter
 from app.modules.reporting.store_models import MaterialPostLink
+from tests.modules.reporting.query_helpers import build_rows
 
 D = date(2026, 10, 5)
 
@@ -321,3 +321,22 @@ def test_default_material_rows_match_full_listing_for_videos_with_facts(
         ("acc-1", "a1"),
         ("acc-2", "b1"),
     }
+
+
+def test_material_grouping_keeps_exact_case_and_unicode_post_identities(
+    session, sync_seed
+):
+    """身份按原始字节精确区分；名称的大小写/Unicode展示不能合并平台ID。"""
+    posts = ["same", "SAME", "é", "e\u0301", "素材"]
+    publish(
+        session,
+        sync_seed,
+        "acc-1",
+        [material_row(post, str(index + 1)) for index, post in enumerate(posts)],
+    )
+    rows = query(session, sync_seed, include_empty=False)
+    actual = {
+        json.loads(row.row_key)[2]: row.metric_buckets[0].values["spend"]
+        for row in rows
+    }
+    assert actual == {post: Decimal(index + 1) for index, post in enumerate(posts)}

@@ -1,12 +1,12 @@
 """定向回读与批量目录共用领取合同，但不共用批量读取的排队位置。"""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy import text
 
 from app.core.context import TenantContext
-from app.jobs.outbox import enqueue_after_commit
 from app.jobs.tasks import register_dispatch_task
+from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 
 TARGETED_TASK_NAME = "ads.targeted_step"
 TASK_NAME = "ads.sync_step"
@@ -19,111 +19,6 @@ register_dispatch_task("reporting.plan_due", "control")
 # 窗口 8 实测每 10 分钟仅完成约 230 个而新建约 330 个，排队超过 2 小时，目录 30 分钟新鲜度无法达成。
 # 放到 32 让 Worker 持续有活；对 TikTok 的实际调用仍由调用准入策略限流。
 TARGETED_DISPATCH_WINDOW = 32
-
-
-def targeted_capacity(session, now=None, *, run=None) -> int:
-    """生产者与扫描器共用窗口锁；按真实可领取的对方需求保留半窗、其余互借。"""
-    from app.modules.ads.directory_services import (
-        SERVICE_KEY,
-        STATUS_SERVICE,
-        directory_service,
-        is_missing_status,
-    )
-    from app.modules.ads.material_directory_children import MATERIAL_CHILD_KEY
-
-    now = now or datetime.now(UTC)
-    locked = (
-        session.connection()
-        .execute(
-            text(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended('tkada:directory-dispatch-window', 0))"
-            )
-        )
-        .scalar_one()
-    )
-    if not locked:
-        return 0
-    own_status = run is not None and directory_service(run) == STATUS_SERVICE
-    own_missing = run is not None and is_missing_status(run)
-    # 一次活动快照同时计算在途和可借用份额；不能为每个服务再扫积压及历史消息。
-    counts = (
-        session.connection()
-        .execute(
-            text("""
-        WITH active AS MATERIALIZED (
-          SELECT r.id,r.tenant_id,r.claim_generation,r.next_page,r.claimed_until,
-            r.next_attempt_at,r.channel,
-            (NOT r.query ? :child AND coalesce(r.query->>:service IN ('status','status_missing'),false)) AS status_service,
-            coalesce(r.query->>:service='status_missing',false) AS status_missing
-          FROM ad_directory_run r
-          WHERE r.workload='live' AND r.status IN ('QUEUED','RUNNING','WAITING_REMOTE')
-            AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0
-              OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)
-        ), delivery AS MATERIALIZED (
-          SELECT a.*,p.id IS NOT NULL AS enqueued,p.published_at
-          FROM active a LEFT JOIN LATERAL (
-            SELECT p.id,p.published_at FROM pending_dispatch p
-            WHERE p.tenant_id=a.tenant_id AND p.task_key=(
-              'ads.targeted_step:'||a.id::text||':'||a.claim_generation::text||':page:'||a.next_page::text)
-            LIMIT 1
-          ) p ON true
-        ), classified AS (
-          SELECT *,coalesce((enqueued AND (published_at IS NULL OR published_at>:cutoff))
-            OR claimed_until>:now,false) AS inflight,
-            channel='OFFICIAL_API' AND (next_attempt_at IS NULL OR next_attempt_at<=:now)
-              AND ((claimed_until IS NULL AND (NOT enqueued OR published_at<:cutoff))
-                OR claimed_until<=:now) AS eligible
-          FROM delivery
-        )
-        SELECT count(*) FILTER (WHERE inflight) AS total,
-          count(*) FILTER (WHERE id=CAST(:run_id AS uuid) AND inflight) AS own_inflight,
-          EXISTS (
-            SELECT 1 FROM classified c JOIN ad_directory_run r ON r.id=c.id
-            WHERE :own_status AND c.tenant_id=CAST(:tenant AS uuid) AND c.status_service AND c.eligible
-              AND r.status IN ('QUEUED','RUNNING','WAITING_REMOTE')
-              AND r.claim_generation=c.claim_generation AND r.next_page=c.next_page
-              AND r.claimed_until IS NOT DISTINCT FROM c.claimed_until
-              AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
-              AND c.status_missing<>:own_missing
-              AND :own_missing=coalesce((SELECT last_status_missing
-                FROM directory_dispatch_cursor WHERE tenant_id=CAST(:tenant AS uuid)),false)
-              AND r.query->>:service IS NOT DISTINCT FROM
-                CASE WHEN c.status_missing THEN 'status_missing' ELSE 'status' END
-            LIMIT 1 FOR UPDATE OF r SKIP LOCKED
-          ) AS other_status_turn,
-
-          count(*) FILTER (WHERE inflight AND status_service<>:own_status) AS opposite_inflight,
-          count(*) FILTER (WHERE eligible AND status_service<>:own_status) AS opposite_pending
-        FROM classified
-    """),
-            {
-                "now": now,
-                "cutoff": now - timedelta(minutes=2),
-                "child": MATERIAL_CHILD_KEY,
-                "service": SERVICE_KEY,
-                "own_status": own_status,
-                "own_missing": own_missing,
-                "tenant": str(run.tenant_id) if run is not None else None,
-                "run_id": str(run.id) if run is not None else None,
-            },
-        )
-        .mappings()
-        .one()
-    )
-    if counts["own_inflight"] or (own_status and counts["other_status_turn"]):
-        return 0
-    available = max(0, TARGETED_DISPATCH_WINDOW - counts["total"])
-    if run is None or TARGETED_DISPATCH_WINDOW < 2:
-        return available
-    opposite_share = (
-        TARGETED_DISPATCH_WINDOW - TARGETED_DISPATCH_WINDOW // 2
-        if own_status
-        else TARGETED_DISPATCH_WINDOW // 2
-    )
-    reserved = min(
-        counts["opposite_pending"], max(0, opposite_share - counts["opposite_inflight"])
-    )
-    return max(0, available - reserved)
 
 
 def is_targeted(run) -> bool:
@@ -140,20 +35,50 @@ def directory_step_key(run) -> str:
 
 
 def enqueue_directory_step(
-    session, run, *, publish_only=False, initial=False, available_at=None
+    session,
+    run,
+    *,
+    publish_only=False,
+    initial=False,
+    available_at=None,
+    dispatch_ready=False,
+    dispatched_at=None,
 ) -> None:
-    if initial and (
-        not is_live_directory(run) or not targeted_capacity(session, run=run)
-    ):
+    from app.modules.sync_control.directory_demand import (
+        directory_outcome,
+        register_directory_run,
+    )
+
+    register_directory_run(session, run, new_execution=initial)
+    if not publish_only and not dispatch_ready:
+        # 生产/续页只唤醒同一到期头；限流不会为每个scope制造一条重试消息。
+        import hashlib
+
+        from app.modules.sync_control.directory_demand import directory_endpoint
+
+        directory_outcome(session, run)
+        endpoint = hashlib.sha256(directory_endpoint(run).encode()).hexdigest()[:16]
+        now = available_at or datetime.now(UTC)
+        enqueue_sync_dispatch(
+            session,
+            context=TenantContext(
+                tenant_id=run.tenant_id, actor_id=run.actor_id, role="operator"
+            ),
+            task_name="reporting.plan_due",
+            task_key=f"sync-directory-wake:{endpoint}:{run.actor_id}:{int(now.timestamp())}",
+            payload={"dispatch_only": True},
+        )
         return
-    dispatch_id = enqueue_after_commit(
+    dispatch_id = enqueue_sync_dispatch(
         session,
+        execution=run,
+        now=dispatched_at,
         context=TenantContext(
             tenant_id=run.tenant_id, actor_id=run.actor_id, role="operator"
         ),
-        task_name=TARGETED_TASK_NAME
-        if is_live_directory(run)
-        else (PUBLISH_TASK_NAME if publish_only else TASK_NAME),
+        task_name=PUBLISH_TASK_NAME
+        if publish_only
+        else (TARGETED_TASK_NAME if is_live_directory(run) else TASK_NAME),
         task_key=directory_step_key(run),
         payload={"run_id": str(run.id), "claim_generation": run.claim_generation},
     )
@@ -186,51 +111,3 @@ def enqueue_directory_step(
         # 等待额度的续步仍走原 outbox；到期前不能发布，避免忙循环和空占租约。
         dispatch.available_at = available_at
         session.add(dispatch)
-
-
-def background_continuation_available(session, run, now) -> bool:
-    """单槽模式下只核对其他在途运行，不对整批候选排名或重新领取。
-
-    使用扫描器同一窗口锁与失联期限；迟到旧消息必须重新竞争，不能持有永久许可。
-    当前页与 outbox 仍在同一事务提交，窗口锁不会跨远端读取持有。
-    """
-    from app.modules.reporting.job_tasks import (
-        DIRECTORY_MESSAGE_LOST_AFTER,
-        PUBLISH_MESSAGE_LOST_AFTER,
-    )
-
-    if (
-        not session.connection()
-        .execute(
-            text(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended('tkada:directory-dispatch-window',0))"
-            )
-        )
-        .scalar_one()
-    ):
-        return False
-    return (
-        not session.connection()
-        .execute(
-            text("""
-        SELECT EXISTS (SELECT 1 FROM ad_directory_run r
-          WHERE r.id<>:run_id AND r.status IN ('QUEUED','RUNNING','WAITING_REMOTE')
-            AND r.channel='OFFICIAL_API'
-            AND NOT (r.workload='live' AND (
-              coalesce(jsonb_array_length(r.query->'ids'),0)>0
-              OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0))
-            AND (r.claimed_until>:now OR (r.claimed_until IS NULL AND EXISTS (
-              SELECT 1 FROM pending_dispatch p WHERE p.tenant_id=r.tenant_id
-                AND p.task_key='ads.sync_step:'||r.id::text||':'||r.claim_generation::text||':page:'||r.next_page::text
-                AND (p.published_at IS NULL OR p.published_at>=CASE
-                  WHEN p.task_name='ads.publish_step' THEN :publish_cutoff ELSE :read_cutoff END)))))
-    """),
-            {
-                "run_id": run.id,
-                "now": now,
-                "read_cutoff": now - DIRECTORY_MESSAGE_LOST_AFTER,
-                "publish_cutoff": now - PUBLISH_MESSAGE_LOST_AFTER,
-            },
-        )
-        .scalar_one()
-    )

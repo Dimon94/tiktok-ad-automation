@@ -5,13 +5,13 @@
 汇总规则：任一成员指标为 NULL（平台 '-'）时合计为 NULL，绝不显示部分合计。
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import delete, insert, or_, text, tuple_
+from sqlalchemy import MetaData, delete, insert, or_, text, tuple_
 from sqlmodel import Session, col, select
 
 from app.core.errors import DomainError
@@ -23,7 +23,6 @@ from app.modules.reporting.metrics import (
     parse_local_day,
     parse_local_hour,
 )
-from app.modules.reporting.partitions import ensure_month_partitions_for_range
 from app.modules.reporting.store_models import (
     METRIC_COLUMNS,
     AccountReconciliationDay,
@@ -73,7 +72,8 @@ def _writable_buckets(session, *, tenant_id, accounts, kind, start, end, request
     """在账户锁内比较本地发布水位；这不是平台事件或归因水位。
 
     发布入口的 requested_at 表示完整快照的首次实际读取开始，而非排队创建时间；
-    素材续页沿用首页时间。该时间之后已经成功发布的日期必须保留，包括完整空结果。
+    素材续页沿用首页时间。观测更晚的已发布日期必须保留，包括完整空结果；
+    旧数据没有观测时点时，保守使用原完成时间，不能猜测源版本。
     失败标记仍可传更保守的原意图时间。事务锁也保护尚不存在的状态行。
     """
     lock_kind = "ad_day" if kind == "account_day" else kind
@@ -95,7 +95,8 @@ def _writable_buckets(session, *, tenant_id, accounts, kind, start, end, request
     protected = {
         (state.advertiser_id, state.stat_date)
         for state in states
-        if state.last_success_at and state.last_success_at > requested_at
+        if (watermark := state.observed_at or state.last_success_at)
+        and watermark > requested_at
     }
     return {
         (advertiser, day) for advertiser in accounts for day in _days(start, end)
@@ -114,7 +115,7 @@ def _bucket_days(buckets):
 
 
 @diagnostics.timed("publish_state")
-def _set_state(session, *, tenant_id, kind, buckets, counts):
+def _set_state(session, *, tenant_id, kind, buckets, counts, observed_at, job_id=None):
     now = _database_now(session)
     for advertiser, day in sorted(buckets):
         state = session.get(ReportSyncState, (tenant_id, advertiser, kind, day))
@@ -130,6 +131,27 @@ def _set_state(session, *, tenant_id, kind, buckets, counts):
         state.status, state.error_code = "COMPLETE", None
         state.row_count = counts.get((advertiser, day), 0)
         state.last_success_at = state.updated_at = now
+        state.observed_at = observed_at
+        state.publication_version += 1
+        if job_id is not None:
+            from app.modules.reporting.store_models import ReportSyncJob
+            from app.modules.sync_control.contracts import ExecutionFence
+            from app.modules.sync_control.requirements import satisfy_requirements
+
+            job = session.get(ReportSyncJob, job_id)
+            if job is not None:
+                if job.tenant_id != tenant_id:
+                    raise ValueError("publication job tenant does not match facts")
+                satisfy_requirements(
+                    session,
+                    fence=ExecutionFence(
+                        job.id, "report", job.claim_generation, job.owner_epoch
+                    ),
+                    observed_at=observed_at,
+                    publication_version=state.publication_version,
+                    bucket_keys=[day.isoformat()],
+                    advertiser_id=advertiser,
+                )
 
 
 def mark_failed(
@@ -193,6 +215,49 @@ def _rollup_sql() -> str:
     """
 
 
+_PUBLISH_BATCH_SIZE = 500
+
+
+def _stage_records(session, model, records):
+    """用事务私有、同类型/唯一键暂存校验全集，Python只保留一个批次。
+
+    暂存表没有事实触发器；最终 INSERT SELECT 始终写父事实表，使覆盖和派生
+    失效与集合替换同事务生效。完整验证前不删除已有事实。
+    """
+    name = f"publish_stage_{uuid4().hex}"
+    table = model.__table__.to_metadata(MetaData(), name=name)
+    connection = session.connection()
+    connection.execute(
+        text(
+            f'CREATE TEMP TABLE "{name}" (LIKE "{model.__tablename__}" '
+            "INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES) ON COMMIT DROP"
+        )
+    )
+    batch = []
+    for record in records:
+        batch.append(record)
+        if len(batch) == _PUBLISH_BATCH_SIZE:
+            connection.execute(insert(table), batch)
+            batch.clear()
+    if batch:
+        connection.execute(insert(table), batch)
+    return table
+
+
+def _publish_staged(session, model, staged, condition):
+    columns = [column.name for column in model.__table__.columns]
+    result = (
+        session.connection()
+        .execution_options(preserve_rowcount=True)
+        .execute(
+            insert(model).from_select(
+                columns, select(*(staged.c[name] for name in columns)).where(condition)
+            )
+        )
+    )
+    return result.rowcount
+
+
 @diagnostics.timed("financial_publish")
 def publish_ad_day(
     session: Session,
@@ -202,46 +267,52 @@ def publish_ad_day(
     accounts: dict[str, AccountMeta],
     start: date,
     end: date,
-    rows: Sequence[dict],
+    rows: Iterable[dict],
     campaign_ids: tuple[str, ...] = (),
     requested_at: datetime | None = None,
 ) -> int:
-    now, records, counts = _database_now(session), [], {}
+    now, counts = _database_now(session), {}
     requested_at = requested_at or now
-    for row in rows:
-        advertiser = _account(row, accounts)
-        dims, metrics = row.get("dimensions") or {}, row.get("metrics") or {}
-        day = _in_range(parse_local_day(dims.get("stat_time_day")), start, end)
-        ad_id, campaign, adgroup = (
-            dims.get("ad_id_v2"),
-            metrics.get("campaign_id"),
-            metrics.get("adgroup_id"),
-        )
-        if not ad_id or not campaign or not adgroup:
-            raise DomainError("report_row_invalid", "广告行缺少广告、系列或广告组 ID")
-        if campaign_ids and campaign not in campaign_ids:
-            raise DomainError("report_row_invalid", "按系列分批结果包含范围外系列")
-        meta = accounts[advertiser]
-        records.append(
-            {
-                "tenant_id": tenant_id,
-                "advertiser_id": advertiser,
-                "stat_date": day,
-                "ad_id": str(ad_id),
-                "campaign_id": str(campaign),
-                "adgroup_id": str(adgroup),
-                "campaign_automation_type": metrics.get("campaign_automation_type"),
-                "ad_name": metrics.get("ad_name"),
-                "campaign_name": metrics.get("campaign_name"),
-                "adgroup_name": metrics.get("adgroup_name"),
-                "currency": meta.currency,
-                "timezone": meta.timezone,
-                "fetched_at": now,
-                "sync_job_id": job_id,
-                **basic_metric_values(metrics),
-            }
-        )
-        counts[(advertiser, day)] = counts.get((advertiser, day), 0) + 1
+
+    def records():
+        for row in rows:
+            advertiser = _account(row, accounts)
+            dims, metrics = row.get("dimensions") or {}, row.get("metrics") or {}
+            day = _in_range(parse_local_day(dims.get("stat_time_day")), start, end)
+            ad_id, campaign, adgroup = (
+                dims.get("ad_id_v2"),
+                metrics.get("campaign_id"),
+                metrics.get("adgroup_id"),
+            )
+            if not ad_id or not campaign or not adgroup:
+                raise DomainError(
+                    "report_row_invalid", "广告行缺少广告、系列或广告组 ID"
+                )
+            if campaign_ids and campaign not in campaign_ids:
+                raise DomainError("report_row_invalid", "按系列分批结果包含范围外系列")
+            meta = accounts[advertiser]
+            yield (
+                {
+                    "tenant_id": tenant_id,
+                    "advertiser_id": advertiser,
+                    "stat_date": day,
+                    "ad_id": str(ad_id),
+                    "campaign_id": str(campaign),
+                    "adgroup_id": str(adgroup),
+                    "campaign_automation_type": metrics.get("campaign_automation_type"),
+                    "ad_name": metrics.get("ad_name"),
+                    "campaign_name": metrics.get("campaign_name"),
+                    "adgroup_name": metrics.get("adgroup_name"),
+                    "currency": meta.currency,
+                    "timezone": meta.timezone,
+                    "fetched_at": now,
+                    "sync_job_id": job_id,
+                    **basic_metric_values(metrics),
+                }
+            )
+            counts[(advertiser, day)] = counts.get((advertiser, day), 0) + 1
+
+    staged = _stage_records(session, AdReportDay, records())
     # 先验证全部平台行，再筛水位；旧任务中的越权行也必须报错。
     buckets = _writable_buckets(
         session,
@@ -255,11 +326,7 @@ def publish_ad_day(
     if not buckets:
         return 0
     diagnostics.counts(buckets=len(buckets))
-    records = [r for r in records if (r["advertiser_id"], r["stat_date"]) in buckets]
-    with diagnostics.stage("publish_partitions"):
-        ensure_month_partitions_for_range(
-            session, start, end, tables=("ad_report_day",)
-        )
+    # 缺月份时由既有 DEFAULT 承接，DDL/搬迁由独立维护事务执行。
     with diagnostics.stage("publish_facts"):
         statement = delete(AdReportDay).where(
             col(AdReportDay.tenant_id) == tenant_id,
@@ -268,8 +335,9 @@ def publish_ad_day(
         if campaign_ids:
             statement = statement.where(col(AdReportDay.campaign_id).in_(campaign_ids))
         session.connection().execute(statement)
-        if records:
-            session.connection().execute(insert(AdReportDay), records)
+        row_count = _publish_staged(
+            session, AdReportDay, staged, _bucket_filter(staged.c, buckets)
+        )
     with diagnostics.stage("publish_rollup"):
         session.connection().execute(
             delete(CampaignReportDay).where(
@@ -295,12 +363,15 @@ def publish_ad_day(
             kind="ad_day",
             buckets=buckets,
             counts=counts,
+            observed_at=requested_at,
+            job_id=job_id,
         )
     with diagnostics.stage("publish_flush"):
         session.flush()
+    _project_ad_buckets(session, tenant_id, buckets)
     _refresh_reconciliation_sums(session, tenant_id, buckets)
-    diagnostics.counts(rows=len(records))
-    return len(records)
+    diagnostics.counts(rows=row_count)
+    return row_count
 
 
 def _publish_simple(
@@ -319,27 +390,29 @@ def _publish_simple(
     time_filter,
     requested_at,
 ) -> int:
-    now, records, counts = _database_now(session), [], {}
+    now, counts = _database_now(session), {}
     requested_at = requested_at or now
-    record_days = []
-    for row in rows:
-        advertiser = _account(row, accounts)
-        meta = accounts[advertiser]
-        keys, day = key_builder(row, meta)
-        record_days.append((advertiser, day))
-        records.append(
-            {
-                "tenant_id": tenant_id,
-                "advertiser_id": advertiser,
-                "currency": meta.currency,
-                "timezone": meta.timezone,
-                "fetched_at": now,
-                "sync_job_id": job_id,
-                **keys,
-                **value_parser(row.get("metrics") or {}),
-            }
-        )
-        counts[(advertiser, day)] = counts.get((advertiser, day), 0) + 1
+
+    def records():
+        for row in rows:
+            advertiser = _account(row, accounts)
+            meta = accounts[advertiser]
+            keys, day = key_builder(row, meta)
+            yield (
+                {
+                    "tenant_id": tenant_id,
+                    "advertiser_id": advertiser,
+                    "currency": meta.currency,
+                    "timezone": meta.timezone,
+                    "fetched_at": now,
+                    "sync_job_id": job_id,
+                    **keys,
+                    **value_parser(row.get("metrics") or {}),
+                }
+            )
+            counts[(advertiser, day)] = counts.get((advertiser, day), 0) + 1
+
+    staged = _stage_records(session, model, records())
     buckets = _writable_buckets(
         session,
         tenant_id=tenant_id,
@@ -351,14 +424,6 @@ def _publish_simple(
     )
     if not buckets:
         return 0
-    records = [
-        r for r, bucket in zip(records, record_days, strict=True) if bucket in buckets
-    ]
-    with diagnostics.stage("publish_partitions"):
-        if model is MaterialReportDay:
-            ensure_month_partitions_for_range(
-                session, start, end, tables=("material_report_day",)
-            )
     with diagnostics.stage("publish_facts"):
         session.connection().execute(
             delete(model).where(
@@ -366,13 +431,22 @@ def _publish_simple(
                 time_filter(model, buckets),
             )
         )
-        if records:
-            session.connection().execute(insert(model), records)
-    _set_state(session, tenant_id=tenant_id, kind=kind, buckets=buckets, counts=counts)
+        row_count = _publish_staged(
+            session, model, staged, time_filter(staged.c, buckets)
+        )
+    _set_state(
+        session,
+        tenant_id=tenant_id,
+        kind=kind,
+        buckets=buckets,
+        counts=counts,
+        observed_at=requested_at,
+        job_id=job_id,
+    )
     with diagnostics.stage("publish_flush"):
         session.flush()
-    diagnostics.counts(rows=len(records), buckets=len(buckets))
-    return len(records)
+    diagnostics.counts(rows=row_count, buckets=len(buckets))
+    return row_count
 
 
 @diagnostics.timed("financial_publish")
@@ -460,7 +534,7 @@ def publish_material_day(
 
 @diagnostics.timed("financial_publish")
 def publish_account_reconciliation(
-    session, *, tenant_id, accounts, start, end, rows, requested_at=None
+    session, *, tenant_id, accounts, start, end, rows, requested_at=None, job_id=None
 ) -> int:
     """账户报表与同期广告汇总比对，结果只用于页面提示。"""
     requested_at = requested_at or _database_now(session)
@@ -507,11 +581,37 @@ def publish_account_reconciliation(
         kind="account_day",
         buckets=buckets,
         counts=dict.fromkeys(reported, 1),
+        observed_at=requested_at,
+        job_id=job_id,
     )
     with diagnostics.stage("publish_flush"):
         session.flush()
     _refresh_reconciliation_sums(session, tenant_id, buckets)
     return len(buckets)
+
+
+def _project_ad_buckets(session, tenant_id, buckets):
+    from app.modules.reporting.read_models.dirty_buckets import ReadBucketKey
+    from app.modules.reporting.read_models.projector import project_bucket
+
+    for advertiser, day in sorted(buckets):
+        revision = (
+            session.connection()
+            .execute(
+                text(
+                    "SELECT source_revision FROM read_bucket_state WHERE tenant_id=:tenant "
+                    "AND advertiser_id=:advertiser AND kind='ad_day' AND bucket=:day"
+                ),
+                {"tenant": tenant_id, "advertiser": advertiser, "day": day},
+            )
+            .scalar_one_or_none()
+        )
+        if revision is not None:
+            project_bucket(
+                session,
+                ReadBucketKey(tenant_id, advertiser, "ad_day", day),
+                expected_version=revision,
+            )
 
 
 @diagnostics.timed("reconciliation")

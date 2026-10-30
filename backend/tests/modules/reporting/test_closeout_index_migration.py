@@ -4,7 +4,7 @@ from time import monotonic
 from typing import Any, cast
 
 from alembic import command
-from sqlalchemy import text
+from sqlalchemy import MetaData, Table, text
 from sqlmodel import Session
 
 from app.modules.reporting.store_models import ReportSyncJob
@@ -47,8 +47,19 @@ def test_closeout_index_roundtrip_preserves_all_job_states(
                 job_key="closeout-migration-seed",
                 due_at=NOW,
             )
-            session.add(job)
-            session.flush()
+            # 历史DDL测试必须按当时表列写入，不能用当前ORM新增字段。
+            historical = Table(
+                "report_sync_job", MetaData(), autoload_with=session.connection()
+            )
+            session.execute(
+                historical.insert().values(
+                    **{
+                        key: value
+                        for key, value in job.model_dump().items()
+                        if key in historical.c
+                    }
+                )
+            )
             session.connection().execute(
                 text("""
                 INSERT INTO report_sync_job

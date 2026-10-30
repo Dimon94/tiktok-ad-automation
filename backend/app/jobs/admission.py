@@ -164,6 +164,7 @@ def admit_call(
     policy: AdmissionPolicy,
     workload: Workload = "live",
     rate_group: str | None = None,
+    dispatch_reservation_id: str | None = None,
 ) -> Admission:
     keys = admission_keys(app_scope, endpoint, tenant_id, advertiser_id, rate_group)
     if workload not in ("live", "background"):
@@ -186,6 +187,13 @@ def admit_call(
         policy.endpoint_calls_per_minute,
         policy.endpoint_calls_per_day,
     ]
+    if dispatch_reservation_id is not None:
+        from app.modules.sync_control.occupancy import occupancy_keys
+
+        keys.extend(
+            occupancy_keys(app_scope, endpoint, tenant_id, advertiser_id, rate_group)
+        )
+        args.append(dispatch_reservation_id)
     try:
         granted, delay, reason = redis_client.eval(
             _ADMISSION_SCRIPT, len(keys), *keys, *args
@@ -253,6 +261,23 @@ def admitted_scope(
         "lease_id": lease_id,
     }
     options = {"rate_group": rate_group} if rate_group is not None else {}
+    from app.modules.sync_control.occupancy import reserve_for_send
+
+    reservation, ready = reserve_for_send(
+        redis_client,
+        policy=policy,
+        app_scope=app_scope,
+        endpoint=endpoint,
+        tenant_id=tenant_id,
+        advertiser_id=advertiser_id,
+        rate_group=rate_group,
+    )
+    if ready is not None and ready.capacity_hint == 0:
+        error = denied_error(ready.retry_after_ms)
+        cast(Any, error).admission_reason = ready.reason
+        raise error
+    if reservation is not None:
+        options["dispatch_reservation_id"] = reservation
     admission = admit(
         redis_client, **scope, policy=policy, workload=workload, **options
     )

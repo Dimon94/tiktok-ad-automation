@@ -10,13 +10,27 @@ from app.core.config import settings
 from app.jobs.models import PendingDispatch
 from app.modules.ads.directory_backlog import review_unstarted_directory
 from app.modules.ads.directory_calibration import PERIODIC_KEY
-from app.modules.ads.directory_dispatch import enqueue_directory_step
 from app.modules.ads.directory_requests import request_directory
 from app.modules.ads.models import AdObject
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 from app.modules.reporting import job_tasks, planner
 from app.modules.reporting.store_models import AdSyncBc
+from app.modules.sync_control.directory_demand import (
+    directory_outcome,
+    register_directory_run,
+)
 from tests.modules.reporting.test_jobs import _route
+
+
+def dispatch(session, now):
+    # 原raw历史夹具经正式收编，当前调度只读取canonical到期头。
+    for run in session.exec(select(AdDirectoryRun)).all():
+        if run.status in {"QUEUED", "RUNNING", "WAITING_REMOTE", "ADMISSION_WAIT"}:
+            register_directory_run(session, run)
+        else:
+            directory_outcome(session, run)
+    session.flush()
+    return job_tasks._dispatch_directories(session, now + timedelta(seconds=1))
 
 
 def case(session, seed, monkeypatch, *, active=True, screened=True):
@@ -152,10 +166,15 @@ def test_obsolete_unstarted_backlog_is_closed_before_outbox(
     newer.completed_at = now
     session.add(newer)
     session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 0
+    assert dispatch(session, now) == 0
     assert old.status == "STALE" and old.published_version is None
     assert not session.exec(
-        select(PendingDispatch).where(PendingDispatch.tenant_id == sync_seed.tenant_id)
+        select(PendingDispatch).where(
+            PendingDispatch.tenant_id == sync_seed.tenant_id,
+            PendingDispatch.task_name.in_(
+                ["ads.sync_step", "ads.targeted_step", "ads.publish_step"]
+            ),
+        )
     ).all()
 
 
@@ -230,11 +249,11 @@ def test_only_marked_calibration_can_be_deferred_at_dispatch(
         pending.query = pending.query | {PERIODIC_KEY: True}
     session.add(pending)
     session.flush()
-    assert job_tasks._dispatch_directories(session, now) == (0 if periodic else 1)
+    assert dispatch(session, now) == (0 if periodic else 1)
     assert pending.status == "QUEUED" and pending.published_version is None
     if periodic:
         assert pending.next_attempt_at == previous.completed_at + timedelta(days=7)
-        assert job_tasks._dispatch_directories(session, now + timedelta(minutes=1)) == 0
+        assert dispatch(session, now + timedelta(minutes=1)) == 0
     else:
         assert pending.next_attempt_at is None
 
@@ -257,7 +276,7 @@ def test_deferred_periodic_run_does_not_hide_missing_layers_or_reactivation(
     pending.query = pending.query | {PERIODIC_KEY: True}
     session.add(pending)
     session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 0
+    assert dispatch(session, now) == 0
     job_tasks._plan_directory_step(session, plan, accounts=["acc-1"], now=now)
     assert {
         r.kind
@@ -302,7 +321,6 @@ def test_started_or_delivered_backlog_is_not_changed(
     )
     newer.status, newer.published_version = "COMPLETE", 2
     newer.completed_at = now
-    session.add(newer)
     if protected == "lease":
         old.claimed_until = now + timedelta(minutes=2)
     elif protected == "page":
@@ -320,11 +338,62 @@ def test_started_or_delivered_backlog_is_not_changed(
             )
         )
     elif protected == "outbox":
-        enqueue_directory_step(session, old)
+        assert dispatch(session, now) == 1
     elif protected == "claim":
         old.claim_token = uuid4()
     else:
         old.next_page = 2
+    session.add(newer)
     session.flush()
     assert not review_unstarted_directory(session, old, now)
     assert old.status == "QUEUED" and old.completed_at is None
+
+
+def test_retired_full_run_keeps_successor_demand_dispatchable(
+    session, sync_seed, monkeypatch
+):
+    from app.modules.sync_control.models import (
+        SyncExecutionScope,
+        SyncRequirement,
+        SyncSchedule,
+    )
+
+    now, _ = case(session, sync_seed, monkeypatch)
+    request(session, sync_seed, ad_types={"acc-1": {"REGULAR": ("campaign",)}})
+    old = runs(session, sync_seed)[0]
+    newer = AdDirectoryRun(
+        **old.model_dump(exclude={"id", "request_id", "request_sequence"})
+    )
+    newer.status, newer.published_version, newer.completed_at = "COMPLETE", 2, now
+    session.add(newer)
+    session.flush()
+    successor = AdDirectoryRun(
+        **old.model_dump(exclude={"id", "request_id", "request_sequence"})
+    )
+    successor.query = old.query | {"ids": ["newly-required"]}
+    successor.partition_key = "f" * 64
+    successor.created_at = old.created_at + timedelta(seconds=1)
+    session.add(successor)
+    session.flush()
+    original_generation = old.claim_generation
+    assert dispatch(session, now) == 1
+    assert old.status == "STALE" and old.claim_generation == original_generation
+    child = session.exec(
+        select(SyncExecutionScope).where(
+            SyncExecutionScope.directory_run_id == successor.id
+        )
+    ).one()
+    demand = session.get(SyncRequirement, child.requirement_id)
+    assert demand.satisfied_revision < demand.desired_revision
+    head = session.exec(
+        select(SyncSchedule).where(SyncSchedule.scope_id == child.scope_id)
+    ).one()
+    assert head.active and head.lease_execution_id == successor.id
+    actual = session.exec(
+        select(PendingDispatch).where(
+            PendingDispatch.task_name.in_(
+                ["ads.sync_step", "ads.targeted_step", "ads.publish_step"]
+            )
+        )
+    ).all()
+    assert len(actual) == 1 and actual[0].payload["run_id"] == str(successor.id)

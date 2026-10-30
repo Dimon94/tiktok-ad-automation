@@ -200,8 +200,19 @@ def gateway_case(request, database_engine, redis_client, monkeypatch, policy, tm
         yield case
     finally:
         if not retain_history:
+            from app.modules.sync_control.models import (
+                SyncExecutionScope,
+                SyncRequirement,
+                SyncSchedule,
+                SyncScope,
+            )
+
             with Session(database_engine) as session:
                 for model in (
+                    SyncExecutionScope,
+                    SyncSchedule,
+                    SyncRequirement,
+                    SyncScope,
                     PendingDispatch,
                     DispatchTenantCursor,
                     McpRefreshAttempt,
@@ -283,6 +294,12 @@ def gateway_wire(monkeypatch, gateway_case, database_engine):
 
     def sdk_request(_pool, method, url, **kwargs):
         check()
+        # 此运输替身取代整个PoolManager.request，未进入真实TrackedConnection；
+        # 在同一个合成HTTP发送点发出观察信号，不以业务返回页数伪造发送成本。
+        cost = getattr(_pool, "_sync_attempt_observer", None)
+        if cost is not None:
+            observer, endpoint = cost
+            observer.attempt(endpoint)
         calls.append((method, url, kwargs))
         tokens.append(kwargs.get("headers", {}).get("Access-Token"))
         return HTTPResponse(

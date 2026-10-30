@@ -13,11 +13,11 @@ from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import RowMapping, text
 from sqlmodel import Session, col, select
 
 from app.integrations.tiktok.contracts.ads import MaterialUseRef
 from app.modules.accounts.models import AdvertiserAccount
-from app.modules.ads.models import AdMaterialReference
 from app.modules.reporting.dimension_query import (
     COMPLETE_COVERAGE_STATUSES,
     _aggregate,
@@ -29,14 +29,21 @@ from app.modules.reporting.dimension_query import (
     metric_vector,
     scoped_rows,
 )
-from app.modules.reporting.material_links import material_row_key, post_video_map
+from app.modules.reporting.read_models.coverage import (
+    projected_states,
+    projection_coverage,
+)
+from app.modules.reporting.read_models.material_names import material_names_sql
+from app.modules.reporting.read_models.models import (
+    CurrentAdMaterial as AdMaterialReference,
+)
+from app.modules.reporting.read_models.models import MaterialEntityDay
 from app.modules.reporting.row_set import (
     MATERIAL_UNSUPPORTED,
     SnapshotMember,
     entity_ref,
 )
 from app.modules.reporting.schemas import ReportingFilter, ReportRow
-from app.modules.reporting.store_models import MaterialReportDay, ReportSyncState
 
 
 def _use(data: dict[str, Any]) -> MaterialUseRef:
@@ -61,21 +68,28 @@ def materialize_material_rows(
     视频行合计该视频在全部账户、全部广告的帖子事实；帖子行只合计这一条帖子。
     """
     scope = sorted(set(advertisers))
-    video_of = post_video_map(
-        session,
-        tenant_id=tenant_id,
-        advertisers=scope,
-        start=filters.start_date,
-        end=filters.end_date,
-    )
     keys = {member.row_key: json.loads(member.row_key) for member in members}
-    videos = {key[1] for key in keys.values() if key[0] == "material"}
-    # 归属必须带事实类型；同 MID 的未知类型仍保留原始帖子行。
-    posts_by_row: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
-    post_ids = sorted(
-        {mid for (adv, mid, mtype), vid in video_of.items() if vid in videos}
-        | {key[2] for key in keys.values() if key[0] == "post"}
+    names: dict[str, str] = (
+        {
+            row.row_key: row.name
+            for row in session.connection()
+            .execute(
+                text(material_names_sql(page=True)),
+                {
+                    "tenant": tenant_id,
+                    "advs": scope,
+                    "start": filters.start_date,
+                    "end": filters.end_date,
+                    "row_keys": list(keys),
+                },
+            )
+            .all()
+        }
+        if keys
+        else {}
     )
+    videos = {key[1] for key in keys.values() if key[0] == "material"}
+    posts_by_row: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     usages = (
         session.exec(
             select(AdMaterialReference).where(
@@ -97,25 +111,25 @@ def materialize_material_rows(
     data = (
         _aggregate(
             session,
-            model=MaterialReportDay,
-            group_cols=["advertiser_id", "main_material_id", "main_material_type"],
+            model=MaterialEntityDay,
+            group_cols=["advertiser_id", "row_key", "main_material_type"],
             tenant_id=tenant_id,
             advertisers=scope,
             start=filters.start_date,
             end=filters.end_date,
-            ids=post_ids,
+            ids=list(keys),
         )
-        if post_ids
+        if keys
         else []
     )
-    facts: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    facts: dict[tuple[str, str, str], list[RowMapping]] = defaultdict(list)
     for item in data:
         identity = (
             item["advertiser_id"],
-            item["main_material_id"],
+            item["row_key"],
             item["main_material_type"],
         )
-        row_key = material_row_key(identity[0], identity[1], video_of.get(identity))
+        row_key = item["row_key"]
         if row_key in keys:
             posts_by_row[row_key].add(identity)
             facts[identity].append(item)
@@ -125,15 +139,13 @@ def materialize_material_rows(
             session, AdvertiserAccount, tenant_id=tenant_id, advertisers=scope
         )
     }
-    states = session.exec(
-        select(ReportSyncState).where(
-            ReportSyncState.tenant_id == tenant_id,
-            col(ReportSyncState.advertiser_id).in_(scope),
-            ReportSyncState.report_kind == "material_day",
-            ReportSyncState.stat_date >= filters.start_date,
-            ReportSyncState.stat_date <= filters.end_date,
-        )
-    ).all()
+    states, projection_states = projected_states(
+        session,
+        tenant_id=tenant_id,
+        advertisers=scope,
+        start=filters.start_date,
+        end=filters.end_date,
+    )
     # 覆盖只取决于账户与日期：每个账户算一次，不随行和事实重复扫描同步状态。
     incomplete_by_adv = {
         adv: _coverage(states, advertisers={adv}, filters=filters, kind="material_day")[
@@ -163,6 +175,9 @@ def materialize_material_rows(
         items = [item for post in sorted(posts) for item in facts.get(post, [])]
         coverage = _coverage(
             states, advertisers=set(row_advs), filters=filters, kind="material_day"
+        )
+        coverage["projection"] = projection_coverage(
+            [state for state in projection_states if state.advertiser_id in row_advs]
         )
         uses = tuple(_use(item) for item in member.material_uses)
         if not uses:
@@ -195,10 +210,7 @@ def materialize_material_rows(
         # 与快照排序同一取值：目录名优先（各帖子一致），否则取素材日报名称。
         name = (
             min((u.name for u in row_usages if u.name), default=None)
-            or min(
-                (i["main_material_name"] for i in items if i.get("main_material_name")),
-                default=None,
-            )
+            or names.get(member.row_key)
             or mid
         )
         single = row_advs[0] if len(row_advs) == 1 else None

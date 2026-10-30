@@ -3,6 +3,7 @@
 import json
 import re
 from datetime import timedelta
+from math import ceil
 from uuid import uuid4
 
 import pytest
@@ -137,9 +138,17 @@ def test_history_lookup_does_not_read_other_dates(
     assert (
         sum(n.get("Rows Removed by Filter", 0) for n in scans) <= same_day_history + 2
     )
+    # 新执行围栏/成本字段会增加每行宽度，页预算按真实物理密度计算；
+    # 仍限定到当天候选的比例，不能以全历史表变大放宽到全表扫描。
+    pages = connection.execute(
+        text(
+            "SELECT pg_relation_size('pg_temp.report_sync_job') / current_setting('block_size')::int"
+        )
+    ).scalar_one()
+    candidate_pages = ceil(pages * (same_day_history + 2) / (240002 + same_day_history))
     assert (
         sum(n.get("Local Hit Blocks", 0) + n.get("Local Read Blocks", 0) for n in scans)
-        < 100 + same_day_history // 10
+        < 100 + 3 * candidate_pages
     )
 
 

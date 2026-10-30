@@ -98,6 +98,7 @@ def test_scan_commits_completed_plan_before_later_timeout(
         yield Reader()
 
     monkeypatch.setattr(job_tasks, "_reader_for", reader_for)
+    entry_started = datetime.now(UTC)
     try:
         job_tasks.plan_due_runs(
             database_engine=engine, redis_client=redis_client, now=NOW
@@ -110,9 +111,13 @@ def test_scan_commits_completed_plan_before_later_timeout(
         assert plan is not None and plan.active_screened_at == NOW
         assert plan.last_active_advertiser_ids == ["acc-1"]
     # 每个BC读取预算受剩余总预算约束，前阶段提交不能被另一BC超时撤销。
-    assert len(deadlines) == 2 and deadlines[1] > deadlines[0]
+    assert len(deadlines) == 2
+    # 统一入口共享10秒剩余预算，不能为后一个BC重新赠送固定8秒。
     assert all(
-        timedelta(seconds=7) < deadline - started <= timedelta(seconds=8)
+        deadline <= entry_started + timedelta(seconds=10) for deadline in deadlines
+    )
+    assert all(
+        timedelta(seconds=2) <= deadline - started <= timedelta(seconds=10)
         for deadline, started in zip(deadlines, opened_at, strict=True)
     )
 

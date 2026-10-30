@@ -1,40 +1,61 @@
-"""背景定向依赖与旧全量各有保底；不改变总窗口或外部服务分类。"""
+"""背景依赖和全量共用canonical类；有限积压都推进且总执行窗口不可超额。"""
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
 
 import pytest
-from sqlmodel import select
 
-from app.jobs.models import PendingDispatch
-from app.modules.ads.sync_models import AdDirectoryRun
-from app.modules.reporting import job_tasks
+from app.modules.accounts.models import AdvertiserAccount
+from app.modules.sync_control.directory_demand import register_directory_run
+from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+from app.modules.sync_control.models import SyncWorkerPool
 from tests.modules.ads.test_directory_sync import _run
+from tests.modules.reporting.directory_claiming import finish, sent
+from tests.modules.sync_control.conftest import (
+    isolated_sync_quota as isolated_sync_quota,
+)
 
 
-def _pending(session, seed, *, targeted, age):
+@pytest.fixture(autouse=True)
+def eight_slot_background_pool(session):
+    # 本组专测目录8槽，显式给共享池同样8槽，避免默认4槽成为另一个瓶颈。
+    pool = session.get(SyncWorkerPool, "background")
+    if pool is None:
+        pool = SyncWorkerPool(pool_name="background", capacity=8)
+        session.add(pool)
+    pool.capacity, pool.prefetch_slots = 8, 0
+    session.flush()
+
+
+def _pending(session, seed, *, targeted, age, advertiser):
+    session.add(
+        AdvertiserAccount(
+            tenant_id=seed.context.tenant_id,
+            advertiser_id=advertiser,
+            currency="USD",
+            timezone="UTC",
+        )
+    )
     row = _run(session, seed, kind="ad", ad_type="SMART_PLUS")
-    row.workload = "background"
-    row.created_at = age
+    row.advertiser_id = advertiser
+    row.workload, row.created_at = "background", age
     row.query = row.query | {
+        "advertiser_id": advertiser,
         "ids": [str(row.id)] if targeted else [],
         "include_deleted": True,
     }
+    session.flush()
+    register_directory_run(session, row, new_execution=True)
     return row
 
 
-def _sent(session):
-    messages = session.exec(
-        select(PendingDispatch).where(PendingDispatch.task_name == "ads.sync_step")
-    ).all()
-    return [
-        session.get(AdDirectoryRun, UUID(message.payload["run_id"]))
-        for message in messages
-    ]
+def tick(session, redis):
+    return dispatch_directories_due(
+        session, redis, now=datetime.now(UTC) + timedelta(seconds=1), limit=8
+    )
 
 
-def test_background_dependency_and_full_scans_each_get_four_slots(
-    session, directory_seed
+def test_background_dependency_and_full_scopes_both_progress(
+    session, directory_seed, redis_client
 ):
     now = datetime.now(UTC)
     full = [
@@ -43,8 +64,9 @@ def test_background_dependency_and_full_scans_each_get_four_slots(
             directory_seed,
             targeted=False,
             age=now - timedelta(hours=5, seconds=i),
+            advertiser=f"full-{i}",
         )
-        for i in range(2000)
+        for i in range(16)
     ]
     dependencies = [
         _pending(
@@ -52,61 +74,66 @@ def test_background_dependency_and_full_scans_each_get_four_slots(
             directory_seed,
             targeted=True,
             age=now - timedelta(minutes=10, seconds=i),
+            advertiser=f"dependency-{i}",
         )
         for i in range(8)
     ]
-    session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 8
-    sent = _sent(session)
-    assert sum(bool(row.query["ids"]) for row in sent) == 4
-    assert {row.id for row in sent if row.query["ids"]} == {
-        row.id for row in dependencies[-4:]
-    }
-    assert {row.id for row in sent if not row.query["ids"]} == {
-        row.id for row in full[-4:]
-    }
-    assert all(row.workload == "background" for row in sent)
-    assert job_tasks._dispatch_directories(session, now) == 0
+    expected = {r.id for r in full + dependencies}
+    completed = set()
+    for _ in range(3):
+        assert tick(session, redis_client) == 8
+        active = [r for r in sent(session) if r.status != "COMPLETE"]
+        assert len(active) == 8 and all(r.workload == "background" for r in active)
+        assert tick(session, redis_client) == 0
+        for row in active:
+            finish(session, redis_client, row, now=datetime.now(UTC))
+            completed.add(row.id)
+    assert completed == expected
 
 
 @pytest.mark.parametrize("occupied_targeted", [True, False])
 def test_background_share_accounts_for_existing_claims(
-    session, directory_seed, occupied_targeted
+    session, directory_seed, redis_client, occupied_targeted
 ):
     now = datetime.now(UTC)
-    for _ in range(7):
-        row = _pending(
+    occupied = [
+        _pending(
             session,
             directory_seed,
             targeted=occupied_targeted,
             age=now - timedelta(days=1),
+            advertiser=f"occupied-{i}",
         )
+        for i in range(7)
+    ]
+    assert tick(session, redis_client) == 7
+    for row in occupied:
         row.status, row.claimed_until = "RUNNING", now + timedelta(minutes=1)
-    _pending(
-        session,
-        directory_seed,
-        targeted=occupied_targeted,
-        age=now - timedelta(hours=5),
-    )
     desired = _pending(
         session,
         directory_seed,
         targeted=not occupied_targeted,
         age=now - timedelta(minutes=1),
+        advertiser="remaining",
     )
-    session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 1
-    assert [row.id for row in _sent(session)] == [desired.id]
+    assert tick(session, redis_client) == 1
+    assert {r.id for r in sent(session)} == {r.id for r in occupied} | {desired.id}
+    assert tick(session, redis_client) == 0
 
 
 @pytest.mark.parametrize("targeted", [True, False])
-def test_background_unused_share_is_borrowed(session, directory_seed, targeted):
+def test_background_unused_share_is_borrowed(
+    session, directory_seed, redis_client, targeted
+):
     now = datetime.now(UTC)
-    for _ in range(9):
+    for index in range(9):
         _pending(
-            session, directory_seed, targeted=targeted, age=now - timedelta(hours=1)
+            session,
+            directory_seed,
+            targeted=targeted,
+            age=now - timedelta(hours=1),
+            advertiser=f"only-{index}",
         )
-    session.flush()
-    assert job_tasks._dispatch_directories(session, now) == 8
-    assert len(_sent(session)) == 8
-    assert job_tasks._dispatch_directories(session, now) == 0
+    assert tick(session, redis_client) == 8
+    assert len(sent(session)) == 8
+    assert tick(session, redis_client) == 0

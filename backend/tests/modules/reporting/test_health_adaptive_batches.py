@@ -46,8 +46,9 @@ def _pool(seed, factory, monkeypatch, redis_client):
 
 
 def _timeout(session, *_args, **_kwargs):
-    session.execute(text("SET LOCAL statement_timeout='50ms'"))
-    session.execute(text("SELECT pg_sleep(0.1)"))
+    # 本机PG取消信号可晚于100ms；保留真实50ms预算，用足够长的语句确保触发57014。
+    with health.query_budget(session, seconds=0.05):
+        session.execute(text("SELECT pg_sleep(1)"))
 
 
 def test_same_offset_timeouts_shrink_and_publish_distinct_immediate_retries(

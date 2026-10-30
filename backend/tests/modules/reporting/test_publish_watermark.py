@@ -402,3 +402,37 @@ def test_simple_old_window_fills_missing_dates_and_accounts_only(
     assert (
         row.account_spend if publisher is publish_account_reconciliation else row.spend
     ) == Decimal("2")
+
+
+@pytest.mark.parametrize(
+    "publisher,kind",
+    [
+        (publish_ad_day, "ad_day"),
+        (publish_material_day, "material_day"),
+        (publish_account_reconciliation, "account_day"),
+    ],
+)
+def test_later_observation_replaces_earlier_snapshot_even_when_both_finish_late(
+    session, sync_seed, publisher, kind
+):
+    """两次读取均早于首次提交；按观测先后而非完成时间选择新快照。"""
+    tenant = sync_seed.tenant_id
+    kwargs = args(tenant)
+    if kind == "account_day":
+        kwargs.pop("job_id")
+    old_rows = (
+        [ad_row("a1", D, spend="20")]
+        if kind == "ad_day"
+        else [material_row(spend="20")]
+    )
+    new_rows = (
+        [ad_row("a1", D, spend="2")] if kind == "ad_day" else [material_row(spend="2")]
+    )
+    assert publisher(session, **kwargs, rows=old_rows, requested_at=OLD) == 1
+    assert (
+        publisher(
+            session, **kwargs, rows=new_rows, requested_at=OLD + timedelta(seconds=1)
+        )
+        == 1
+    )
+    assert publisher(session, **kwargs, rows=old_rows, requested_at=OLD) == 0

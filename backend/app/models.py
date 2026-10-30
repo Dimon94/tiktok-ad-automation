@@ -151,6 +151,9 @@ class TokenPayload(SQLModel):
 
 
 # 广告管理的复合外键及任务表在普通应用进程也必须登记，不能只依赖迁移导入。
+from app.modules.ad_management import (  # noqa: E402
+    batch_models as management_batch_models,  # noqa: E402, F401
+)
 from app.modules.ad_management import models as ad_management_models  # noqa: E402, F401
 from app.modules.builds import (  # noqa: E402
     carousel_music_models,  # noqa: E402,F401
@@ -172,5 +175,7 @@ from app.modules.materials.carousel_models import (  # noqa: E402, F401
     CarouselPresetVersion,
 )
 from app.modules.reporting import store_models  # noqa: E402, F401
-
-from app.modules.ad_management import batch_models as management_batch_models  # noqa: E402, F401
+from app.modules.reporting.read_models import (  # noqa: E402
+    models as reporting_read_models,  # noqa: E402, F401
+)
+from app.modules.sync_control import models as sync_control_models  # noqa: E402, F401

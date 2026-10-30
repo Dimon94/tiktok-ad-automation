@@ -5,7 +5,6 @@ from uuid import uuid4
 import pytest
 
 from app.modules.ads.models import AdMaterialReference, AdObject, CampaignNameProjection
-from app.modules.reporting.dimension_query import build_rows
 from app.modules.reporting.publish import (
     AccountMeta,
     publish_ad_day,
@@ -13,6 +12,7 @@ from app.modules.reporting.publish import (
 )
 from app.modules.reporting.schemas import ReportingFilter
 from app.modules.reporting.store_models import METRIC_COLUMNS
+from tests.modules.reporting.query_helpers import build_rows
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.test_jobs import D
 

@@ -350,6 +350,10 @@ def install_transport_tracking(client: Any) -> None:
                 trace.phase = "tls_setup"
 
         def request(self, *args, **kwargs):
+            cost = getattr(client, "_sync_attempt_observer", None)
+            if cost is not None:
+                observer, endpoint = cost
+                observer.attempt(endpoint)
             trace = active()
             if trace is None:
                 return super().request(*args, **kwargs)

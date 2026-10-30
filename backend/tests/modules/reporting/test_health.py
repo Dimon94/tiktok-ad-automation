@@ -110,8 +110,9 @@ def test_health_observation_survives_contended_repair_lock(committed_sync_seed):
 
     from sqlalchemy import text
 
-    from app.modules.reporting.jobs import _key
     from app.modules.reporting.store_models import ReportSyncHealth
+    from app.modules.sync_control.models import SyncScope
+    from app.modules.sync_control.scopes import ensure_scope
 
     seed, factory = committed_sync_seed
     now = datetime.now(UTC)
@@ -121,23 +122,22 @@ def test_health_observation_survives_contended_repair_lock(committed_sync_seed):
         plan.last_active_advertiser_ids, plan.active_screened_at = ["acc-2"], now
         route = plan.frozen_route
         session.commit()
-    scope = _key(
-        seed.tenant_id,
-        "ad_day",
-        "live-coverage",
-        (),
-        now.date(),
-        now.date(),
-        (),
-        "bc-a",
-        seed.actor_id,
-        route,
-    )
-    with factory() as holder:
-        holder.connection().execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"report-enqueue:{scope}"},
+    with factory() as session:
+        scope = ensure_scope(
+            session,
+            route=route,
+            actor_id=seed.actor_id,
+            advertiser_id="acc-2",
+            resource="ad_day",
+            query={"campaign_ids": []},
+            timezone="UTC",
         )
+        scope_id = scope.id
+        session.commit()
+    with factory() as holder:
+        holder.exec(
+            select(SyncScope).where(SyncScope.id == scope_id).with_for_update()
+        ).one()
 
         def observe():
             with factory() as session:
