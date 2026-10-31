@@ -80,3 +80,28 @@ def test_directory_timeout_keeps_report_dispatch_and_refunds_uncommitted_reserva
         redis_client.zscore(key, "failed-directory") is None
         for key in occupancy_keys(**scope)
     )
+
+
+def test_directory_commit_batch_does_not_reduce_total_inflight_window(
+    session, sync_seed, redis_client, monkeypatch
+):
+    from app.modules.ads import tasks  # noqa:F401
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from tests.modules.sync_control.test_schedule_fencing import _directory
+
+    monkeypatch.setattr(job_tasks.settings, "TIKTOK_APP_ID", str(sync_seed.tenant_id))
+    _directory(session, sync_seed)
+    _directory(session, sync_seed, advertiser="acc-2")
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    # 一次提交一条，下一次仍可填充第二个空槽，不能把总窗口误改为1。
+    for _ in range(2):
+        assert (
+            dispatch_directories_due(
+                session, redis_client, now=now, limit=40, max_claims=1
+            )
+            == 1
+        )
+    assert (
+        dispatch_directories_due(session, redis_client, now=now, limit=40, max_claims=1)
+        == 0
+    )

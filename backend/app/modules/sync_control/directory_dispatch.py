@@ -38,6 +38,7 @@ def dispatch_directories_due(
     now: datetime,
     limit: int = 8,
     allow_backfill: bool = True,
+    max_claims: int | None = None,
 ) -> int:
     from app.modules.ads.directory_dispatch import (
         directory_step_key,
@@ -83,6 +84,12 @@ def dispatch_directories_due(
     limit = max(0, limit - int(inflight))
     if not limit:
         return 0
+    # 窗口约束总在途数；提交批量只约束本事务新增数，不能混为缩小Worker窗口。
+    claim_limit = limit
+    if max_claims is not None:
+        if max_claims < 1:
+            raise ValueError("max_claims must be positive")
+        claim_limit = min(limit, max_claims)
     due = [
         col(SyncSchedule.active).is_(True),
         col(SyncSchedule.work_class).in_(["realtime", "directory"]),
@@ -103,11 +110,11 @@ def dispatch_directories_due(
     background_blocked = False
     # 共享池拒绝后台候选后，额外一轮直接SQL筛选独立live/publisher；
     # 不能逐条跳过历史积压，也不能让最老后台头遮住有空闲执行池的候选。
-    for _ in range(limit + 1):
+    for _ in range(claim_limit + 1):
         progressed = False
         blocked_before = background_blocked
         for tenant_id in tenants:
-            if count >= limit:
+            if count >= claim_limit:
                 break
             cursor = lock_tenant_cursor(session, tenant_id)
             candidates = []

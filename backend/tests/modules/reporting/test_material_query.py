@@ -106,6 +106,36 @@ def by_id(rows):
     return {r.display["main_material_id"]: r for r in rows}
 
 
+def test_page_coverage_does_not_rescan_all_accounts_for_every_row(
+    session, sync_seed, monkeypatch
+):
+    from app.modules.reporting import material_query
+
+    publish(session, sync_seed, "acc-1", [material_row("p1", "10")])
+    publish(session, sync_seed, "acc-2", [material_row("p2", "20")])
+    original = material_query.projected_states
+    visits = []
+    sizes = []
+
+    class CountedStates(list):
+        def __iter__(self):
+            for item in super().__iter__():
+                visits.append(1)
+                yield item
+
+    def counted(*args, **kwargs):
+        states, projections = original(*args, **kwargs)
+        sizes.append(len(states))
+        return CountedStates(states), projections
+
+    monkeypatch.setattr(material_query, "projected_states", counted)
+    rows = query(session, sync_seed)
+    assert len(rows) == 2
+    assert all(row.coverage["status"] == "COMPLETE" for row in rows)
+    # 页补全对全账户状态只允许固定次数遍历，不能随账户数或行数相乘。
+    assert sum(visits) <= 3 * sum(sizes)
+
+
 def test_unlinked_posts_keep_money_as_post_rows(session, sync_seed):
     # 对不上广告的帖子单独成行，金额不丢，仍可排序。
     publish(

@@ -243,7 +243,7 @@ def _advance(due, now, interval):
     return due + (max(0, (now - due) // interval) + 1) * interval
 
 
-def _dispatch_directories(session, now, *, allow_backfill=True):
+def _dispatch_directories(session, now, *, allow_backfill=True, max_claims=None):
     from app.modules.sync_control.directory_dispatch import dispatch_directories_due
 
     with Redis.from_url(settings.REDIS_URL) as redis:
@@ -253,6 +253,7 @@ def _dispatch_directories(session, now, *, allow_backfill=True):
             now=now,
             limit=DIRECTORY_DISPATCH_WINDOW,
             allow_backfill=allow_backfill,
+            max_claims=max_claims,
         )
 
 
@@ -919,7 +920,10 @@ def _dispatch_pending(
                             )
                         elif family == "directory":
                             dispatched = _dispatch_directories(
-                                session, now, allow_backfill=allow_backfill
+                                session,
+                                now,
+                                allow_backfill=allow_backfill,
+                                max_claims=1,
                             )
                         else:
                             dispatched = dispatch_balances_due(session, redis, now=now)

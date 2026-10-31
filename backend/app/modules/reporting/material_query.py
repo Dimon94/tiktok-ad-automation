@@ -44,6 +44,7 @@ from app.modules.reporting.row_set import (
     entity_ref,
 )
 from app.modules.reporting.schemas import ReportingFilter, ReportRow
+from app.modules.reporting.store_models import ReportSyncState
 
 
 def _use(data: dict[str, Any]) -> MaterialUseRef:
@@ -146,17 +147,20 @@ def materialize_material_rows(
         start=filters.start_date,
         end=filters.end_date,
     )
-    # 覆盖只取决于账户与日期：每个账户算一次，不随行和事实重复扫描同步状态。
+    # 先按账户分组；每次覆盖计算只遍历对应账户的日期，避免账户数的平方级扫描。
+    states_by_adv: dict[str, list[ReportSyncState]] = defaultdict(list)
+    for state in states:
+        states_by_adv[state.advertiser_id].append(state)
     incomplete_by_adv = {
-        adv: _coverage(states, advertisers={adv}, filters=filters, kind="material_day")[
-            "status"
-        ]
+        adv: _coverage(
+            states_by_adv[adv], advertisers={adv}, filters=filters, kind="material_day"
+        )["status"]
         not in COMPLETE_COVERAGE_STATUSES
         for adv in scope
     }
     empty_by_adv = {
         adv: empty_metric_values(
-            states, advertiser=adv, filters=filters, kind="material_day"
+            states_by_adv[adv], advertiser=adv, filters=filters, kind="material_day"
         )
         for adv in accounts
     }
@@ -174,7 +178,10 @@ def materialize_material_rows(
         row_advs = [adv for adv in row_advs if adv in accounts]
         items = [item for post in sorted(posts) for item in facts.get(post, [])]
         coverage = _coverage(
-            states, advertisers=set(row_advs), filters=filters, kind="material_day"
+            [state for adv in row_advs for state in states_by_adv[adv]],
+            advertisers=set(row_advs),
+            filters=filters,
+            kind="material_day",
         )
         coverage["projection"] = projection_coverage(
             [state for state in projection_states if state.advertiser_id in row_advs]

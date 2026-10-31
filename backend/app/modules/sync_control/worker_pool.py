@@ -57,7 +57,9 @@ def background_lease_count(session: Session, *, now: datetime) -> int:
       SELECT id,owner_epoch FROM report_sync_job
       WHERE execution_pool='background' AND status='RUNNING' AND claimed_until>:now
     ), directory_candidates AS MATERIALIZED (
+      -- 提前写明后续相同的活跃状态约束，命中(status,next_attempt_at,claimed_until)索引前缀。
       SELECT r.id FROM ad_directory_run r WHERE r.claimed_until>:now
+        AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
       UNION
       SELECT r.id FROM leased_heads h JOIN ad_directory_run r ON r.id=h.id
       WHERE r.claim_generation=h.generation AND r.claimed_until IS NULL

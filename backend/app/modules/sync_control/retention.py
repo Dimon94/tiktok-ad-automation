@@ -109,7 +109,6 @@ def compact_sync_dispatches(
         pending_child = (
             select(SyncExecutionScope.id)
             .where(
-                col(PendingDispatch.id).in_(candidates),
                 execution_column == col(model.id),
                 col(SyncExecutionScope.status) == "PENDING",
             )
@@ -126,6 +125,8 @@ def compact_sync_dispatches(
                 ),
             )
             .where(
+                # 候选边界必须约束外层；放进NOT EXISTS会扩大扫描并绕过子任务保护。
+                col(PendingDispatch.id).in_(candidates),
                 or_(
                     col(PendingDispatch.published_at) <= cutoff,
                     col(PendingDispatch.superseded_at) <= cutoff,

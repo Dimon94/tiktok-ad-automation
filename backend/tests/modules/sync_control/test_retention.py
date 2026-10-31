@@ -123,6 +123,27 @@ def test_bounded_compaction_advances_past_protected_prefix(session, sync_seed):
     assert protected[0].compacted_at is not None
 
 
+def test_compaction_never_reads_beyond_candidate_page(session, sync_seed):
+    from app.modules.sync_control.retention import compact_sync_dispatches
+
+    # 首屏被活跃任务占据时，不得绕过候选范围提前处理后面的终态任务。
+    _, first, *_ = seed_dispatch(session, sync_seed, status="WAITING")
+    _, later, *_ = seed_dispatch(session, sync_seed)
+    first.published_at = datetime.now(UTC) - timedelta(days=10)
+    later.published_at = datetime.now(UTC) - timedelta(days=9)
+    session.flush()
+    cursors = {}
+    cutoff = datetime.now(UTC) - timedelta(days=7)
+    assert (
+        compact_sync_dispatches(session, limit=1, cutoff=cutoff, cursors=cursors) == 0
+    )
+    assert later.payload and later.compacted_at is None
+    assert (
+        compact_sync_dispatches(session, limit=1, cutoff=cutoff, cursors=cursors) == 1
+    )
+    assert later.compacted_at is not None
+
+
 def test_old_pure_wake_is_compacted_but_business_planning_signal_is_preserved(
     session, sync_seed
 ):
