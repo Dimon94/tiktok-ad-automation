@@ -14,6 +14,7 @@ from app.modules.reporting.read_models.ddl import (
     _bump,
     entity_refresh,
     material_refresh,
+    material_refresh_statements,
     naming_refresh,
 )
 from app.modules.reporting.read_models.dirty_buckets import ReadBucketKey, mark_dirty
@@ -85,7 +86,12 @@ def backfill_directory_page(
         params,
     )
     # 固定模板的DELETE/INSERT分别绑定；psycopg禁止一次prepared执行多条命令。
-    for statement in refresh(keys).split(";"):
+    statements = (
+        material_refresh_statements(keys)
+        if kind == "usage"
+        else refresh(keys).split(";")
+    )
+    for statement in statements:
         if statement.strip():
             session.connection().execute(text(statement), params)
     return RebuildPage(len(rows), tuple(rows[-1]) if len(rows) == limit else None)

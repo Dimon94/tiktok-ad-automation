@@ -89,6 +89,14 @@ def naming_refresh(keys: str) -> str:
 
 
 def material_refresh(keys: str) -> str:
+    return "".join(
+        _replan(statement) for statement in material_refresh_statements(keys)
+    )
+
+
+def material_refresh_statements(keys: str) -> tuple[str, str]:
+    # 回填通过带参数的SQL直接执行；只有触发器包装PL/pgSQL EXECUTE来重规划。
+    # 共用原始DML，避免维护两套素材候选规则或拆分dollar-quoted函数体。
     # 每个使用身份独立重建全部历史候选。局部窗口阻止LATERAL被拉平成全表JOIN，
     # 精确身份探测与每批重规划配合，避免前批基数让后批重复扫描无关引用。
     # 精确ID优先后再取最大完整版本，所有同版本候选保留，不能用LIMIT 1猜消歧。
@@ -121,7 +129,7 @@ def material_refresh(keys: str) -> str:
 
     """
 
-    return _replan(deletion) + _replan(insertion)
+    return deletion, insertion
 
 
 def trigger_statements() -> list[str]:

@@ -5,6 +5,59 @@ from app.modules.reporting.read_models.models import AdEntityRead
 from app.modules.reporting.read_models.rebuild import backfill_directory_page
 
 
+def test_usage_rebuild_resumes_and_preserves_precise_latest_candidates(
+    session, sync_seed
+):
+    # 真实回填入口必须能独立执行SQL，而非把触发器内的PL/pgSQL当SQL发送。
+    session.execute(
+        text("""INSERT INTO ad_material_reference
+        (id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+         ad_material_id,material_type,name,creative_ids,complete,published_version)
+        SELECT gen_random_uuid(),:tenant,'acc-1',v.ad,'video',v.material,'VIDEO',
+            v.name,'[]'::jsonb,v.complete,v.version
+        FROM (VALUES
+            ('a',NULL,'imprecise',true,99),
+            ('a','old','older',true,1),
+            ('a','one','current-one',true,2),
+            ('a','two','current-two',true,2),
+            ('a','partial','incomplete',false,100),
+            ('b','three','second-ad',true,3)
+        ) v(ad,material,name,complete,version)"""),
+        {"tenant": sync_seed.tenant_id},
+    )
+    session.execute(
+        text("DELETE FROM current_ad_material WHERE tenant_id=:tenant"),
+        {"tenant": sync_seed.tenant_id},
+    )
+    after = None
+    processed = 0
+    while True:
+        page = backfill_directory_page(
+            session,
+            tenant_id=sync_seed.tenant_id,
+            advertiser_id="acc-1",
+            kind="usage",
+            after=after,
+            limit=1,
+        )
+        processed += page.processed
+        after = page.after
+        if after is None:
+            break
+    assert processed == 2
+    rows = session.execute(
+        text("""SELECT ad_remote_id,ad_material_id,name,published_version
+        FROM current_ad_material WHERE tenant_id=:tenant
+        ORDER BY ad_remote_id,ad_material_id"""),
+        {"tenant": sync_seed.tenant_id},
+    ).all()
+    assert rows == [
+        ("a", "one", "current-one", 2),
+        ("a", "two", "current-two", 2),
+        ("b", "three", "second-ad", 3),
+    ]
+
+
 def test_directory_rebuild_pages_resume_without_missing_or_reverting_source(
     report_case,
 ):
