@@ -252,3 +252,55 @@ def test_unsettled_or_unknown_cost_prevents_parent_cleanup(
     assert session.exec(
         select(SyncCostLedger.id).where(SyncCostLedger.id == receipt.id)
     ).all()
+
+
+@pytest.mark.parametrize("task", ["reporting.plan_due", "reporting.plan_continue"])
+def test_legacy_wake_compaction_advances_bounded_pages_without_scanning_protected_tail(
+    session, sync_seed, task
+):
+    from app.jobs.tasks import register_dispatch_task
+    from app.modules.sync_control.retention import compact_sync_dispatches
+
+    register_dispatch_task(task, "control")
+    context = TenantContext(
+        tenant_id=sync_seed.tenant_id, actor_id=sync_seed.actor_id, role="operator"
+    )
+    now = datetime.now(UTC)
+    rows = []
+    for eligible in (False, True):
+        identity = str(uuid4())
+        if task == "reporting.plan_due":
+            key = f"sync-directory-wake:{identity}"
+            payload = {"dispatch_only": eligible}
+        else:
+            key = f"report-planning-continue:{identity}"
+            payload = {
+                "continuation_id": identity,
+                "expires_at": (now - timedelta(days=8)).isoformat(),
+            }
+            if not eligible:
+                payload["business_owner"] = "protected"
+        dispatch_id = enqueue_after_commit(
+            session, context=context, task_name=task, task_key=key, payload=payload
+        )
+        row = session.get(PendingDispatch, dispatch_id)
+        row.published_at = now - timedelta(days=9 if not eligible else 8)
+        rows.append(row)
+    session.flush()
+    cursors = {}
+    # 第一页只有受保护正文；不能为找到一条可清理记录越过候选页边界。
+    assert (
+        compact_sync_dispatches(
+            session, limit=1, cutoff=now - timedelta(days=7), cursors=cursors
+        )
+        == 0
+    )
+    assert all(row.compacted_at is None for row in rows)
+    assert (
+        compact_sync_dispatches(
+            session, limit=1, cutoff=now - timedelta(days=7), cursors=cursors
+        )
+        == 1
+    )
+    assert rows[0].payload and rows[0].compacted_at is None
+    assert rows[1].payload == {} and rows[1].payload_digest

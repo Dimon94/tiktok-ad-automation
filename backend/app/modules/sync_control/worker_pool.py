@@ -139,10 +139,16 @@ def _due_categories(
 
 def _readiness_candidates(
     session: Session, *, category: str, cursor: str, now: datetime, limit: int
-) -> list[tuple[UUID, UUID, str, str]]:
-    # 每个head先用partial PENDING子引用确认真实执行，再按scope主键有界轮转。
+) -> list[tuple[UUID, UUID, str, str, bool]]:
+    # 先固定窄head页再检查执行资格。先过滤EXISTS再LIMIT会让Merge Join
+    # 每次从头重扫执行引用；游标越靠后，持公共池锁的时间反而越长。
     if category in {"facts", "links"}:
         parent, reference = "report_sync_job", "report_job_id"
+        family = (
+            "h.work_class='history' AND s.resource<>'material_links'"
+            if category == "facts"
+            else "s.resource='material_links'"
+        )
         condition = "p.status IN ('QUEUED','WAITING','RUNNING') AND p.due_at<=:now"
         condition += (
             " AND h.work_class='history' AND p.kind<>'material_links'"
@@ -151,6 +157,7 @@ def _readiness_candidates(
         )
     elif category == "directory":
         parent, reference = "ad_directory_run", "directory_run_id"
+        family = "s.resource LIKE 'directory:%'"
         condition = """p.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
           AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=:now)
           AND NOT (p.workload='live' AND (coalesce(jsonb_array_length(p.query->'ids'),0)>0
@@ -158,17 +165,24 @@ def _readiness_candidates(
           AND NOT EXISTS (SELECT 1 FROM ad_directory_page page WHERE page.run_id=p.id AND page.complete IS TRUE)"""
     else:
         parent, reference = "report_balance_run", "balance_run_id"
+        family = "h.work_class='maintenance' AND s.resource='balance'"
         condition = "p.status='ACTIVE' AND (p.next_attempt_at IS NULL OR p.next_attempt_at<=:now)"
     statement = text(f"""
-      SELECT DISTINCT h.scope_id,h.tenant_id,h.physical_endpoint,s.advertiser_id
-      FROM sync_schedule h JOIN sync_scope s ON s.id=h.scope_id
-      WHERE h.active IS TRUE AND h.next_eligible_at<=:now
-        AND (h.leased_until IS NULL OR h.leased_until<=:now) AND h.scope_id>:cursor
-        AND EXISTS (SELECT 1 FROM sync_execution_scope e JOIN {parent} p ON p.id=e.{reference}
-          WHERE e.scope_id=h.scope_id AND e.status='PENDING' AND e.owner_epoch=s.owner_epoch
-            AND p.owner_epoch=s.owner_epoch AND (p.claimed_until IS NULL OR p.claimed_until<=:now)
-            AND {condition})
-      ORDER BY h.scope_id LIMIT :limit
+      WITH candidates AS MATERIALIZED (
+        SELECT h.scope_id,h.tenant_id,h.physical_endpoint,h.work_class,
+          s.advertiser_id,s.owner_epoch,s.timezone
+        FROM sync_schedule h JOIN sync_scope s ON s.id=h.scope_id
+        WHERE h.active IS TRUE AND h.next_eligible_at<=:now
+          AND (h.leased_until IS NULL OR h.leased_until<=:now)
+          AND h.scope_id>:cursor AND s.id>:cursor AND {family}
+        ORDER BY h.scope_id LIMIT :limit
+      )
+      SELECT h.scope_id,h.tenant_id,h.physical_endpoint,h.advertiser_id,
+        EXISTS (SELECT 1 FROM sync_execution_scope e JOIN {parent} p ON p.id=e.{reference}
+          WHERE e.scope_id=h.scope_id AND e.status='PENDING' AND e.owner_epoch=h.owner_epoch
+            AND p.owner_epoch=h.owner_epoch AND (p.claimed_until IS NULL OR p.claimed_until<=:now)
+            AND {condition.replace("s.timezone", "h.timezone")}) AS runnable
+      FROM candidates h ORDER BY h.scope_id
     """)
     return [
         tuple(row)
@@ -218,11 +232,15 @@ def _ready_categories(
             rows = _readiness_candidates(
                 session, category=candidate, cursor=zero, now=now, limit=probe_limit
             )
-        for index, (scope_id, tenant_id, endpoint, advertiser) in enumerate(rows):
+        for index, (scope_id, tenant_id, endpoint, advertiser, runnable) in enumerate(
+            rows
+        ):
             # 即使SQL恰好用完软预算也至少探测一项，保证游标不会永远停在慢页前。
             if index and monotonic() >= stop:
                 break
             cursors[candidate] = str(scope_id)
+            if not runnable:
+                continue  # 失效/受保护前缀也推进游标，下轮继续探测，不假报可运行。
             key = (tenant_id, endpoint, advertiser)
             if key not in cache:
                 cache[key] = dispatch_readiness(

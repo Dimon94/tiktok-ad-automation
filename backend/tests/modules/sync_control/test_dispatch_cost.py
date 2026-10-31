@@ -194,3 +194,96 @@ def test_shared_pool_due_probes_skip_large_terminal_execution_history(
     print("SYNC_WORKER_POOL_HISTORY_PLANS " + json.dumps(plans, default=str))  # noqa:T201
     assert len(plans) == 2
     assert all(plan["Plan"].get("Shared Hit Blocks", 0) < 500 for plan in plans), plans
+
+
+def test_pool_readiness_late_cursor_does_not_rescan_earlier_pending_scopes(
+    session, sync_seed
+):
+    """游标已到尾部时，只探测下一页，不能重扫此前一万个仍待执行的scope。"""
+    from uuid import UUID, uuid4
+
+    from sqlalchemy import event, insert
+
+    from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.models import (
+        SyncRequirement,
+        SyncSchedule,
+        SyncScope,
+    )
+    from app.modules.sync_control.worker_pool import _readiness_candidates
+    from tests.modules.sync_control.test_schedule_fencing import _directory
+
+    now = datetime.now(UTC)
+    run = _directory(session, sync_seed, query_extra={"ids": []})
+    child = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.directory_run_id == run.id)
+    ).one()
+    models = (
+        SyncScope,
+        SyncRequirement,
+        AdDirectoryRun,
+        SyncExecutionScope,
+        SyncSchedule,
+    )
+    templates = (
+        session.get(SyncScope, child.scope_id).model_dump(),
+        session.get(SyncRequirement, child.requirement_id).model_dump(),
+        run.model_dump(),
+        child.model_dump(),
+        session.exec(
+            select(SyncSchedule).where(SyncSchedule.scope_id == child.scope_id)
+        )
+        .one()
+        .model_dump(),
+    )
+    batches = [[] for _ in models]
+    for i in range(1, 10001):
+        scope, requirement, execution = UUID(int=i), uuid4(), uuid4()
+        rows = [dict(template) for template in templates]
+        rows[0].update(id=scope, identity_digest=f"{i:064x}")
+        rows[1].update(id=requirement, scope_id=scope)
+        rows[2].pop("request_sequence", None)
+        rows[2].update(
+            id=execution,
+            partition_key=f"{i:064x}",
+            workload="background",
+            status="COMPLETE" if i <= 9500 else "QUEUED",
+        )
+        rows[3].update(
+            id=uuid4(),
+            scope_id=scope,
+            requirement_id=requirement,
+            directory_run_id=execution,
+        )
+        rows[4].update(scope_id=scope, next_eligible_at=now)
+        for batch, row in zip(batches, rows, strict=True):
+            batch.append(row)
+    for model, rows in zip(models, batches, strict=True):
+        session.connection().execute(insert(model), rows)
+        session.execute(text(f"ANALYZE {model.__tablename__}"))
+    captured = []
+    connection = session.connection()
+
+    def capture(_conn, _cursor, sql, params, _context, _many):
+        captured.append((sql, params))
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        found = _readiness_candidates(
+            session, category="directory", cursor=str(UUID(int=9000)), now=now, limit=64
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert [row[0] for row in found] == [UUID(int=i) for i in range(9001, 9065)]
+    assert not any(row[4] for row in found)
+    later = _readiness_candidates(
+        session, category="directory", cursor=str(UUID(int=9500)), now=now, limit=64
+    )
+    assert [row[0] for row in later] == [UUID(int=i) for i in range(9501, 9565)]
+    assert all(row[4] for row in later)
+    sql, params = captured[-1]
+    plan = connection.exec_driver_sql(
+        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, params
+    ).scalar_one()[0]
+    print("READINESS_PLAN " + json.dumps(plan))  # noqa: T201
+    assert plan["Plan"]["Shared Hit Blocks"] < 3000, plan

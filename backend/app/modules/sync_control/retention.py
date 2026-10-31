@@ -23,11 +23,21 @@ _UUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-
 
 
 def _legacy_candidates(
-    session: Session, *, limit: int, cutoff: datetime, cursors: dict[str, list[str]]
+    session: Session,
+    *,
+    limit: int,
+    cutoff: datetime,
+    cursors: dict[str, list[str]],
+    tasks: tuple[str, ...] = SYNC_TASKS,
+    published_only: bool = False,
+    cursor_prefix: str = "",
 ) -> list[UUID]:
     """先沿时间索引读窄ID，业务所有权只在有界候选内核验；游标不是删除证明。"""
     identities: list[UUID] = []
-    for name in ("published_at", "superseded_at"):
+    for name in (
+        ("published_at",) if published_only else ("published_at", "superseded_at")
+    ):
+        cursor_key = cursor_prefix + name
         timestamp = getattr(PendingDispatch, name)
         conditions = [
             timestamp <= cutoff,
@@ -35,10 +45,10 @@ def _legacy_candidates(
             col(PendingDispatch.dispatch_contract_version).is_(None),
             # 固定合同字面量让长连接的generic plan也能证明部分索引谓词。
             col(PendingDispatch.task_name).in_(
-                [literal(task, literal_execute=True) for task in SYNC_TASKS]
+                [literal(task, literal_execute=True) for task in tasks]
             ),
         ]
-        if cursor := cursors.get(name):
+        if cursor := cursors.get(cursor_key):
             conditions.append(
                 tuple_(timestamp, col(PendingDispatch.id))
                 > (datetime.fromisoformat(cursor[0]), UUID(cursor[1]))
@@ -51,10 +61,10 @@ def _legacy_candidates(
         ).all()
         identities.extend(row[1] for row in rows)
         if len(rows) == limit:
-            cursors[name] = [rows[-1][0].isoformat(), str(rows[-1][1])]
+            cursors[cursor_key] = [rows[-1][0].isoformat(), str(rows[-1][1])]
         else:
             # 扫至末尾下一轮从头复查，先前未终态/被锁的任务不会永久遗漏。
-            cursors.pop(name, None)
+            cursors.pop(cursor_key, None)
     return identities
 
 
@@ -69,11 +79,12 @@ def compact_sync_dispatches(
 
     if not 1 <= limit <= 5000:
         raise ValueError("invalid sync compaction limit")
+    cursors = cursors if cursors is not None else {}
     candidates = _legacy_candidates(
         session,
         limit=limit,
         cutoff=cutoff,
-        cursors=cursors if cursors is not None else {},
+        cursors=cursors,
     )
     total = 0
     specs = (
@@ -157,9 +168,20 @@ def compact_sync_dispatches(
     # 精确纯唤醒没有业务正文所有权；旧request/health前缀只压缩正文，
     # 不补造有效期或删除幂等摘要。普通规划任务及附带其它参数的消息保持原样。
     if total < limit:
+        # JSON合同核验必须在窄ID页之后，不能为了凑满一页重扫全部旧唤醒正文。
+        wake_candidates = _legacy_candidates(
+            session,
+            limit=limit - total,
+            cutoff=cutoff,
+            cursors=cursors,
+            tasks=("reporting.plan_due",),
+            published_only=True,
+            cursor_prefix="plan_due:",
+        )
         wakes = session.exec(
             select(PendingDispatch)
             .where(
+                col(PendingDispatch.id).in_(wake_candidates),
                 col(PendingDispatch.task_name)
                 == literal("reporting.plan_due", literal_execute=True),
                 or_(
@@ -184,6 +206,15 @@ def compact_sync_dispatches(
             row.compacted_at = now
         total += len(wakes)
     if total < limit:
+        continuation_candidates = _legacy_candidates(
+            session,
+            limit=limit - total,
+            cutoff=cutoff,
+            cursors=cursors,
+            tasks=("reporting.plan_continue",),
+            published_only=True,
+            cursor_prefix="plan_continue:",
+        )
         # 旧规划续点自身已带30秒绝对期限。只清精确合同且期限也已超过保留期的
         # 已发送正文；非法/无时区时间不做强制转换，不补造V2身份或删除旧摘要。
         payload = col(PendingDispatch.payload)
@@ -201,6 +232,7 @@ def compact_sync_dispatches(
         rows = session.exec(
             select(PendingDispatch)
             .where(
+                col(PendingDispatch.id).in_(continuation_candidates),
                 col(PendingDispatch.task_name)
                 == literal("reporting.plan_continue", literal_execute=True),
                 col(PendingDispatch.task_key) == "report-planning-continue:" + raw_id,
