@@ -80,6 +80,8 @@ def legacy_balance_dispatch_query() -> SelectOfScalar[PendingDispatch]:
             col(PendingDispatch.task_name) == "reporting.balance_step",
             col(PendingDispatch.published_at).is_(None),
             col(PendingDispatch.superseded_at).is_(None),
+            # 与待派发部分索引一致；忽略已退役消息，避免扫描整张历史派发表。
+            col(PendingDispatch.retired_at).is_(None),
             payload.op("?")("run_id"),
             payload.op("?")("page"),
             payload.op("-")("run_id").op("-")("page") == {},

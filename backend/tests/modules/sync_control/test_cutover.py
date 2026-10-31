@@ -282,6 +282,20 @@ def test_balance_cutover_retires_only_mapped_old_messages(session, sync_seed):
         task_key=f"new:{run.id}",
         payload={**payload, "claim_id": str(uuid4()), "claim_generation": 2},
     )
+    retired_id = enqueue_after_commit(
+        session,
+        context=sync_seed.context,
+        task_name="reporting.balance_step",
+        task_key=f"retired:{run.id}",
+        payload=payload,
+    )
+    # 已退役消息即使正文符合旧格式，也不能再次参与离线接管。
+    retired = session.get(PendingDispatch, retired_id)
+    retired.dispatch_contract_version = 2
+    retired.issued_at = datetime.now(UTC) - timedelta(hours=1)
+    retired.valid_until = datetime.now(UTC) + timedelta(hours=1)
+    retired.retired_at = datetime.now(UTC)
+    session.flush()
     original = session.get(PendingDispatch, old_id)
     digest = original.payload_digest
     with pytest.raises(ValueError, match="stopped"):
@@ -298,6 +312,7 @@ def test_balance_cutover_retires_only_mapped_old_messages(session, sync_seed):
     assert original.superseded_at is not None and original.published_at is None
     assert original.payload == payload and original.payload_digest == digest
     assert session.get(PendingDispatch, new_id).superseded_at is None
+    assert session.get(PendingDispatch, retired_id).superseded_at is None
     assert run.next_page == 3 and run.remaining_advertiser_ids == ["acc-1"]
 
 
