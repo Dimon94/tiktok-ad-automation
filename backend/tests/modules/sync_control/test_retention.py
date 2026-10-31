@@ -304,3 +304,60 @@ def test_legacy_wake_compaction_advances_bounded_pages_without_scanning_protecte
     )
     assert rows[0].payload and rows[0].compacted_at is None
     assert rows[1].payload == {} and rows[1].payload_digest
+
+
+def test_planning_cleanup_shares_one_page_across_wake_and_continuation_tasks(
+    session, sync_seed
+):
+    """稀疏续点不能为了找下一条而穿过另一类数百万条唤醒历史。"""
+    from app.jobs.tasks import register_dispatch_task
+    from app.modules.sync_control.retention import compact_sync_dispatches
+
+    now = datetime.now(UTC)
+    context = TenantContext(
+        tenant_id=sync_seed.tenant_id, actor_id=sync_seed.actor_id, role="operator"
+    )
+    register_dispatch_task("reporting.plan_due", "control")
+    register_dispatch_task("reporting.plan_continue", "control")
+    first_id = enqueue_after_commit(
+        session,
+        context=context,
+        task_name="reporting.plan_due",
+        task_key="protected-plan",
+        payload={"dispatch_only": False},
+    )
+    identity = str(uuid4())
+    second_id = enqueue_after_commit(
+        session,
+        context=context,
+        task_name="reporting.plan_continue",
+        task_key=f"report-planning-continue:{identity}",
+        payload={
+            "continuation_id": identity,
+            "expires_at": (now - timedelta(days=8)).isoformat(),
+        },
+    )
+    first, second = (
+        session.get(PendingDispatch, first_id),
+        session.get(PendingDispatch, second_id),
+    )
+    first.published_at, second.published_at = (
+        now - timedelta(days=9),
+        now - timedelta(days=8),
+    )
+    session.flush()
+    cursors = {}
+    assert (
+        compact_sync_dispatches(
+            session, limit=1, cutoff=now - timedelta(days=7), cursors=cursors
+        )
+        == 0
+    )
+    assert second.compacted_at is None
+    assert (
+        compact_sync_dispatches(
+            session, limit=1, cutoff=now - timedelta(days=7), cursors=cursors
+        )
+        == 1
+    )
+    assert first.payload and second.payload == {}

@@ -167,21 +167,23 @@ def compact_sync_dispatches(
         total += len(rows)
     # 精确纯唤醒没有业务正文所有权；旧request/health前缀只压缩正文，
     # 不补造有效期或删除幂等摘要。普通规划任务及附带其它参数的消息保持原样。
+    planning_candidates: list[UUID] = []
     if total < limit:
         # JSON合同核验必须在窄ID页之后，不能为了凑满一页重扫全部旧唤醒正文。
-        wake_candidates = _legacy_candidates(
+        # 时间索引覆盖两种规划任务；分开找稀疏续点仍会越过大量另一类正文。
+        planning_candidates = _legacy_candidates(
             session,
             limit=limit - total,
             cutoff=cutoff,
             cursors=cursors,
-            tasks=("reporting.plan_due",),
+            tasks=("reporting.plan_due", "reporting.plan_continue"),
             published_only=True,
-            cursor_prefix="plan_due:",
+            cursor_prefix="planning:",
         )
         wakes = session.exec(
             select(PendingDispatch)
             .where(
-                col(PendingDispatch.id).in_(wake_candidates),
+                col(PendingDispatch.id).in_(planning_candidates),
                 col(PendingDispatch.task_name)
                 == literal("reporting.plan_due", literal_execute=True),
                 or_(
@@ -206,15 +208,6 @@ def compact_sync_dispatches(
             row.compacted_at = now
         total += len(wakes)
     if total < limit:
-        continuation_candidates = _legacy_candidates(
-            session,
-            limit=limit - total,
-            cutoff=cutoff,
-            cursors=cursors,
-            tasks=("reporting.plan_continue",),
-            published_only=True,
-            cursor_prefix="plan_continue:",
-        )
         # 旧规划续点自身已带30秒绝对期限。只清精确合同且期限也已超过保留期的
         # 已发送正文；非法/无时区时间不做强制转换，不补造V2身份或删除旧摘要。
         payload = col(PendingDispatch.payload)
@@ -232,7 +225,7 @@ def compact_sync_dispatches(
         rows = session.exec(
             select(PendingDispatch)
             .where(
-                col(PendingDispatch.id).in_(continuation_candidates),
+                col(PendingDispatch.id).in_(planning_candidates),
                 col(PendingDispatch.task_name)
                 == literal("reporting.plan_continue", literal_execute=True),
                 col(PendingDispatch.task_key) == "report-planning-continue:" + raw_id,
