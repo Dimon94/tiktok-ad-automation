@@ -220,6 +220,158 @@ def snapshot_ids(engine, fixture) -> set[str]:
         }
 
 
+def validate_publish_target(engine, fixture, parameters) -> dict:
+    """额外授权只覆盖原helper的第一账户、end_date+2及它声明的1000个ID。"""
+    from sqlalchemy import text
+
+    target = parameters.end_date + timedelta(days=2)
+    advertiser = fixture["accounts"][0]
+    declared_ids = [f"concurrency-publish-{i}" for i in range(1000)]
+    with engine.connect() as connection:
+        unknown = connection.execute(
+            text("""SELECT EXISTS (
+                SELECT 1 FROM ad_report_day
+                WHERE tenant_id=:tenant AND advertiser_id=:advertiser AND stat_date=:day
+                AND NOT (ad_id = ANY(:declared_ids))
+            )"""),
+            {
+                "tenant": UUID(fixture["tenant_id"]),
+                "advertiser": advertiser,
+                "day": target,
+                "declared_ids": declared_ids,
+            },
+        ).scalar_one()
+    if unknown:
+        raise BenchmarkFailure("fixture_publish_target_contains_undeclared_data")
+    return {
+        "advertiser_id": advertiser,
+        "day": str(target),
+        "source_end_date_offset_days": 2,
+        "allowed_ad_id_range": "concurrency-publish-0..999",
+        "undeclared_data": False,
+    }
+
+
+def normalize_publication(publication: dict) -> dict:
+    # HTTP入口未安装原服务压测的SQL监听；默认0/空trace不是实际观测值。
+    return {
+        **{
+            key: value
+            for key, value in publication.items()
+            if key not in {"sql_count", "sql_ms", "traces"}
+        },
+        "sql_instrumented": False,
+    }
+
+
+def publish_with_timing(reference, engine, fixture, parameters, barrier):
+    timing = {}
+
+    class PublicationGate:
+        def wait(self, timeout=None):
+            value = barrier.wait(timeout=timeout)
+            # 原helper自行构造1000行后才wait；此时起覆盖真实publish+COMMIT+readback。
+            timing["started_monotonic"] = time.perf_counter()
+            return value
+
+    try:
+        publication = reference.publish_future(
+            engine, fixture, parameters, PublicationGate()
+        )
+    except Exception as error:  # noqa: BLE001 - 启动失败也释放等待者并保留安全失败证据。
+        barrier.abort()
+        publication = {
+            "kind": "publish",
+            "complete": False,
+            "failure_type": type(error).__name__,
+        }
+    finally:
+        timing["finished_monotonic"] = time.perf_counter()
+    return normalize_publication(publication), timing
+
+
+def overlap_evidence(queries, timing) -> dict:
+    start, end = timing.get("started_monotonic"), timing.get("finished_monotonic")
+    overlaps = [
+        max(
+            0.0,
+            min(end, q["http_finished_monotonic"])
+            - max(start, q["http_started_monotonic"]),
+        )
+        * 1000
+        if start is not None
+        and end is not None
+        and "http_started_monotonic" in q
+        and "http_finished_monotonic" in q
+        else 0.0
+        for q in queries
+    ]
+    return {
+        "clock": "parent time.perf_counter; shared barrier",
+        "publication_interval": "after helper barrier wait through publish_ad_day, COMMIT and readback return",
+        "http_interval": "TCP request start through complete response body; excludes oracle validation",
+        "publication_started_monotonic": start,
+        "publication_finished_monotonic": end,
+        "overlap_ms_by_request": overlaps,
+        "overlapping_http_requests": sum(value > 0 for value in overlaps),
+        "overlap_observed": any(value > 0 for value in overlaps),
+    }
+
+
+def workloads(reference, parameters, same_days: int, *, mixed: bool):
+    cases = reference.distinct_cases(parameters.days, 20)
+    same = reference.QueryCase("material", min(same_days, parameters.days))
+    base = [
+        ("distinct-cold-20", cases),
+        *[(f"same-cold-{n}", [same] * n) for n in (1, 5, 20)],
+    ]
+    return [(name, work, False) for name, work in base] + (
+        [(f"mixed-{name}", work, True) for name, work in base] if mixed else []
+    )
+
+
+def run_workload(
+    reference,
+    engine,
+    fixture,
+    parameters,
+    *,
+    port,
+    token,
+    work,
+    oracles,
+    timeout,
+    mixed,
+):
+    barrier = threading.Barrier(len(work) + int(mixed))
+    with ThreadPoolExecutor(max_workers=barrier.parties) as pool:
+        futures = [
+            pool.submit(
+                http_case,
+                port,
+                token,
+                request_path(fixture, parameters, case),
+                case,
+                oracles[case],
+                barrier,
+                timeout,
+            )
+            for case in work
+        ]
+        publisher = (
+            pool.submit(
+                publish_with_timing, reference, engine, fixture, parameters, barrier
+            )
+            if mixed
+            else None
+        )
+        queries = [future.result() for future in futures]
+        publication, timing = (
+            publisher.result() if publisher is not None else (None, {})
+        )
+    return queries, publication, overlap_evidence(queries, timing) if mixed else None
+
+
 def expected_page(reference, parameters, fixture, case) -> dict:
     """整数分oracle来自原夹具；分组身份独立计算，不调用生产查询构造结果。"""
     from tests.performance.sync_query_fixture import expected_metrics
@@ -374,10 +526,13 @@ def http_case(port, token, path, case, oracle, barrier, timeout) -> dict:
     try:
         barrier.wait(timeout=30)
         started = time.perf_counter()
+        result["http_started_monotonic"] = started
         status, body = http_get(port, path, token=token, timeout=timeout)
         # 含TCP连接、正式认证/路由、DB提交、JSON序列化和全部响应字节；oracle校验不计入HTTP。
+        finished = time.perf_counter()
         result.update(
-            elapsed_ms=(time.perf_counter() - started) * 1000,
+            elapsed_ms=(finished - started) * 1000,
+            http_finished_monotonic=finished,
             http_status=status,
             response_bytes=len(body),
         )
@@ -389,7 +544,10 @@ def http_case(port, token, path, case, oracle, barrier, timeout) -> dict:
         if not result["complete"]:
             result["failure_type"] = "OracleMismatch"
     except Exception as error:  # noqa: BLE001 - 只存异常类型，不存token、URL、响应正文或连接配置。
-        result.setdefault("elapsed_ms", (time.perf_counter() - started) * 1000)
+        finished = time.perf_counter()
+        result.setdefault("elapsed_ms", (finished - started) * 1000)
+        if "http_started_monotonic" in result:
+            result.setdefault("http_finished_monotonic", finished)
         result["failure_type"] = type(error).__name__
     return result
 
@@ -521,6 +679,13 @@ def snapshot_check(queries, new_ids: set[str], expected: int) -> dict:
     }
 
 
+def round_complete(snapshot_ok: bool, publication, overlap) -> bool:
+    return snapshot_ok and (
+        publication is None
+        or bool(publication["complete"] and overlap["overlap_observed"])
+    )
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
@@ -528,7 +693,13 @@ def parse_args(argv=None):
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--same-days", type=int, default=7)
+    parser.add_argument("--mixed", action="store_true")
+    parser.add_argument("--allow-fixture-publish", action="store_true")
     args = parser.parse_args(argv)
+    if args.mixed != args.allow_fixture_publish:
+        parser.error(
+            "mixed publishing requires both --mixed and --allow-fixture-publish"
+        )
     if args.port != 0 and not 1024 <= args.port <= 65535:
         parser.error("port must be 0 or 1024..65535")
     if not 1 <= args.timeout <= 300 or not 1 <= args.same_days <= 90:
@@ -553,6 +724,8 @@ def main(argv=None) -> int:
         "full_scale": False,
         "slo_qualified": False,
         "complete": False,
+        "mixed_requested": args.mixed,
+        "fixture_publish_authorized": args.allow_fixture_publish,
         "manifest_sha256": digest,
         "fixture": str(args.manifest),
         "fixture_parameters": fixture["parameters"],
@@ -578,19 +751,37 @@ def main(argv=None) -> int:
             stage = "fixture_parameters"
             parameters = fixture_parameters(fixture)
             reference = load_reference()
-            cases = reference.distinct_cases(parameters.days, 20)
+            rounds = workloads(reference, parameters, args.same_days, mixed=args.mixed)
             same = reference.QueryCase("material", min(args.same_days, parameters.days))
             stage = "oracle_prepare"
             oracles = {
                 case: expected_page(reference, parameters, fixture, case)
-                for case in set(cases + [same])
+                for case in {case for _, work, _ in rounds for case in work}
             }
             stage = "fixture_authorization"
             verify_fixture_actor(engine, fixture)
+            if args.mixed:
+                stage = "fixture_publish_preflight"
+                result["fixture_publish_target"] = validate_publish_target(
+                    engine, fixture, parameters
+                )
             token = create_access_token(fixture["actor_id"], timedelta(minutes=30))
             result.update(
                 pool_size=settings.DATABASE_POOL_SIZE,
                 max_overflow=settings.DATABASE_MAX_OVERFLOW,
+                connection_budget={
+                    "server_configured_max": settings.DATABASE_POOL_SIZE
+                    + settings.DATABASE_MAX_OVERFLOW,
+                    "parent_configured_max": settings.DATABASE_POOL_SIZE
+                    + settings.DATABASE_MAX_OVERFLOW,
+                    "combined_configured_max": 2
+                    * (settings.DATABASE_POOL_SIZE + settings.DATABASE_MAX_OVERFLOW),
+                    "parent_simultaneous_db_operations": 1,
+                    "workload_expected_connection_bound": settings.DATABASE_POOL_SIZE
+                    + settings.DATABASE_MAX_OVERFLOW
+                    + 1,
+                    "parent_operations": "scoped metadata/expiry before and after HTTP; one publisher during mixed HTTP",
+                },
             )
             stage = "http_server_start"
             with local_server(environment, port=args.port) as port:
@@ -603,38 +794,37 @@ def main(argv=None) -> int:
                     raise AssertionError(
                         "formal authentication did not reject missing bearer"
                     )
-                for name, work in [
-                    ("distinct-cold-20", cases),
-                    *[(f"same-cold-{n}", [same] * n) for n in (1, 5, 20)],
-                ]:
+                for name, work, mixed in rounds:
                     guard()
+                    if mixed:
+                        stage = "fixture_publish_preflight"
+                        validate_publish_target(engine, fixture, parameters)
                     stage = "snapshot_expire"
                     expired = reference.expire_fixture_snapshots(engine, fixture)
                     before = snapshot_ids(engine, fixture)
-                    barrier = threading.Barrier(len(work))
                     started = time.perf_counter()
                     stage = "http_round"
-                    with ThreadPoolExecutor(max_workers=len(work)) as pool:
-                        futures = [
-                            pool.submit(
-                                http_case,
-                                port,
-                                token,
-                                request_path(fixture, parameters, case),
-                                case,
-                                oracles[case],
-                                barrier,
-                                args.timeout,
-                            )
-                            for case in work
-                        ]
-                        queries = [future.result() for future in futures]
+                    queries, publication, overlap = run_workload(
+                        reference,
+                        engine,
+                        fixture,
+                        parameters,
+                        port=port,
+                        token=token,
+                        work=work,
+                        oracles=oracles,
+                        timeout=args.timeout,
+                        mixed=mixed,
+                    )
                     result["http_measured"] = True
                     round_result = {
                         "name": name,
                         "concurrency": len(work),
                         "expired_snapshots": expired,
                         "queries": queries,
+                        "mixed_publish": mixed,
+                        "publication": publication,
+                        "work_overlap": overlap,
                         "complete": False,
                     }
                     result["rounds"].append(round_result)
@@ -656,6 +846,9 @@ def main(argv=None) -> int:
                             "failed_requests": sum(not q["complete"] for q in queries),
                             "queries": queries,
                         }
+                    )
+                    round_result["complete"] = round_complete(
+                        round_result["complete"], publication, overlap
                     )
                     persist(handle, result)
             result["complete"] = all(row["complete"] for row in result["rounds"])

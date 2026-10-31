@@ -511,3 +511,203 @@ def test_child_startup_failure_reports_static_reason_without_raw_logs(
         with module.local_server({}):
             pytest.fail("exited child cannot be ready")
     assert error.value.reason == reason
+
+
+@pytest.mark.parametrize("flags", [["--mixed"], ["--allow-fixture-publish"]])
+def test_mixed_publish_requires_both_explicit_flags(tmp_path, flags):
+    with pytest.raises(SystemExit):
+        tool().parse_args(
+            [
+                "--manifest",
+                "fixture.json",
+                "--output",
+                str(tmp_path / "new.json"),
+                *flags,
+            ]
+        )
+
+
+def test_default_is_readonly_and_explicit_mixed_keeps_original_four_rounds(tmp_path):
+    module = tool()
+    args = ["--manifest", "fixture.json", "--output", str(tmp_path / "new.json")]
+    pure = module.parse_args(args)
+    assert not pure.mixed and not pure.allow_fixture_publish
+    mixed = module.parse_args([*args, "--mixed", "--allow-fixture-publish"])
+    assert mixed.mixed and mixed.allow_fixture_publish
+    reference = module.load_reference()
+    parameters = SimpleNamespace(days=90)
+    original = module.workloads(reference, parameters, 7, mixed=False)
+    extended = module.workloads(reference, parameters, 7, mixed=True)
+    assert len(original) == 4 and len(extended) == 8
+    assert original == extended[:4]
+    assert sum(len(work) for _, work, _ in original) == 46
+    assert sum(len(work) for _, work, _ in extended) == 92
+    assert sum(publish for _, _, publish in extended) == 4
+    assert [work for _, work, _ in original] == [work for _, work, _ in extended[4:]]
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_publish_preflight_is_scoped_to_first_account_and_original_future_day(unknown):
+    module = tool()
+    fixture = manifest()
+    parameters = SimpleNamespace(end_date=date(2026, 10, 30))
+    captured = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def execute(self, _statement, values):
+            captured.append(values)
+            return SimpleNamespace(scalar_one=lambda: unknown)
+
+    engine = SimpleNamespace(connect=Connection)
+    if unknown:
+        with pytest.raises(module.BenchmarkFailure) as error:
+            module.validate_publish_target(engine, fixture, parameters)
+        assert error.value.reason == "fixture_publish_target_contains_undeclared_data"
+    else:
+        result = module.validate_publish_target(engine, fixture, parameters)
+        assert result["day"] == "2026-11-01" and not result["undeclared_data"]
+    assert len(captured) == 1
+    assert captured[0]["advertiser"] == "perf-account-1"
+    assert captured[0]["day"] == date(2026, 11, 1)
+    assert str(captured[0]["tenant"]) == fixture["tenant_id"]
+    assert captured[0]["declared_ids"] == [
+        f"concurrency-publish-{i}" for i in range(1000)
+    ]
+    assert parameters.end_date == date(2026, 10, 30)
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_only_mixed_worker_invokes_original_publisher_on_shared_barrier(
+    monkeypatch, mixed
+):
+    module = tool()
+    reference = module.load_reference()
+    case = reference.QueryCase("material", 7)
+    fixture, parameters, engine = {"token": "unchanged-fixture"}, object(), object()
+    calls, parties = [], []
+    publication = {
+        "complete": True,
+        "elapsed_ms": 125.0,
+        "actual_rows": 1000,
+        "actual_spend": "1250",
+        "actual_revenue_d0": "2500",
+        "actual_revenue_total": "2500",
+    }
+
+    def publisher(actual_engine, actual_fixture, actual_parameters, gate):
+        assert mixed, "pure HTTP cannot publish"
+        assert (
+            actual_engine is engine
+            and actual_fixture is fixture
+            and actual_parameters is parameters
+        )
+        calls.append("publish")
+        gate.wait(timeout=2)
+        return publication
+
+    def http(_port, _token, _path, _case, _oracle, barrier, _timeout):
+        parties.append(barrier.parties)
+        barrier.wait(timeout=2)
+        return {"complete": True, "elapsed_ms": 1.0}
+
+    monkeypatch.setattr(reference, "publish_future", publisher)
+    monkeypatch.setattr(module, "http_case", http)
+    monkeypatch.setattr(module, "request_path", lambda *_: "/api/fixed")
+    queries, actual, timing = module.run_workload(
+        reference,
+        engine,
+        fixture,
+        parameters,
+        port=1,
+        token="private",
+        work=[case] * 5,
+        oracles={case: {}},
+        timeout=2,
+        mixed=mixed,
+    )
+    assert len(queries) == 5 and parties == [5 + int(mixed)] * 5
+    assert calls == (["publish"] if mixed else [])
+    if mixed:
+        assert actual == {**publication, "sql_instrumented": False}
+        assert "sql_instrumented" not in publication
+        assert (
+            timing["publication_finished_monotonic"]
+            >= timing["publication_started_monotonic"]
+        )
+    else:
+        assert actual is None and timing is None
+
+
+def test_publish_failure_aborts_barrier_and_preserves_failure_type():
+    module = tool()
+    calls = []
+
+    def fail(*_):
+        raise RuntimeError("secret configuration")
+
+    publication, timing = module.publish_with_timing(
+        SimpleNamespace(publish_future=fail),
+        None,
+        {},
+        None,
+        SimpleNamespace(abort=lambda: calls.append("abort")),
+    )
+    assert calls == ["abort"]
+    assert publication == {
+        "kind": "publish",
+        "complete": False,
+        "failure_type": "RuntimeError",
+        "sql_instrumented": False,
+    }
+    assert "started_monotonic" not in timing and "finished_monotonic" in timing
+    assert "secret" not in json.dumps(publication)
+
+
+def test_work_overlap_uses_actual_intervals_not_only_same_round_label():
+    module = tool()
+    queries = [
+        {"http_started_monotonic": 1.0, "http_finished_monotonic": 3.0},
+        {"http_started_monotonic": 5.0, "http_finished_monotonic": 6.0},
+    ]
+    overlap = module.overlap_evidence(
+        queries, {"started_monotonic": 2.0, "finished_monotonic": 4.0}
+    )
+    assert overlap["overlap_ms_by_request"] == [1000.0, 0.0]
+    assert overlap["overlapping_http_requests"] == 1
+    assert module.round_complete(True, {"complete": True}, overlap)
+    assert not module.round_complete(False, {"complete": True}, overlap)
+    assert not module.round_complete(True, {"complete": False}, overlap)
+    separated = module.overlap_evidence(
+        queries, {"started_monotonic": 7.0, "finished_monotonic": 8.0}
+    )
+    assert not module.round_complete(True, {"complete": True}, separated)
+    assert module.round_complete(True, None, None)
+
+
+def test_publication_omits_unobserved_sql_without_mutating_reference_result():
+    module = tool()
+    raw = {
+        "complete": True,
+        "elapsed_ms": 12.5,
+        "actual_rows": 1000,
+        "actual_spend": "1250.00",
+        "sql_count": 0,
+        "sql_ms": 0.0,
+        "traces": [],
+    }
+    normalized = module.normalize_publication(raw)
+    assert normalized == {
+        "complete": True,
+        "elapsed_ms": 12.5,
+        "actual_rows": 1000,
+        "actual_spend": "1250.00",
+        "sql_instrumented": False,
+    }
+    assert raw["sql_count"] == 0 and raw["sql_ms"] == 0.0 and raw["traces"] == []
+    assert "sql_instrumented" not in raw
