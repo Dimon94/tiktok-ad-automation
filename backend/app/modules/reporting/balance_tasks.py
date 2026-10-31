@@ -25,7 +25,7 @@ from app.jobs.outbox import (
     validate_dispatch_payload,
 )
 from app.jobs.tasks import register_dispatch_task
-from app.modules.accounts.routing import verify_route
+from app.modules.accounts.routing import verify_read_routes
 from app.modules.ads.balances import persist_balance
 from app.modules.reporting.planner import owned_accounts
 from app.modules.reporting.store_models import AdSyncBc, ReportBalanceRun
@@ -263,14 +263,9 @@ def _run_balance(
         if route.channel != "OFFICIAL_API" or route.tenant_id != context.tenant_id:
             raise DomainError("api_binding_required", "余额同步需要当前租户的 API 绑定")
         advertisers = tuple(run.remaining_advertiser_ids)
-        for advertiser in advertisers:
-            verify_route(
-                session,
-                context=context,
-                route=route,
-                advertiser_id=advertiser,
-                capability="read",
-            )
+        verify_read_routes(
+            session, context=context, route=route, advertiser_ids=advertisers
+        )
         generation, owner_epoch = run.claim_generation, run.owner_epoch
         # queued令牌只能消费一次；行锁内旋转后提交，重复消息不能进入HTTP。
         run.claim_token = claim_token = uuid4()
@@ -343,14 +338,9 @@ def _run_balance(
         )
 
         balance_fence(session, current)
-        for advertiser in advertisers:
-            verify_route(
-                session,
-                context=context,
-                route=route,
-                advertiser_id=advertiser,
-                capability="read",
-            )
+        verify_read_routes(
+            session, context=context, route=route, advertiser_ids=advertisers
+        )
         confirmed = set()
         for advertiser, balance in balances.items():
             if advertiser not in advertisers:

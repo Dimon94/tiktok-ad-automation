@@ -1,10 +1,11 @@
 """只从明确 BC 默认冻结连接；后续任务只核验原连接，不重新选路。"""
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
 from app.core.errors import DomainError
@@ -157,15 +158,6 @@ def verify_route(
         (context.tenant_id, route.bc_id, advertiser_id, route.connection_id),
         populate_existing=True,
     )
-    if account is None or grant is None:
-        raise DomainError("account_not_in_bc", "账户不在该连接的 BC 目录")
-    if account.ownership_conflict:
-        raise DomainError("account_ownership_conflict", "账户归属冲突")
-    if not account.currency.strip() or not account.timezone.strip():
-        raise DomainError("account_metadata_incomplete", "账户信息尚未完整")
-    if not (grant.in_bc and grant.authorized and grant.active):
-        raise DomainError("account_access_denied", "当前连接未授权该账户")
-
     authorization = session.exec(
         select(ConnectionAuthorization)
         .where(
@@ -176,6 +168,35 @@ def verify_route(
         )
         .execution_options(populate_existing=True)
     ).one_or_none()
+    _verify_account_evidence(
+        account,
+        grant,
+        authorization,
+        capability=capability,
+        operation=operation,
+        entity_kind=entity_kind,
+    )
+
+
+def _verify_account_evidence(
+    account: AdvertiserAccount | None,
+    grant: BCAccountAccess | None,
+    authorization: ConnectionAuthorization | None,
+    *,
+    capability: Capability,
+    operation: str | None = None,
+    entity_kind: str | None = None,
+) -> None:
+    """单账户及批量读取共用同一证据判定，避免优化绕过授权规则。"""
+    if account is None or grant is None:
+        raise DomainError("account_not_in_bc", "账户不在该连接的 BC 目录")
+    if account.ownership_conflict:
+        raise DomainError("account_ownership_conflict", "账户归属冲突")
+    if not account.currency.strip() or not account.timezone.strip():
+        raise DomainError("account_metadata_incomplete", "账户信息尚未完整")
+    if not (grant.in_bc and grant.authorized and grant.active):
+        raise DomainError("account_access_denied", "当前连接未授权该账户")
+
     now = datetime.now(UTC)
     if (
         authorization is None
@@ -222,6 +243,66 @@ def verify_route(
         or (capability == "build" and not grant.can_build)
     ):
         raise DomainError("account_access_denied", "账户当前角色或范围不支持该操作")
+
+
+def verify_read_routes(
+    session: Session,
+    *,
+    context: TenantContext,
+    route: FrozenTikTokRoute,
+    advertiser_ids: Collection[str],
+) -> None:
+    """一个事务阶段批量读取账户证据；HTTP前后必须各调用一次，不跨阶段缓存。"""
+    verify_route(
+        session, context=context, route=route, advertiser_id=None, capability="read"
+    )
+    if any(type(value) is not str or not value.strip() for value in advertiser_ids):
+        raise DomainError("account_required", "该操作必须指定广告账户")
+    advertisers = list(dict.fromkeys(advertiser_ids))
+    authorization = session.exec(
+        select(ConnectionAuthorization)
+        .where(
+            ConnectionAuthorization.tenant_id == context.tenant_id,
+            ConnectionAuthorization.connection_id == route.connection_id,
+            ConnectionAuthorization.authorization_revision
+            == route.authorization_revision,
+        )
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    # 只读取当前租户、BC、冻结连接的账户证据；每500项一页限制SQL参数和内存。
+    for offset in range(0, len(advertisers), 500):
+        page = advertisers[offset : offset + 500]
+        accounts = {
+            row.advertiser_id: row
+            for row in session.exec(
+                select(AdvertiserAccount)
+                .where(
+                    col(AdvertiserAccount.tenant_id) == context.tenant_id,
+                    col(AdvertiserAccount.advertiser_id).in_(page),
+                )
+                .execution_options(populate_existing=True)
+            ).all()
+        }
+        grants = {
+            row.advertiser_id: row
+            for row in session.exec(
+                select(BCAccountAccess)
+                .where(
+                    col(BCAccountAccess.tenant_id) == context.tenant_id,
+                    col(BCAccountAccess.bc_id) == route.bc_id,
+                    col(BCAccountAccess.connection_id) == route.connection_id,
+                    col(BCAccountAccess.advertiser_id).in_(page),
+                )
+                .execution_options(populate_existing=True)
+            ).all()
+        }
+        for advertiser in page:
+            _verify_account_evidence(
+                accounts.get(advertiser),
+                grants.get(advertiser),
+                authorization,
+                capability="read",
+            )
 
 
 def set_default_route(

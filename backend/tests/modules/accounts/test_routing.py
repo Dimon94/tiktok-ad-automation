@@ -271,3 +271,100 @@ def test_default_management_requires_admin_and_exact_binding(
         select(AuditEvent).where(AuditEvent.tenant_id == context.tenant_id)
     ).all()
     assert any(event.action == "tiktok.bc.default_connection" for event in events)
+
+
+def test_bulk_read_routes_bounds_queries_and_rechecks_revocation(session, route_case):
+    """同一路由批量验权不能按账户重复查询公共证据，下一次必须重读撤权。"""
+    from sqlalchemy import event
+
+    from app.modules.accounts import routing
+
+    context, connection, grant, _ = route_case
+    route = frozen(session, route_case)
+    advertisers = [grant.advertiser_id]
+    for index in range(600):
+        advertiser = f"bulk-read-{index}"
+        advertisers.append(advertiser)
+        session.add(
+            AdvertiserAccount(
+                tenant_id=context.tenant_id,
+                advertiser_id=advertiser,
+                currency="USD",
+                timezone="UTC",
+            )
+        )
+        session.add(
+            BCAccountAccess(
+                tenant_id=context.tenant_id,
+                bc_id=grant.bc_id,
+                advertiser_id=advertiser,
+                connection_id=connection.id,
+                in_bc=True,
+                authorized=True,
+                active=True,
+                checked_at=datetime.now(UTC),
+            )
+        )
+    session.flush()
+    statements = []
+    connection_db = session.connection()
+
+    def capture(_connection, _cursor, statement, *_):
+        statements.append(statement)
+
+    event.listen(connection_db, "before_cursor_execute", capture)
+    try:
+        routing.verify_read_routes(
+            session, context=context, route=route, advertiser_ids=advertisers
+        )
+    finally:
+        event.remove(connection_db, "before_cursor_execute", capture)
+    assert len(statements) <= 14
+    grant.authorized = False
+    session.flush()
+    with pytest.raises(DomainError) as failure:
+        routing.verify_read_routes(
+            session, context=context, route=route, advertiser_ids=advertisers
+        )
+    assert failure.value.code == "account_access_denied"
+
+
+@pytest.mark.parametrize(
+    "problem,code",
+    [
+        ("missing", "account_not_in_bc"),
+        ("metadata", "account_metadata_incomplete"),
+        ("conflict", "account_ownership_conflict"),
+        ("authorization", "account_access_denied"),
+        ("binding", "route_binding_changed"),
+    ],
+)
+def test_bulk_read_routes_preserves_account_and_route_fences(
+    session, route_case, problem, code
+):
+    from app.modules.accounts import routing
+
+    context, connection, grant, authorization = route_case
+    route = frozen(session, route_case)
+    advertiser = grant.advertiser_id
+    if problem == "missing":
+        advertiser = "outside-frozen-bc"
+    elif problem in {"metadata", "conflict"}:
+        account = session.get(AdvertiserAccount, (context.tenant_id, advertiser))
+        if problem == "metadata":
+            account.timezone = ""
+        else:
+            account.ownership_conflict = True
+    elif problem == "authorization":
+        authorization.permission_summary = {"read_authorized": False}
+    else:
+        binding = session.get(
+            BCConnectionBinding, (context.tenant_id, grant.bc_id, connection.id)
+        )
+        binding.revision += 1
+    session.flush()
+    with pytest.raises(DomainError) as failure:
+        routing.verify_read_routes(
+            session, context=context, route=route, advertiser_ids=[advertiser]
+        )
+    assert failure.value.code == code

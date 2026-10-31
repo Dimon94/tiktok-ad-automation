@@ -157,7 +157,7 @@ def test_verify_route_revocation_retires_dispatched_generation(
     def revoke(*_args, **_kwargs):
         raise DomainError("authorization_revoked", "test revoked before HTTP")
 
-    monkeypatch.setattr(balance_tasks, "verify_route", revoke)
+    monkeypatch.setattr(balance_tasks, "verify_read_routes", revoke)
     monkeypatch.setattr(
         balance_tasks,
         "open_tiktok_gateway",
@@ -835,7 +835,7 @@ def test_before_http_local_error_does_not_consume_provider_budget(
             )
         raise ValueError("local frozen route validation")
 
-    monkeypatch.setattr(balance_tasks, "verify_route", local_failure)
+    monkeypatch.setattr(balance_tasks, "verify_read_routes", local_failure)
     monkeypatch.setattr(
         balance_tasks,
         "open_tiktok_gateway",
