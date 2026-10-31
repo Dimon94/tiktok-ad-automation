@@ -4,6 +4,8 @@
 
 本次选择：本地保留已有正确性验证及必要的小规模定向回归，全量容量和持续服务率转为上线观察。保留历史事实、任务ID、暂存页和断点，迁移仍通过Alembic及有界映射工具完成。按用户现行策略不自动创建备份或执行恢复演练；新合同写入后只能暂停相关处理并前向修复，不能直接启动旧镜像。上线前仍须查清生产存储余量，未知容量不等于有足够空间。
 
+2026-10-31后续已从控制台核实实际实例180GB、使用122.82GB，自动扩容开启且上限64000GB；容量未知停止条件解除。本次从0069开始逐版本调用Alembic升级至0099，每个版本提交后记录结果，减少中间索引重建的同时占用；任一步失败保持应用停写，核对已提交revision后前向续接。平台额度、物理Worker并发及四开关保持原值，持久background池选用4/12（容量/额外预取）。
+
 ## 准备与停止点
 
 1. 保存精确旧镜像/候选 SHA、当前 Alembic revision、四项业务开关、真实 app 额度策略摘要及各队列角色预算。不输出密钥。备份按用户当前按需策略，不将未执行的备份或恢复演练写成已完成。
@@ -13,7 +15,7 @@
 
 ## 迁移与映射
 
-环境文件必须经 `config/README.md` / `config/environments.json` 定位。以下为待审批的命令形状，`$APP_ENV_FILE` 必须由操作者明确设为目标环境，禁止使用默认 `.env`。命令在 `backend/` 执行。
+环境文件必须经 `config/README.md` / `config/environments.json` 定位。以下为已选定流程的命令形状，`$APP_ENV_FILE` 必须由操作者明确设为目标环境，禁止使用默认 `.env`。命令在 `backend/` 执行。
 
 ```bash
 uv run alembic current
@@ -33,7 +35,7 @@ uv run python ../scripts/sync-query-cutover.py --kind all --apply --consumers-st
 
 0088将历史事实、历史关联、目录全量读取和余额读取纳入同一个 `background` 池；实时读取与本地发布继续走各自队列。必须逐项核对实际队列消费者，不能以Deployment名称推断职责。当前生产清单的 `ads-backfill,ads-directory` 共用4个进程，`ads-publish` 的单槽是本地发布角色。
 
-池中 `capacity` 表示实际后台进程预算，`prefetch_slots` 是除此之外允许排队的工作量；它们不增加平台QPS、不改变Celery并发。默认4/0只是结构初值，最终值须以同队列混合负载实测决定。预取过小可能使页间空闲，过大则扩大等待与过期重派，因此4+12在两组反序真实transport边界混合测试中未见吞吐下降，可作为待审批候选值；不是生产吞吐保证。当前候选尚未批准生产值。
+池中 `capacity` 表示实际后台进程预算，`prefetch_slots` 是除此之外允许排队的工作量；它们不增加平台QPS、不改变Celery并发。默认4/0只是结构初值，最终值须以同队列混合负载实测决定。预取过小可能使页间空闲，过大则扩大等待与过期重派，因此4+12在两组反序真实transport边界混合测试中未见吞吐下降，本次按已授权整体优化选用4/12；不是生产吞吐保证。
 
 只有停止全部旧消费者并完成 `--kind all` 映射后，才可在同一切换命令增加 `--background-capacity N --background-prefetch-slots M`。命令拒绝只读模式、部分kind及越界值；映射未完成时不会应用配置。输出中必须同时核对 `mapping_complete`、`background_pool.source` 及 `configuration_applied`。不传这些参数保留既有配置和公平游标；重新执行不会重置公平状态。调整实际Worker数量时也须同步核对该持久预算，不只改Deployment。
 
