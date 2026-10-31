@@ -251,7 +251,7 @@ def verify_read_routes(
     context: TenantContext,
     route: FrozenTikTokRoute,
     advertiser_ids: Collection[str],
-) -> None:
+) -> dict[str, str]:
     """一个事务阶段批量读取账户证据；HTTP前后必须各调用一次，不跨阶段缓存。"""
     verify_route(
         session, context=context, route=route, advertiser_id=None, capability="read"
@@ -269,6 +269,7 @@ def verify_read_routes(
         )
         .execution_options(populate_existing=True)
     ).one_or_none()
+    currencies: dict[str, str] = {}
     # 只读取当前租户、BC、冻结连接的账户证据；每500项一页限制SQL参数和内存。
     for offset in range(0, len(advertisers), 500):
         page = advertisers[offset : offset + 500]
@@ -303,6 +304,9 @@ def verify_read_routes(
                 authorization,
                 capability="read",
             )
+            currencies[advertiser] = accounts[advertiser].currency
+
+    return currencies
 
 
 def set_default_route(

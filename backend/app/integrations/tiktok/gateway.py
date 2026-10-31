@@ -96,7 +96,7 @@ from app.modules.accounts.connection_models import (
     ConnectionToolObservation,
 )
 from app.modules.accounts.models import AdvertiserAccount, TikTokConnection
-from app.modules.accounts.routing import Capability, verify_route
+from app.modules.accounts.routing import Capability, verify_read_routes, verify_route
 
 # 按精确操作登记所需权限；不得按前缀把未来写操作默认为 read。
 _OPERATION_CAPABILITIES: dict[str, Capability] = {
@@ -362,6 +362,16 @@ def open_tiktok_gateway(
             assert account is not None
             return account.currency
 
+    def check_accounts(advertiser_ids: tuple[str, ...]) -> dict[str, str]:
+        # 同一返回页批量核验，不跨HTTP或事务缓存授权；隔离目标仍逐项限制。
+        if group_isolation is not None:
+            for advertiser_id in advertiser_ids:
+                require_isolation_target(group_isolation, advertiser_id=advertiser_id)
+        with bounded_session(database_engine, task_deadline=task_deadline) as session:
+            return verify_read_routes(
+                session, context=context, route=route, advertiser_ids=advertiser_ids
+            )
+
     # 此后不保留 Session；portal 回调各自拥有独立、限时的数据库事务。
     def authorize(
         advertiser_id: str | None,
@@ -622,6 +632,7 @@ def open_tiktok_gateway(
                         client,
                         route=route,
                         check_account=check_account,
+                        check_accounts=check_accounts,
                         subject_id=facts.subject_id,
                         finance=finance,
                     ),
@@ -663,6 +674,7 @@ def open_tiktok_gateway(
                         official,
                         route=route,
                         check_account=check_account,
+                        check_accounts=check_accounts,
                         subject_id=facts.subject_id,
                         finance=finance,
                         request_scope=request_scope,

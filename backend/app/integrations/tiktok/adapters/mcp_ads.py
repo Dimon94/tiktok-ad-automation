@@ -16,12 +16,14 @@ class McpAdsReadOperations(AdsReadAdapter):
         *,
         route: FrozenTikTokRoute,
         check_account: Callable[[str], str],
+        check_accounts: Callable[[tuple[str, ...]], dict[str, str]],
         subject_id: str | None,
         finance: FinanceReadState,
     ):
         super().__init__(
             route=route,
             check_account=check_account,
+            check_accounts=check_accounts,
             subject_id=subject_id,
             finance=finance,
         )

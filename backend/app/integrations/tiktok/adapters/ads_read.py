@@ -245,11 +245,13 @@ class AdsReadAdapter:
         *,
         route: FrozenTikTokRoute,
         check_account: Callable[[str], str],
+        check_accounts: Callable[[tuple[str, ...]], dict[str, str]],
         subject_id: str | None,
         finance: FinanceReadState,
     ):
         self.route = route
         self._check_account = check_account
+        self._check_accounts = check_accounts
         self._subject_id = subject_id
         self._finance = finance
 
@@ -675,7 +677,9 @@ class AdsReadAdapter:
                     "BALANCE_MISSING" if not balances else "BALANCE_AMBIGUOUS"
                 )
             row, evidence = balances[0]
-            return self._balance_value(advertiser_id, row, evidence, now)
+            return self._balance_value(
+                advertiser_id, row, evidence, now, self._check_account(advertiser_id)
+            )
         except DomainError as error:
             if error.code not in OPTIONAL_READ_FAILURES:
                 raise
@@ -716,8 +720,7 @@ class AdsReadAdapter:
         self._finance.verified = True
         return True, evidence
 
-    def _balance_value(self, advertiser_id, row, evidence, now):
-        currency = self._check_account(advertiser_id)
+    def _balance_value(self, advertiser_id, row, evidence, now, currency):
 
         def unavailable(reason):
             return AccountBalance(None, currency, reason, now, evidence)
@@ -765,14 +768,15 @@ class AdsReadAdapter:
         """每次只读 BC 余额的一页，调用方持久派发下一页，避免逐账户全表扫描。"""
         if not advertiser_ids or page < 1:
             raise invalid()
-        self._check_account(advertiser_ids[0])
+        self._check_accounts(advertiser_ids)
         now = datetime.now(UTC)
         allowed, evidence = self._verify_finance(advertiser_ids[0])
         if not allowed:
+            currencies = self._check_accounts(advertiser_ids)
             return {
                 adv: AccountBalance(
                     None,
-                    self._check_account(adv),
+                    currencies[adv],
                     "PERMISSION_UNVERIFIED",
                     now,
                     evidence,
@@ -792,6 +796,7 @@ class AdsReadAdapter:
             rows, next_page = paged_rows(
                 response.data, page=page, page_size=100, key="advertiser_account_list"
             )
+            currencies = self._check_accounts(advertiser_ids)
             wanted = set(advertiser_ids)
             results = {}
             for row in rows:
@@ -800,12 +805,14 @@ class AdsReadAdapter:
                     continue
                 if adv in results:
                     raise invalid()
-                results[adv] = self._balance_value(adv, row, response.evidence, now)
+                results[adv] = self._balance_value(
+                    adv, row, response.evidence, now, currencies[adv]
+                )
             if next_page is None:
                 for adv in wanted - results.keys():
                     results[adv] = AccountBalance(
                         None,
-                        self._check_account(adv),
+                        currencies[adv],
                         "BALANCE_MISSING",
                         now,
                         response.evidence,

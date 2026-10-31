@@ -26,7 +26,7 @@ from app.jobs.outbox import (
 )
 from app.jobs.tasks import register_dispatch_task
 from app.modules.accounts.routing import verify_read_routes
-from app.modules.ads.balances import persist_balance
+from app.modules.ads.balances import persist_balances
 from app.modules.reporting.planner import owned_accounts
 from app.modules.reporting.store_models import AdSyncBc, ReportBalanceRun
 
@@ -341,17 +341,11 @@ def _run_balance(
         verify_read_routes(
             session, context=context, route=route, advertiser_ids=advertisers
         )
+        if not set(balances).issubset(advertisers):
+            raise DomainError("ads_response_invalid", "余额返回了冻结范围外账户")
+        persist_balances(session, context=context, route=route, balances=balances)
         confirmed = set()
         for advertiser, balance in balances.items():
-            if advertiser not in advertisers:
-                raise DomainError("ads_response_invalid", "余额返回了冻结范围外账户")
-            persist_balance(
-                session,
-                context=context,
-                route=route,
-                advertiser_id=advertiser,
-                balance=balance,
-            )
             if publish_balance_requirement(session, current, advertiser, balance):
                 confirmed.add(advertiser)
         current.remaining_advertiser_ids = sorted(set(advertisers) - confirmed)

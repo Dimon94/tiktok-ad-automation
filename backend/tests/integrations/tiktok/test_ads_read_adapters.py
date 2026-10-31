@@ -976,3 +976,117 @@ def test_sdk_carousel_directory_retains_composition_and_partial_evidence(
     assert decoded.identities[-1].ordered_image_ids == ("second", "shared")
     assert decoded.identities[-1].music_id == "song-2"
     assert {use.use_ref.material_type for use in result.materials} == {"IMAGE"}
+
+
+@pytest.mark.parametrize("revoke_during_http", [False, True])
+@pytest.mark.parametrize("gateway_case", ["OFFICIAL_API"], indirect=True)
+def test_balance_missing_tail_and_persistence_keep_database_work_batched(
+    database_engine, redis_client, gateway_case, gateway_wire, revoke_during_http
+):
+    """末页缺口也须保留观测，但不能为每个缺口再开独立验权事务。"""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import event
+
+    from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
+    from app.modules.ads import balances as balance_store
+
+    context, route, original = gateway_case
+    authenticated_subject(database_engine, gateway_case)
+    advertisers = [original]
+    with Session(database_engine) as session:
+        for index in range(120):
+            adv = f"missing-balance-{index}"
+            advertisers.append(adv)
+            session.add(
+                AdvertiserAccount(
+                    tenant_id=context.tenant_id,
+                    advertiser_id=adv,
+                    currency="USD",
+                    timezone="UTC",
+                )
+            )
+            session.add(
+                BCAccountAccess(
+                    tenant_id=context.tenant_id,
+                    bc_id=route.bc_id,
+                    advertiser_id=adv,
+                    connection_id=route.connection_id,
+                    in_bc=True,
+                    active=True,
+                    authorized=True,
+                    checked_at=datetime.now(UTC),
+                )
+            )
+        session.commit()
+    member = {
+        "user_id": "subject-1",
+        "relation_status": "BOUND",
+        "ext_user_role": {"finance_role": "ANALYST"},
+    }
+    row = {
+        "advertiser_id": original,
+        "currency": "USD",
+        "balance_info": {"account_balance": "12.5"},
+    }
+    if revoke_during_http:
+        calls = []
+
+        def revoke_after_request():
+            calls.append(True)
+            if len(calls) == 2:
+                with Session(database_engine) as session:
+                    grant = session.get(
+                        BCAccountAccess,
+                        (
+                            context.tenant_id,
+                            route.bc_id,
+                            advertisers[-1],
+                            route.connection_id,
+                        ),
+                    )
+                    grant.authorized = False
+                    session.commit()
+
+        gateway_wire["before"]["callback"] = revoke_after_request
+    replies(
+        gateway_wire,
+        "OFFICIAL_API",
+        {
+            "bc_member_get": [page([member], size=20)],
+            "advertiser_balance_get": [
+                {
+                    "advertiser_account_list": [row],
+                    "page_info": page([row], size=100)["page_info"],
+                }
+            ],
+        },
+    )
+    statements = []
+
+    def capture(_connection, _cursor, statement, *_):
+        statements.append(statement)
+
+    event.listen(database_engine, "before_cursor_execute", capture)
+    try:
+        if revoke_during_http:
+            with pytest.raises(DomainError) as failure:
+                with gateway(database_engine, redis_client, gateway_case) as client:
+                    client.ads.read_balance_page(tuple(advertisers))
+            assert failure.value.code == "account_access_denied"
+            return
+        with gateway(database_engine, redis_client, gateway_case) as client:
+            values, next_page = client.ads.read_balance_page(tuple(advertisers))
+        assert next_page is None and len(values) == 121
+        assert values[original].amount == Decimal("12.5")
+        assert all(
+            values[adv].availability == "BALANCE_MISSING" for adv in advertisers[1:]
+        )
+        with Session(database_engine) as session:
+            balance_store.persist_balances(
+                session, context=context, route=route, balances=values
+            )
+            session.rollback()
+    finally:
+        event.remove(database_engine, "before_cursor_execute", capture)
+    assert len(statements) < 180
