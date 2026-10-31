@@ -105,3 +105,50 @@ def test_directory_commit_batch_does_not_reduce_total_inflight_window(
         dispatch_directories_due(session, redis_client, now=now, limit=40, max_claims=1)
         == 0
     )
+
+
+@pytest.mark.usefixtures("redis_client")
+def test_later_report_claim_failure_preserves_first_committed_claim(
+    committed_sync_seed, monkeypatch
+):
+    seed, factory = committed_sync_seed
+    monkeypatch.setattr(job_tasks.settings, "REDIS_URL", os.environ["TEST_REDIS_URL"])
+    now = datetime.now(UTC)
+    with factory() as session, session.begin():
+        jobs = [
+            enqueue_job(
+                session,
+                tenant_id=seed.tenant_id,
+                bc_id="bc-a",
+                kind="ad_day",
+                tier="hot",
+                advertiser_ids=[adv],
+                start=D,
+                end=D,
+                frozen_route=_route(seed),
+                actor_id=seed.actor_id,
+                due_at=now,
+            )
+            for adv in ("acc-1", "acc-2")
+        ]
+    original = job_tasks._dispatch_report_jobs
+    calls = 0
+
+    def dispatch(session, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise QueryBudgetExceeded()
+        return original(session, *args, **kwargs)
+
+    monkeypatch.setattr(job_tasks, "_dispatch_report_jobs", dispatch)
+    assert (
+        job_tasks._dispatch_pending(
+            engine, now + timedelta(seconds=1), budget_seconds=4
+        )
+        == 1
+    )
+    with factory() as session:
+        assert sorted(
+            session.get(ReportSyncJob, identity).status for identity in jobs
+        ) == ["QUEUED", "RUNNING"]

@@ -819,7 +819,12 @@ def _plan_one(
 
 
 def _dispatch_report_jobs(
-    session: Session, now: datetime, *, allow_backfill=True, redis_client=None
+    session: Session,
+    now: datetime,
+    *,
+    allow_backfill=True,
+    redis_client=None,
+    max_claims=None,
 ) -> int:
     from app.modules.sync_control.dispatcher import dispatch_due
 
@@ -832,6 +837,7 @@ def _dispatch_report_jobs(
                 now=now,
                 physical_slots=slots,
                 allow_backfill=allow_backfill,
+                max_claims=max_claims,
             )
     return dispatch_due(
         session,
@@ -839,6 +845,7 @@ def _dispatch_report_jobs(
         now=now,
         physical_slots=slots,
         allow_backfill=allow_backfill,
+        max_claims=max_claims,
     )
 
 
@@ -916,7 +923,10 @@ def _dispatch_pending(
                     ):
                         if family == "report":
                             dispatched = _dispatch_report_jobs(
-                                session, now, allow_backfill=allow_backfill
+                                session,
+                                now,
+                                allow_backfill=allow_backfill,
+                                max_claims=1,
                             )
                         elif family == "directory":
                             dispatched = _dispatch_directories(

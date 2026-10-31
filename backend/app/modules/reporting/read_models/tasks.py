@@ -30,7 +30,9 @@ def project_read_models() -> int:
     with Session(engine) as session:
         prune_query_reuse(session)
         session.commit()
-    while completed < 25 and monotonic() < deadline:
+    # 由墙钟预算让出publisher，不再因25个轻量桶提前结束并空等下一次Beat。
+    # 仍逐桶提交，后续失败不撤销已完成桶，也不扩大单事务锁范围。
+    while monotonic() < deadline:
         with Session(engine) as session:
             results = rebuild_pending(session, limit=1)
             session.commit()

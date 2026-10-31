@@ -87,6 +87,7 @@ def dispatch_due(
     now: datetime,
     physical_slots: int,
     allow_backfill: bool = True,
+    max_claims: int | None = None,
 ) -> int:
     if not lock_background_pool(session):
         return 0
@@ -124,6 +125,12 @@ def dispatch_due(
     available = max(0, min(physical_slots, live_remaining + background_remaining))
     if not available:
         return 0
+    # 单次提交数量与物理窗口分开，避免后续领取超时撤销本次已经准备好的任务。
+    claim_limit = available
+    if max_claims is not None:
+        if max_claims < 1:
+            raise ValueError("max_claims must be positive")
+        claim_limit = min(available, max_claims)
     dispatched = 0
     endpoints: Sequence[str] = tuple(
         dict.fromkeys(
@@ -145,7 +152,7 @@ def dispatch_due(
         )
     ).all()
     for endpoint in endpoints:
-        if dispatched >= available:
+        if dispatched >= claim_limit:
             break
         policy = admission_policy(
             "reports.integrated", channel="OFFICIAL_API", physical_endpoint=endpoint
@@ -185,10 +192,10 @@ def dispatch_due(
         # 每轮各租户先给一页；槽多于租户时在下方有界循环公平借用。
         # 只读发现不提前锁head；被锁执行需要跳过候选后继续填槽，最多多探16个。
         skipped_scopes: set[UUID] = set()
-        for _round in range(available - dispatched + 16):
+        for _round in range(claim_limit - dispatched + 16):
             progressed = False
             for tenant_id, _ in tenants:
-                if dispatched >= available:
+                if dispatched >= claim_limit:
                     break
                 session.connection().execute(
                     insert(ReportDispatchCursor)
