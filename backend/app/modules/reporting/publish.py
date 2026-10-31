@@ -116,42 +116,59 @@ def _bucket_days(buckets):
 
 @diagnostics.timed("publish_state")
 def _set_state(session, *, tenant_id, kind, buckets, counts, observed_at, job_id=None):
-    now = _database_now(session)
-    for advertiser, day in sorted(buckets):
-        state = session.get(ReportSyncState, (tenant_id, advertiser, kind, day))
-        if state is None:
-            state = ReportSyncState(
-                tenant_id=tenant_id,
-                advertiser_id=advertiser,
-                report_kind=kind,
-                stat_date=day,
-                status="COMPLETE",
-            )
-            session.add(state)
-        state.status, state.error_code = "COMPLETE", None
-        state.row_count = counts.get((advertiser, day), 0)
-        state.last_success_at = state.updated_at = now
-        state.observed_at = observed_at
-        state.publication_version += 1
-        if job_id is not None:
-            from app.modules.reporting.store_models import ReportSyncJob
-            from app.modules.sync_control.contracts import ExecutionFence
-            from app.modules.sync_control.requirements import satisfy_requirements
+    from app.modules.reporting.store_models import ReportSyncJob
+    from app.modules.sync_control.contracts import ExecutionFence
+    from app.modules.sync_control.requirements import satisfy_requirements
 
-            job = session.get(ReportSyncJob, job_id)
-            if job is not None:
-                if job.tenant_id != tenant_id:
-                    raise ValueError("publication job tenant does not match facts")
-                satisfy_requirements(
-                    session,
-                    fence=ExecutionFence(
-                        job.id, "report", job.claim_generation, job.owner_epoch
-                    ),
-                    observed_at=observed_at,
-                    publication_version=state.publication_version,
-                    bucket_keys=[day.isoformat()],
-                    advertiser_id=advertiser,
+    if not buckets:
+        return
+    job = session.get(ReportSyncJob, job_id) if job_id is not None else None
+    if job is not None and job.tenant_id != tenant_id:
+        raise ValueError("publication job tenant does not match facts")
+    now = _database_now(session)
+    ordered = sorted(buckets)
+    # _writable_buckets 已持有账户事务锁。固定大小预读并统一 flush，避免
+    # 每桶 SELECT/UPDATE/确认需求各往返一次，同时限制 SQL 参数和 ORM 内存。
+    for offset in range(0, len(ordered), 500):
+        batch = ordered[offset : offset + 500]
+        states = {
+            (state.advertiser_id, state.stat_date): state
+            for state in session.exec(
+                select(ReportSyncState).where(
+                    col(ReportSyncState.tenant_id) == tenant_id,
+                    col(ReportSyncState.report_kind) == kind,
+                    _bucket_filter(ReportSyncState, batch),
                 )
+            ).all()
+        }
+        versions = {}
+        for advertiser, day in batch:
+            state = states.get((advertiser, day))
+            if state is None:
+                state = ReportSyncState(
+                    tenant_id=tenant_id,
+                    advertiser_id=advertiser,
+                    report_kind=kind,
+                    stat_date=day,
+                    status="COMPLETE",
+                )
+                session.add(state)
+            state.status, state.error_code = "COMPLETE", None
+            state.row_count = counts.get((advertiser, day), 0)
+            state.last_success_at = state.updated_at = now
+            state.observed_at = observed_at
+            state.publication_version += 1
+            versions[(advertiser, day.isoformat())] = state.publication_version
+        session.flush()
+        if job is not None:
+            satisfy_requirements(
+                session,
+                fence=ExecutionFence(
+                    job.id, "report", job.claim_generation, job.owner_epoch
+                ),
+                observed_at=observed_at,
+                publication_version=versions,
+            )
 
 
 def mark_failed(
@@ -271,7 +288,8 @@ def publish_ad_day(
     campaign_ids: tuple[str, ...] = (),
     requested_at: datetime | None = None,
 ) -> int:
-    now, counts = _database_now(session), {}
+    now = _database_now(session)
+    counts: dict[tuple[str, date], int] = {}
     requested_at = requested_at or now
 
     def records():
@@ -390,7 +408,8 @@ def _publish_simple(
     time_filter,
     requested_at,
 ) -> int:
-    now, counts = _database_now(session), {}
+    now = _database_now(session)
+    counts: dict[tuple[str, date], int] = {}
     requested_at = requested_at or now
 
     def records():
@@ -590,6 +609,7 @@ def publish_account_reconciliation(
     return len(buckets)
 
 
+@diagnostics.timed("publish_projection")
 def _project_ad_buckets(session, tenant_id, buckets):
     from app.modules.reporting.read_models.dirty_buckets import ReadBucketKey
     from app.modules.reporting.read_models.projector import project_bucket

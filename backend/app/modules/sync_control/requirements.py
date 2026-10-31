@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
@@ -184,7 +184,7 @@ def satisfy_requirements(
     *,
     fence: ExecutionFence,
     observed_at: datetime,
-    publication_version: int,
+    publication_version: int | Mapping[tuple[str, str], int],
     bucket_keys: Collection[str] | None = None,
     advertiser_id: str | None = None,
 ) -> list[UUID]:
@@ -208,6 +208,16 @@ def satisfy_requirements(
         statement = statement.where(col(SyncScope.advertiser_id) == advertiser_id)
     if bucket_keys is not None:
         statement = statement.where(col(SyncRequirement.bucket_key).in_(bucket_keys))
+    # 报表批量发布携带每个实际写入桶的版本。必须按账户/日期成对过滤，
+    # 不能取两个集合的笛卡尔积，否则会误确认被新水位保护、没有写入的桶。
+    if isinstance(publication_version, Mapping):
+        if not publication_version:
+            return []
+        statement = statement.where(
+            tuple_(col(SyncScope.advertiser_id), col(SyncRequirement.bucket_key)).in_(
+                sorted(publication_version)
+            )
+        )
     rows = session.exec(statement.with_for_update()).all()
     successors = []
     for child, requirement, scope in rows:
@@ -227,7 +237,9 @@ def satisfy_requirements(
         child.status, child.observed_at, child.published_version = (
             "PUBLISHED",
             observed_at,
-            publication_version,
+            publication_version[(scope.advertiser_id, requirement.bucket_key)]
+            if isinstance(publication_version, Mapping)
+            else publication_version,
         )
         requirement.satisfied_revision = max(
             requirement.satisfied_revision, child.frozen_revision

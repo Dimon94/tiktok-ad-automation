@@ -23,6 +23,7 @@ _STAGES = frozenset(
         "publish_rollup",
         "publish_state",
         "publish_flush",
+        "publish_projection",
         "reconciliation",
         "reconciliation_account",
         "directory_refresh",

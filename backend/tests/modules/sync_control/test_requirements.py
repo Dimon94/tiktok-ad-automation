@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from sqlmodel import select
 
 from app.modules.reporting.jobs import enqueue_job
@@ -289,3 +290,90 @@ def test_account_publication_does_not_lock_other_accounts_in_same_balance_batch(
             session.get(SyncExecutionScope, by_account["acc-1"]).status == "PUBLISHED"
         )
         assert session.get(SyncExecutionScope, by_account["acc-2"]).status == "PENDING"
+
+
+def test_batch_publication_locks_only_written_account_day_pairs(committed_sync_seed):
+    """其它事务锁住未写入的交叉桶，不应阻塞本批已写入桶的确认。"""
+    from sqlalchemy import text
+
+    seed, factory = committed_sync_seed
+    now = datetime.now(UTC)
+    tomorrow = DAY + timedelta(days=1)
+    with factory() as session, session.begin():
+        job_id = enqueue_job(
+            session,
+            tenant_id=seed.tenant_id,
+            bc_id="bc-a",
+            kind="ad_day",
+            tier="history",
+            advertiser_ids=["acc-1", "acc-2"],
+            start=DAY,
+            end=tomorrow,
+            frozen_route=_route(seed),
+            actor_id=seed.actor_id,
+            requested_at=now,
+        )
+        references = session.exec(
+            select(SyncExecutionScope, SyncRequirement, SyncScope)
+            .join(
+                SyncRequirement, SyncExecutionScope.requirement_id == SyncRequirement.id
+            )
+            .join(SyncScope, SyncExecutionScope.scope_id == SyncScope.id)
+            .where(SyncExecutionScope.report_job_id == job_id)
+        ).all()
+        ids = {
+            (scope.advertiser_id, requirement.bucket_key): child.id
+            for child, requirement, scope in references
+        }
+    versions = {("acc-1", DAY.isoformat()): 8, ("acc-2", tomorrow.isoformat()): 3}
+    with factory() as other, other.begin():
+        for key, child_id in ids.items():
+            if key not in versions:
+                other.get(SyncExecutionScope, child_id, with_for_update=True)
+        with factory() as session, session.begin():
+            session.execute(text("SET LOCAL lock_timeout='100ms'"))
+            satisfy_requirements(
+                session,
+                fence=ExecutionFence(job_id, "report", 0, 1),
+                observed_at=now,
+                publication_version=versions,
+            )
+    with factory() as session:
+        for key, child_id in ids.items():
+            child = session.get(SyncExecutionScope, child_id)
+            assert child.status == ("PUBLISHED" if key in versions else "PENDING")
+            assert child.published_version == versions.get(key)
+
+
+@pytest.mark.parametrize("invalid", ["owner", "generation", "observation", "empty"])
+def test_batch_publication_preserves_execution_fences(session, sync_seed, invalid):
+    now = datetime.now(UTC)
+    job_id = enqueue_job(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        bc_id="bc-a",
+        kind="ad_day",
+        tier="history",
+        advertiser_ids=["acc-1"],
+        start=DAY,
+        end=DAY,
+        frozen_route=_route(sync_seed),
+        actor_id=sync_seed.actor_id,
+        requested_at=now,
+    )
+    child = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == job_id)
+    ).one()
+    requirement = session.get(SyncRequirement, child.requirement_id)
+    if invalid == "owner":
+        session.get(SyncScope, child.scope_id).owner_epoch = 2
+    satisfy_requirements(
+        session,
+        fence=ExecutionFence(job_id, "report", 1 if invalid == "generation" else 0, 1),
+        observed_at=now - timedelta(seconds=1) if invalid == "observation" else now,
+        publication_version={}
+        if invalid == "empty"
+        else {("acc-1", DAY.isoformat()): 4},
+    )
+    assert child.status == "PENDING" and child.published_version is None
+    assert requirement.satisfied_revision == 0
