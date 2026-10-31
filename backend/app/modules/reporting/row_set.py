@@ -216,10 +216,13 @@ def _facts_cte(
     meta = f"{meta}," if meta else ""
 
     def identity(column: str) -> str:
-        # 平台身份/类型/币种是精确键，不按人类语言排序规则分组。C排序同时让
-        # 全日期聚合保留基表统计并自然顺序读取；无需先物化全部日事实到临时盘，
-        # 也不会为沿用面向50行补全的page索引顺序而随机读取整个日期窗口。
-        return f'{column} COLLATE "C"' if table == "material_entity_day" else column
+        # 只有派生行键/币种使用C聚合。账户和类型还会关联基表身份索引，必须
+        # 保留存储列的collation；显式C会传播到JOIN，使账户条件退化为索引后过滤。
+        return (
+            f'{column} COLLATE "C"'
+            if table == "material_entity_day" and column in {"t.row_key", "t.currency"}
+            else column
+        )
 
     adv = identity("t.advertiser_id")
     rid = identity(f"t.{id_column}" if id_column else "t.advertiser_id")

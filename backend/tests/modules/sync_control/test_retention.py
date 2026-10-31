@@ -102,6 +102,27 @@ def test_terminal_with_unpublished_child_is_not_compacted(session, sync_seed):
     assert row.payload
 
 
+def test_bounded_compaction_advances_past_protected_prefix(session, sync_seed):
+    from app.modules.sync_control.retention import compact_sync_dispatches
+
+    protected = [
+        seed_dispatch(session, sync_seed, status="WAITING")[1] for _ in range(5)
+    ]
+    _, eligible, *_ = seed_dispatch(session, sync_seed)
+    cursors = {}
+    cutoff = datetime.now(UTC) - timedelta(days=7)
+    for _ in range(6):
+        compact_sync_dispatches(session, limit=2, cutoff=cutoff, cursors=cursors)
+    assert eligible.compacted_at is not None
+    assert all(row.payload and row.compacted_at is None for row in protected)
+    # 一轮扫完后会重新访问曾受保护的记录，不永久跳过后来终态的任务。
+    job = session.get(ReportSyncJob, protected[0].payload["job_id"])
+    job.status = "COMPLETE"
+    for _ in range(6):
+        compact_sync_dispatches(session, limit=2, cutoff=cutoff, cursors=cursors)
+    assert protected[0].compacted_at is not None
+
+
 def test_old_pure_wake_is_compacted_but_business_planning_signal_is_preserved(
     session, sync_seed
 ):

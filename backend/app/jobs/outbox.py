@@ -223,7 +223,11 @@ def enqueue_many_after_commit(
 
 
 def compact_published_dispatches(
-    session: Session, *, limit: int = 1000, retention_days: int = 7
+    session: Session,
+    *,
+    limit: int = 1000,
+    retention_days: int = 7,
+    sync_cursors: dict[str, list[str]] | None = None,
 ) -> int:
     """压缩已结算且没有活跃业务所有者的构建投递，保留幂等和审计身份。"""
     if type(limit) is not int or not 1 <= limit <= 5000:
@@ -234,7 +238,7 @@ def compact_published_dispatches(
 
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     sync_compacted = compact_sync_dispatches(
-        session, limit=max(1, limit // 2), cutoff=cutoff
+        session, limit=max(1, limit // 2), cutoff=cutoff, cursors=sync_cursors
     )
     if sync_compacted == limit:
         return sync_compacted

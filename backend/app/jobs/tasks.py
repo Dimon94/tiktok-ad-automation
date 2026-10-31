@@ -143,22 +143,28 @@ def flush_dispatch_task(limit: int = 100) -> int:
 @celery_app.task(name="jobs.compact_dispatches", time_limit=45, soft_time_limit=40)  # type: ignore[untyped-decorator]
 def compact_dispatches_task(limit: int = 1000) -> int:
     """分批压缩已结算构建/同步消息；保留七天正文及幂等摘要。"""
+    import json
+    from datetime import UTC, datetime
+
+    from redis import Redis
+    from sqlalchemy import text
     from sqlmodel import Session
 
     from app.jobs.outbox import compact_published_dispatches
+    from app.modules.sync_control.retention import prune_sync_dispatches
 
-    with Session(engine) as session, session.begin():
-        from sqlalchemy import text
-
-        session.execute(text("SET LOCAL statement_timeout='5s'"))
-        session.execute(text("SET LOCAL lock_timeout='200ms'"))
-        from datetime import UTC, datetime
-
-        from app.modules.sync_control.retention import prune_sync_dispatches
-
-        pruned = prune_sync_dispatches(
-            session, now=datetime.now(UTC), limit=max(1, limit // 2)
-        )
-        return compact_published_dispatches(session, limit=max(1, limit // 2)) + sum(
-            pruned.values()
-        )
+    with Redis.from_url(settings.REDIS_URL) as redis:
+        key = "sync:legacy-dispatch-compaction:cursor:v1"
+        cursors = json.loads(redis.get(key) or "{}")
+        with Session(engine) as session, session.begin():
+            session.execute(text("SET LOCAL statement_timeout='5s'"))
+            session.execute(text("SET LOCAL lock_timeout='200ms'"))
+            pruned = prune_sync_dispatches(
+                session, now=datetime.now(UTC), limit=max(1, limit // 2)
+            )
+            compacted = compact_published_dispatches(
+                session, limit=max(1, limit // 2), sync_cursors=cursors
+            )
+        # 只有数据库提交后才推进扫描位置；丢失游标仅导致安全重扫，不能跳过清理。
+        redis.set(key, json.dumps(cursors), ex=86400)
+        return compacted + sum(pruned.values())

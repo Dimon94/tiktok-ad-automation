@@ -1,8 +1,9 @@
 """同步投递正文回收：终态和无待发布子桶均有证据，幂等摘要仍保留。"""
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
-from sqlalchemy import DateTime, Uuid, and_, case, cast, func, literal, or_
+from sqlalchemy import DateTime, Uuid, and_, case, cast, func, literal, or_, tuple_
 from sqlmodel import Session, col, select
 
 from app.jobs.models import PendingDispatch
@@ -21,11 +22,59 @@ SYNC_TASKS = (
 _UUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 
-def compact_sync_dispatches(session: Session, *, limit: int, cutoff: datetime) -> int:
+def _legacy_candidates(
+    session: Session, *, limit: int, cutoff: datetime, cursors: dict[str, list[str]]
+) -> list[UUID]:
+    """先沿时间索引读窄ID，业务所有权只在有界候选内核验；游标不是删除证明。"""
+    identities: list[UUID] = []
+    for name in ("published_at", "superseded_at"):
+        timestamp = getattr(PendingDispatch, name)
+        conditions = [
+            timestamp <= cutoff,
+            col(PendingDispatch.compacted_at).is_(None),
+            col(PendingDispatch.dispatch_contract_version).is_(None),
+            # 固定合同字面量让长连接的generic plan也能证明部分索引谓词。
+            col(PendingDispatch.task_name).in_(
+                [literal(task, literal_execute=True) for task in SYNC_TASKS]
+            ),
+        ]
+        if cursor := cursors.get(name):
+            conditions.append(
+                tuple_(timestamp, col(PendingDispatch.id))
+                > (datetime.fromisoformat(cursor[0]), UUID(cursor[1]))
+            )
+        rows = session.exec(
+            select(timestamp, col(PendingDispatch.id))
+            .where(*conditions)
+            .order_by(timestamp, col(PendingDispatch.id))
+            .limit(limit)
+        ).all()
+        identities.extend(row[1] for row in rows)
+        if len(rows) == limit:
+            cursors[name] = [rows[-1][0].isoformat(), str(rows[-1][1])]
+        else:
+            # 扫至末尾下一轮从头复查，先前未终态/被锁的任务不会永久遗漏。
+            cursors.pop(name, None)
+    return identities
+
+
+def compact_sync_dispatches(
+    session: Session,
+    *,
+    limit: int,
+    cutoff: datetime,
+    cursors: dict[str, list[str]] | None = None,
+) -> int:
     from app.jobs.outbox import _payload_digest
 
     if not 1 <= limit <= 5000:
         raise ValueError("invalid sync compaction limit")
+    candidates = _legacy_candidates(
+        session,
+        limit=limit,
+        cutoff=cutoff,
+        cursors=cursors if cursors is not None else {},
+    )
     total = 0
     specs = (
         (
@@ -52,7 +101,7 @@ def compact_sync_dispatches(session: Session, *, limit: int, cutoff: datetime) -
     )
     now = datetime.now(UTC)
     for model, tasks, key, execution_column, terminal in specs:
-        if total == limit:
+        if total == limit or not candidates:
             break
         raw_id = col(PendingDispatch.payload)[key].astext
         # CASE保证非法旧正文不触发UUID转换错误，join仍可按业务主键定位。
@@ -60,6 +109,7 @@ def compact_sync_dispatches(session: Session, *, limit: int, cutoff: datetime) -
         pending_child = (
             select(SyncExecutionScope.id)
             .where(
+                col(PendingDispatch.id).in_(candidates),
                 execution_column == col(model.id),
                 col(SyncExecutionScope.status) == "PENDING",
             )

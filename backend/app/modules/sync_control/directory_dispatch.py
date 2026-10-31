@@ -269,14 +269,22 @@ def _candidate(
     now: datetime,
     independent_only: bool,
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
-    # 先在到期头的账户有序索引中找可锁的窄ID；锁跳过发生在LIMIT之前。
-    # EXISTS保留精确scope/需求类/owner围栏，绝不把同账户其他范围当成本头执行。
-    # 宽query/frozen_route只在确定一条ID后通过主键回读，避免全积压宽行排序落盘。
+    # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
+    # 选出ID后再按主键锁定并重新校验所有围栏；冲突回滚小保存点，继续下一候选。
     session.flush()
-    row = (
-        session.connection()
-        .execute(
-            text("""
+    excluded: list[UUID] = []
+    params = {
+        "tenant_id": tenant_id,
+        "work_class": work_class,
+        "now": now,
+        "independent_only": independent_only,
+        "excluded": excluded,
+    }
+    for _ in range(16):
+        row = (
+            session.connection()
+            .execute(
+                text("""
         SELECT h.scope_id, h.work_class, picked.id
         FROM sync_schedule h
         JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
@@ -284,7 +292,7 @@ def _candidate(
             SELECT r.id, r.created_at
             FROM ad_directory_run r
             WHERE r.tenant_id=h.tenant_id AND r.advertiser_id=s.advertiser_id
-                AND r.owner_epoch=s.owner_epoch
+                AND r.owner_epoch=s.owner_epoch AND r.id <> ALL(CAST(:excluded AS uuid[]))
                 AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
                 AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
                 AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
@@ -299,32 +307,59 @@ def _candidate(
                     WHERE e.directory_run_id=r.id AND e.scope_id=h.scope_id
                         AND e.tenant_id=h.tenant_id AND e.status='PENDING'
                         AND e.owner_epoch=s.owner_epoch AND q.source=h.work_class
-                    LIMIT 1 FOR UPDATE OF e,q SKIP LOCKED
+                    LIMIT 1
                 )
             ORDER BY r.created_at,r.id
-            LIMIT 1 FOR UPDATE OF r SKIP LOCKED
+            LIMIT 1
         ) picked
         WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class
             AND h.active IS TRUE AND h.next_eligible_at<=:now
             AND (h.leased_until IS NULL OR h.leased_until<=:now)
         ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,
             picked.created_at,picked.id
-        LIMIT 1 FOR UPDATE OF h,s SKIP LOCKED
+        LIMIT 1
     """),
-            {
-                "tenant_id": tenant_id,
-                "work_class": work_class,
-                "now": now,
-                "independent_only": independent_only,
-            },
+                params,
+            )
+            .first()
         )
-        .first()
-    )
-    if row is None:
-        return None
-    head = session.get(
-        SyncSchedule, (row.scope_id, row.work_class), populate_existing=True
-    )
-    run = session.get(AdDirectoryRun, row.id, populate_existing=True)
-    assert head is not None and run is not None
-    return head, run
+        if row is None:
+            return None
+        with session.begin_nested() as attempt:
+            claimed = (
+                session.connection()
+                .execute(
+                    text("""
+SELECT h.scope_id,h.work_class,r.id
+FROM sync_schedule h
+JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
+JOIN sync_execution_scope e ON e.scope_id=h.scope_id AND e.tenant_id=h.tenant_id AND e.status='PENDING' AND e.owner_epoch=s.owner_epoch
+JOIN sync_requirement q ON q.id=e.requirement_id AND q.source=h.work_class
+JOIN ad_directory_run r ON r.id=e.directory_run_id AND r.tenant_id=h.tenant_id AND r.advertiser_id=s.advertiser_id AND r.owner_epoch=s.owner_epoch
+WHERE h.scope_id=:scope_id AND r.id=:run_id AND h.tenant_id=:tenant_id AND h.work_class=:work_class AND h.active IS TRUE
+AND h.next_eligible_at<=:now AND (h.leased_until IS NULL OR h.leased_until<=:now)
+AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
+AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
+AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
+AND (NOT :independent_only OR (r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)) OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
+ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,r.created_at,r.id LIMIT 1 FOR UPDATE OF h,s,e,q,r SKIP LOCKED
+"""),
+                    {
+                        **params,
+                        "scope_id": row.scope_id,
+                        "run_id": row.id,
+                    },
+                )
+                .first()
+            )
+            if claimed is None:
+                attempt.rollback()
+                excluded.append(row.id)
+                continue
+            head = session.get(
+                SyncSchedule, (row.scope_id, row.work_class), populate_existing=True
+            )
+            run = session.get(AdDirectoryRun, row.id, populate_existing=True)
+            assert head is not None and run is not None
+            return head, run
+    return None

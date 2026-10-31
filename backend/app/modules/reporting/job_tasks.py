@@ -287,7 +287,7 @@ def _continuation_contract(payload):
     return identity, expires
 
 
-def _planning_budget_error(error):
+def _planning_budget_error(error: BaseException) -> bool:
     return isinstance(error, QueryBudgetExceeded) or (
         isinstance(error, DBAPIError)
         and getattr(error.orig, "sqlstate", None) in {"57014", "55P03", "40P01"}
@@ -885,35 +885,57 @@ def _dispatch_pending(
 ) -> int:
     from contextlib import nullcontext
 
-    with (
-        Session(database_engine) as session,
-        session.begin(),
-        (
-            query_budget(session, seconds=budget_seconds)
-            if budget_seconds is not None
-            else nullcontext()
-        ),
-    ):
-        from app.modules.sync_control.balance_demand import dispatch_balances_due
+    from app.modules.sync_control.balance_demand import dispatch_balances_due
+    from app.modules.sync_control.occupancy import reservation_transaction
 
-        count = 0
-        started = time.monotonic()
-        # 公共池的下一类可能在另一派发器；有界轮转填满，不能一个pair后等Beat。
-        with Redis.from_url(settings.REDIS_URL) as redis:
-            for _ in range(8):
-                current = _dispatch_report_jobs(
-                    session, now, allow_backfill=allow_backfill
-                )
-                if include_directories:
-                    current += _dispatch_directories(
-                        session, now, allow_backfill=allow_backfill
+    count = 0
+    stop = time.monotonic() + (budget_seconds if budget_seconds is not None else 4)
+    families = (
+        ("report", "directory", "balance")
+        if include_directories
+        else ("report", "balance")
+    )
+    with Redis.from_url(settings.REDIS_URL) as redis:
+        for _ in range(8):
+            current = 0
+            for family in families:
+                remaining = stop - time.monotonic()
+                if remaining <= 0:
+                    return count
+                try:
+                    # 每类派发独立提交：后续查询耗尽总预算不能撤销前面已领取的
+                    # 工作。租约、成本和outbox仍同事务；异常同步撤销Redis占位。
+                    with (
+                        reservation_transaction(redis),
+                        Session(database_engine) as session,
+                        session.begin(),
+                        query_budget(session, seconds=remaining)
+                        if budget_seconds is not None
+                        else nullcontext(),
+                    ):
+                        if family == "report":
+                            dispatched = _dispatch_report_jobs(
+                                session, now, allow_backfill=allow_backfill
+                            )
+                        elif family == "directory":
+                            dispatched = _dispatch_directories(
+                                session, now, allow_backfill=allow_backfill
+                            )
+                        else:
+                            dispatched = dispatch_balances_due(session, redis, now=now)
+                        session.flush()
+                    count += dispatched
+                    current += dispatched
+                except (DBAPIError, QueryBudgetExceeded) as error:
+                    if not _planning_budget_error(error):
+                        raise
+                    logger.info(
+                        "sync dispatch yielded: family=%s committed=%s", family, count
                     )
-                current += dispatch_balances_due(session, redis, now=now)
-                count += current
-                if not current or time.monotonic() - started >= (budget_seconds or 4):
-                    break
-        session.flush()
-        return count
+                    return count
+            if not current:
+                break
+    return count
 
 
 def _failed(session, job, code):

@@ -17,6 +17,27 @@ _CURRENT: ContextVar[dict[str, Any] | None] = ContextVar(
     "sync_dispatch_occupancy", default=None
 )
 logger = logging.getLogger(__name__)
+_TRANSACTION_RESERVATIONS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "sync_transaction_reservations", default=None
+)
+
+
+@contextmanager
+def reservation_transaction(redis: Redis) -> Iterator[None]:
+    """包住DB事务及commit；失败时只撤销本事务的queued占位，不退已发送额度。"""
+    reservations: list[dict[str, Any]] = []
+    token = _TRANSACTION_RESERVATIONS.set(reservations)
+    try:
+        yield
+    except BaseException:
+        for reservation in reservations:
+            try:
+                release_dispatch(redis, **reservation)
+            except RedisError:
+                logger.warning("rolled back dispatch reservation awaits expiry")
+        raise
+    finally:
+        _TRANSACTION_RESERVATIONS.reset(token)
 
 
 @contextmanager
@@ -138,6 +159,18 @@ def reserve_dispatch(
     capacity, delay, reason, now = cast(
         list[int], redis.eval(_RESERVE, len(keys), *keys, *(str(arg) for arg in args))
     )
+    reservations = _TRANSACTION_RESERVATIONS.get()
+    if capacity > 0 and not _observe and reservations is not None:
+        reservations.append(
+            {
+                "reservation_id": reservation_id,
+                "app_scope": app_scope,
+                "endpoint": endpoint,
+                "tenant_id": tenant_id,
+                "advertiser_id": advertiser_id,
+                "rate_group": rate_group,
+            }
+        )
     return EndpointReadiness(
         int(capacity),
         int(delay),
