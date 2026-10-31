@@ -193,7 +193,7 @@ def satisfy_requirements(
         "directory": col(SyncExecutionScope.directory_run_id),
         "balance": col(SyncExecutionScope.balance_run_id),
     }[fence.execution_kind]
-    rows = session.exec(
+    statement = (
         select(SyncExecutionScope, SyncRequirement, SyncScope)
         .join(
             SyncRequirement,
@@ -201,14 +201,16 @@ def satisfy_requirements(
         )
         .join(SyncScope, col(SyncExecutionScope.scope_id) == col(SyncScope.id))
         .where(column == fence.execution_id)
-        .with_for_update()
-    ).all()
+    )
+    # 余额逐账户、报表逐日桶发布时，范围必须在SQL领取锁之前生效。
+    # 取回整批再Python过滤会重复读取/锁定其它账户，批量回写退化为平方级。
+    if advertiser_id is not None:
+        statement = statement.where(col(SyncScope.advertiser_id) == advertiser_id)
+    if bucket_keys is not None:
+        statement = statement.where(col(SyncRequirement.bucket_key).in_(bucket_keys))
+    rows = session.exec(statement.with_for_update()).all()
     successors = []
     for child, requirement, scope in rows:
-        if advertiser_id is not None and scope.advertiser_id != advertiser_id:
-            continue
-        if bucket_keys is not None and requirement.bucket_key not in bucket_keys:
-            continue
         if (
             child.owner_epoch != scope.owner_epoch
             or child.owner_epoch != fence.owner_epoch

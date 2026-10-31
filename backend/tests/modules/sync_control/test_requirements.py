@@ -238,3 +238,54 @@ def test_periodic_maintenance_cannot_expand_a_started_frozen_link_query(
         assert (job.start_date, job.end_date) == (DAY, DAY)
         assert job.progress["validated_page"] == 3
         assert db.get(ReportSyncJob, successor).status == "QUEUED"
+
+
+def test_account_publication_does_not_lock_other_accounts_in_same_balance_batch(
+    committed_sync_seed,
+):
+    """余额逐账户回写不能反复锁住整批账户的需求和引用。"""
+    from uuid import uuid4
+
+    from sqlalchemy import text
+
+    from app.modules.reporting.store_models import ReportBalanceRun
+    from app.modules.sync_control.balance_demand import register_balance
+
+    seed, factory = committed_sync_seed
+    now = datetime.now(UTC)
+    with factory() as session, session.begin():
+        run = ReportBalanceRun(
+            tenant_id=seed.tenant_id,
+            actor_id=seed.actor_id,
+            run_key=str(uuid4()),
+            frozen_route=_route(seed),
+            remaining_advertiser_ids=["acc-1", "acc-2"],
+            created_at=now,
+        )
+        session.add(run)
+        session.flush()
+        register_balance(session, run)
+        job_id = run.id
+        references = session.exec(
+            select(SyncExecutionScope, SyncScope)
+            .join(SyncScope, SyncScope.id == SyncExecutionScope.scope_id)
+            .where(SyncExecutionScope.balance_run_id == job_id)
+        ).all()
+        by_account = {scope.advertiser_id: child.id for child, scope in references}
+        generation = run.claim_generation
+    with factory() as other, other.begin():
+        other.get(SyncExecutionScope, by_account["acc-2"], with_for_update=True)
+        with factory() as session, session.begin():
+            session.execute(text("SET LOCAL lock_timeout='100ms'"))
+            satisfy_requirements(
+                session,
+                fence=ExecutionFence(job_id, "balance", generation, 1),
+                observed_at=now + timedelta(seconds=1),
+                publication_version=1,
+                advertiser_id="acc-1",
+            )
+    with factory() as session:
+        assert (
+            session.get(SyncExecutionScope, by_account["acc-1"]).status == "PUBLISHED"
+        )
+        assert session.get(SyncExecutionScope, by_account["acc-2"]).status == "PENDING"
