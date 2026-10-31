@@ -7,8 +7,9 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
 
 from app.modules.ads.sync_models import AdDirectoryRun
@@ -137,6 +138,22 @@ def record_cost_receipt(
     ledger.updated_at = datetime.now(UTC)
 
 
+def _settlement_due() -> ColumnElement[bool]:
+    # 在途且仍被原预留覆盖时，没有要改的公平成本，不锁其收据阻塞worker收尾。
+    # 完结/封存必须结算版本；超过已扣成本的真实发送仍立即补扣，未知成本不退款。
+    return and_(
+        col(SyncCostLedger.receipt_version) > col(SyncCostLedger.settled_version),
+        or_(
+            col(SyncCostLedger.closed).is_(True),
+            col(SyncCostLedger.abandoned_at).is_not(None),
+            func.greatest(
+                col(SyncCostLedger.reserved_units), col(SyncCostLedger.observed_units)
+            )
+            > col(SyncCostLedger.charged_units),
+        ),
+    )
+
+
 def settle_costs(
     session: Session, cursor: ReportDispatchCursor, *, limit: int = 256
 ) -> int:
@@ -146,7 +163,7 @@ def settle_costs(
         select(SyncCostLedger)
         .where(
             col(SyncCostLedger.tenant_id) == cursor.tenant_id,
-            col(SyncCostLedger.receipt_version) > col(SyncCostLedger.settled_version),
+            _settlement_due(),
         )
         .order_by(col(SyncCostLedger.id))
         .limit(limit)
@@ -459,10 +476,7 @@ def settle_idle_costs(
             session.connection().execute(text("SET LOCAL statement_timeout='500ms'"))
             tenants = session.exec(
                 select(col(SyncCostLedger.tenant_id))
-                .where(
-                    col(SyncCostLedger.receipt_version)
-                    > col(SyncCostLedger.settled_version)
-                )
+                .where(_settlement_due())
                 .distinct()
                 .limit(limit)
             ).all()

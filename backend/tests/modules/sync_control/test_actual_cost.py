@@ -74,7 +74,7 @@ def test_physical_cost_receipts_settle_idempotently_and_do_not_refund_unknown(
     ledger, cursor = reserve(session, sync_seed)
     producer = uuid4()
     record_cost_receipt(session, ledger.id, producer, total_units=7, closed=False)
-    assert settle_costs(session, cursor) == 1
+    assert settle_costs(session, cursor) == 0
     assert ledger.charged_units == 50 and not ledger.closed
     record_cost_receipt(session, ledger.id, producer, total_units=7, closed=True)
     assert settle_costs(session, cursor) == 1
@@ -486,3 +486,34 @@ def test_cost_maintenance_database_failure_does_not_stop_dispatch_or_outbox(
     finally:
         if failure_stage == "discover":
             event.remove(engine, "before_cursor_execute", broken_discovery)
+
+
+def test_zero_delta_open_receipt_does_not_block_worker_closing(committed_sync_seed):
+    """调度持cursor期间，不应锁住尚无结算差额的在途收据阻止worker收尾。"""
+    from sqlalchemy import text
+
+    seed, factory = committed_sync_seed
+    producer = uuid4()
+    with factory() as session, session.begin():
+        ledger, _ = reserve(session, seed, units=1)
+        identity = ledger.id
+        record_cost_receipt(session, identity, producer, total_units=0, closed=False)
+    with factory() as dispatch, dispatch.begin():
+        cursor = lock_tenant_cursor(dispatch, seed.tenant_id)
+        with factory() as worker, worker.begin():
+            worker.execute(text("SET LOCAL lock_timeout='100ms'"))
+            record_cost_receipt(worker, identity, producer, total_units=1, closed=True)
+        assert settle_costs(dispatch, cursor) == 1
+        ledger = dispatch.get(SyncCostLedger, identity, populate_existing=True)
+        assert ledger.closed and ledger.charged_units == 1
+        assert ledger.settled_version == ledger.receipt_version
+
+
+def test_open_receipt_exceeding_reservation_still_charges_immediately(
+    session, sync_seed
+):
+    ledger, cursor = reserve(session, sync_seed, units=1)
+    record_cost_receipt(session, ledger.id, uuid4(), total_units=7, closed=False)
+    assert settle_costs(session, cursor) == 1
+    assert ledger.charged_units == 7 and not ledger.closed
+    assert ledger.receipt_version == ledger.settled_version

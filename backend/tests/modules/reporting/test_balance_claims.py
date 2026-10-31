@@ -845,3 +845,41 @@ def test_before_http_local_error_does_not_consume_provider_budget(
     with factory() as db:
         run = db.get(ReportBalanceRun, UUID(payload["run_id"]))
         assert run.provider_failures == 0
+
+
+@pytest.mark.parametrize(
+    "error_code,provider_failures",
+    [("tiktok_local_resources_unavailable", 0), ("tiktok_call_deadline_exceeded", 1)],
+)
+def test_gateway_transient_errors_keep_balance_retryable(
+    committed_sync_seed, redis_client, error_code, provider_failures
+):
+    """gateway包装的本地资源/调用期限错误不能直接终结整批余额需求。"""
+    from app.core.context import TenantContext
+
+    seed, factory = committed_sync_seed
+    payload = create_claim(seed, factory, redis_client)
+    with factory() as db:
+        run = db.get(ReportBalanceRun, UUID(payload["run_id"]))
+        fence = {
+            "generation": run.claim_generation,
+            "owner_epoch": run.owner_epoch,
+            "claim_token": run.claim_token,
+            "page": run.next_page,
+            "advertiser": "acc-1",
+            "provider_call_active": True,
+        }
+    result = balance_tasks._record_balance_failure(
+        database_engine=balance_tasks.engine,
+        context=TenantContext(
+            tenant_id=seed.tenant_id, actor_id=seed.actor_id, role="operator"
+        ),
+        run_id=UUID(payload["run_id"]),
+        failure_fence=fence,
+        error=DomainError(error_code, "synthetic transient gateway failure"),
+    )
+    assert result == "WAITING"
+    with factory() as db:
+        run = db.get(ReportBalanceRun, UUID(payload["run_id"]))
+        assert run.status == "ACTIVE" and run.next_attempt_at is not None
+        assert run.provider_failures == provider_failures

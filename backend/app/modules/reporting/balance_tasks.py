@@ -415,9 +415,16 @@ def _record_balance_failure(
             retryable = not isinstance(error, DomainError) or error.code in {
                 "tiktok_response_error",
                 "read_deadline_exceeded",
+                "tiktok_call_deadline_exceeded",
+                "tiktok_local_resources_unavailable",
             }
-            local = not failure_fence.get("provider_call_active", False) or isinstance(
-                error, (SQLAlchemyError, ValueError)
+            # gateway里的本地数据库超时会包装成DomainError；仍属本地竞争，
+            # 不能误作永久失败或消耗平台失败预算。调用期限错误沿用有界重试。
+            local = (
+                not failure_fence.get("provider_call_active", False)
+                or isinstance(error, (SQLAlchemyError, ValueError))
+                or isinstance(error, DomainError)
+                and error.code == "tiktok_local_resources_unavailable"
             )
             run.error_code = (
                 error.code
