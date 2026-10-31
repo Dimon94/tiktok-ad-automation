@@ -1089,6 +1089,8 @@ def _run_job_step(*, database_engine, redis_client, job_id, claim_token):
 # 成功/作废页保留1小时；FAILED保留7天排查与人工恢复窗口，之后仅无活租约/待发布子桶才清页。
 DIRECTORY_PAGE_RETENTION = timedelta(hours=1)
 FAILED_DIRECTORY_PAGE_RETENTION = timedelta(days=7)
+# 成功报表的规范事实已原子发布；临时响应不再承担查询或恢复职责。
+REPORT_PAGE_RETENTION = timedelta(hours=1)
 # 单批清理的运行数上限：暂存页含大 JSONB，分批各自提交，避免长事务。
 DIRECTORY_PAGE_CLEANUP_RUNS = 2000
 # 每分钟以10秒为续批预算，首轮每类仍有一次机会；短批各自提交，持续追赶暂存。
@@ -1228,7 +1230,9 @@ def _execution_cleanup_guard(model, execution_column, payload_key):
         .where(execution_column == model.id, SyncExecutionScope.status == "PENDING")
         .exists()
     )
-    # 先保留outbox摘要，再删父任务，否则正文再也无法凭终态证据安全压缩。
+    # 本函数仅保护分页清理，父任务由归档流程单独保留。成功执行的迟到消息
+    # 只核对终态，不再读取分页，不能让七天的outbox留存拖住大响应正文。
+    # 失败/取消执行仍保守等待消息证据压缩，避免丢失恢复线索。
     unpreserved_dispatch = (
         select(PendingDispatch.id)
         .where(
@@ -1253,7 +1257,10 @@ def _execution_cleanup_guard(model, execution_column, payload_key):
     )
     # 未结算/未封存的未知成本仍是恢复证据；失效代数保守封存并结算后可回收。
     return (
-        ~pending & ~unpreserved_dispatch & ~unsettled_cost & model.claim_token.is_(None)
+        ~pending
+        & ((model.status == "COMPLETE") | ~unpreserved_dispatch)
+        & ~unsettled_cost
+        & model.claim_token.is_(None)
     )
 
 
@@ -1265,12 +1272,19 @@ def _cleanup_category(session, *, category, now, cursors):
     if category in {"jobs", "balances", "hours"}:
         return 0
 
-    terminal = col(ReportSyncJob.status).in_(["COMPLETE", "FAILED", "CANCELLED"])
     expired_jobs = (
-        terminal
-        & (col(ReportSyncJob.finished_at) < now - timedelta(days=7))
+        (
+            (col(ReportSyncJob.status) == "COMPLETE")
+            & (col(ReportSyncJob.finished_at) < now - REPORT_PAGE_RETENTION)
+            | col(ReportSyncJob.status).in_(["FAILED", "CANCELLED"])
+            & (col(ReportSyncJob.finished_at) < now - timedelta(days=7))
+        )
         & _execution_cleanup_guard(
             ReportSyncJob, SyncExecutionScope.report_job_id, "job_id"
+        )
+        & (
+            col(ReportSyncJob.claimed_until).is_(None)
+            | (col(ReportSyncJob.claimed_until) <= now)
         )
     )
     models = {
