@@ -9,7 +9,7 @@ connect/read timeouts plus processing margin.
 
 import logging
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -326,7 +326,13 @@ def admitted_scope(
         # 进程终止不证明远端调用结束，保留原租约至过期；正常释放也不解除业务 UNKNOWN 围栏。
         if not interrupted:
             try:
-                release(redis_client, **scope)
+                cleanup = (
+                    redis_client.cleanup_scope()
+                    if callable(getattr(type(redis_client), "cleanup_scope", None))
+                    else nullcontext(redis_client)
+                )
+                with cleanup as cleanup_client:
+                    release(cleanup_client, **scope)
             except RedisError, DomainError:
                 logging.getLogger(__name__).warning(
                     "admission_release_failed",

@@ -233,3 +233,40 @@ def test_provider_cooldown_is_shared_by_physical_endpoint(redis_client):
     assert admit_call(
         redis_client, **(scope | {"endpoint": "other"}), lease_id=uuid4(), policy=policy
     ).granted
+
+
+def test_expired_request_still_releases_own_inflight_lease(redis_client):
+    from datetime import UTC, datetime, timedelta
+
+    from app.integrations.tiktok.bounded_resources import bounded_redis
+    from app.jobs.admission import admission_keys, admitted_scope
+
+    scope = {
+        "app_scope": f"test-{uuid4()}",
+        "endpoint": "physical",
+        "tenant_id": uuid4(),
+        "advertiser_id": "a",
+    }
+    policy = AdmissionPolicy(
+        app_max_inflight=50,
+        endpoint_max_inflight=50,
+        tenant_max_inflight=50,
+        advertiser_max_inflight=50,
+        app_calls_per_window=50,
+        endpoint_calls_per_window=50,
+        window_ms=1000,
+        lease_ms=60000,
+    )
+    keys = admission_keys(
+        scope["app_scope"], scope["endpoint"], scope["tenant_id"], "a"
+    )
+    with bounded_redis(
+        redis_client, task_deadline=datetime.now(UTC) + timedelta(seconds=10)
+    ) as client:
+        with admitted_scope(
+            client, **scope, policy=policy, denied_error=lambda _: RuntimeError("quota")
+        ):
+            assert redis_client.zcard(keys[2]) == 1
+            client._task_deadline = datetime.now(UTC) - timedelta(seconds=1)
+    assert redis_client.zcard(keys[2]) == 0
+    assert redis_client.zcard(keys[1]) == 1

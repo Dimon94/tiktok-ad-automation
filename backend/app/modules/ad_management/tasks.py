@@ -7,6 +7,7 @@ from uuid import UUID
 
 from redis.exceptions import RedisError
 from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as DatabasePoolTimeout
 from sqlmodel import Session, col, select
 
 from app.core.db import engine
@@ -50,7 +51,7 @@ def _locked_task(session: Session, task_id: UUID, tenant: UUID, actor: UUID):
 
 @celery_app.task(
     name=MANAGEMENT_DISPATCH_TASK,
-    autoretry_for=(OperationalError, InterfaceError, RedisError),
+    autoretry_for=(OperationalError, InterfaceError, DatabasePoolTimeout, RedisError),
     retry_backoff=True,
     retry_backoff_max=60,
     retry_jitter=True,

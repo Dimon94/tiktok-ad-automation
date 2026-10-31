@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Any
 
 import business_api_client as sdk  # type: ignore[import-untyped]
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.common import CallEvidence, RemoteCallError
@@ -277,7 +278,7 @@ def batch_receipts(
     has_member_evidence = isinstance(data, dict) and any(
         value
         for key, value in data.items()
-        if key.endswith("_ids") or key == "error_list"
+        if key.endswith("_ids") or key in {"error_list", f"{commands[0].ref.kind}_list"}
     )
     # 非零顶层业务码且无成员结果是整次请求的明确拒绝；失败响应无需成功data。
     # 有成员证据时仍逐项解析，避免把混合回执当成整批同一结果。
@@ -293,6 +294,21 @@ def batch_receipts(
     errors = data.get("error_list", [])
     if type(success_ids) is not list or type(errors) is not list:
         return tuple(unknown for _ in commands)
+    # Smart+实际状态回执返回campaign_list等对象列表，而不是campaign_ids。
+    # 必须同时证明成员身份与最终状态；缺字段/冲突仍保留UNKNOWN。
+    status_rows = data.get(f"{commands[0].ref.kind}_list", [])
+    if commands[0].field == "status" and status_rows:
+        desired = commands[0].desired.get(
+            "operation_status", commands[0].desired.get("status")
+        )
+        if type(status_rows) is not list or any(
+            type(row) is not dict
+            or type(row.get(id_key)) is not str
+            or row.get("status", row.get("operation_status")) != desired
+            for row in status_rows
+        ):
+            return tuple(unknown for _ in commands)
+        success_ids = [*success_ids, *(row[id_key] for row in status_rows)]
     accepted: Counter[str] = Counter()
     rejected: Counter[str] = Counter()
     error_codes: dict[str, int] = {}
@@ -361,6 +377,16 @@ def _failure(
         if sent
         else getattr(error, "code", "management_preflight_failed")
     )
+    if not sent and isinstance(error, SQLAlchemyError):
+        receipt = ManagementReceipt(
+            "NOT_SENT",
+            evidence.request_id,
+            True,
+            evidence,
+            "management_local_deferred",
+            1000,
+        )
+        return tuple(receipt for _ in commands)
     retry_after = getattr(error, "retry_after_ms", None)
     receipt = ManagementReceipt(
         "UNKNOWN" if sent else "NOT_SENT",

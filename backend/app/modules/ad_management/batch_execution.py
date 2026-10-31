@@ -1,8 +1,11 @@
 """一个物理请求的领取、围栏与逐成员审计；等待平台时不持SQL事务。"""
 
 from datetime import timedelta
+from threading import Lock
 from uuid import UUID, uuid4
 
+from sqlalchemy import tuple_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -25,6 +28,30 @@ from app.modules.ad_management.models import (
     ManagementTask,
     ManagementTaskItem,
 )
+from app.modules.ads.models import AdObject
+
+# 领取阶段串行进入数据库，等待者不借连接；网络发送仍使用共享50请求窗口。
+# 避免多个线程持连接等同一Task行锁，使已领取请求的最终围栏等不到连接。
+_claim_guard = Lock()
+
+
+def _prefetch_objects(session, rows):
+    refs = [ex._ref(item.ref) for item in rows]
+    return session.exec(
+        select(AdObject).where(
+            tuple_(
+                AdObject.tenant_id,
+                AdObject.advertiser_id,
+                AdObject.kind,
+                AdObject.remote_id,
+            ).in_(
+                [
+                    (ref.tenant_id, ref.advertiser_id, ref.kind, ref.remote_id)
+                    for ref in refs
+                ]
+            )
+        )
+    ).all()
 
 
 def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
@@ -37,7 +64,7 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
     prepared = []
     physical_id = None
     try:
-        with Session(database_engine) as session:
+        with _claim_guard, Session(database_engine) as session:
             scopes = session.exec(
                 select(ManagementTaskItem.task_id, ManagementTaskItem.tenant_id)
                 .where(col(ManagementTaskItem.id).in_(item_ids))
@@ -70,6 +97,9 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
             route = ex._route(task)
             context = TenantContext(task.tenant_id, task.actor_id, "operator")
             eligible = []
+            # 强引用保留ORM identity map；逐成员原值校验不再逐个读广告目录。
+            observed_objects = _prefetch_objects(session, rows)
+            verified_accounts = set()
             for item in sorted(rows, key=lambda r: r.position):
                 attempts = ex._attempts(session, item)
                 if not ex._can_run(session, item, attempts):
@@ -86,15 +116,22 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
                     )
                 # 个别对象失效只跳过该对象；整批共享的路由/授权门禁仍在发送前重验。
                 try:
-                    verify_route(
-                        session,
-                        context=context,
-                        route=route,
-                        advertiser_id=ref.advertiser_id,
-                        capability="ads_manage",
-                        operation=item.capability.get("operation"),
-                        entity_kind=ref.kind,
+                    authority = (
+                        ref.advertiser_id,
+                        item.capability.get("operation"),
+                        ref.kind,
                     )
+                    if authority not in verified_accounts:
+                        verify_route(
+                            session,
+                            context=context,
+                            route=route,
+                            advertiser_id=ref.advertiser_id,
+                            capability="ads_manage",
+                            operation=item.capability.get("operation"),
+                            entity_kind=ref.kind,
+                        )
+                        verified_accounts.add(authority)
                     ex._same_frozen_value(session, item, ref)
                     command = ex._command(item)
                 except DomainError as error:
@@ -179,6 +216,7 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
                 quantum=30,
             )
             session.commit()
+            del observed_objects
 
         def before_request():
             lease.fence(redis_client)
@@ -198,6 +236,8 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
                     )
                 ).all()
                 by_id = {r.id: r for r in current}
+                observed_objects = _prefetch_objects(check, current)
+                verified_accounts = set()
                 for item_id, generation, _, command in prepared:
                     item = by_id.get(item_id)
                     if (
@@ -208,16 +248,24 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
                         != route.model_dump(mode="json")
                     ):
                         raise DomainError("management_claim_stale", "批次领取已失效")
-                    verify_route(
-                        check,
-                        context=context,
-                        route=route,
-                        advertiser_id=command.ref.advertiser_id,
-                        capability="ads_manage",
-                        operation=command.operation,
-                        entity_kind=command.ref.kind,
+                    authority = (
+                        command.ref.advertiser_id,
+                        command.operation,
+                        command.ref.kind,
                     )
+                    if authority not in verified_accounts:
+                        verify_route(
+                            check,
+                            context=context,
+                            route=route,
+                            advertiser_id=command.ref.advertiser_id,
+                            capability="ads_manage",
+                            operation=command.operation,
+                            entity_kind=command.ref.kind,
+                        )
+                        verified_accounts.add(authority)
                     ex._same_frozen_value(check, item, command.ref)
+                del observed_objects
             lease.fence(redis_client)
 
         called = False
@@ -251,22 +299,35 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
         except DomainError as error:
             receipts = tuple(
                 ManagementReceipt(
-                    "UNKNOWN" if called else "NOT_SENT", None, False, reason=error.code
+                    "UNKNOWN" if called else "NOT_SENT",
+                    None,
+                    not called and error.retryable,
+                    reason="management_local_deferred"
+                    if not called and error.retryable
+                    else error.code,
+                    retry_after_ms=1000 if not called and error.retryable else None,
                 )
                 for _ in prepared
             )
-        except Exception:
+        except Exception as error:
+            local_wait = not called and isinstance(error, SQLAlchemyError)
             receipts = tuple(
                 ManagementReceipt(
                     "UNKNOWN" if called else "NOT_SENT",
                     None,
-                    False,
+                    local_wait,
                     reason="management_result_unknown"
                     if called
-                    else "management_preflight_failed",
+                    else (
+                        "management_local_deferred"
+                        if local_wait
+                        else "management_preflight_failed"
+                    ),
+                    retry_after_ms=1000 if local_wait else None,
                 )
                 for _ in prepared
             )
+        accepted_members = []
         for (item_id, generation, attempt_no, command), receipt in zip(
             prepared, receipts, strict=True
         ):
@@ -318,11 +379,17 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
                     attempt_no=attempt_no,
                 )
             if persisted and receipt.outcome == "ACCEPTED":
-                try:
-                    ex._refresh_after_commit(
-                        database_engine, context=context, route=route, ref=command.ref
-                    )
-                except Exception:
+                accepted_members.append((item_id, command.ref))
+        if accepted_members:
+            try:
+                ex._refresh_many_after_commit(
+                    database_engine,
+                    context=context,
+                    route=route,
+                    refs=tuple(ref for _, ref in accepted_members),
+                )
+            except Exception:
+                for item_id, _ in accepted_members:
                     ex._set_refresh_state(database_engine, item_id, pending=True)
         with Session(database_engine) as session, session.begin():
             physical = session.get(ManagementPhysicalRequest, physical_id)

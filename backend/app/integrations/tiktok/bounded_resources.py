@@ -126,6 +126,16 @@ class _DeadlineRedis(Redis):
             raise _resource_error()
         return result
 
+    @contextmanager
+    def cleanup_scope(self) -> Iterator[Redis]:
+        # 请求期限结束不应阻止释放自己的在途租约。清理只移除已持有的lease，
+        # 使用独立的5秒资源期限，不恢复请求发送或返还已消耗的平台速率。
+        with bounded_redis(
+            self,
+            task_deadline=datetime.now(UTC) + timedelta(seconds=MAX_RESOURCE_SECONDS),
+        ) as client:
+            yield client
+
     def pipeline(self, transaction: bool = True, shard_hint: Any = None) -> Any:
         # 准入使用单次 Lua 原子命令；延迟 pipeline 会绕过逐命令期限检查。
         raise DomainError(

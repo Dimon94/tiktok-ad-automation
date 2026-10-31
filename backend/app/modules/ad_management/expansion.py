@@ -1126,14 +1126,22 @@ def _expand(
                 )
             )
             return
-        if current == final:
+        already_deleted = (
+            field == "status"
+            and final == "DISABLE"
+            and use is None
+            and row.delivery_status
+            in {"CAMPAIGN_STATUS_DELETE", "ADGROUP_STATUS_DELETE", "AD_STATUS_DELETE"}
+        )
+        # 删除为平台终态且不可再修改；批量暂停不能把它混进写请求影响有效成员。
+        if current == final or already_deleted:
             items.append(
                 ExpandedItem(
                     row.ref,
                     use,
                     current,
                     final,
-                    "no_change",
+                    "already_deleted" if already_deleted else "no_change",
                     "NO_CHANGE",
                     None,
                     row.parent_ref,

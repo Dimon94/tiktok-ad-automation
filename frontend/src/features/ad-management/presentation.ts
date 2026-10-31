@@ -47,6 +47,8 @@ const RENAME_KIND_LABEL: Record<
  */
 export const renameReasonLabel: Record<string, string> = {
   no_change: "新名称与原名称相同，跳过",
+  already_deleted: "对象已删除，无需暂停",
+  management_local_deferred: "等待本地资源后继续执行",
   name_empty: "新名称为空",
   name_too_long: "新名称超过 512 个字符",
   name_has_emoji: "新名称不能包含表情符号",

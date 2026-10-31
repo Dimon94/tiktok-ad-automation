@@ -556,9 +556,11 @@ def open_tiktok_gateway(
         if deadline != task_deadline:
             raise DomainError("read_deadline_invalid", "调用期限与任务不一致")
         full_operation = f"management.{operation}"
-        authorize(advertiser_id, full_operation, entity_kind)
+        # SDK adapter在实际HTTP发送前调用before_send完整围栏；此处只重验授权，
+        # 不能在一次物理请求里重复扫描整批五次、耗尽连接池与请求期限。
+        authorize(advertiser_id, full_operation, entity_kind, check_workflow=False)
         with admit(advertiser_id, full_operation, physical_endpoint):
-            authorize(advertiser_id, full_operation, entity_kind)
+            authorize(advertiser_id, full_operation, entity_kind, check_workflow=False)
             yield
 
     def isolation_guard() -> None:
@@ -695,7 +697,10 @@ def open_tiktok_gateway(
                         official,
                         request_scope=request_scope,
                         capability_check=lambda advertiser, operation, kind: authorize(
-                            advertiser, f"management.{operation}", kind
+                            advertiser,
+                            f"management.{operation}",
+                            kind,
+                            check_workflow=False,
                         ),
                         management_scope=management_scope,
                         before_send=before_request,

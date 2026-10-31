@@ -587,9 +587,13 @@ def _persist_outcome(
             return False
         attempt.outcome = outcome
         attempt.request_id = request_id
-        quota_wait = response.get("reason") == "admission_deferred"
+        quota_wait = response.get("reason") in {
+            "admission_deferred",
+            "management_local_deferred",
+        }
         transport_attempts = sum(
-            row.response.get("reason") != "admission_deferred"
+            row.response.get("reason")
+            not in {"admission_deferred", "management_local_deferred"}
             for row in _attempts(session, item)
             if row.id != attempt.id
         ) + (0 if quota_wait else 1)
@@ -661,7 +665,19 @@ def _refresh_after_commit(
     route: FrozenTikTokRoute,
     ref: EntityRef,
 ) -> None:
-    # 回执已独立提交；同步关闭或缺 API 计划时不追加后台读取。
+    return _refresh_many_after_commit(
+        database_engine, context=context, route=route, refs=(ref,)
+    )
+
+
+def _refresh_many_after_commit(
+    database_engine: Engine,
+    *,
+    context: TenantContext,
+    route: FrozenTikTokRoute,
+    refs: tuple[EntityRef, ...],
+) -> None:
+    # 一个物理批次只登记一份定向回读，不能再按20成员重复锁BC和投递。
     del context
     if not settings.ADS_SYNC_ENABLED:
         return
@@ -675,14 +691,14 @@ def _refresh_after_commit(
             bc_id=route.bc_id,
             frozen_route=plan.frozen_route,
             actor_id=plan.actor_id,
-            advertiser_ids=[ref.advertiser_id],
+            advertiser_ids=list(dict.fromkeys(ref.advertiser_id for ref in refs)),
             scope="targeted",
-            refs=[ref],
+            refs=list(refs),
         )
         plan_hot(
             session,
             plan,
-            active=[ref.advertiser_id],
+            active=list(dict.fromkeys(ref.advertiser_id for ref in refs)),
             now=datetime.now(UTC),
             tier="manual",
         )

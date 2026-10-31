@@ -720,3 +720,33 @@ def test_mcp_linked_roas_uses_one_single_group_tool_call():
         "adgroup_id": "0",
         "roas_bid": 1.2,
     }
+
+
+def test_actual_smart_campaign_list_receipts_preserve_member_identity():
+    receipts = batches.batch_receipts(
+        (command("one", smart=True), command("two", smart=True)),
+        {
+            "code": 0,
+            "request_id": "actual-response-shape",
+            "data": {
+                "campaign_list": [
+                    {"campaign_id": "one", "status": "DISABLE"},
+                    {"campaign_id": "two", "status": "DISABLE"},
+                ],
+                "error_list": [],
+            },
+        },
+    )
+    assert [receipt.outcome for receipt in receipts] == ["ACCEPTED", "ACCEPTED"]
+    assert {receipt.request_id for receipt in receipts} == {"actual-response-shape"}
+
+
+def test_campaign_list_wrong_status_never_proves_requested_pause():
+    receipts = batches.batch_receipts(
+        (command("one", smart=True),),
+        {
+            "code": 0,
+            "data": {"campaign_list": [{"campaign_id": "one", "status": "ENABLE"}]},
+        },
+    )
+    assert receipts[0].outcome == "UNKNOWN"

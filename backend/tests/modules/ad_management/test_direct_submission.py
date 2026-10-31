@@ -514,3 +514,31 @@ def test_preparation_watchdogs_coalesce_in_bounded_future_buckets():
     assert first == same
     assert later[1] != first[1]
     assert now + timedelta(seconds=120) <= first[3] <= now + timedelta(seconds=150)
+
+
+def test_pause_skips_deleted_campaign_even_when_operation_status_is_enable(
+    session, management_env
+):
+    context, bc, account, route, selection = management_env
+    ref = EntityRef(
+        context.tenant_id, account.advertiser_id, "campaign", "deleted-campaign"
+    )
+    row = _row(ref, connection_id=route.connection_id)
+    row.operation_status = "ENABLE"
+    row.delivery_status = "CAMPAIGN_STATUS_DELETE"
+    session.add(row)
+    _set_selection(selection, [ref])
+    session.flush()
+    result = submit_direct_task(
+        session,
+        context,
+        bc.bc_id,
+        selection.id,
+        MutationSpec(field="status", mode="set", value="DISABLE"),
+        uuid4(),
+    )
+    assert prepare_direct_chunk(session, result.task_id)
+    item = session.exec(
+        select(ManagementTaskItem).where(ManagementTaskItem.task_id == result.task_id)
+    ).one()
+    assert item.execution_result == "NO_CHANGE" and item.reason == "already_deleted"
