@@ -150,6 +150,8 @@ def _queue_refresh(
             PendingDispatch.task_name == "accounts.refresh_mcp",
             PendingDispatch.payload["attempt_id"].as_string() == str(attempt.id),
             col(PendingDispatch.published_at).is_(None),
+            col(PendingDispatch.superseded_at).is_(None),
+            col(PendingDispatch.retired_at).is_(None),
         )
         .order_by(col(PendingDispatch.available_at))
         # publisher 在 send_task 后才提交 published_at；等待它的行锁并重判，不能把原消息误认成恢复。

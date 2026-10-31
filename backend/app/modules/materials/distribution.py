@@ -2367,10 +2367,13 @@ def repair_material_dispatches(session: Session, *, limit: int = 100) -> int:
     source_tasks = ["materials.upload_original", "materials.verify_original"]
     # 显式物化待投递集合，防止规划器按 operation 索引扫描该身份全部历史，
     # 再逐行检查 published_at。future available_at 也必须保留，不能绕过退避。
+    # 已替代/退役消息不能阻止恢复；三个空值条件共同匹配待派发部分索引。
     pending_sources = (
         select(PendingDispatch.tenant_id, PendingDispatch.payload)
         .where(
             col(PendingDispatch.published_at).is_(None),
+            col(PendingDispatch.superseded_at).is_(None),
+            col(PendingDispatch.retired_at).is_(None),
             col(PendingDispatch.task_name).in_(source_tasks),
         )
         .cte("repair_pending_sources")

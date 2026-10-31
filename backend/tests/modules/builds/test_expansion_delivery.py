@@ -231,22 +231,39 @@ def test_wall_clock_budget_yields_after_the_current_committed_page(
     assert revision == 1 and dispatch != identity
 
 
-def test_other_tenant_due_expansion_gets_a_yield_after_one_page(submitted):
+@pytest.mark.parametrize("state", ["pending", "superseded", "retired"])
+def test_other_tenant_due_expansion_gets_a_yield_after_one_page(
+    submitted, monkeypatch, state
+):
     from app.jobs.outbox import enqueue_after_commit
 
     case, identity = submitted
+    monkeypatch.setattr(submission_tasks, "monotonic", lambda: 0.0)
     with Session(case.database_engine) as session, session.begin():
-        enqueue_after_commit(
+        other_id = enqueue_after_commit(
             session,
             context=case.other.context,
             task_name=submission_tasks.TASK_NAME,
             task_key=f"other-submission:{uuid4()}",
             payload={"submission_id": str(uuid4()), "revision": 0},
         )
+        other = session.get(PendingDispatch, other_id)
+        now = datetime.now(UTC)
+        if state == "superseded":
+            other.superseded_at = now
+        elif state == "retired":
+            other.dispatch_contract_version = 2
+            other.issued_at = now - timedelta(hours=1)
+            other.valid_until = now + timedelta(hours=1)
+            other.retired_at = now
     deliver(case)
     done, count, revision, dispatch, _ = snapshot(case)
-    assert not done and 0 < count <= PAGE
-    assert revision == 1 and dispatch != identity
+    if state == "pending":
+        assert not done and 0 < count <= PAGE
+        assert revision == 1 and dispatch != identity
+    else:
+        assert done and count == TOTAL_STEPS
+        assert revision == 0 and dispatch == identity
 
 
 def test_actual_other_tenant_probe_keeps_partial_index_with_generic_plan(submitted):

@@ -122,6 +122,8 @@ def process_submission(
                         PendingDispatch.task_name
                         == literal(TASK_NAME, literal_execute=True),
                         col(PendingDispatch.published_at).is_(None),
+                        col(PendingDispatch.superseded_at).is_(None),
+                        col(PendingDispatch.retired_at).is_(None),
                         PendingDispatch.available_at <= datetime.now(UTC),
                     )
                     .limit(1)

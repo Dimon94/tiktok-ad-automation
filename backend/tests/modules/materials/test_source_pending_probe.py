@@ -95,7 +95,14 @@ def test_pending_source_probe_does_not_visit_published_history(source_env):
 
 @pytest.mark.parametrize(
     "scheduled_scope,repaired",
-    [("current_claim", 0), ("old_claim", 1), ("other_tenant", 1), ("other_task", 1)],
+    [
+        ("current_claim", 0),
+        ("old_claim", 1),
+        ("other_tenant", 1),
+        ("other_task", 1),
+        ("superseded", 1),
+        ("retired", 1),
+    ],
 )
 def test_pending_source_keeps_claim_tenant_and_task_scope(
     source_env, scheduled_scope, repaired
@@ -124,6 +131,13 @@ def test_pending_source_keeps_claim_tenant_and_task_scope(
             pending.tenant_id = uuid4()
         elif scheduled_scope == "other_task":
             pending.task_name = "reporting.plan_due"
+        elif scheduled_scope == "superseded":
+            pending.superseded_at = now
+        elif scheduled_scope == "retired":
+            pending.dispatch_contract_version = 2
+            pending.issued_at = now - timedelta(hours=1)
+            pending.valid_until = now + timedelta(hours=1)
+            pending.retired_at = now
         db.add_all([old, pending])
         db.flush()
         assert repair_material_dispatches(db, limit=1) == repaired

@@ -686,11 +686,14 @@ def disable_connection(
         run.status = "CANCELLED"
         run.error_code = "connection_unavailable"
         session.add(run)
+    # 只取消仍可派发的消息，保留已替代/退役身份，并命中待派发部分索引。
     pending = session.exec(
         select(PendingDispatch)
         .where(
             PendingDispatch.tenant_id == context.tenant_id,
             col(PendingDispatch.published_at).is_(None),
+            col(PendingDispatch.superseded_at).is_(None),
+            col(PendingDispatch.retired_at).is_(None),
         )
         .with_for_update()
     ).all()

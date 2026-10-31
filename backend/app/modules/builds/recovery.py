@@ -176,6 +176,7 @@ MATERIAL_RETRY = """(s.cover_job_id IS NULL AND NOT s.resolved ? 'mapping' AND E
   AND other.bc_id=d.bc_id AND other.material_id=d.material_id AND other.advertiser_id=d.advertiser_id
   AND other.id<>d.id AND other.status<>'blocked' AND other.superseded_by_id IS NULL)
  AND NOT EXISTS (SELECT 1 FROM pending_dispatch pd WHERE pd.tenant_id=d.tenant_id AND pd.published_at IS NULL
+  AND pd.superseded_at IS NULL AND pd.retired_at IS NULL
   AND (pd.payload->>'distribution_id'=d.id::text OR pd.payload->>'operation_id'=o.id::text))
 ))"""
 IMAGE_MATERIAL_RETRY = """(s.cover_job_id IS NULL AND NOT s.resolved ? 'mapping' AND EXISTS (
@@ -191,6 +192,7 @@ IMAGE_MATERIAL_RETRY = """(s.cover_job_id IS NULL AND NOT s.resolved ? 'mapping'
  AND NOT o.remote_response ? 'image_id' AND coalesce(o.remote_response->'candidates','[]'::jsonb)='[]'::jsonb
  AND o.remote_response->'share_acknowledged' IS DISTINCT FROM 'true'::jsonb
  AND NOT EXISTS (SELECT 1 FROM pending_dispatch pd WHERE pd.tenant_id=d.tenant_id AND pd.published_at IS NULL
+ AND pd.superseded_at IS NULL AND pd.retired_at IS NULL
  AND (pd.payload->>'distribution_id'=d.id::text OR pd.payload->>'operation_id'=o.id::text))))"""
 MATERIAL_RETRY = f"({MATERIAL_RETRY} OR {IMAGE_MATERIAL_RETRY})"
 

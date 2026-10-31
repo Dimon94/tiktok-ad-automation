@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx2
 import pytest
@@ -397,6 +397,25 @@ def test_disable_cancels_unsent_dispatch_and_preserves_history(
         run = own.get(DiscoveryRun, run_id)
         run.sent_count = 1
         own.add(run)
+        now = datetime.now(UTC)
+        inactive_ids = set()
+        for state in ("superseded", "retired"):
+            inactive = PendingDispatch(
+                tenant_id=committed_context.tenant_id,
+                actor_id=committed_context.actor_id,
+                task_name="accounts.discover",
+                task_key=f"inactive-discovery:{uuid4()}",
+                payload={"run_id": str(run_id)},
+            )
+            if state == "superseded":
+                inactive.superseded_at = now
+            else:
+                inactive.dispatch_contract_version = 2
+                inactive.issued_at = now - timedelta(hours=1)
+                inactive.valid_until = now + timedelta(hours=1)
+                inactive.retired_at = now
+            inactive_ids.add(inactive.id)
+            own.add(inactive)
         own.commit()
         disable_connection(
             own,
@@ -409,12 +428,14 @@ def test_disable_cancels_unsent_dispatch_and_preserves_history(
         run = own.get(DiscoveryRun, run_id)
         assert run.status == "CANCELLED" and run.sent_count == 1
         assert (
-            own.exec(
-                select(PendingDispatch).where(
-                    PendingDispatch.tenant_id == committed_context.tenant_id
-                )
-            ).all()
-            == []
+            set(
+                own.exec(
+                    select(PendingDispatch.id).where(
+                        PendingDispatch.tenant_id == committed_context.tenant_id
+                    )
+                ).all()
+            )
+            == inactive_ids
         )
         with pytest.raises(DomainError) as error:
             request_mcp_revocation(
