@@ -25,6 +25,12 @@ def _bump(keys: str, *, complete: bool = False) -> str:
     """
 
 
+def _replan(statement: str) -> str:
+    # transition表每次statement大小可从1变为数万；PL/pgSQL静态计划会沿用首批估计。
+    # 只重新规划已证明昂贵的固定内部DML，不拼接调用者数据、不改变原子事务。
+    return f"EXECUTE $qrm_transition${statement}$qrm_transition$;"
+
+
 def entity_refresh(
     keys: str, *, source_rows: str | None = None, delete_only: bool = False
 ) -> str:
@@ -84,14 +90,16 @@ def naming_refresh(keys: str) -> str:
 
 def material_refresh(keys: str) -> str:
     # 每个使用身份独立重建全部历史候选。局部窗口阻止LATERAL被拉平成全表JOIN，
-    # 避免40k发布留下的缓存基数让后续500行重复扫描百万无关引用。
+    # 精确身份探测与每批重规划配合，避免前批基数让后批重复扫描无关引用。
     # 精确ID优先后再取最大完整版本，所有同版本候选保留，不能用LIMIT 1猜消歧。
     fields = "id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,ad_material_id,material_type,name,operation_status,complete,published_version"
-    return f"""
+    deletion = f"""
         DELETE FROM current_ad_material target USING ({keys}) k
         WHERE target.tenant_id=k.tenant_id AND target.advertiser_id=k.advertiser_id
             AND target.ad_remote_id=k.ad_remote_id AND target.platform_material_id=k.platform_material_id
             AND target.material_type=k.material_type;
+    """
+    insertion = f"""
         INSERT INTO current_ad_material ({fields})
         SELECT {",".join("chosen." + field for field in fields.split(","))}
         FROM ({keys}) k CROSS JOIN LATERAL (
@@ -112,6 +120,8 @@ def material_refresh(keys: str) -> str:
         ) chosen;
 
     """
+
+    return _replan(deletion) + _replan(insertion)
 
 
 def trigger_statements() -> list[str]:
@@ -203,9 +213,11 @@ def trigger_statements() -> list[str]:
                     f"SELECT DISTINCT tenant_id,advertiser_id,'link'::varchar AS kind,{DIRECTORY_BUCKET} AS bucket FROM ({keys}) k",
                     complete=True,
                 )
-                body += _bump(f"""SELECT DISTINCT f.tenant_id,f.advertiser_id,'material_day'::varchar AS kind,f.stat_date AS bucket
+                body += _replan(
+                    _bump(f"""SELECT DISTINCT f.tenant_id,f.advertiser_id,'material_day'::varchar AS kind,f.stat_date AS bucket
                     FROM ({keys}) k JOIN material_report_day f ON f.tenant_id=k.tenant_id
                         AND f.advertiser_id=k.advertiser_id AND f.main_material_id=k.main_material_id""")
+                )
             suffix = f"{table}_{operation.lower()}"
             result.append(
                 f"CREATE FUNCTION qrm_{suffix}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN {body} RETURN NULL; END $$"
