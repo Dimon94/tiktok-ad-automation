@@ -39,7 +39,6 @@ from app.modules.sync_control.requirements import (
 from app.modules.sync_control.schedule import wake_scope
 from app.modules.sync_control.scopes import ensure_scope
 from app.modules.sync_control.worker_pool import (
-    lock_background_pool,
     reserve_background_turn,
 )
 
@@ -253,8 +252,7 @@ def balance_reservation(run: ReportBalanceRun, generation: int) -> str:
 def dispatch_balances_due(
     session: Session, redis: Redis, *, now: datetime, limit: int = 2
 ) -> int:
-    if not lock_background_pool(session):
-        return 0
+    # 家族窗口独立串行；共享后台池仅在实际后台准入时非阻塞锁定。
     if (
         not session.connection()
         .execute(
@@ -282,6 +280,8 @@ def dispatch_balances_due(
             if count >= limit:
                 break
             cursor = lock_tenant_cursor(session, tenant_id)
+            if cursor is None:
+                continue
             # 先对轻量执行集合排序；LATERAL的LIMIT/行锁使整批owner核验只发生在
             # 实际探测的候选上，不把数千账户×几十周期展开后才取一个执行。
             candidates = (

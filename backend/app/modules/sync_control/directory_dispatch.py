@@ -26,7 +26,6 @@ from app.modules.sync_control.models import (
 )
 from app.modules.sync_control.occupancy import release_dispatch, reserve_dispatch
 from app.modules.sync_control.worker_pool import (
-    lock_background_pool,
     reserve_background_turn,
 )
 
@@ -46,9 +45,8 @@ def dispatch_directories_due(
         is_live_directory,
     )
 
-    # 所有派发入口统一pool→tenant cursor→执行/头的锁顺序，避免跨租户交错死锁。
-    if not lock_background_pool(session):
-        return 0
+    # 独立实时读取/本地发布不占后台池；家族锁保护本类窗口，租户cursor保护费用。
+    # 只有实际后台候选才在reserve_background_turn中非阻塞领取共享池。
     if (
         not session.connection()
         .execute(
@@ -99,11 +97,18 @@ def dispatch_directories_due(
             col(SyncSchedule.leased_until) <= now,
         ),
         # 报表关联也有directory类，但由报表dispatcher持有；这里只选目录scope。
-        col(SyncSchedule.scope_id).in_(
-            select(col(SyncExecutionScope.scope_id)).where(
-                col(SyncExecutionScope.directory_run_id).is_not(None)
-            )
-        ),
+        # 只探测本头的一条未完成引用，命中scope的PENDING部分索引；
+        # 不能把全部历史目录引用物化后再判断当前头是否属于目录。
+        select(col(SyncExecutionScope.id))
+        .where(
+            col(SyncExecutionScope.scope_id) == col(SyncSchedule.scope_id),
+            col(SyncExecutionScope.directory_run_id).is_not(None),
+            col(SyncExecutionScope.status) == "PENDING",
+        )
+        .correlate(SyncSchedule)
+        .limit(1)
+        .offset(0)
+        .exists(),
     ]
     tenants = due_tenants(session, due, limit=min(64, limit))
     count = 0
@@ -117,6 +122,8 @@ def dispatch_directories_due(
             if count >= claim_limit:
                 break
             cursor = lock_tenant_cursor(session, tenant_id)
+            if cursor is None:
+                continue
             candidates = []
             for work_class in ("realtime", "directory"):
                 row = _candidate(

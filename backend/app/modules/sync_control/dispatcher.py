@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from redis import Redis
 from sqlalchemy import and_, case, func, or_, text, update
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
 
@@ -17,13 +16,11 @@ from app.core.context import TenantContext
 from app.jobs.admission import admission_policy
 from app.modules.accounts.models import AdvertiserAccount
 from app.modules.reporting.store_models import (
-    ReportDispatchCursor,
     ReportSyncJob,
 )
 from app.modules.sync_control.costs import (
     cost_classes,
     reserve_execution_cost,
-    settle_costs,
 )
 from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 from app.modules.sync_control.fairness import WEIGHTS, choose_work_class
@@ -39,7 +36,6 @@ from app.modules.sync_control.requirements import execution_owner_current
 from app.modules.sync_control.schedule import report_endpoint
 from app.modules.sync_control.worker_pool import (
     background_lease_count,
-    lock_background_pool,
     report_background_category,
     reserve_background_turn,
 )
@@ -89,9 +85,8 @@ def dispatch_due(
     allow_backfill: bool = True,
     max_claims: int | None = None,
 ) -> int:
-    if not lock_background_pool(session):
-        return 0
     # 一个租户轮次的cursor与租约/outbox同事务；第二Control不读改同一公平余额。
+    # 家族窗口独立串行；共享后台池仅在实际后台准入时非阻塞锁定。
     if (
         not session.connection()
         .execute(
@@ -169,48 +164,22 @@ def dispatch_due(
         if not allow_backfill:
             due.append(col(SyncSchedule.work_class) != "history")
         # 有界租户批次；只读取到期头及其cursor，不排序全部执行历史。
-        tenants = session.exec(
-            select(
-                col(SyncSchedule.tenant_id),
-                col(ReportDispatchCursor.last_dispatched_at),
-            )
-            .outerjoin(
-                ReportDispatchCursor,
-                col(ReportDispatchCursor.tenant_id) == col(SyncSchedule.tenant_id),
-            )
-            .where(*due)
-            .group_by(
-                col(SyncSchedule.tenant_id),
-                col(ReportDispatchCursor.last_dispatched_at),
-            )
-            .order_by(
-                col(ReportDispatchCursor.last_dispatched_at).asc().nullsfirst(),
-                col(SyncSchedule.tenant_id),
-            )
-            .limit(min(64, available - dispatched))
-        ).all()
+        from app.modules.sync_control.fairness import due_tenants
+
+        tenants = due_tenants(session, due, limit=min(64, available - dispatched))
         # 每轮各租户先给一页；槽多于租户时在下方有界循环公平借用。
         # 只读发现不提前锁head；被锁执行需要跳过候选后继续填槽，最多多探16个。
         skipped_scopes: set[UUID] = set()
         for _round in range(claim_limit - dispatched + 16):
             progressed = False
-            for tenant_id, _ in tenants:
+            for tenant_id in tenants:
                 if dispatched >= claim_limit:
                     break
-                session.connection().execute(
-                    insert(ReportDispatchCursor)
-                    .values(
-                        tenant_id=tenant_id,
-                        last_dispatched_at=datetime(1970, 1, 1, tzinfo=UTC),
-                        fairness_state={},
-                    )
-                    .on_conflict_do_nothing(index_elements=["tenant_id"])
-                )
-                cursor = session.get(
-                    ReportDispatchCursor, tenant_id, with_for_update=True
-                )
-                assert cursor is not None  # 当前事务已插入租户cursor
-                settle_costs(session, cursor)
+                from app.modules.sync_control.fairness import lock_tenant_cursor
+
+                cursor = lock_tenant_cursor(session, tenant_id)
+                if cursor is None:
+                    continue
                 heads = []
                 for candidate_class in (
                     "realtime",

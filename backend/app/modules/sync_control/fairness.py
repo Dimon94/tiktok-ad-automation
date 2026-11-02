@@ -49,26 +49,36 @@ def due_tenants(
 
     from app.modules.reporting.store_models import ReportDispatchCursor
     from app.modules.sync_control.models import SyncSchedule
+    from app.modules.tenants.models import Tenant
 
+    # 租户数量远小于账户头数量；每租户找到一个到期头即停止，不能先扫完
+    # 全部积压再GROUP BY。OFFSET 0保留相关探测，避免优化器重写成全量半连接。
+    has_due = (
+        select(col(SyncSchedule.scope_id))
+        .where(col(SyncSchedule.tenant_id) == col(Tenant.id), *predicates)
+        .correlate(Tenant)
+        .limit(1)
+        .offset(0)
+        .exists()
+    )
     return session.exec(
-        select(col(SyncSchedule.tenant_id))
+        select(col(Tenant.id))
         .outerjoin(
             ReportDispatchCursor,
-            col(ReportDispatchCursor.tenant_id) == col(SyncSchedule.tenant_id),
+            col(ReportDispatchCursor.tenant_id) == col(Tenant.id),
         )
-        .where(*predicates)
-        .group_by(
-            col(SyncSchedule.tenant_id), col(ReportDispatchCursor.last_dispatched_at)
-        )
+        .where(has_due)
         .order_by(
             col(ReportDispatchCursor.last_dispatched_at).asc().nullsfirst(),
-            col(SyncSchedule.tenant_id),
+            col(Tenant.id),
         )
         .limit(limit)
     ).all()
 
 
-def lock_tenant_cursor(session: Session, tenant_id: UUID) -> ReportDispatchCursor:
+def lock_tenant_cursor(
+    session: Session, tenant_id: UUID
+) -> ReportDispatchCursor | None:
     from datetime import UTC
 
     from sqlalchemy.dialects.postgresql import insert
@@ -84,9 +94,16 @@ def lock_tenant_cursor(session: Session, tenant_id: UUID) -> ReportDispatchCurso
         )
         .on_conflict_do_nothing(index_elements=["tenant_id"])
     )
-    # 三类派发均先锁租户cursor再锁执行/头，避免相反锁顺序。
-    cursor = session.get(ReportDispatchCursor, tenant_id, with_for_update=True)
-    assert cursor is not None  # 前述INSERT和该读取处于同一事务
+    # 三类派发均先锁租户cursor再锁执行/头；后台池在之后只做try-lock，
+    # 冲突立即让出，不能反过来持pool等待本cursor形成环。
+    cursor = session.get(
+        ReportDispatchCursor,
+        tenant_id,
+        with_for_update={"skip_locked": True},
+        populate_existing=True,
+    )
+    if cursor is None:
+        return None  # 其他家族正在结算/派发，立即跳过，不能持家族或pool锁等待。
     from app.modules.sync_control.costs import settle_costs
 
     settle_costs(session, cursor)

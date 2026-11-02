@@ -1,4 +1,4 @@
-"""ads-backfill与ads-directory共用Worker池：统一窗口及跨接口工作类机会。"""
+"""实际后台远端读取共享Worker池；实时读取和本地发布不占此池。"""
 
 from __future__ import annotations
 
@@ -265,7 +265,7 @@ def _ready_categories(
 
 
 def lock_background_pool(session: Session) -> bool:
-    """所有派发器先取公共池锁，再取租户cursor，禁止交叉锁序。"""
+    """后台准入只try-lock；不能持pool等待租户cursor阻塞独立执行池。"""
     return bool(
         session.connection()
         .execute(
