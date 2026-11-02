@@ -782,7 +782,13 @@ def test_lost_directory_message_is_redispatched_with_new_generation(
         job_tasks, "_reader_for", lambda **_kwargs: _ctx(_EmptyReader())
     )
     now = datetime.now(UTC)
-    job_tasks.plan_due_runs(database_engine=engine, redis_client=redis_client, now=now)
+    from tests.modules.sync_control.test_schedule_fencing import _directory
+
+    # 只建立本例的待恢复任务。整轮planner会创建6个目录而共享池只有4槽，
+    # 随机挑出的旧消息不保证在首轮先于其他未派发任务入选。
+    with factory() as registered, registered.begin():
+        run = _directory(registered, seed)
+        run.workload = "background"
     now = datetime.now(UTC) + timedelta(seconds=1)
     with factory() as registered, registered.begin():
         job_tasks._dispatch_directories(registered, now)

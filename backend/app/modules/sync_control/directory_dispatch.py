@@ -12,6 +12,7 @@ from sqlmodel import Session, col, select
 from app.core.config import settings
 from app.jobs.admission import admission_policy
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
+from app.modules.reporting.store_models import ReportDispatchCursor
 from app.modules.sync_control.costs import cost_classes, reserve_execution_cost
 from app.modules.sync_control.directory_demand import directory_endpoint
 from app.modules.sync_control.fairness import (
@@ -111,6 +112,7 @@ def dispatch_directories_due(
         .exists(),
     ]
     tenants = due_tenants(session, due, limit=min(64, limit))
+    cursors: dict[UUID, ReportDispatchCursor | None] = {}
     count = 0
     background_blocked = False
     # 共享池拒绝后台候选后，额外一轮直接SQL筛选独立live/publisher；
@@ -121,7 +123,10 @@ def dispatch_directories_due(
         for tenant_id in tenants:
             if count >= claim_limit:
                 break
-            cursor = lock_tenant_cursor(session, tenant_id)
+            # 行锁持有到本批提交；复用ORM状态，公平余额仍逐领取更新。
+            if tenant_id not in cursors:
+                cursors[tenant_id] = lock_tenant_cursor(session, tenant_id)
+            cursor = cursors[tenant_id]
             if cursor is None:
                 continue
             candidates = []

@@ -16,6 +16,7 @@ from app.core.context import TenantContext
 from app.jobs.admission import admission_policy
 from app.modules.accounts.models import AdvertiserAccount
 from app.modules.reporting.store_models import (
+    ReportDispatchCursor,
     ReportSyncJob,
 )
 from app.modules.sync_control.costs import (
@@ -126,6 +127,7 @@ def dispatch_due(
         if max_claims < 1:
             raise ValueError("max_claims must be positive")
         claim_limit = min(available, max_claims)
+    cursors: dict[UUID, ReportDispatchCursor | None] = {}
     dispatched = 0
     endpoints: Sequence[str] = tuple(
         dict.fromkeys(
@@ -177,7 +179,10 @@ def dispatch_due(
                     break
                 from app.modules.sync_control.fairness import lock_tenant_cursor
 
-                cursor = lock_tenant_cursor(session, tenant_id)
+                # 本批同租户共享已持锁cursor；不重复结算/加锁，不能跨事务缓存。
+                if tenant_id not in cursors:
+                    cursors[tenant_id] = lock_tenant_cursor(session, tenant_id)
+                cursor = cursors[tenant_id]
                 if cursor is None:
                     continue
                 heads = []

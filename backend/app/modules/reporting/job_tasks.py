@@ -3,7 +3,7 @@
 import json
 import logging
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -64,6 +64,8 @@ logger = logging.getLogger(__name__)
 DIRECTORY_DISPATCH_WINDOW = 40
 # 合并旧24+2+4+6个报表候补为统一物理窗口，工作类份额由持久公平游标分配。
 REPORT_DISPATCH_WINDOW = 36
+# 按小批摊销窗口/租户发现，批间提交释放锁；不能一次锁住整个候补窗口。
+DISPATCH_COMMIT_BATCH = 4
 # 一轮周期目录分批推进；此游标不占用账户筛选或规则相位的进度键。
 DIRECTORY_PLAN_PROGRESS = "directory_cycle_v1"
 # 批量上限配合查询预算保护数据库；不再按固定分钟额度延迟必要任务发现。
@@ -243,10 +245,16 @@ def _advance(due, now, interval):
     return due + (max(0, (now - due) // interval) + 1) * interval
 
 
-def _dispatch_directories(session, now, *, allow_backfill=True, max_claims=None):
+def _dispatch_directories(
+    session, now, *, allow_backfill=True, max_claims=None, redis_client=None
+):
     from app.modules.sync_control.directory_dispatch import dispatch_directories_due
 
-    with Redis.from_url(settings.REDIS_URL) as redis:
+    with (
+        nullcontext(redis_client)
+        if redis_client is not None
+        else Redis.from_url(settings.REDIS_URL)
+    ) as redis:
         return dispatch_directories_due(
             session,
             redis,
@@ -891,8 +899,6 @@ def _dispatch_pending(
     include_directories: bool = True,
     budget_seconds: float | None = None,
 ) -> int:
-    from contextlib import nullcontext
-
     from app.modules.sync_control.balance_demand import dispatch_balances_due
     from app.modules.sync_control.occupancy import reservation_transaction
 
@@ -904,9 +910,13 @@ def _dispatch_pending(
         else ("report", "balance")
     )
     with Redis.from_url(settings.REDIS_URL) as redis:
+        exhausted: set[str] = set()
         for _ in range(8):
             current = 0
             for family in families:
+                # 空家族/锁冲突在下一次唤醒重试；本轮不随另一类的每个续步重复扫描。
+                if family in exhausted:
+                    continue
                 remaining = stop - time.monotonic()
                 if remaining <= 0:
                     return count
@@ -917,29 +927,32 @@ def _dispatch_pending(
                         reservation_transaction(redis),
                         Session(database_engine) as session,
                         session.begin(),
-                        query_budget(session, seconds=remaining)
-                        if budget_seconds is not None
-                        else nullcontext(),
+                        # Worker直接补位也必须受默认总预算约束，不能仅Beat有超时。
+                        query_budget(session, seconds=remaining),
                     ):
                         if family == "report":
                             dispatched = _dispatch_report_jobs(
                                 session,
                                 now,
                                 allow_backfill=allow_backfill,
-                                max_claims=1,
+                                max_claims=DISPATCH_COMMIT_BATCH,
+                                redis_client=redis,
                             )
                         elif family == "directory":
                             dispatched = _dispatch_directories(
                                 session,
                                 now,
                                 allow_backfill=allow_backfill,
-                                max_claims=1,
+                                max_claims=DISPATCH_COMMIT_BATCH,
+                                redis_client=redis,
                             )
                         else:
                             dispatched = dispatch_balances_due(session, redis, now=now)
                         session.flush()
                     count += dispatched
                     current += dispatched
+                    if not dispatched:
+                        exhausted.add(family)
                 except (DBAPIError, QueryBudgetExceeded) as error:
                     if not _planning_budget_error(error):
                         raise

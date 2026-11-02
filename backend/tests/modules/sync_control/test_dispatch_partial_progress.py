@@ -108,29 +108,14 @@ def test_directory_commit_batch_does_not_reduce_total_inflight_window(
 
 
 @pytest.mark.usefixtures("redis_client")
-def test_later_report_claim_failure_preserves_first_committed_claim(
+def test_later_report_claim_failure_preserves_first_committed_batch(
     committed_sync_seed, monkeypatch
 ):
     seed, factory = committed_sync_seed
     monkeypatch.setattr(job_tasks.settings, "REDIS_URL", os.environ["TEST_REDIS_URL"])
-    now = datetime.now(UTC)
-    with factory() as session, session.begin():
-        jobs = [
-            enqueue_job(
-                session,
-                tenant_id=seed.tenant_id,
-                bc_id="bc-a",
-                kind="ad_day",
-                tier="hot",
-                advertiser_ids=[adv],
-                start=D,
-                end=D,
-                frozen_route=_route(seed),
-                actor_id=seed.actor_id,
-                due_at=now,
-            )
-            for adv in ("acc-1", "acc-2")
-        ]
+    from tests.modules.sync_control.test_dispatch_batch_efficiency import seed_jobs
+
+    jobs, now = seed_jobs(factory, seed, 6)
     original = job_tasks._dispatch_report_jobs
     calls = 0
 
@@ -146,9 +131,10 @@ def test_later_report_claim_failure_preserves_first_committed_claim(
         job_tasks._dispatch_pending(
             engine, now + timedelta(seconds=1), budget_seconds=4
         )
-        == 1
+        == 4
     )
     with factory() as session:
-        assert sorted(
-            session.get(ReportSyncJob, identity).status for identity in jobs
-        ) == ["QUEUED", "RUNNING"]
+        assert (
+            sorted(session.get(ReportSyncJob, identity).status for identity in jobs)
+            == ["QUEUED"] * 2 + ["RUNNING"] * 4
+        )
