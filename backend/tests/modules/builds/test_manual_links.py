@@ -255,7 +255,19 @@ def test_manual_supplement_reuses_pending_provider_work_for_other_rows(
     assert rows[0].preparation.candidates == []
 
 
-def test_reprepare_reruns_provider_links_after_a_failed_link(session, context, intent):
+@pytest.mark.parametrize(
+    ("status", "error_code", "rerun"),
+    [
+        ("failed", "provider_unavailable", True),
+        ("needs_resolution", "drama_not_found", True),
+        ("needs_resolution", "drama_ambiguous", False),
+        ("result_unknown", "provider_result_unknown", False),
+        ("ready", None, False),
+    ],
+)
+def test_reprepare_reruns_provider_links_after_a_failed_link(
+    session, context, intent, status, error_code, rerun
+):
     """同剧单重新准备：上次有剧取链失败时必须重新取链，不能复用失败结果。"""
     from app.modules.builds.models import BuildDraft
 
@@ -271,7 +283,8 @@ def test_reprepare_reruns_provider_links_after_a_failed_link(session, context, i
             LinkPreparationItem.preparation_id == old.provider_task_id
         )
     ).all()
-    items[0].status = "failed"
+    items[0].status = status
+    items[0].resolved = {**items[0].resolved, "error_code": error_code}
     draft = session.get(BuildDraft, draft_id)
     draft.status = "BLOCKED"
     old.status = "BLOCKED"
@@ -282,7 +295,7 @@ def test_reprepare_reruns_provider_links_after_a_failed_link(session, context, i
         prepare_draft(session, context=context, draft_id=draft_id, request_id=uuid4()),
     )
     assert new.provider_task_id is not None
-    assert new.provider_task_id != old.provider_task_id
+    assert (new.provider_task_id != old.provider_task_id) == rerun
 
 
 @pytest.mark.parametrize(

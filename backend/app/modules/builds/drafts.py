@@ -504,13 +504,20 @@ def prepare_draft(
             .where(
                 LinkPreparationItem.tenant_id == context.tenant_id,
                 LinkPreparationItem.preparation_id == previous_provider,
-                LinkPreparationItem.status == "failed",
+                (col(LinkPreparationItem.status) == "failed")
+                | (
+                    (col(LinkPreparationItem.status) == "needs_resolution")
+                    & (
+                        LinkPreparationItem.resolved["error_code"].astext
+                        == "drama_not_found"
+                    )
+                ),
             )
             .limit(1)
         ).first()
     ):
-        # 上次取链有剧明确失败（如版权方接入问题修复前的失败）时，重新准备要真正重新取链，
-        # 不能把失败结果原样带回。各版权方建链前都会先查已有链接，重新取链不会重复建链。
+        # 明确失败或查无剧目时，用户重新准备应重新查询，避免修复接入问题后仍复用旧失败。
+        # 多候选消歧与未知写结果仍复用原任务；建链前先查已有链接，不重复建链。
         previous_provider = None
     prep.provider_task_id = (
         (
