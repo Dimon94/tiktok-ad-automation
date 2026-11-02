@@ -372,7 +372,8 @@ spec:
           resources:
             requests: {cpu: "250m", memory: 1Gi}
             limits: {cpu: "1", memory: 2Gi}
-          command: [celery, -A, "app.jobs.celery_app:celery_app", worker, -Q, ads-publish, --pool, prefork, --concurrency, "1", --loglevel=INFO, --hostname, "ads-directory@%h"]
+          # 本地发布四进程；逐执行围栏保留，总目录窗口40与平台额度不变。
+          command: [celery, -A, "app.jobs.celery_app:celery_app", worker, -Q, ads-publish, --pool, prefork, --concurrency, "4", --loglevel=INFO, --hostname, "ads-directory@%h"]
           readinessProbe:
             exec:
               command: [python, -c, "import socket; from app.jobs.celery_app import celery_app; r=celery_app.control.ping(destination=['ads-directory@'+socket.gethostname()], timeout=5); raise SystemExit(0 if r else 1)"]
@@ -708,7 +709,7 @@ spec:
           resources:
             requests: {cpu: "500m", memory: 2560Mi}
             limits: {cpu: "3", memory: 3Gi}
-          # 实时消费者不抓取后台全量/历史依赖；发布仍由单槽 ads-publish 执行。
+          # 实时消费者不抓取后台全量/历史依赖；本地发布由独立 ads-publish 池执行。
           # 8槽实测约95%被远端I/O占用；12槽预计2.2–2.4Gi，池上限增加12连接。
           command: [celery, -A, "app.jobs.celery_app:celery_app", worker, -Q, ads-live-directory, --pool, prefork, --concurrency, "12", --loglevel=INFO, --hostname, "ads-live-directory@%h"]
           readinessProbe:

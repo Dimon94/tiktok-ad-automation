@@ -367,3 +367,82 @@ def test_date_merge_requires_every_account_to_keep_the_frozen_query_scope(
     )
     assert second is not None and second != first
     assert session.get(ReportSyncJob, first).end_date == D
+
+
+@pytest.mark.parametrize("kind", ["material_links", "ad_day", "material_day"])
+@pytest.mark.parametrize("tier", ["hot", "material"])
+def test_single_day_refresh_reuses_unstarted_history_without_duplicate_children(
+    session, sync_seed, kind, tier
+):
+    from app.modules.sync_control.models import SyncRequirement
+
+    now = datetime.now(UTC)
+    common = {
+        "tenant_id": sync_seed.tenant_id,
+        "bc_id": "bc-a",
+        "actor_id": sync_seed.actor_id,
+        "frozen_route": _route(sync_seed),
+        "kind": kind,
+        "advertiser_ids": ["acc-1"],
+    }
+    identity = enqueue_job(
+        session,
+        **common,
+        tier="history",
+        start=D,
+        end=D + timedelta(days=1),
+        requested_at=now - timedelta(hours=1),
+    )
+    assert (
+        enqueue_job(
+            session,
+            **common,
+            tier=tier,
+            start=D + timedelta(days=1),
+            end=D + timedelta(days=1),
+            requested_at=now,
+        )
+        is None
+    )
+    session.flush()
+    children = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == identity)
+    ).all()
+    assert len(children) == len({child.requirement_id for child in children}) == 2
+    for child in children:
+        requirement = session.get(SyncRequirement, child.requirement_id)
+        assert child.frozen_revision == requirement.desired_revision
+        assert child.status == "PENDING" and requirement.satisfied_revision == 0
+    assert session.get(ReportSyncJob, identity).claim_generation == 0
+
+
+@pytest.mark.parametrize("days_ago", [0, 1])
+@pytest.mark.parametrize("kind", ["ad_day", "material_day"])
+def test_recent_amount_refresh_still_splits_from_unstarted_history(
+    session, sync_seed, days_ago, kind
+):
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(UTC).astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+    common = {
+        "tenant_id": sync_seed.tenant_id,
+        "bc_id": "bc-a",
+        "actor_id": sync_seed.actor_id,
+        "frozen_route": _route(sync_seed),
+        "kind": kind,
+        "advertiser_ids": ["acc-1"],
+    }
+    old = enqueue_job(
+        session,
+        **common,
+        tier="history",
+        start=today - timedelta(days=3),
+        end=today,
+        requested_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    day = today - timedelta(days=days_ago)
+    new = enqueue_job(session, **common, tier="hot", start=day, end=day)
+    assert new is not None and new != old
+    job = session.get(ReportSyncJob, new)
+    assert job.start_date == job.end_date == day and job.priority == 1
+    assert session.get(ReportSyncJob, old).start_date == today - timedelta(days=3)

@@ -339,8 +339,11 @@ def enqueue_report_requirements(
         candidate = existing.get(requirement.id)
         if candidate is not None:
             job, child = candidate
+            # 只有今天/昨天的实时金额需从跨日历史任务拆出；补链和旧日期
+            # 仍复用未启动执行。按tier误拆会在相邻归并时再次插入同一子桶。
             if job.id in unstarted_ids and not (
-                priority <= 2 and start == end and job.start_date != job.end_date
+                classes[scope_accounts[requirement.scope_id]] == "realtime"
+                and job.start_date != job.end_date
             ):
                 if child.frozen_revision < requirement.desired_revision:
                     job.error_code = None
