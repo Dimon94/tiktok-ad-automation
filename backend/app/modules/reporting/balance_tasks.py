@@ -66,7 +66,27 @@ def enqueue_balances(
     ).hexdigest()
     key = f"balance:{route_key}:{int(now.timestamp()) // 1800}"
     from app.modules.sync_control.balance_demand import balance_scopes, register_balance
+    from app.modules.sync_control.requirements import execution_owner_current
 
+    # 周期tick只保证存在尚未完成的刷新，不给同一缺口每半小时再建一份执行。
+    # 不改在途页码/冻结水位；整批owner失效时不能拿其余账户冒充有效覆盖。
+    covered = {
+        account
+        for remaining in session.exec(
+            select(ReportBalanceRun.remaining_advertiser_ids).where(
+                ReportBalanceRun.tenant_id == plan.tenant_id,
+                ReportBalanceRun.actor_id == plan.actor_id,
+                ReportBalanceRun.frozen_route == plan.frozen_route,
+                ReportBalanceRun.status == "ACTIVE",
+                execution_owner_current(ReportBalanceRun, "balance_run_id"),
+            )
+        ).all()
+        for account in remaining
+    }
+    advertisers = sorted(set(advertisers) - covered)
+    if not advertisers:
+        return 0
+    # 无新缺口时不再逐账户取得数千scope锁，避免周期计划阻塞余额回写。
     scopes = balance_scopes(
         session,
         tenant_id=plan.tenant_id,
@@ -76,7 +96,11 @@ def enqueue_balances(
     )
     count = 0
     for epoch in sorted({scope.owner_epoch for scope in scopes.values()}):
-        group_key = f"{key}:owner:{epoch}"
+        accounts = sorted(
+            account for account, scope in scopes.items() if scope.owner_epoch == epoch
+        )
+        account_key = hashlib.sha256(json.dumps(accounts).encode()).hexdigest()[:16]
+        group_key = f"{key}:owner:{epoch}:{account_key}"
         if session.exec(
             select(ReportBalanceRun.id).where(
                 ReportBalanceRun.tenant_id == plan.tenant_id,
@@ -90,11 +114,7 @@ def enqueue_balances(
             run_key=group_key,
             owner_epoch=epoch,
             frozen_route=plan.frozen_route,
-            remaining_advertiser_ids=[
-                account
-                for account, scope in scopes.items()
-                if scope.owner_epoch == epoch
-            ],
+            remaining_advertiser_ids=accounts,
             created_at=now,
         )
         session.add(run)

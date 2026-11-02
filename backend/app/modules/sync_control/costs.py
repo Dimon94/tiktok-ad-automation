@@ -165,7 +165,8 @@ def settle_costs(
             col(SyncCostLedger.tenant_id) == cursor.tenant_id,
             _settlement_due(),
         )
-        .order_by(col(SyncCostLedger.id))
+        # 匹配(tenant, endpoint, id)脏收据索引；端点间成本独立，避免空结算扫全历史主键。
+        .order_by(col(SyncCostLedger.physical_endpoint), col(SyncCostLedger.id))
         .limit(limit)
         .with_for_update(skip_locked=True)
         .execution_options(populate_existing=True)

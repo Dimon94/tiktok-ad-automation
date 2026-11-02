@@ -8,7 +8,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from redis import Redis
-from sqlalchemy import or_, text, update
+from sqlalchemy import or_, text, true, update
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
@@ -281,29 +282,13 @@ def dispatch_balances_due(
             if count >= limit:
                 break
             cursor = lock_tenant_cursor(session, tenant_id)
-            candidate_ids = (
-                select(col(SyncExecutionScope.balance_run_id).label("id"))
-                .join(
-                    SyncSchedule,
-                    col(SyncSchedule.scope_id) == col(SyncExecutionScope.scope_id),
-                )
-                .where(
-                    *due,
-                    col(SyncSchedule.tenant_id) == tenant_id,
-                    col(SyncExecutionScope.status) == "PENDING",
-                    col(SyncExecutionScope.balance_run_id).is_not(None),
-                )
-                .distinct()
-                .cte("balance_candidates")
-                .prefix_with("MATERIALIZED")
-            )
-            # 一个余额执行可能覆盖数千scope，整批owner只在去重执行集合上核验一次。
-            eligible_runs = (
+            # 先对轻量执行集合排序；LATERAL的LIMIT/行锁使整批owner核验只发生在
+            # 实际探测的候选上，不把数千账户×几十周期展开后才取一个执行。
+            candidates = (
                 select(col(ReportBalanceRun.id).label("id"))
-                .join(candidate_ids, candidate_ids.c.id == col(ReportBalanceRun.id))
                 .where(
+                    col(ReportBalanceRun.tenant_id) == tenant_id,
                     col(ReportBalanceRun.status) == "ACTIVE",
-                    execution_owner_current(ReportBalanceRun, "balance_run_id"),
                     or_(
                         col(ReportBalanceRun.claimed_until).is_(None),
                         col(ReportBalanceRun.claimed_until) <= now,
@@ -312,48 +297,64 @@ def dispatch_balances_due(
                         col(ReportBalanceRun.next_attempt_at).is_(None),
                         col(ReportBalanceRun.next_attempt_at) <= now,
                     ),
+                    select(col(SyncExecutionScope.id))
+                    .join(
+                        SyncSchedule,
+                        col(SyncSchedule.scope_id) == col(SyncExecutionScope.scope_id),
+                    )
+                    .where(
+                        *due,
+                        col(SyncExecutionScope.balance_run_id)
+                        == col(ReportBalanceRun.id),
+                        col(SyncExecutionScope.status) == "PENDING",
+                    )
+                    .limit(1)
+                    .offset(0)  # 保持逐执行探测，禁止优化器拉平成全关联扫描。
+                    .correlate(ReportBalanceRun)
+                    .exists(),
                 )
-                .cte("eligible_balance_runs")
+                .order_by(col(ReportBalanceRun.created_at), col(ReportBalanceRun.id))
+                .cte("balance_candidates")
                 .prefix_with("MATERIALIZED")
             )
-            row = session.exec(
-                select(SyncSchedule, ReportBalanceRun)
+            locked = (
+                select(ReportBalanceRun)
+                .where(
+                    col(ReportBalanceRun.id) == candidates.c.id,
+                    execution_owner_current(ReportBalanceRun, "balance_run_id"),
+                )
+                .limit(1)
+                .with_for_update(of=ReportBalanceRun, skip_locked=True)
+                .correlate(candidates)
+                .lateral("locked_balance")
+            )
+            selected = aliased(ReportBalanceRun, locked)
+            run = session.exec(
+                select(selected).select_from(candidates).join(locked, true()).limit(1)
+            ).first()
+            if run is None:
+                continue
+            head = session.exec(
+                select(SyncSchedule)
                 .join(
                     SyncExecutionScope,
                     col(SyncExecutionScope.scope_id) == col(SyncSchedule.scope_id),
                 )
-                .join(SyncScope, col(SyncScope.id) == col(SyncExecutionScope.scope_id))
-                .join(
-                    ReportBalanceRun,
-                    col(ReportBalanceRun.id) == col(SyncExecutionScope.balance_run_id),
-                )
-                .join(eligible_runs, eligible_runs.c.id == col(ReportBalanceRun.id))
                 .where(
                     *due,
                     col(SyncSchedule.tenant_id) == tenant_id,
+                    col(SyncExecutionScope.balance_run_id) == run.id,
                     col(SyncExecutionScope.status) == "PENDING",
-                    col(SyncExecutionScope.owner_epoch) == col(SyncScope.owner_epoch),
-                    col(ReportBalanceRun.owner_epoch) == col(SyncScope.owner_epoch),
-                    col(ReportBalanceRun.status) == "ACTIVE",
-                    or_(
-                        col(ReportBalanceRun.claimed_until).is_(None),
-                        col(ReportBalanceRun.claimed_until) <= now,
-                    ),
-                    or_(
-                        col(ReportBalanceRun.next_attempt_at).is_(None),
-                        col(ReportBalanceRun.next_attempt_at) <= now,
-                    ),
                 )
                 .order_by(
                     col(SyncSchedule.last_dispatched_at).asc().nullsfirst(),
                     col(SyncSchedule.oldest_pending_at),
+                    col(SyncSchedule.scope_id),
                 )
                 .limit(1)
-                .with_for_update(of=ReportBalanceRun, skip_locked=True)
             ).first()
-            if row is None:
+            if head is None:
                 continue
-            head, run = row
             # 所有路径按run→child/scope→head顺序持锁，避免与发布/失败回写倒序竞争。
             balance_fence(session, run)
             generation = run.claim_generation + 1

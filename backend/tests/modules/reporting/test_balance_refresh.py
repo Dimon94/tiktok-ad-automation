@@ -287,7 +287,7 @@ def test_balance_schedule_ignores_report_backoff_and_coalesces(
     balance_tasks.plan_balances(database_engine=engine, now=now)
     assert own_runs() == 1
     balance_tasks.plan_balances(database_engine=engine, now=now + timedelta(minutes=30))
-    assert own_runs() == 2
+    assert own_runs() == 1
     with factory() as s:
         rows = s.exec(
             select(PendingDispatch).where(
@@ -426,10 +426,7 @@ def test_large_balance_scope_stays_out_of_bounded_queue_payload(
     connection = session.connection()
 
     def capture(_conn, cursor, statement, parameters, _context, _many):
-        if (
-            "SELECT sync_schedule.scope_id" in statement
-            and "JOIN sync_execution_scope" in statement
-        ):
+        if "locked_balance" in statement:
             cursor.execute(
                 "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) " + statement, parameters
             )
@@ -574,3 +571,53 @@ def test_balance_outcome_updates_many_account_heads_in_bounded_queries(
         head.next_eligible_at == due and head.active for head in heads
     )
     assert len(queries) < 10
+
+
+def test_periodic_balance_reuses_pending_accounts_across_many_ticks(
+    session, sync_seed, monkeypatch
+):
+    from datetime import timedelta
+
+    from app.modules.sync_control.balance_demand import balance_outcome
+    from app.modules.sync_control.models import SyncExecutionScope, SyncRequirement
+
+    monkeypatch.setattr(balance_tasks.settings, "ADS_SYNC_ENABLED", True)
+    now = datetime.now(UTC)
+    planner.ensure_bc_plans(session, now=now)
+    plan = session.get(AdSyncBc, (sync_seed.tenant_id, "bc-a"))
+    assert balance_tasks.enqueue_balances(session, plan, ["acc-1"], now) == 1
+    run = session.exec(select(ReportBalanceRun)).one()
+    run.next_page = 7
+    run.claim_generation = 1
+    run.claimed_until = now + timedelta(minutes=40)
+    child = session.exec(select(SyncExecutionScope)).one()
+    child.execution_generation = 1
+    frozen = (child.frozen_revision, child.frozen_requested_after)
+    for tick in range(1, 61):
+        assert (
+            balance_tasks.enqueue_balances(
+                session, plan, ["acc-1"], now + timedelta(minutes=30 * tick)
+            )
+            == 0
+        )
+    assert run.next_page == 7 and run.claim_generation == 1
+    assert (child.frozen_revision, child.frozen_requested_after) == frozen
+    requirement = session.exec(select(SyncRequirement)).one()
+    assert requirement.desired_revision == 1
+    assert requirement.satisfied_revision == 0
+    # 新加入账户不能被整批去重遗漏。
+    later = now + timedelta(hours=31)
+    assert balance_tasks.enqueue_balances(session, plan, ["acc-1", "acc-2"], later) == 1
+    assert session.exec(
+        select(ReportBalanceRun).where(ReportBalanceRun.id != run.id)
+    ).one().remaining_advertiser_ids == ["acc-2"]
+    # 已结束的需求不会阻止下一周期真正刷新。
+    run.status = "COMPLETE"
+    run.claimed_until = None
+    balance_outcome(session, run)
+    assert (
+        balance_tasks.enqueue_balances(
+            session, plan, ["acc-1", "acc-2"], later + timedelta(minutes=30)
+        )
+        == 1
+    )
