@@ -82,7 +82,7 @@ celery_app.conf.update(
         "reporting.backfill_step": {"queue": "ads-backfill"},
         "reporting.plan_balances": {"queue": "control"},
         "reporting.balance_step": {"queue": "ads-directory"},
-        "reporting.project_read_models": {"queue": "ads-publish"},
+        "reporting.project_read_models": {"queue": "ads-reporting"},
         "reporting.cleanup_store": {"queue": "ads-reporting"},
         "ads.sync_step": {"queue": "ads-directory"},
         "ads.publish_step": {"queue": "ads-publish"},
@@ -111,10 +111,12 @@ celery_app.conf.update(
             "schedule": 1.0,
             "options": {"queue": "control"},
         },
+        # 查询汇总与报表同池；不能在单槽目录publisher后排队超过5秒而被丢弃。
+        # 桶级SKIP LOCKED及source_revision保护仍在，不增加Worker或平台调用。
         "project-report-read-models": {
             "task": "reporting.project_read_models",
             "schedule": 5.0,
-            "options": {"queue": "ads-publish"},
+            "options": {"queue": "ads-reporting"},
         },
         "recover-material-production": {
             "task": "material_production.recover",
