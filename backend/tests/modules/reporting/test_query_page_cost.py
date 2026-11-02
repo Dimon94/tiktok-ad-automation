@@ -105,3 +105,73 @@ def test_campaign_query_does_not_read_wide_directory_or_name_history(report_case
         "from ad_object" in sql or "from campaign_name_projection" in sql
         for sql in statements
     )
+
+
+def test_material_page_uses_video_bound_probe_under_cold_random_io(session, sync_seed):
+    from sqlalchemy import event, text
+
+    from app.modules.reporting.material_query import materialize_material_rows
+    from app.modules.reporting.row_set import SnapshotMember
+    from app.modules.reporting.schemas import ReportingFilter
+
+    session.execute(
+        text("""INSERT INTO current_ad_material
+        (id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,material_type,name,complete,published_version)
+        SELECT gen_random_uuid(),:tenant,'acc-1','ad-'||i,'video-'||i,'VIDEO','name-'||i,true,1
+        FROM generate_series(1,100000)i"""),
+        {"tenant": sync_seed.tenant_id},
+    )
+    session.execute(
+        text("""INSERT INTO current_ad_material
+        (id,tenant_id,advertiser_id,ad_remote_id,platform_material_id,material_type,name,complete,published_version)
+        VALUES (gen_random_uuid(),:tenant,'acc-2','foreign','video-1','VIDEO','foreign',true,2),
+          (gen_random_uuid(),:tenant,'acc-1','incomplete','video-1','VIDEO','incomplete',false,2),
+          (gen_random_uuid(),:tenant,'acc-1','image','video-1','IMAGE','image',true,2)"""),
+        {"tenant": sync_seed.tenant_id},
+    )
+    session.execute(text("ANALYZE current_ad_material"))
+    # 冷随机I/O成本高时，仍应由当前页素材身份驱动；不能退为整个账户目录扫描。
+    session.execute(text("SET LOCAL random_page_cost=100"))
+    members = [
+        SnapshotMember(json.dumps(["material", f"video-{i}"]), (), ())
+        for i in range(1, 51)
+    ]
+    statements = []
+    connection = session.connection()
+
+    def capture(_conn, _cursor, statement, parameters, _context, _many):
+        if "FROM current_ad_material" in statement:
+            statements.append((statement, parameters))
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        rows = materialize_material_rows(
+            session,
+            tenant_id=sync_seed.tenant_id,
+            filters=ReportingFilter(dimension="material", start_date=D, end_date=D),
+            members=members,
+            advertisers=["acc-1", *[f"account-{i}" for i in range(1343)]],
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert len(rows) == 50
+    assert all(len(row.directory_versions) == 1 for row in rows)
+    assert {row.display["name"] for row in rows} == {f"name-{i}" for i in range(1, 51)}
+    assert len(statements) == 1
+    statement, parameters = statements[0]
+    plan = connection.exec_driver_sql(
+        "EXPLAIN (ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) " + statement, parameters
+    ).scalar_one()[0]["Plan"]
+
+    def nodes(node):
+        yield node
+        for child in node.get("Plans", []):
+            yield from nodes(child)
+
+    scanned = sum(
+        (node["Actual Rows"] + node.get("Rows Removed by Filter", 0))
+        * node["Actual Loops"]
+        for node in nodes(plan)
+        if node.get("Relation Name") == "current_ad_material"
+    )
+    assert scanned < 1000, json.dumps(plan)

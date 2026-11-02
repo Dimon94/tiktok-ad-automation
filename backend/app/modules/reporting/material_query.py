@@ -14,7 +14,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import RowMapping, text
-from sqlmodel import Session, col, select
+from sqlmodel import Session, select
 
 from app.integrations.tiktok.contracts.ads import MaterialUseRef
 from app.modules.accounts.models import AdvertiserAccount
@@ -22,7 +22,6 @@ from app.modules.reporting.dimension_query import (
     COMPLETE_COVERAGE_STATUSES,
     _aggregate,
     _coverage,
-    any_of,
     empty_metric_values,
     fact_vector,
     merge_metric_buckets,
@@ -91,18 +90,25 @@ def materialize_material_rows(
     )
     videos = {key[1] for key in keys.values() if key[0] == "material"}
     posts_by_row: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    # 当前页素材驱动索引探测；OFFSET 0保留相关子查询，避免大账户集合
+    # 把计划改成按账户扫描整个目录。账户条件在外层SQL过滤，防止每个素材
+    # 又按全部账户展开索引探测；全部合法使用位置仍返回，不加LIMIT或截断。
     usages = (
-        session.exec(
-            select(AdMaterialReference).where(
-                AdMaterialReference.tenant_id == tenant_id,
-                col(AdMaterialReference.advertiser_id).in_(scope),
-                # 必须写成布尔列本身才能命中部分索引 ix_ad_material_video（WHERE complete）；
-                # 写成 IS true 规划器不认，会退回逐账户扫描全部使用记录。
-                col(AdMaterialReference.complete),
-                AdMaterialReference.material_type == "VIDEO",
-                any_of(col(AdMaterialReference.platform_material_id), videos),
-            )
-        ).all()
+        session.execute(
+            select(AdMaterialReference).from_statement(
+                text("""SELECT u.* FROM unnest(CAST(:videos AS text[])) v(id)
+                CROSS JOIN LATERAL (
+                    SELECT * FROM current_ad_material
+                    WHERE tenant_id=:tenant AND platform_material_id=v.id
+                        AND complete AND material_type='VIDEO'
+                    OFFSET 0
+                ) u
+                WHERE u.advertiser_id=ANY(CAST(:advertisers AS text[]))""")
+            ),
+            {"tenant": tenant_id, "videos": sorted(videos), "advertisers": scope},
+        )
+        .scalars()
+        .all()
         if videos
         else []
     )
