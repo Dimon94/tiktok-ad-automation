@@ -7,6 +7,36 @@ from app.core.errors import DomainError
 from app.modules.providers.adapters.rongliang import RongliangClient
 
 
+@pytest.mark.parametrize(
+    ("title", "expected_ids"),
+    [
+        ("Moon Show", ["8453", "8454"]),
+        ("Moon", ["8453"]),
+        ("Moon Sho", []),
+        ("moon show", []),
+    ],
+)
+def test_rongliang_search_matches_current_or_original_title_exactly(title, expected_ids):
+    # 当前剧名与原名不同；同名多剧保留给上层消歧，近似名称不能自动选中。
+    def handle(request):
+        assert request.method == "GET"
+        assert request.url.params["compilationsName"] == title
+        return httpx.Response(
+            200,
+            json={"records": [
+                {"compilationsId": 8453, "compilationsName": "Moon Show", "originalTitle": "Moon"},
+                {"compilationsId": 8454, "compilationsName": "Moon Show", "originalTitle": "Another Moon"},
+                {"compilationsId": 8455, "compilationsName": "Moon Show Extended", "originalTitle": "Extended"},
+            ], "total": 3},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        page = RongliangClient(http).search(title, None)
+    assert [item.external_drama_id for item in page.items] == expected_ids
+    assert all(item.title == title for item in page.items)
+    assert page.complete
+
+
 def test_rongliang_form_login_form_data_search_and_strict_create_readback():
     seen = []
 

@@ -281,15 +281,17 @@ class RongliangClient:
         for row in data["records"]:
             if not isinstance(row, dict):
                 raise failure("provider_schema_unsupported")
-            row_title = row.get("originalTitle") or row.get("compilationsName")
-            if not isinstance(row_title, str):
+            titles = (row.get("compilationsName"), row.get("originalTitle"))
+            if not any(isinstance(value, str) for value in titles):
                 raise failure("provider_schema_unsupported")
-            if row_title == title:
+            # 容量当前剧名可能已改名，不能因原名存在而丢弃当前剧名的精确匹配。
+            # 两个名称任一完全匹配即可；保留全部同名候选，交给准备流程消歧。
+            if title in titles:
                 items.append(
                     DramaCandidate(
                         external_drama_id=external_id(row.get("compilationsId")),
                         display_drama_id=external_id(row.get("compilationsId")),
-                        title=row_title,
+                        title=title,
                         language=row.get("languageName") if isinstance(row.get("languageName"), str) else None,
                     )
                 )
