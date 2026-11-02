@@ -81,21 +81,12 @@ def lock_tenant_cursor(
 ) -> ReportDispatchCursor | None:
     from datetime import UTC
 
+    from sqlalchemy import text
     from sqlalchemy.dialects.postgresql import insert
+    from sqlmodel import select
 
-    from app.modules.reporting.store_models import ReportDispatchCursor
-
-    session.connection().execute(
-        insert(ReportDispatchCursor)
-        .values(
-            tenant_id=tenant_id,
-            last_dispatched_at=datetime(1970, 1, 1, tzinfo=UTC),
-            fairness_state={},
-        )
-        .on_conflict_do_nothing(index_elements=["tenant_id"])
-    )
-    # 三类派发均先锁租户cursor再锁执行/头；后台池在之后只做try-lock，
-    # 冲突立即让出，不能反过来持pool等待本cursor形成环。
+    # 先跳过被锁的现有行。无条件INSERT ON CONFLICT即使最终不插入，
+    # 仍会等待另一事务更新的唯一索引项，使后面的SKIP LOCKED失去意义。
     cursor = session.get(
         ReportDispatchCursor,
         tenant_id,
@@ -103,7 +94,40 @@ def lock_tenant_cursor(
         populate_existing=True,
     )
     if cursor is None:
-        return None  # 其他家族正在结算/派发，立即跳过，不能持家族或pool锁等待。
+        existing = session.exec(
+            select(col(ReportDispatchCursor.tenant_id)).where(
+                col(ReportDispatchCursor.tenant_id) == tenant_id
+            )
+        ).first()
+        if existing is not None:
+            return None  # MVCC只读确认已存在，不能为锁竞争再次尝试初始化。
+        # 只在首次创建时竞争此非阻塞锁；并发初始化也不能在唯一键上等待。
+        if (
+            not session.connection()
+            .execute(
+                text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key,0))"),
+                {"key": f"tkada:sync-cursor-init:{tenant_id}"},
+            )
+            .scalar_one()
+        ):
+            return None
+        session.connection().execute(
+            insert(ReportDispatchCursor)
+            .values(
+                tenant_id=tenant_id,
+                last_dispatched_at=datetime(1970, 1, 1, tzinfo=UTC),
+                fairness_state={},
+            )
+            .on_conflict_do_nothing(index_elements=["tenant_id"])
+        )
+        cursor = session.get(
+            ReportDispatchCursor,
+            tenant_id,
+            with_for_update={"skip_locked": True},
+            populate_existing=True,
+        )
+    if cursor is None:
+        return None
     from app.modules.sync_control.costs import settle_costs
 
     settle_costs(session, cursor)

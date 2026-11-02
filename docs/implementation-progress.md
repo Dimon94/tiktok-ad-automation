@@ -1,3 +1,7 @@
+## 2026-11-02 修复租户cursor初始化在SKIP LOCKED之前阻塞（125项测试通过，待发布）
+
+批量派发f276133e已上线，但生产采样定位到无条件INSERT ON CONFLICT会等待另一事务UPDATE过的cursor。新增双连接回归先复现100ms锁超时，再改为先跳锁、仅首次初始化写入；详见[验收](validation/2026-11-02-dispatch-batching.md)。
+
 ## 2026-11-02 有界批量派发与Worker补位预算（待发布）
 
 每批最多4步，复用本批租户cursor与Redis连接，跳过本轮空家族，默认Worker补位也启用4秒SQL总预算；原平台配额、执行窗口和围栏保持。测试、生产证据及发布方案见[验收记录](validation/2026-11-02-dispatch-batching.md)。
