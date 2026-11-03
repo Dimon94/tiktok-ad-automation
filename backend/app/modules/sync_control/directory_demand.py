@@ -273,7 +273,9 @@ def handoff_directory_publication(
     return True
 
 
-def directory_outcome(session: Session, run: AdDirectoryRun) -> None:
+def directory_outcome(
+    session: Session, run: AdDirectoryRun, *, expected_lease_token: UUID | None = None
+) -> None:
     from app.modules.sync_control.schedule import (
         pending_execution_dues,
         retire_execution_children,
@@ -295,6 +297,12 @@ def directory_outcome(session: Session, run: AdDirectoryRun) -> None:
         session, heads, "directory", now=datetime.now(UTC)
     )
     for head in heads:
+        if (
+            expected_lease_token is not None
+            and head.lease_token is not None
+            and head.lease_token != expected_lease_token
+        ):
+            continue  # 页间资格变化不能清除后来签发的grant，即使执行ID/代数相同。
         if head.lease_execution_id is not None and (
             head.lease_execution_id != run.id
             or head.lease_execution_generation != run.claim_generation

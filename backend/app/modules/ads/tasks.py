@@ -1,14 +1,14 @@
-"""Celery 入口：每次推进一个广告目录页，目录完成后才发布。"""
+"""Celery 入口：背景目录有界连续读页，完整暂存后才发布。"""
 
 from __future__ import annotations
 
 import hashlib
 import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from billiard.exceptions import SoftTimeLimitExceeded  # type: ignore[import-untyped]
@@ -33,6 +33,7 @@ from app.modules.ads.directory_dispatch import (
     PUBLISH_TASK_NAME,
     TARGETED_TASK_NAME,
     TASK_NAME,
+    directory_read_pages,
     enqueue_directory_step,
     is_live_directory,
 )
@@ -60,11 +61,19 @@ logger = logging.getLogger(__name__)
 
 @contextmanager
 def _directory_session(
-    database_engine: Any, *, publish_only: bool = False
+    database_engine: Any,
+    *,
+    publish_only: bool = False,
+    deadline: datetime | None = None,
 ) -> Iterator[Session]:
     """领取和发布均使用有界事务，异常时丢弃物理连接以释放服务器行锁。"""
     with Session(database_engine, expire_on_commit=False) as session:
         try:
+            remaining_ms = (
+                max(1, int((deadline - datetime.now(UTC)).total_seconds() * 1000))
+                if deadline is not None
+                else None
+            )
             session.connection().execute(
                 text(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'")
             )
@@ -74,6 +83,9 @@ def _directory_session(
             timeout = (
                 _PUBLISH_TRANSACTION_TIMEOUT if publish_only else _TRANSACTION_TIMEOUT
             )
+            if remaining_ms is not None:
+                # 页间也共享入口的绝对期限；不能为每个暂存事务重开45秒预算。
+                timeout = f"{min(45000, remaining_ms)}ms"
             session.connection().execute(
                 text(f"SET LOCAL transaction_timeout = '{timeout}'")
             )
@@ -120,6 +132,14 @@ class _CommittedDirectoryWork:
     deliver: bool = False
     failure_fence: tuple[int, int, UUID | None] | None = None
     reservation: tuple[str, dict[str, Any]] | None = None
+    dispatch_stack: ExitStack = field(default_factory=ExitStack)
+    read_deadline: datetime = field(
+        default_factory=lambda: datetime.now(UTC) + timedelta(seconds=45)
+    )
+    read_limit: int = 1
+    pages_read: int = 0
+    resume_token: UUID | None = None
+    head_fence: tuple[UUID, datetime] | None = None
 
 
 def _deliver_committed_work(
@@ -133,7 +153,7 @@ def _deliver_committed_work(
             from app.modules.reporting import planner
             from app.modules.reporting.job_tasks import _dispatch_pending
 
-            # 每页提交后补位整个共享池，让下一获胜的历史/补链/余额类立即前进；
+            # 量子交回或末页提交后补位共享池，让下一获胜的工作类立即前进；
             # 领取有总预算，失败只回滚补位事务，已暂存页和due仍可由Beat恢复。
             now = datetime.now(UTC)
             with Redis.from_url(settings.REDIS_URL) as redis_client:
@@ -190,12 +210,15 @@ def run_directory_step(
     work = _CommittedDirectoryWork()
     cost_registered = False
     try:
-        with execution_cost_context(
-            database_engine,
-            tenant_id=context.tenant_id,
-            execution_id=run_id,
-            generation=claim_generation,
-            kind="directory",
+        with (
+            work.dispatch_stack,
+            execution_cost_context(
+                database_engine,
+                tenant_id=context.tenant_id,
+                execution_id=run_id,
+                generation=claim_generation,
+                kind="directory",
+            ),
         ):
             cost_registered = True
             return _execute_directory_step(
@@ -259,15 +282,18 @@ def _execute_directory_step(
     work: _CommittedDirectoryWork,
 ) -> str:
     try:
-        return _run_directory_step(
-            database_engine=database_engine,
-            redis_client=redis_client,
-            context=context,
-            run_id=run_id,
-            claim_generation=claim_generation,
-            publish_only=publish_only,
-            work=work,
-        )
+        while True:
+            result = _run_directory_step(
+                database_engine=database_engine,
+                redis_client=redis_client,
+                context=context,
+                run_id=run_id,
+                claim_generation=claim_generation,
+                publish_only=publish_only,
+                work=work,
+            )
+            if work.resume_token is None or result != "CONTINUE":
+                return result
     except DomainError as error:
         if work.failure_fence is None or error.code not in {
             "route_binding_changed",
@@ -415,7 +441,11 @@ def _run_directory_step(
     # 实例总开关同时拦截已经排队的目录任务；重新开启后由扫描器恢复。
     if not settings.ADS_SYNC_ENABLED:
         return "WAIT"
-    with _directory_session(database_engine, publish_only=publish_only) as session:
+    with _directory_session(
+        database_engine,
+        publish_only=publish_only,
+        deadline=work.read_deadline if work.read_limit > 1 else None,
+    ) as session:
         run = session.exec(
             select(AdDirectoryRun)
             .where(
@@ -439,8 +469,17 @@ def _run_directory_step(
         # A crashed worker leaves a short lease.  A live duplicate must not
         # open a second provider call; the scanner advances generation only
         # after this lease expires.
-        if run.claimed_until is not None and run.claimed_until > now:
+        continuing = work.resume_token is not None
+        if continuing:
+            if (
+                run.claim_token != work.resume_token
+                or run.claimed_until is None
+                or run.claimed_until <= now
+            ):
+                return "WAIT"
+        elif run.claimed_until is not None and run.claimed_until > now:
             return "WAIT"
+        work.read_limit = directory_read_pages(run)
         terminal_staged = session.exec(
             select(AdDirectoryPage.page)
             .where(
@@ -462,7 +501,7 @@ def _run_directory_step(
             # 业务run锁在前，scope/child完整围栏在领取后核验；这里只验证
             # canonical dispatcher持久授予本代HTTP资格，不能由旧消息自行续页。
             authorized = session.exec(
-                select(SyncSchedule.scope_id)
+                select(SyncSchedule.lease_token, SyncSchedule.leased_until)
                 .join(SyncScope, col(SyncScope.id) == col(SyncSchedule.scope_id))
                 .join(
                     SyncExecutionScope,
@@ -485,13 +524,35 @@ def _run_directory_step(
                 )
                 .limit(1)
             ).first()
-            if authorized is None:
+            if authorized is None or (
+                continuing and tuple(authorized) != work.head_fence
+            ):
+                if continuing:
+                    from app.modules.sync_control.directory_demand import (
+                        directory_outcome,
+                    )
+
+                    # 已确认仍持原run token；正常退出立即归还自己的Worker槽。
+                    # head按原grant token复验，不能清掉后来签发的新资格。
+                    run.claim_token = run.claimed_until = None
+                    directory_outcome(
+                        session,
+                        run,
+                        expected_lease_token=work.head_fence[0]
+                        if work.head_fence
+                        else None,
+                    )
+                    work.resume_token = None
+                    session.commit()
+                    work.refill = True
                 return "WAIT"
+            if not continuing:
+                work.head_fence = cast(tuple[UUID, datetime], tuple(authorized))
             from app.modules.ads.directory_dispatch import directory_step_key
             from app.modules.sync_control.directory_demand import directory_endpoint
 
             endpoint = directory_endpoint(run)
-            work.reservation = (
+            work.reservation = work.reservation or (
                 directory_step_key(run),
                 {
                     "app_scope": settings.TIKTOK_APP_ID,
@@ -503,11 +564,13 @@ def _run_directory_step(
             )
 
         work.failure_fence = (run.claim_generation, run.owner_epoch, run.claim_token)
-        run.claim_token = uuid4()
+        if not continuing:
+            run.claim_token = uuid4()
+            run.claimed_until = now + timedelta(
+                seconds=_PUBLISH_LEASE_SECONDS if publish_only else _LEASE_SECONDS
+            )
         claim_token = run.claim_token
-        run.claimed_until = now + timedelta(
-            seconds=_PUBLISH_LEASE_SECONDS if publish_only else _LEASE_SECONDS
-        )
+        assert claim_token is not None
         route = _route(run.frozen_route)
         verify_route(
             session,
@@ -574,26 +637,25 @@ def _run_directory_step(
         session.commit()
         work.failure_fence = (run.claim_generation, run.owner_epoch, claim_token)
 
-    deadline = datetime.now(UTC) + timedelta(seconds=45)
+    deadline = (
+        work.read_deadline
+        if work.read_limit > 1
+        else datetime.now(UTC) + timedelta(seconds=45)
+    )
     try:
         from app.modules.ads.directory_dispatch import directory_step_key
         from app.modules.sync_control.directory_demand import directory_endpoint
         from app.modules.sync_control.occupancy import dispatch_context
 
         endpoint = directory_endpoint(run)
-        budget = dispatch_context(
-            redis_client,
-            reservation_id=directory_step_key(run),
-            scope={
-                "app_scope": settings.TIKTOK_APP_ID,
-                "endpoint": endpoint,
-                "rate_group": endpoint,
-                "tenant_id": run.tenant_id,
-                "advertiser_id": run.advertiser_id,
-            },
-        )
+        if not work.pages_read:
+            assert work.reservation is not None
+            identity, scope = work.reservation
+            # 整个量子只交接首次queued身份；后续真实HTTP仍逐次走现有准入。
+            work.dispatch_stack.enter_context(
+                dispatch_context(redis_client, reservation_id=identity, scope=scope)
+            )
         with (
-            budget,
             open_tiktok_gateway(
                 database_engine=database_engine,
                 redis_client=redis_client,
@@ -642,7 +704,10 @@ def _run_directory_step(
                 work.refill = True
             session.commit()
         return "WAIT"
-    with _directory_session(database_engine) as session:
+    with _directory_session(
+        database_engine,
+        deadline=work.read_deadline if work.read_limit > 1 else None,
+    ) as session:
         current = session.get(AdDirectoryRun, run_id, with_for_update=True)
         if (
             current is None
@@ -682,6 +747,20 @@ def _run_directory_step(
         current.status = "RUNNING"
         current.error_code = None
         current.next_attempt_at = datetime.now(UTC)
+        work.pages_read += 1
+        can_continue = (
+            not page.complete
+            and work.pages_read < work.read_limit
+            and (work.read_deadline - datetime.now(UTC)).total_seconds() >= 3
+            and current.claimed_until is not None
+            and current.claimed_until > datetime.now(UTC)
+        )
+        if can_continue:
+            # 页已独立提交；保留原token/租约与grant，重复消息仍只能WAIT。
+            work.resume_token = claim_token
+            session.commit()
+            return "CONTINUE"
+        work.resume_token = None
         current.claim_token = current.claimed_until = None
         from app.modules.sync_control.directory_demand import (
             handoff_directory_publication,
@@ -695,7 +774,7 @@ def _run_directory_step(
             work.deliver = True
         else:
             directory_outcome(session, current)
-        # 非末页仍公平重领；末页释放的后台读取容量也可补给其他家族。
+        # 量子结束后公平重领；末页释放的后台读取容量也可补给其他家族。
         work.refill = True
         session.commit()
         return "CONTINUE"
