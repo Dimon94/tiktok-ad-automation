@@ -129,13 +129,11 @@ def test_physical_fifty_vs_five_cost_and_success_throughput(
                     return original_reserve(*args, **kwargs)
 
                 monkeypatch.setattr(dispatcher, "reserve_execution_cost", unit_reserve)
-                monkeypatch.setattr(dispatcher, "settle_costs", lambda *_: 0)
-                monkeypatch.setattr(costs, "settle_costs", lambda *_: 0)
+                monkeypatch.setattr(costs, "settle_costs", lambda *_args, **_kwargs: 0)
             else:
                 monkeypatch.setattr(
                     dispatcher, "reserve_execution_cost", original_reserve
                 )
-                monkeypatch.setattr(dispatcher, "settle_costs", original_settle)
                 monkeypatch.setattr(costs, "settle_costs", original_settle)
             with Session(database_engine) as session, session.begin():
                 for day, tier in (
@@ -232,6 +230,7 @@ def test_physical_fifty_vs_five_cost_and_success_throughput(
             / ".runtime"
             / "actual-cost-transport-trace.json"
         )
+        destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(
             json.dumps(
                 {"latency_seconds": latency, "target": target, "variants": results},

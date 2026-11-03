@@ -1,9 +1,30 @@
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
+import pytest
+
 from app.jobs.admission import admission_keys, admit_call
 from app.modules.sync_control.occupancy import occupancy_keys, reserve_dispatch
 from tests.modules.sync_control.test_endpoint_readiness import _policy, _scope
+
+
+def test_successful_nested_reservation_is_released_if_outer_transaction_fails(
+    redis_client,
+):
+    from app.modules.sync_control.occupancy import reservation_transaction
+
+    scope, token = _scope(), uuid4()
+    with pytest.raises(RuntimeError, match="outer failure"):
+        with reservation_transaction(redis_client):
+            with reservation_transaction(redis_client):
+                assert (
+                    reserve_dispatch(
+                        redis_client, reservation_id=token, policy=_policy(), **scope
+                    ).capacity_hint
+                    > 0
+                )
+            raise RuntimeError("outer failure")
+    assert all(redis_client.zcard(key) == 0 for key in occupancy_keys(**scope))
 
 
 def test_two_controllers_cannot_reserve_same_free_slot(redis_client):

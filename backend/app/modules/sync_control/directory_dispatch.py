@@ -14,14 +14,17 @@ from sqlmodel import Session, col, select
 from app.core.config import settings
 from app.jobs.admission import admission_policy
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
-from app.modules.reporting.store_models import ReportDispatchCursor
 from app.modules.sync_control.costs import cost_classes, reserve_execution_cost
 from app.modules.sync_control.directory_demand import directory_endpoint
+from app.modules.sync_control.dispatch_budget import (
+    DispatchBudgetConflict,
+    EndpointBudgets,
+    dispatch_budget_transaction,
+)
 from app.modules.sync_control.fairness import (
     WEIGHTS,
     choose_work_class,
     due_tenants,
-    lock_tenant_cursor,
 )
 from app.modules.sync_control.models import (
     SyncExecutionScope,
@@ -126,6 +129,31 @@ def dispatch_directories_due(
     allow_backfill: bool = True,
     max_claims: int | None = None,
 ) -> int:
+    try:
+        with dispatch_budget_transaction(session, redis) as budgets:
+            return _dispatch_directories_due(
+                session,
+                redis,
+                now=now,
+                limit=limit,
+                allow_backfill=allow_backfill,
+                max_claims=max_claims,
+                budgets=budgets,
+            )
+    except DispatchBudgetConflict:
+        return 0
+
+
+def _dispatch_directories_due(
+    session: Session,
+    redis: Redis,
+    *,
+    now: datetime,
+    limit: int = 8,
+    allow_backfill: bool = True,
+    max_claims: int | None = None,
+    budgets: EndpointBudgets,
+) -> int:
     from app.modules.ads.directory_dispatch import (
         directory_step_key,
         enqueue_directory_step,
@@ -198,7 +226,6 @@ def dispatch_directories_due(
         .exists(),
     ]
     tenants = due_tenants(session, due, limit=min(64, limit))
-    cursors: dict[UUID, ReportDispatchCursor | None] = {}
     count = 0
     unavailable_run_ids: set[UUID] = set()
     background_blocked = False
@@ -237,12 +264,6 @@ def dispatch_directories_due(
                     candidates.append(row)
             if not candidates:
                 continue
-            # 行锁持有到本批提交；复用ORM状态，公平余额仍逐领取更新。
-            if tenant_id not in cursors:
-                cursors[tenant_id] = lock_tenant_cursor(session, tenant_id)
-            cursor = cursors[tenant_id]
-            if cursor is None:
-                continue
             # 每物理接口维持独立工作类预算；只在该接口同时存在的类间比较。
             endpoint = min(
                 candidates,
@@ -253,6 +274,9 @@ def dispatch_directories_due(
                     or row[1].created_at
                 ),
             )[0].physical_endpoint
+            cursor = budgets.acquire(tenant_id, endpoint)
+            if cursor is None:
+                continue
             eligible = [
                 row for row in candidates if row[0].physical_endpoint == endpoint
             ]

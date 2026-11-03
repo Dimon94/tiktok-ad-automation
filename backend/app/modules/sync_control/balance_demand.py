@@ -22,8 +22,13 @@ from app.modules.reporting.store_models import (
     ReportBalanceRun,
 )
 from app.modules.sync_control.contracts import ExecutionFence
+from app.modules.sync_control.dispatch_budget import (
+    DispatchBudgetConflict,
+    EndpointBudgets,
+    dispatch_budget_transaction,
+)
 from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
-from app.modules.sync_control.fairness import due_tenants, lock_tenant_cursor
+from app.modules.sync_control.fairness import due_tenants
 from app.modules.sync_control.models import (
     SyncExecutionScope,
     SyncSchedule,
@@ -252,6 +257,23 @@ def balance_reservation(run: ReportBalanceRun, generation: int) -> str:
 def dispatch_balances_due(
     session: Session, redis: Redis, *, now: datetime, limit: int = 2
 ) -> int:
+    try:
+        with dispatch_budget_transaction(session, redis) as budgets:
+            return _dispatch_balances_due(
+                session, redis, now=now, limit=limit, budgets=budgets
+            )
+    except DispatchBudgetConflict:
+        return 0
+
+
+def _dispatch_balances_due(
+    session: Session,
+    redis: Redis,
+    *,
+    now: datetime,
+    limit: int = 2,
+    budgets: EndpointBudgets,
+) -> int:
     # 家族窗口独立串行；共享后台池仅在实际后台准入时非阻塞锁定。
     if (
         not session.connection()
@@ -279,7 +301,7 @@ def dispatch_balances_due(
         for tenant_id in tenants:
             if count >= limit:
                 break
-            cursor = lock_tenant_cursor(session, tenant_id)
+            cursor = budgets.acquire(tenant_id, ENDPOINT)
             if cursor is None:
                 continue
             # 先对轻量执行集合排序；LATERAL的LIMIT/行锁使整批owner核验只发生在

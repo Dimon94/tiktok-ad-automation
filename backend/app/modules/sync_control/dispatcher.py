@@ -16,12 +16,16 @@ from app.core.context import TenantContext
 from app.jobs.admission import admission_policy
 from app.modules.accounts.models import AdvertiserAccount
 from app.modules.reporting.store_models import (
-    ReportDispatchCursor,
     ReportSyncJob,
 )
 from app.modules.sync_control.costs import (
     cost_classes,
     reserve_execution_cost,
+)
+from app.modules.sync_control.dispatch_budget import (
+    DispatchBudgetConflict,
+    EndpointBudgets,
+    dispatch_budget_transaction,
 )
 from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 from app.modules.sync_control.fairness import WEIGHTS, choose_work_class
@@ -86,6 +90,31 @@ def dispatch_due(
     allow_backfill: bool = True,
     max_claims: int | None = None,
 ) -> int:
+    try:
+        with dispatch_budget_transaction(session, redis) as budgets:
+            return _dispatch_due(
+                session,
+                redis,
+                now=now,
+                physical_slots=physical_slots,
+                allow_backfill=allow_backfill,
+                max_claims=max_claims,
+                budgets=budgets,
+            )
+    except DispatchBudgetConflict:
+        return 0
+
+
+def _dispatch_due(
+    session: Session,
+    redis: Redis,
+    *,
+    now: datetime,
+    physical_slots: int,
+    allow_backfill: bool = True,
+    max_claims: int | None = None,
+    budgets: EndpointBudgets,
+) -> int:
     # 一个租户轮次的cursor与租约/outbox同事务；第二Control不读改同一公平余额。
     # 家族窗口独立串行；共享后台池仅在实际后台准入时非阻塞锁定。
     if (
@@ -127,7 +156,6 @@ def dispatch_due(
         if max_claims < 1:
             raise ValueError("max_claims must be positive")
         claim_limit = min(available, max_claims)
-    cursors: dict[UUID, ReportDispatchCursor | None] = {}
     dispatched = 0
     endpoints: Sequence[str] = tuple(
         dict.fromkeys(
@@ -177,12 +205,7 @@ def dispatch_due(
             for tenant_id in tenants:
                 if dispatched >= claim_limit:
                     break
-                from app.modules.sync_control.fairness import lock_tenant_cursor
-
-                # 本批同租户共享已持锁cursor；不重复结算/加锁，不能跨事务缓存。
-                if tenant_id not in cursors:
-                    cursors[tenant_id] = lock_tenant_cursor(session, tenant_id)
-                cursor = cursors[tenant_id]
+                cursor = budgets.acquire(tenant_id, endpoint)
                 if cursor is None:
                     continue
                 heads = []

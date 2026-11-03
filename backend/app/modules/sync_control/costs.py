@@ -155,15 +155,24 @@ def _settlement_due() -> ColumnElement[bool]:
 
 
 def settle_costs(
-    session: Session, cursor: ReportDispatchCursor, *, limit: int = 256
+    session: Session,
+    cursor: ReportDispatchCursor,
+    *,
+    limit: int = 256,
+    endpoint: str | None = None,
 ) -> int:
-    """调用方先持租户cursor；不读取/锁job，因此不会与worker形成job→cursor死锁。"""
+    """生产调用方先持接口advisory并使用独立快照；不读取/锁job，末尾才合并游标。"""
     session.flush()
     rows = session.exec(
         select(SyncCostLedger)
         .where(
             col(SyncCostLedger.tenant_id) == cursor.tenant_id,
             _settlement_due(),
+            *(
+                [col(SyncCostLedger.physical_endpoint) == endpoint]
+                if endpoint is not None
+                else []
+            ),
         )
         # 匹配(tenant, endpoint, id)脏收据索引；端点间成本独立，避免空结算扫全历史主键。
         .order_by(col(SyncCostLedger.physical_endpoint), col(SyncCostLedger.id))
@@ -475,15 +484,22 @@ def settle_idle_costs(
     try:
         with Session(database_engine) as session, session.begin():
             session.connection().execute(text("SET LOCAL statement_timeout='500ms'"))
-            tenants = session.exec(
-                select(col(SyncCostLedger.tenant_id))
+            endpoints = session.exec(
+                select(
+                    col(SyncCostLedger.tenant_id), col(SyncCostLedger.physical_endpoint)
+                )
                 .where(_settlement_due())
                 .distinct()
                 .limit(limit)
             ).all()
     except DBAPIError:
         return total  # 连候选发现都失败时让出维护预算，dispatch/outbox仍继续。
-    for tenant_id in tenants:
+    from app.modules.sync_control.dispatch_budget import (
+        DispatchBudgetConflict,
+        EndpointBudgets,
+    )
+
+    for tenant_id, endpoint in endpoints:
         if monotonic() >= stop:
             break
         try:
@@ -492,15 +508,10 @@ def settle_idle_costs(
                     text("SET LOCAL statement_timeout='500ms'")
                 )
                 session.connection().execute(text("SET LOCAL lock_timeout='100ms'"))
-                cursor = session.exec(
-                    select(ReportDispatchCursor)
-                    .where(
-                        col(ReportDispatchCursor.tenant_id) == tenant_id,
-                    )
-                    .with_for_update(skip_locked=True)
-                ).one_or_none()
-                if cursor is not None:
-                    total += settle_costs(session, cursor)
-        except DBAPIError:
+                budgets = EndpointBudgets(session)
+                if budgets.acquire(tenant_id, endpoint) is not None:
+                    budgets.persist()
+            total += budgets.settled
+        except DBAPIError, DispatchBudgetConflict:
             continue  # 脏版本未推进，下次Beat继续，不伪造结算成功。
     return total

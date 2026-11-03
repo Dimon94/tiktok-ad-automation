@@ -26,6 +26,7 @@ _TRANSACTION_RESERVATIONS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
 def reservation_transaction(redis: Redis) -> Iterator[None]:
     """包住DB事务及commit；失败时只撤销本事务的queued占位，不退已发送额度。"""
     reservations: list[dict[str, Any]] = []
+    parent = _TRANSACTION_RESERVATIONS.get()
     token = _TRANSACTION_RESERVATIONS.set(reservations)
     try:
         yield
@@ -36,6 +37,10 @@ def reservation_transaction(redis: Redis) -> Iterator[None]:
             except RedisError:
                 logger.warning("rolled back dispatch reservation awaits expiry")
         raise
+    else:
+        # 子SAVEPOINT成功还不代表外层COMMIT成功，清理责任随成功结果交还父事务。
+        if parent is not None:
+            parent.extend(reservations)
     finally:
         _TRANSACTION_RESERVATIONS.reset(token)
 

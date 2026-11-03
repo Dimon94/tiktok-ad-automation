@@ -247,13 +247,18 @@ def test_busy_tenant_cursor_is_skipped_without_blocking_other_dispatchers(
 ):
     from app.modules.ads import tasks  # noqa: F401
     from app.modules.reporting.store_models import ReportDispatchCursor
-    from app.modules.sync_control.fairness import lock_tenant_cursor
 
     seed, factory = committed_sync_seed
     with factory() as db, db.begin():
         run = _directory(db, seed)
         run.workload = "live"
-        assert lock_tenant_cursor(db, seed.tenant_id) is not None
+        db.add(
+            ReportDispatchCursor(
+                tenant_id=seed.tenant_id,
+                last_dispatched_at=datetime.now(UTC),
+                fairness_state={},
+            )
+        )
     with factory() as blocker, blocker.begin():
         blocker.get(ReportDispatchCursor, seed.tenant_id, with_for_update=True)
         with factory() as db, db.begin():
