@@ -93,6 +93,7 @@ def promote_status_requests(session, runs, *, missing_run_ids=()):
             }
             for run in values[offset : offset + 500]
         ]
+        # 晋升状态调度优先级，仍保留明确identity用途，防止真正素材补读被跳过。
         rows = (
             session.connection()
             .execute(
@@ -115,8 +116,9 @@ def promote_status_requests(session, runs, *, missing_run_ids=()):
               ORDER BY r.id FOR UPDATE OF r SKIP LOCKED
             )
             UPDATE ad_directory_run r
-            SET query=r.query||jsonb_build_object(CAST(:key AS text),
-              CASE WHEN e.missing THEN 'status_missing' ELSE 'status' END)
+            SET query=CASE WHEN r.query->>CAST(:key AS text)='identity' THEN r.query
+              ELSE r.query||jsonb_build_object(CAST(:key AS text),
+                CASE WHEN e.missing THEN 'status_missing' ELSE 'status' END) END
             FROM eligible e WHERE r.id=e.id RETURNING r.id,r.query
         """),
                 {"expected": json.dumps(expected), "key": SERVICE_KEY},

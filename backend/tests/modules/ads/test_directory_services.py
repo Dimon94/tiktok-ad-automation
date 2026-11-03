@@ -4,7 +4,11 @@ import pytest
 from sqlmodel import select
 
 from app.core.config import settings
-from app.modules.ads.directory_services import SERVICE_KEY, directory_service
+from app.modules.ads.directory_services import (
+    SERVICE_KEY,
+    directory_service,
+    promote_status_requests,
+)
 from app.modules.ads.material_directory_children import material_child_scope
 from app.modules.ads.models import AdObject
 from app.modules.ads.sync import (
@@ -73,7 +77,46 @@ def test_status_parent_demand_promotes_existing_identity_without_duplicate(
     ).all()
     assert len(parents) == 1
     assert (parent.id, parent.claim_generation, parent.partition_key) == identity
-    assert directory_service(parent) == "status"
+    assert directory_service(parent) == "identity"
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_status_promotion_preserves_explicit_material_identity_demand(
+    session, directory_seed, monkeypatch, missing
+):
+    from app.modules.sync_control.directory_demand import register_directory_run
+    from app.modules.sync_control.models import SyncExecutionScope, SyncRequirement
+
+    monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+    _authority(session, directory_seed)
+    source = _run(session, directory_seed, kind="ad", ad_type="SMART_PLUS")
+    source.workload = "live"
+    source.query = source.query | {"ids": ["ad"], SERVICE_KEY: "identity"}
+    register_directory_run(session, source, new_execution=True)
+    assert (
+        promote_status_requests(
+            session, [source], missing_run_ids=[source.id] if missing else []
+        )
+        == 1
+    )
+    assert directory_service(source) == "identity"
+    child = session.exec(
+        select(SyncExecutionScope).where(
+            SyncExecutionScope.directory_run_id == source.id
+        )
+    ).one()
+    assert session.get(SyncRequirement, child.requirement_id).source == "realtime"
+    stage_directory_page(
+        session,
+        run_id=source.id,
+        claim_generation=1,
+        page=_source_page(directory_seed, 1, [("ad", "group")], terminal=True),
+    )
+    publish_directory(session, run_id=source.id, claim_generation=1)
+    material = session.exec(
+        select(AdDirectoryRun).where(AdDirectoryRun.kind == "creative")
+    ).one()
+    assert directory_service(material) == "identity"
 
 
 @pytest.mark.parametrize("service", [None, "status", "identity"])
@@ -95,6 +138,11 @@ def test_material_child_keeps_identity_scope_and_source_age(
         page=_source_page(directory_seed, 1, [("ad", "group")], terminal=True),
     )
     publish_directory(session, run_id=source.id, claim_generation=1)
+    if service == "status":
+        assert not session.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.kind == "creative")
+        ).all()
+        return
     child = session.exec(
         select(AdDirectoryRun).where(AdDirectoryRun.kind == "creative")
     ).one()

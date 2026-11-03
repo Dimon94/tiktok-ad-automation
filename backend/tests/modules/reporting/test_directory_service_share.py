@@ -169,7 +169,8 @@ def test_hot_fact_reuses_and_promotes_unstarted_old_run(
     assert [
         (r.id, r.partition_key, r.claim_generation, r.created_at) for r in runs
     ] == identities
-    assert all(r.query.get(KEY) == "status_missing" for r in runs)
+    expected_service = "identity" if service == "identity" else "status_missing"
+    assert all(r.query.get(KEY) == expected_service for r in runs)
 
 
 @pytest.mark.parametrize(
