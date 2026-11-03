@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import NamedTuple
 from uuid import UUID, uuid4
 
 from redis import Redis
@@ -29,6 +30,77 @@ from app.modules.sync_control.occupancy import release_dispatch, reserve_dispatc
 from app.modules.sync_control.worker_pool import (
     reserve_background_turn,
 )
+
+
+class CandidateKey(NamedTuple):
+    scope_id: UUID
+    work_class: str
+    id: UUID
+
+
+ORDERED_CANDIDATES = """
+        SELECT h.scope_id, h.work_class, picked.id
+        FROM sync_schedule h
+        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
+        CROSS JOIN LATERAL (
+            SELECT r.id, r.created_at
+            FROM ad_directory_run r
+            WHERE r.tenant_id=h.tenant_id AND r.advertiser_id=s.advertiser_id
+                AND r.owner_epoch=s.owner_epoch AND r.id <> ALL(CAST(:excluded AS uuid[]))
+                AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
+                AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
+                AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
+                AND (NOT :independent_only OR (
+                    r.workload='live' AND (
+                        coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR
+                        coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)
+                    ) OR EXISTS (SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
+                AND EXISTS (
+                    SELECT 1 FROM sync_execution_scope e
+                    JOIN sync_requirement q ON q.id=e.requirement_id
+                    WHERE e.directory_run_id=r.id AND e.scope_id=h.scope_id
+                        AND e.tenant_id=h.tenant_id AND e.status='PENDING'
+                        AND e.owner_epoch=s.owner_epoch AND q.source=h.work_class
+                    LIMIT 1
+                )
+            ORDER BY r.created_at,r.id
+            LIMIT 1
+        ) picked
+        WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class
+            AND h.active IS TRUE AND h.next_eligible_at<=:now
+            AND (h.leased_until IS NULL OR h.leased_until<=:now)
+        ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,
+            picked.created_at,picked.id
+        LIMIT 1
+    """
+
+INDEPENDENT_CANDIDATES = """
+WITH heads AS MATERIALIZED (
+ SELECT h.scope_id,h.work_class,h.tenant_id,s.advertiser_id,s.owner_epoch
+ FROM sync_schedule h JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
+ WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class AND h.active IS TRUE
+ AND h.next_eligible_at<=:now AND (h.leased_until IS NULL OR h.leased_until<=:now)
+ AND h.scope_id>:scan_cursor AND s.resource LIKE 'directory:%'
+ ORDER BY h.scope_id LIMIT 64
+)
+SELECT h.scope_id,h.work_class,picked.id FROM heads h
+LEFT JOIN LATERAL (
+ SELECT r.id FROM sync_execution_scope e
+ JOIN sync_requirement q ON q.id=e.requirement_id
+ CROSS JOIN LATERAL (SELECT * FROM ad_directory_run WHERE id=e.directory_run_id OFFSET 0) r
+ WHERE e.scope_id=h.scope_id AND e.status='PENDING' AND e.owner_epoch=h.owner_epoch
+ AND e.tenant_id=h.tenant_id AND q.source=h.work_class
+ AND r.tenant_id=h.tenant_id AND r.advertiser_id=h.advertiser_id AND r.owner_epoch=h.owner_epoch
+ AND r.id <> ALL(CAST(:excluded AS uuid[]))
+ AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
+ AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
+ AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
+ AND ((r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0
+ OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0))
+ OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
+ ORDER BY r.created_at,r.id LIMIT 1
+) picked ON TRUE ORDER BY h.scope_id
+"""
 
 
 def dispatch_directories_due(
@@ -123,12 +195,6 @@ def dispatch_directories_due(
         for tenant_id in tenants:
             if count >= claim_limit:
                 break
-            # 行锁持有到本批提交；复用ORM状态，公平余额仍逐领取更新。
-            if tenant_id not in cursors:
-                cursors[tenant_id] = lock_tenant_cursor(session, tenant_id)
-            cursor = cursors[tenant_id]
-            if cursor is None:
-                continue
             candidates = []
             for work_class in ("realtime", "directory"):
                 row = _candidate(
@@ -137,10 +203,18 @@ def dispatch_directories_due(
                     work_class=work_class,
                     now=now,
                     independent_only=background_blocked,
+                    discover_only=True,
+                    redis=redis,
                 )
                 if row is not None:
                     candidates.append(row)
             if not candidates:
+                continue
+            # 行锁持有到本批提交；复用ORM状态，公平余额仍逐领取更新。
+            if tenant_id not in cursors:
+                cursors[tenant_id] = lock_tenant_cursor(session, tenant_id)
+            cursor = cursors[tenant_id]
+            if cursor is None:
                 continue
             # 每物理接口维持独立工作类预算；只在该接口同时存在的类间比较。
             endpoint = min(
@@ -168,6 +242,18 @@ def dispatch_directories_due(
             head, run = next(
                 row for row in eligible if row[0].work_class == chosen_class
             )
+            # 发现阶段不持公平游标锁；取得游标后仅按确定的主键短锁复验。
+            claimed = _candidate(
+                session,
+                tenant_id=tenant_id,
+                work_class=head.work_class,
+                now=now,
+                independent_only=background_blocked,
+                selected=(head.scope_id, run.id),
+            )
+            if claimed is None:
+                continue
+            head, run = claimed
             # 领取前沿用原完整覆盖/周期校准复验；唤醒不是已投递执行，
             # 真正有页、租约或本代消息的运行仍由原保护拒绝改写。
             from app.modules.ads.directory_backlog import review_unstarted_directory
@@ -287,6 +373,9 @@ def _candidate(
     work_class: str,
     now: datetime,
     independent_only: bool,
+    discover_only: bool = False,
+    selected: tuple[UUID, UUID] | None = None,
+    redis: Redis | None = None,
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
     # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
     # 选出ID后再按主键锁定并重新校验所有围栏；冲突回滚小保存点，继续下一候选。
@@ -299,51 +388,67 @@ def _candidate(
         "independent_only": independent_only,
         "excluded": excluded,
     }
-    for _ in range(16):
-        row = (
-            session.connection()
-            .execute(
-                text("""
-        SELECT h.scope_id, h.work_class, picked.id
-        FROM sync_schedule h
-        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
-        CROSS JOIN LATERAL (
-            SELECT r.id, r.created_at
-            FROM ad_directory_run r
-            WHERE r.tenant_id=h.tenant_id AND r.advertiser_id=s.advertiser_id
-                AND r.owner_epoch=s.owner_epoch AND r.id <> ALL(CAST(:excluded AS uuid[]))
-                AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
-                AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
-                AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
-                AND (NOT :independent_only OR (
-                    r.workload='live' AND (
-                        coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR
-                        coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)
-                    ) OR EXISTS (SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
-                AND EXISTS (
-                    SELECT 1 FROM sync_execution_scope e
-                    JOIN sync_requirement q ON q.id=e.requirement_id
-                    WHERE e.directory_run_id=r.id AND e.scope_id=h.scope_id
-                        AND e.tenant_id=h.tenant_id AND e.status='PENDING'
-                        AND e.owner_epoch=s.owner_epoch AND q.source=h.work_class
-                    LIMIT 1
-                )
-            ORDER BY r.created_at,r.id
-            LIMIT 1
-        ) picked
-        WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class
-            AND h.active IS TRUE AND h.next_eligible_at<=:now
-            AND (h.leased_until IS NULL OR h.leased_until<=:now)
-        ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,
-            picked.created_at,picked.id
-        LIMIT 1
-    """),
-                params,
+    # 独立池只扫描64个头的窄页，游标在Redis推进，即使事务预算回滚也不会永远重扫同一前缀。
+    # 游标仅影响发现顺序；真实领取仍按主键复验全部围栏，不保存执行授权。
+    scan_key = f"sync:directory-discovery:v1:{tenant_id}:{work_class}"
+    scan_cursor = UUID(int=0)
+    if independent_only and redis is not None:
+        value = redis.get(scan_key)
+        if value:
+            scan_cursor = UUID(
+                value.decode() if isinstance(value, bytes) else str(value)
             )
-            .first()
-        )
+    wrapped = False
+    row: CandidateKey | None
+    for _ in range(32):
+        if selected:
+            row = CandidateKey(
+                scope_id=selected[0], work_class=work_class, id=selected[1]
+            )
+        elif independent_only:
+            rows = (
+                session.connection()
+                .execute(
+                    text(INDEPENDENT_CANDIDATES), {**params, "scan_cursor": scan_cursor}
+                )
+                .all()
+            )
+            if not rows:
+                if wrapped or scan_cursor.int == 0:
+                    return None
+                scan_cursor, wrapped = UUID(int=0), True
+                if redis is not None:
+                    redis.set(scan_key, str(scan_cursor), ex=86400)
+                continue
+            found = next((r for r in rows if r.id is not None), None)
+            row = (
+                CandidateKey(found.scope_id, found.work_class, found.id)
+                if found
+                else None
+            )
+            scan_cursor = row.scope_id if row is not None else rows[-1].scope_id
+            if redis is not None:
+                redis.set(scan_key, str(scan_cursor), ex=86400)
+            if row is None:
+                continue
+        else:
+            found = (
+                session.connection().execute(text(ORDERED_CANDIDATES), params).first()
+            )
+            row = (
+                CandidateKey(found.scope_id, found.work_class, found.id)
+                if found
+                else None
+            )
         if row is None:
             return None
+        if discover_only:
+            head = session.get(
+                SyncSchedule, (row.scope_id, row.work_class), populate_existing=True
+            )
+            run = session.get(AdDirectoryRun, row.id, populate_existing=True)
+            assert head is not None and run is not None
+            return head, run
         with session.begin_nested() as attempt:
             claimed = (
                 session.connection()
@@ -373,6 +478,8 @@ ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,r.created_at,r
             )
             if claimed is None:
                 attempt.rollback()
+                if selected:
+                    return None
                 excluded.append(row.id)
                 continue
             head = session.get(

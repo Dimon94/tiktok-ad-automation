@@ -1153,6 +1153,7 @@ CLEANUP_JOB_BATCH_ROWS = 1000
 CLEANUP_STATEMENT_MS = 2000
 CLEANUP_LOCK_MS = 200
 CLEANUP_CATEGORIES = (
+    "covered_reports",
     "material_pages",
     "jobs",
     "hours",
@@ -1315,6 +1316,19 @@ def _execution_cleanup_guard(model, execution_column, payload_key):
 
 def _cleanup_category(session, *, category, now, cursors):
     from app.modules.sync_control.models import SyncExecutionScope
+
+    if category == "covered_reports":
+        from app.modules.sync_control.report_retirement import retire_covered_reports
+
+        count, position = retire_covered_reports(
+            session, now=now, cursor=cursors.get(category),
+            scan_limit=cursors.get("_limits", {}).get(category, {}).get("scan", CLEANUP_SCAN_ROWS),
+            batch_limit=cursors.get("_limits", {}).get(category, {}).get("batch", CLEANUP_BATCH_ROWS),
+        )
+        cursors[category] = position
+        if position is None and not count:
+            cursors["_exhausted"] = True
+        return count
 
     # 摘要只由持久归档回收；平台小时金额是原始事实，不能当作30天缓存删除。
     # 保留旧游标类别为空操作，其他短期页及快照继续有界清理。
