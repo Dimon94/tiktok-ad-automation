@@ -154,13 +154,21 @@ def dispatch_directories_due(
     count = 0
     unavailable_run_ids: set[UUID] = set()
     background_blocked = False
+    lock_retries = 0
+    periodic_reviews: dict[UUID, int] = {}
     # 共享池拒绝后台候选后，额外一轮直接SQL筛选独立live/publisher；
     # 不能逐条跳过历史积压，也不能让最老后台头遮住有空闲执行池的候选。
     # 领取失败可继续跳过本轮锁冲突；搜索次数有界，真实派发上限仍是claim_limit。
-    for _ in range(claim_limit + 32):
+    for round_index in range(claim_limit + 33):
+        # 额外预算只属于真正的行锁冲突，周期延期不能借此整头重扫并长持锁。
+        if round_index >= claim_limit + 1 + min(lock_retries, 32):
+            break
         progressed = False
         blocked_before = background_blocked
         for tenant_id in tenants:
+            # 其它租户的锁冲突不能为本租户的周期维护追加持锁扫描预算。
+            if periodic_reviews.get(tenant_id, 0) >= claim_limit + 1:
+                continue
             if count >= claim_limit:
                 break
             candidates = []
@@ -191,9 +199,11 @@ def dispatch_directories_due(
             endpoint = min(
                 candidates,
                 # 新头以真实入队时间参加轮转；NULL不能永久插到所有旧续点前面。
-                key=lambda row: row[0].last_dispatched_at
-                or row[0].oldest_pending_at
-                or row[1].created_at,
+                key=lambda row: (
+                    row[0].last_dispatched_at
+                    or row[0].oldest_pending_at
+                    or row[1].created_at
+                ),
             )[0].physical_endpoint
             eligible = [
                 row for row in candidates if row[0].physical_endpoint == endpoint
@@ -228,6 +238,7 @@ def dispatch_directories_due(
             )
             if claimed is None:
                 unavailable_run_ids.add(run.id)
+                lock_retries += 1
                 progressed = True
                 continue
             head, run = claimed
@@ -237,6 +248,7 @@ def dispatch_directories_due(
             from app.modules.sync_control.directory_demand import directory_outcome
 
             if review_unstarted_directory(session, run, now):
+                periodic_reviews[tenant_id] = periodic_reviews.get(tenant_id, 0) + 1
                 directory_outcome(session, run)
                 # 复核/延期也已服务这个头；不扣HTTP费用，但必须让回其它头。
                 # 否则同scope的多个周期副本反复占据最老位置，空闲实时池也拿不到任务。
@@ -394,9 +406,7 @@ def _candidate(
         else:
             rows = (
                 session.connection()
-                .execute(
-                    text(PAGED_CANDIDATES), {**params, "scan_cursor": scan_cursor}
-                )
+                .execute(text(PAGED_CANDIDATES), {**params, "scan_cursor": scan_cursor})
                 .all()
             )
             if not rows:

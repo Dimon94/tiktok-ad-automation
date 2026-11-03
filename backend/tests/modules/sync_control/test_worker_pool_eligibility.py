@@ -89,7 +89,6 @@ def test_readiness_cursor_reaches_ready_material_after_sixty_five_blocked_fact_s
         SyncRequirement,
         SyncSchedule,
         SyncScope,
-        SyncWorkerPool,
     )
     from app.modules.sync_control.worker_pool import _ready_categories
 
@@ -159,29 +158,23 @@ def test_readiness_cursor_reaches_ready_material_after_sixty_five_blocked_fact_s
         tenant_id=sync_seed.tenant_id,
         advertiser_id="acc-1",
     ).granted
-    pool = session.get(SyncWorkerPool, "background")
-    if pool is None:
-        pool = SyncWorkerPool(
-            pool_name="background", fairness_state={}, readiness_cursor={}
+    with session.begin_nested() as attempt:
+        first = _ready_categories(
+            session,
+            redis_client,
+            category="directory",
+            now=now,
+            allow_backfill=True,
+            budget_seconds=1,
+            probe_limit=64,
         )
-        session.add(pool)
-    pool.readiness_cursor = {}
-    first = _ready_categories(
-        session,
-        redis_client,
-        pool=pool,
-        category="directory",
-        now=now,
-        allow_backfill=True,
-        budget_seconds=1,
-        probe_limit=64,
-    )
+        attempt.rollback()
     assert first == {"directory"}
-    assert pool.readiness_cursor["facts"] == str(UUID(int=64))
+    key = f"sync:background-readiness:v2:{settings.TIKTOK_APP_ID}"
+    assert redis_client.hget(key, "facts") == str(UUID(int=64))
     second = _ready_categories(
         session,
         redis_client,
-        pool=pool,
         category="directory",
         now=now,
         allow_backfill=True,
