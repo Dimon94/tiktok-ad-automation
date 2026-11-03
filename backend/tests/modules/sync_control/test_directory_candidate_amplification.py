@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
 from sqlmodel import select
 
@@ -12,8 +13,9 @@ from tests.modules.sync_control.test_balance_dispatch_scale import capture_plans
 from tests.modules.sync_control.test_schedule_fencing import _directory
 
 
-def test_independent_candidate_does_not_probe_account_for_every_ineligible_head(
-    session, sync_seed
+@pytest.mark.parametrize("independent_only", [False, True])
+def test_candidate_does_not_probe_account_for_every_ineligible_head(
+    session, sync_seed, independent_only
 ):
     run = _directory(session, sync_seed)
     stage_directory_page(
@@ -48,7 +50,7 @@ def test_independent_candidate_does_not_probe_account_for_every_ineligible_head(
                 tenant_id=sync_seed.tenant_id,
                 work_class=head.work_class,
                 now=datetime.now(UTC),
-                independent_only=True,
+                independent_only=independent_only,
             )
         ),
     )
@@ -65,7 +67,10 @@ def test_independent_candidate_does_not_probe_account_for_every_ineligible_head(
     assert plans and max(probes(p["Plan"]) for p in plans) < 100
 
 
-def test_scan_cursor_survives_transaction_rollback(session, sync_seed, redis_client):
+@pytest.mark.parametrize("independent_only", [False, True])
+def test_scan_cursor_survives_transaction_rollback(
+    session, sync_seed, redis_client, independent_only
+):
     from uuid import UUID
 
     run = _directory(session, sync_seed)
@@ -91,7 +96,7 @@ def test_scan_cursor_survives_transaction_rollback(session, sync_seed, redis_cli
         "tenant_id": sync_seed.tenant_id,
         "work_class": head.work_class,
         "now": datetime.now(UTC),
-        "independent_only": True,
+        "independent_only": independent_only,
         "discover_only": True,
         "redis": redis_client,
     }

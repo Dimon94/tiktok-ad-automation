@@ -309,9 +309,9 @@ def test_unstarted_revision_merge_holds_execution_lock_against_dispatch(
             if (
                 connection.info.get("revision_merge_test")
                 and not raced
-                and statement.startswith(
-                    "SELECT report_sync_job.id \nFROM report_sync_job"
-                )
+                and statement.startswith("SELECT ")
+                and "FROM report_sync_job" in statement
+                and "FOR UPDATE OF report_sync_job SKIP LOCKED" in statement
                 and "report_sync_job.claim_generation" in statement
             ):
                 raced.append(pool.submit(dispatch).result(timeout=5))
