@@ -199,7 +199,7 @@ def test_continue_waits_for_batch_before_locking_any_member(
         if (
             is_worker()
             and statement.startswith("SELECT material_cover_share_batch.")
-            and "FOR UPDATE" in statement
+            and ("FOR UPDATE" in statement or "FOR NO KEY UPDATE" in statement)
         ):
             boundary.set()
 

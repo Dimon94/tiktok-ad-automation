@@ -1488,6 +1488,20 @@ def run_cover(
                     delay=local_retry_delay(current.failure_count),
                 )
             elif (
+                read_transient(error)
+                and current.failure_count < COVER_READ_RETRY_LIMIT
+                and (read or current.request_armed_at is None)
+            ):
+                # 视频/库存读取失败不能直接毒化后续搭建。只在尚未上传或只读
+                # 核查阶段退避；已 armed 的上传在上方分支只能进入原身份核查。
+                current.error_code = code
+                _queue(
+                    session,
+                    current,
+                    read=read or bool(current.candidate_image_id),
+                    delay=local_retry_delay(current.failure_count),
+                )
+            elif (
                 isinstance(error, RemoteCallError)
                 and error.code in TRANSIENT_NOT_SENT
                 and current.failure_count < 3
@@ -1534,6 +1548,17 @@ LOCAL_TRANSIENT_CODES = frozenset(
 )
 LOCAL_RETRY_LIMIT = 8
 
+# SDK读取超时被统一包装为tiktok_response_error；库存索引短暂缺页会触发
+# cover_schema_unsupported。二者只在读取阶段有限重试，不放宽字段校验。
+COVER_READ_TRANSIENT_CODES = frozenset(
+    {"tiktok_response_error", "cover_schema_unsupported"}
+)
+COVER_READ_RETRY_LIMIT = 3
+
+
+def read_transient(error: Exception) -> bool:
+    return isinstance(error, DomainError) and error.code in COVER_READ_TRANSIENT_CODES
+
 
 def local_transient(error: Exception) -> bool:
     # 已发送的调用一律由适配器转成 RemoteCallError；普通 DomainError 只来自发送前的本地检查。
@@ -1571,10 +1596,16 @@ def _read_failure(
         current.failure_count += 1
         code = error.code if isinstance(error, DomainError) else "cover_response_error"
         if (
-            isinstance(error, RemoteCallError)
-            and error.code in TRANSIENT_NOT_SENT
-            and current.failure_count < 3
-        ) or (local_transient(error) and current.failure_count < LOCAL_RETRY_LIMIT):
+            (
+                isinstance(error, RemoteCallError)
+                and error.code in TRANSIENT_NOT_SENT
+                and current.failure_count < 3
+            )
+            or (
+                read_transient(error) and current.failure_count < COVER_READ_RETRY_LIMIT
+            )
+            or (local_transient(error) and current.failure_count < LOCAL_RETRY_LIMIT)
+        ):
             current.error_code = code
             _queue(
                 session,

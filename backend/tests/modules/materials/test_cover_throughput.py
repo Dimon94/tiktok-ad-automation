@@ -1226,8 +1226,14 @@ def test_invalid_armed_search_stops_instead_of_endless_automatic_reads(
     identities = matrix(source_env, 1, 1)
     wire[1].extend([{"list": [image(0)]}, page([]), {"failed_infos": {}}])
     drive(source_env, redis_client, identities[0])
-    wire[1].append({"list": [], "page_info": {"page": "invalid"}})
-    run(source_env, redis_client, identities[0], read=True)
+    # 图片索引的异常读取最多三次；每次保留原共享发送身份，不能重新POST。
+    for attempt in range(3):
+        wire[1].append({"list": [], "page_info": {"page": "invalid"}})
+        run(source_env, redis_client, identities[0], read=True)
+        current = job_state(identities[0])
+        assert current.failure_count == attempt + 1
+        assert current.status == ("UNKNOWN" if attempt == 2 else "VERIFYING")
+        assert bool(current.dispatch_id) is (attempt < 2)
     current = job_state(identities[0])
     assert current.status == "UNKNOWN" and current.dispatch_id is None
     assert sum(call[0] == "POST" for call in wire[0]) == 1

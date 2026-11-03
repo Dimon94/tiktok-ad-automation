@@ -1,0 +1,26 @@
+# 2026-11-03 封面读取恢复与重试死锁修复
+
+## 问题与修复范围
+
+P2CM 的32个广告已在上一轮按授权恢复。本轮修复后续搭建的共性缺口，不重新提交P2CM，不执行真实广告、授权或版权方写入。
+
+1. 视频封面、源图片详情及目标库存读取的`tiktok_response_error`和`cover_schema_unsupported`此前会立即落成BLOCKED。现在在实际读取阶段沿原job和共享批次有限重试，累计失败达到3次即停止；不放宽图片、分页或内容校验。源封面准备在未armed时可继续，已armed上传异常只能核查原身份，不能重发上传/共享。
+2. 新目标发现真实成功上传位置的历史源封面因上述读取异常阻断时，允许在原权限、路由、VID、素材摘要和实际上传所有权核验通过后接续。保留原失败计数，不因目标账户增加而重置预算；已发送、有回执、正在处理、预算耗尽及权限错误不走这条自动重试路径。不扩大后台两小时恢复扫描范围。
+3. PostgreSQL真实复现：共享Worker先持批次FOR UPDATE再等成员，重试事务先持成员、更新后又因外键检查请求批次KEY SHARE，形成死锁。共享批次主键不可变，将`_resume`和`_locked_batch`统一改为FOR NO KEY UPDATE，继续互斥批次写入，同时允许成员更新的外键检查。保留批次到成员及成员ID排序，不修改租约、围栏或外键。
+
+## 测试证据
+
+使用本轮独立PostgreSQL 18和Redis 8容器，不连接本地业务或生产数据库，外部SDK只在HTTP传输边界替身。
+
+- 先运行新增测试，确认读取异常直接BLOCKED、历史源不接续、未知上传后的读取不重试等6项失败；真实双连接测试另复现DeadlockDetected。修复后首轮9项通过，随后扩展为12项新增回归。
+- 相关整组首次结果：227通过、4失败、20个退役MCP通道用例未运行，耗时401.65秒。
+- 其中2项在未修改的`b5d7dbc4`源码及独立基线测试库同样失败：`test_every_sdk_call_releases_db_and_separately_checks_shared_admission`仍查逻辑操作Redis桶，而当前已按物理接口共桶；`test_invalid_armed_search_stops_instead_of_endless_automatic_reads`仍要求首次异常即终止，而原实现已有三次读取预算。已分别修正为真实物理桶核验和三次预算/始终只有一次POST核验，没有改变生产额度。
+- 另外2项为`test_continue_waits_for_batch_before_locking_any_member[continue/publish]`的测试埋点仅识别FOR UPDATE，未识别本次FOR NO KEY UPDATE。更新埋点后仍使用真实第二连接NOWAIT核验，不降低锁顺序断言。
+- 最终重跑新增12项及上述4项：16通过，19.90秒；与前轮227项合计覆盖本轮231项相关用例。生产逻辑在两轮之间没有继续变更；没有重复运行未受影响的大组，也没有将分批结果写成一次整组全绿。
+- Ruff检查、7个变更Python文件的格式检查、两个生产模块的ty类型检查及compileall通过；git diff --check通过。无前端代码变化，未运行前端构建或全量后端测试。
+
+完整本地测试输出和原版本对照保存在私有`.runtime/incident-20261102-P2CM/`的`fix-regressions.log`、`baseline-regressions.log`、`fix-targeted-final.log`；不提交测试环境配置或真实广告明细。
+
+## 交付边界
+
+本轮只修改并验证代码、测试和文档，无数据库结构/持久化合同/任务payload/配置/开关/额度/并发变化。按仓库只有明确要求才推送的规则，本轮本地提交，不自动推送或发布生产；生产不会因本地修改而自动生效。未创建备份或执行恢复演练。

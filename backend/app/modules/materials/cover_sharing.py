@@ -262,6 +262,24 @@ def _start_recorded_source(
             task_key=f"cover-source:{operation.id}",
             route=route,
         )
+        if result.state == "blocked" and result.task_id:
+            source = covers._job(db, context, result.task_id, lock=True)
+            if (
+                source.status == "BLOCKED"
+                and source.error_code in covers.COVER_READ_TRANSIENT_CODES
+                and source.failure_count < covers.COVER_READ_RETRY_LIMIT
+                and source.request_armed_at is None
+                and source.known_image_id is None
+                and source.dispatch_id is None
+                and not (source.claimed_until and source.claimed_until > covers._now())
+            ):
+                # 有真实原件上传证据的新搭建可接续旧读取失败，不受后台两小时
+                # 扫描窗口限制；保留失败计数，不能因每个目标到来而重置预算。
+                failures = source.failure_count
+                result = covers.request_cover_retry(
+                    db, context=context, job_id=source.id
+                )
+                source.failure_count = failures
         return result.state in {"queued", "ready"}
     return False
 
@@ -564,7 +582,9 @@ def _resume(
             MaterialCoverShareBatch.bc_id == first.bc_id,
             MaterialCoverShareBatch.actor_id == context.actor_id,
         )
-        .with_for_update()
+        # 批次主键不可变；NO KEY UPDATE仍互斥发送者，允许成员更新的
+        # 外键KEY SHARE检查，消除batch→job与retry job→FK batch的锁环。
+        .with_for_update(key_share=True)
     ).one()
     members = {UUID(member["job_id"]): member for member in batch.members}
     # 前置_claim已独立提交；这里保持批次→按ID锁成员的次序，不反向获取素材锁。
@@ -636,7 +656,7 @@ def _locked_batch(
             MaterialCoverShareBatch.bc_id == batch.bc_id,
             MaterialCoverShareBatch.actor_id == context.actor_id,
         )
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).one_or_none()
     if current is None:
@@ -1565,14 +1585,15 @@ def run_shared_cover(
                     active[identity] = job
             retry = (
                 isinstance(error, AccountAdmissionDeferred)
-                # 共享刚完成时图片搜索索引可能暂时返回不完整分页。
-                # 只重试已 armed 批次的读取，保留全部发送身份，最多三次；
-                # 绝不因为读取格式异常重新发送共享或绕过完整性校验。
+                # 共享前后都可能遇到读取超时或索引缺页；只在实际读取阶段
+                # 有限重试。已armed批次保留发送身份，绝不重新共享或放宽校验。
                 or (
-                    unknown
-                    and phase == "scan"
-                    and code == "cover_schema_unsupported"
-                    and all(job.failure_count < 3 for job in active.values())
+                    phase in {"source_lookup", "scan"}
+                    and covers.read_transient(error)
+                    and all(
+                        job.failure_count < covers.COVER_READ_RETRY_LIMIT
+                        for job in active.values()
+                    )
                 )
                 or (isinstance(error, DomainError) and error.retryable and not unknown)
                 or (

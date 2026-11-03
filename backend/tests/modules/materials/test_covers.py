@@ -870,15 +870,18 @@ def test_every_sdk_call_releases_db_and_separately_checks_shared_admission(
 
     wire[1].extend(
         [
-            lambda: inspect("materials.get_videos", video_info()),
+            # 准入已按真实物理接口共桶；逻辑操作名不是Redis端点身份。
+            lambda: inspect("GET /open_api/v1.3/file/video/ad/info/", video_info()),
             lambda: inspect(
-                "materials.upload_image_url",
+                "POST /open_api/v1.3/file/image/ad/upload/",
                 {"image_id": "target-image", "signature": "a" * 32},
             ),
         ]
     )
     run(source_env, redis_client, identity)
-    wire[1].append(lambda: inspect("materials.get_images", image_info(identity)))
+    wire[1].append(
+        lambda: inspect("GET /open_api/v1.3/file/image/ad/info/", image_info(identity))
+    )
     run(source_env, redis_client, identity, read=True)
     assert job_state(identity).status == "READY"
 
