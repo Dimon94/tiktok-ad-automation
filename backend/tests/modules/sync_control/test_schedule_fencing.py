@@ -16,7 +16,15 @@ from tests.modules.reporting.test_jobs import _route
 
 
 def _directory(
-    session, seed, advertiser="acc-1", query_extra=None, new_execution=False
+    session,
+    seed,
+    advertiser="acc-1",
+    query_extra=None,
+    new_execution=False,
+    *,
+    kind="ad",
+    ad_type="SMART_PLUS",
+    created_at=None,
 ):
     run = AdDirectoryRun(
         tenant_id=seed.tenant_id,
@@ -28,14 +36,15 @@ def _directory(
         frozen_route=_route(seed),
         partition_key=uuid4().hex * 2,
         query={
-            "kind": "ad",
-            "ad_type": "SMART_PLUS",
+            "kind": kind,
+            "ad_type": ad_type,
             "ids": [uuid4().hex],
             **(query_extra or {}),
         },
-        kind="ad",
-        ad_type="SMART_PLUS",
+        kind=kind,
+        ad_type=ad_type,
         claim_generation=1,
+        **({"created_at": created_at} if created_at is not None else {}),
     )
     session.add(run)
     session.flush()

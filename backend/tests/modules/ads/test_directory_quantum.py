@@ -26,6 +26,7 @@ def test_quantum_commits_each_page_and_yields_at_bound(
     session, directory_seed, redis_client, monkeypatch, workload, want
 ):
     _authority(session, directory_seed)
+    monkeypatch.setattr(tasks, "_deliver_committed_work", lambda *_: None)
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
     run = _run(session, directory_seed)
     run.workload = workload
@@ -585,6 +586,7 @@ def test_nonterminal_head_expiry_releases_own_claim_without_second_http(
     from app.modules.sync_control.worker_pool import background_lease_count
 
     run, args = background_case
+    monkeypatch.setattr(tasks, "_deliver_committed_work", lambda *_: None)
     seen = []
 
     def read(query):
