@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
-from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.sql.elements import ColumnElement
@@ -47,7 +46,6 @@ def due_tenants(
 ) -> Sequence[UUID]:
     from sqlmodel import select
 
-    from app.modules.reporting.store_models import ReportDispatchCursor
     from app.modules.sync_control.models import SyncSchedule
     from app.modules.tenants.models import Tenant
 
@@ -74,61 +72,3 @@ def due_tenants(
         )
         .limit(limit)
     ).all()
-
-
-def lock_tenant_cursor(
-    session: Session, tenant_id: UUID
-) -> ReportDispatchCursor | None:
-    from datetime import UTC
-
-    from sqlalchemy import text
-    from sqlalchemy.dialects.postgresql import insert
-    from sqlmodel import select
-
-    # 先跳过被锁的现有行。无条件INSERT ON CONFLICT即使最终不插入，
-    # 仍会等待另一事务更新的唯一索引项，使后面的SKIP LOCKED失去意义。
-    cursor = session.get(
-        ReportDispatchCursor,
-        tenant_id,
-        with_for_update={"skip_locked": True},
-        populate_existing=True,
-    )
-    if cursor is None:
-        existing = session.exec(
-            select(col(ReportDispatchCursor.tenant_id)).where(
-                col(ReportDispatchCursor.tenant_id) == tenant_id
-            )
-        ).first()
-        if existing is not None:
-            return None  # MVCC只读确认已存在，不能为锁竞争再次尝试初始化。
-        # 只在首次创建时竞争此非阻塞锁；并发初始化也不能在唯一键上等待。
-        if (
-            not session.connection()
-            .execute(
-                text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key,0))"),
-                {"key": f"tkada:sync-cursor-init:{tenant_id}"},
-            )
-            .scalar_one()
-        ):
-            return None
-        session.connection().execute(
-            insert(ReportDispatchCursor)
-            .values(
-                tenant_id=tenant_id,
-                last_dispatched_at=datetime(1970, 1, 1, tzinfo=UTC),
-                fairness_state={},
-            )
-            .on_conflict_do_nothing(index_elements=["tenant_id"])
-        )
-        cursor = session.get(
-            ReportDispatchCursor,
-            tenant_id,
-            with_for_update={"skip_locked": True},
-            populate_existing=True,
-        )
-    if cursor is None:
-        return None
-    from app.modules.sync_control.costs import settle_costs
-
-    settle_costs(session, cursor)
-    return cursor

@@ -7,19 +7,33 @@ import pytest
 from sqlmodel import select
 
 from app.modules.reporting.jobs import enqueue_job
-from app.modules.reporting.store_models import ReportSyncJob
+from app.modules.reporting.store_models import ReportDispatchCursor, ReportSyncJob
 from app.modules.sync_control.costs import (
     apply_cost_delta,
     record_cost_receipt,
     reserve_execution_cost,
     settle_costs,
 )
-from app.modules.sync_control.fairness import lock_tenant_cursor
 from app.modules.sync_control.models import SyncCostLedger
 from tests.modules.reporting.test_jobs import _route
 
 ENDPOINT = "GET /open_api/v1.3/report/integrated/get/"
 WEIGHTS = {"realtime": 50, "history": 30}
+
+
+def _cost_cursor(session, tenant_id):
+    # 成本单元用例显式持行锁；生产调度统一使用EndpointBudgets。
+    cursor = session.get(
+        ReportDispatchCursor, tenant_id, with_for_update=True, populate_existing=True
+    )
+    if cursor is None:
+        cursor = ReportDispatchCursor(
+            tenant_id=tenant_id, last_dispatched_at=datetime.now(UTC), fairness_state={}
+        )
+        session.add(cursor)
+        session.flush()
+    settle_costs(session, cursor)
+    return cursor
 
 
 def reserve(session, seed, *, generation=1, units=50):
@@ -48,7 +62,7 @@ def reserve(session, seed, *, generation=1, units=50):
             select(ReportSyncJob).where(ReportSyncJob.tenant_id == seed.tenant_id)
         ).one()
     job.claim_generation = generation
-    cursor = lock_tenant_cursor(session, seed.tenant_id)
+    cursor = _cost_cursor(session, seed.tenant_id)
     state = apply_cost_delta(
         cursor.fairness_state.get(ENDPOINT, {}), WEIGHTS, "history", 1
     )
@@ -499,7 +513,7 @@ def test_zero_delta_open_receipt_does_not_block_worker_closing(committed_sync_se
         identity = ledger.id
         record_cost_receipt(session, identity, producer, total_units=0, closed=False)
     with factory() as dispatch, dispatch.begin():
-        cursor = lock_tenant_cursor(dispatch, seed.tenant_id)
+        cursor = _cost_cursor(dispatch, seed.tenant_id)
         with factory() as worker, worker.begin():
             worker.execute(text("SET LOCAL lock_timeout='100ms'"))
             record_cost_receipt(worker, identity, producer, total_units=1, closed=True)

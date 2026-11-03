@@ -180,11 +180,14 @@ def enqueue_many_after_commit(
     keys = [task_key for _, task_key, _, _ in entries]
     if len(set(keys)) != len(keys):
         raise DomainError("dispatch_key_conflict", "同一批次内任务标识重复")
-    session.exec(
-        insert(DispatchTenantCursor)
-        .values(tenant_id=context.tenant_id)
-        .on_conflict_do_nothing(index_elements=["tenant_id"])
-    )
+    # 已存在的游标可能正由发送器更新；重复INSERT的唯一性检查也会等待它。
+    # 正常生产只需MVCC读确认，首次初始化才参与唯一键竞争。
+    if session.get(DispatchTenantCursor, context.tenant_id) is None:
+        session.exec(
+            insert(DispatchTenantCursor)
+            .values(tenant_id=context.tenant_id)
+            .on_conflict_do_nothing(index_elements=["tenant_id"])
+        )
     inserted: dict[str, UUID] = {
         task_key: identity
         for identity, task_key in session.exec(
