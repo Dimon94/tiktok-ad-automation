@@ -16,6 +16,90 @@ from tests.modules.reporting.test_jobs import _route
 from tests.modules.sync_control.test_schedule_fencing import _directory
 
 
+@pytest.mark.parametrize("kind", ["material_day", "material_links"])
+def test_background_fairness_rejection_falls_through_to_live_report(
+    session, sync_seed, redis_client, kind
+):
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.reporting import job_tasks  # noqa: F401
+    from app.modules.reporting.store_models import ReportDispatchCursor
+    from app.modules.sync_control.models import SyncWorkerPool
+    from app.modules.sync_control.schedule import report_endpoint
+    from app.modules.sync_control.worker_pool import background_lease_count
+
+    now = datetime.now(UTC)
+    occupied = _directory(session, sync_seed, advertiser="acc-2")
+    occupied.workload, occupied.status = "background", "RUNNING"
+    occupied.claimed_until = now + timedelta(minutes=1)
+    ready = _directory(session, sync_seed)
+    ready.workload = "background"
+    pool = session.get(SyncWorkerPool, "background") or SyncWorkerPool(
+        pool_name="background"
+    )
+    pool.capacity, pool.prefetch_slots = 1, 2
+    pool.fairness_state = {"directory": 100}
+    session.add(pool)
+    ids = []
+    for day, tier in [(now.date() - timedelta(days=2), "history"), (now.date(), "hot")]:
+        ids.append(
+            enqueue_job(
+                session,
+                tenant_id=sync_seed.tenant_id,
+                actor_id=sync_seed.actor_id,
+                bc_id="bc-a",
+                kind=kind,
+                tier=tier,
+                advertiser_ids=["acc-1"],
+                start=day,
+                end=day,
+                frozen_route=_route(sync_seed),
+                due_at=now,
+            )
+        )
+    cursor = session.get(ReportDispatchCursor, sync_seed.tenant_id)
+    if cursor is None:
+        cursor = ReportDispatchCursor(
+            tenant_id=sync_seed.tenant_id, last_dispatched_at=now
+        )
+        session.add(cursor)
+    endpoint = report_endpoint(kind)
+    cursor.fairness_state = {endpoint: {"history": 100, "realtime": -100}}
+    session.flush()
+    assert background_lease_count(session, now=now) == 1
+    assert (
+        dispatch_due(
+            session,
+            redis_client,
+            now=now + timedelta(seconds=1),
+            physical_slots=12,
+            max_claims=1,
+        )
+        == 1
+    )
+    historical, live = (session.get(ReportSyncJob, identity) for identity in ids)
+    assert historical.claim_token is None
+    assert live.execution_pool == "live-report" and live.claim_token is not None
+    assert background_lease_count(session, now=now) == 1
+    assert pool.fairness_state == {"directory": 100}
+    if kind == "material_day":
+        # 未获得后台轮次不是无需求；原历史份额不能因实时借用被清零。
+        assert cursor.fairness_state[endpoint]["history"] == 100
+        pool.fairness_state = {"facts": 100, "directory": -100}
+        assert (
+            dispatch_due(
+                session,
+                redis_client,
+                now=now + timedelta(seconds=2),
+                physical_slots=12,
+                max_claims=1,
+            )
+            == 1
+        )
+        assert historical.execution_pool == "background"
+        assert historical.claim_token is not None
+        assert background_lease_count(session, now=now) == 2
+
+
 @pytest.mark.parametrize("family", ["live-report", "live-directory", "publisher"])
 def test_background_pool_lock_does_not_block_independent_execution(
     committed_sync_seed, redis_client, family

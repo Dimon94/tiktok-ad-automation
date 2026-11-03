@@ -153,3 +153,159 @@ def test_saved_empty_age_cycle_reopens_when_later_work_arrives(
     _head(session, later).last_dispatched_at = now + timedelta(seconds=2)
     found = _candidate(session, now=now + timedelta(seconds=3), **args)
     assert found is not None and found[1].id == later.id
+
+
+def test_temporarily_locked_oldest_head_is_retried_after_other_work_finishes(
+    committed_sync_seed, redis_client
+):
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.ads.sync_models import AdDirectoryRun
+
+    seed, factory = committed_sync_seed
+    with factory() as db, db.begin():
+        runs = _runs(db, seed, 3, "lock-age")
+        ids = [r.id for r in runs]
+        now = datetime.now(UTC) + timedelta(seconds=1)
+        for r, age in zip(runs, [120, 60, 30], strict=True):
+            _head(db, r).last_dispatched_at = now - timedelta(minutes=age)
+    with factory() as blocker, blocker.begin():
+        blocker.get(AdDirectoryRun, ids[0], with_for_update=True)
+        with factory() as db, db.begin():
+            assert (
+                dispatch_directories_due(
+                    db, redis_client, now=now, limit=40, max_claims=1
+                )
+                == 1
+            )
+            assert (
+                _head(db, db.get(AdDirectoryRun, ids[1])).lease_execution_id == ids[1]
+            )
+    with factory() as db, db.begin():
+        assert (
+            dispatch_directories_due(
+                db, redis_client, now=now + timedelta(seconds=1), limit=40, max_claims=1
+            )
+            == 1
+        )
+        assert _head(db, db.get(AdDirectoryRun, ids[0])).lease_execution_id == ids[0]
+
+
+def test_lock_prefix_larger_than_retry_budget_cannot_lose_old_work_forever(
+    committed_sync_seed, redis_client
+):
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.ads.sync_models import AdDirectoryRun
+
+    seed, factory = committed_sync_seed
+    with factory() as db, db.begin():
+        runs = _runs(db, seed, 67, "many-lock-age")
+        ids = [r.id for r in runs]
+        now = datetime.now(UTC) + timedelta(seconds=1)
+        for i, r in enumerate(runs):
+            _head(db, r).last_dispatched_at = (
+                now - timedelta(days=2) + timedelta(seconds=i)
+            )
+    with factory() as blocker, blocker.begin():
+        blocker.exec(
+            select(AdDirectoryRun)
+            .where(AdDirectoryRun.id.in_(ids[:65]))
+            .with_for_update()
+        ).all()
+        with factory() as db, db.begin():
+            assert (
+                dispatch_directories_due(
+                    db, redis_client, now=now, limit=40, max_claims=1
+                )
+                == 0
+            )
+        with factory() as db, db.begin():
+            assert (
+                dispatch_directories_due(
+                    db, redis_client, now=now, limit=40, max_claims=1
+                )
+                == 1
+            )
+            assert (
+                _head(db, db.get(AdDirectoryRun, ids[65])).lease_execution_id == ids[65]
+            )
+    with factory() as db, db.begin():
+        assert (
+            dispatch_directories_due(
+                db, redis_client, now=now + timedelta(seconds=1), limit=40, max_claims=1
+            )
+            == 1
+        )
+        assert _head(db, db.get(AdDirectoryRun, ids[0])).lease_execution_id == ids[0]
+
+
+def test_successful_claims_reuse_verified_ineligible_prefix(
+    committed_sync_seed, redis_client
+):
+    from uuid import UUID
+
+    from sqlalchemy import event
+
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.sync_control.models import SyncScope
+
+    seed, factory = committed_sync_seed
+    with factory() as db, db.begin():
+        runs = _runs(db, seed, 2, "cached-empty")
+        now = datetime.now(UTC) + timedelta(seconds=1)
+        first = _head(db, runs[0])
+        scope = db.get(SyncScope, first.scope_id)
+        for index, run in enumerate(runs):
+            _head(db, run).last_dispatched_at = now - timedelta(hours=2 - index)
+        scopes, heads = [], []
+        for i in range(130):
+            identity = UUID(int=i + 1)
+            scopes.append(
+                dict(scope.model_dump(), id=identity, identity_digest=f"{i:064x}")
+            )
+            heads.append(
+                dict(
+                    first.model_dump(),
+                    scope_id=identity,
+                    last_dispatched_at=None,
+                    oldest_pending_at=now - timedelta(days=2),
+                )
+            )
+        db.execute(SyncScope.__table__.insert(), scopes)
+        db.execute(SyncSchedule.__table__.insert(), heads)
+    counts = []
+
+    def count_pages(_connection, _cursor, statement, parameters, _context, _many):
+        if (
+            "picked.id" in statement
+            and isinstance(parameters, dict)
+            and parameters.get("work_class") == "directory"
+        ):
+            counts.append(statement)
+
+    with factory() as db:
+        engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", count_pages)
+    try:
+        with factory() as db, db.begin():
+            assert (
+                dispatch_directories_due(
+                    db, redis_client, now=now, limit=40, max_claims=1
+                )
+                == 1
+            )
+        first_pages = len(counts)
+        counts.clear()
+        with factory() as db, db.begin():
+            assert (
+                dispatch_directories_due(
+                    db,
+                    redis_client,
+                    now=now + timedelta(seconds=1),
+                    limit=40,
+                    max_claims=1,
+                )
+                == 1
+            )
+        assert first_pages >= 3 and len(counts) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", count_pages)
