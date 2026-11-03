@@ -71,3 +71,10 @@ uv run python ../scripts/sync-query-cutover.py --kind all --apply --consumers-st
 - 查询观察首屏完成时间、页读取、同时构建数、pool wait、WAL、临时文件与最老dirty年龄；20相同查询和20不同冷查询分开统计。
 
 证据入口：[总体验收](../validation/sync-query-redesign-acceptance.md)、[总体方案](../superpowers/specs/2026-10-31-sync-query-redesign.md)、[实施计划](../superpowers/plans/2026-10-31-sync-query-redesign.md)。
+
+
+## 2026-11-04 生产后台容量配套
+
+当前生产清单八槽，必须同时实查持久化background池capacity8/prefetch12；4/0仍是通用模型初值，不代表生产目标。首次建立该生产配置，在完成全部旧消费者停止和全量映射之后，按本手册既有切换命令明确传入`--background-capacity 8 --background-prefetch-slots 12`，核对`mapping_complete`和实际池。既有环境不重跑映射/初始化，也不在消费者在线时执行配置入口；只改镜像时保留已验证8/12与fairness状态。
+
+后台每prefork进程数据库池2+1，八槽预算最多24连接；Recreate避免新旧进程叠加。Pod request/limit内存均6Gi，CPUrequest1/limit3，子进程任务后500MiB回收。实际容量需随负载重测，不将此生产值套用低配测试环境。

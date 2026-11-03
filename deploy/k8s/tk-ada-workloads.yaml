@@ -617,6 +617,8 @@ metadata:
     role: worker-ads-backfill
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   revisionHistoryLimit: 2
   selector:
     matchLabels:
@@ -639,11 +641,11 @@ spec:
           image: __APP_IMAGE__
           imagePullPolicy: IfNotPresent
           resources:
-            requests: {cpu: "250m", memory: 1536Mi}
-            limits: {cpu: "2", memory: 3Gi}
-          # 后台三槽持续繁忙而CPU有余量；增加一槽并为批量事实/素材处理预留内存。
-          # 连接池上限增加3，发布前重核共享数据库预算，零旧Pod后再启动新配置。
-          command: [celery, -A, "app.jobs.celery_app:celery_app", worker, -Q, "ads-backfill,ads-directory", --pool, prefork, --concurrency, "4", --loglevel=INFO, --hostname, "ads-backfill@%h"]
+            requests: {cpu: "1", memory: 6Gi}
+            limits: {cpu: "3", memory: 6Gi}
+          # 后台八槽与持久化background池8/12配套；发布使用Recreate避免新旧进程叠加。
+          # 子进程超过500MiB后完成当前任务再回收；6Gi内存申请保留整个Pod上限。
+          command: [celery, -A, "app.jobs.celery_app:celery_app", worker, -Q, "ads-backfill,ads-directory", --pool, prefork, --concurrency, "8", --max-memory-per-child, "512000", --loglevel=INFO, --hostname, "ads-backfill@%h"]
           readinessProbe:
             exec:
               command: [python, -c, "import socket; from app.jobs.celery_app import celery_app; r=celery_app.control.ping(destination=['ads-backfill@'+socket.gethostname()], timeout=5); raise SystemExit(0 if r else 1)"]
