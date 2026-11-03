@@ -683,9 +683,19 @@ def _run_directory_step(
         current.error_code = None
         current.next_attempt_at = datetime.now(UTC)
         current.claim_token = current.claimed_until = None
-        directory_outcome(session, current)
-        # 分页与末页均只持久due，再由同次全池补位统一领取新代数。
-        # 末页领取零HTTP成本、独立ads-publish队列，避免直投与扫描重复发布。
+        from app.modules.sync_control.directory_demand import (
+            handoff_directory_publication,
+        )
+
+        if page.complete and handoff_directory_publication(
+            session, current, now=datetime.now(UTC)
+        ):
+            # 本地发布不再回到整池HTTP年龄轮转；保留原代grant，消息键按新页码幂等。
+            # 旧读取重复消息被terminal_staged挡住，发布仍核验原run/gen/owner/route。
+            work.deliver = True
+        else:
+            directory_outcome(session, current)
+        # 非末页仍公平重领；末页释放的后台读取容量也可补给其他家族。
         work.refill = True
         session.commit()
         return "CONTINUE"
