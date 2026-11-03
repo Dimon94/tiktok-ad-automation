@@ -69,7 +69,7 @@ ORDERED_CANDIDATES = """
         WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class
             AND h.active IS TRUE AND h.next_eligible_at<=:now
             AND (h.leased_until IS NULL OR h.leased_until<=:now)
-        ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,
+        ORDER BY coalesce(h.last_dispatched_at,h.oldest_pending_at,picked.created_at),h.oldest_pending_at,
             picked.created_at,picked.id
         LIMIT 1
     """
@@ -219,10 +219,10 @@ def dispatch_directories_due(
             # 每物理接口维持独立工作类预算；只在该接口同时存在的类间比较。
             endpoint = min(
                 candidates,
-                key=lambda row: (
-                    row[0].last_dispatched_at is not None,
-                    row[0].last_dispatched_at or now,
-                ),
+                # 新头以真实入队时间参加轮转；NULL不能永久插到所有旧续点前面。
+                key=lambda row: row[0].last_dispatched_at
+                or row[0].oldest_pending_at
+                or row[1].created_at,
             )[0].physical_endpoint
             eligible = [
                 row for row in candidates if row[0].physical_endpoint == endpoint
@@ -466,7 +466,7 @@ AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
 AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
 AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
 AND (NOT :independent_only OR (r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)) OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
-ORDER BY h.last_dispatched_at ASC NULLS FIRST,h.oldest_pending_at,r.created_at,r.id LIMIT 1 FOR UPDATE OF h,s,e,q,r SKIP LOCKED
+ORDER BY coalesce(h.last_dispatched_at,h.oldest_pending_at,r.created_at),h.oldest_pending_at,r.created_at,r.id LIMIT 1 FOR UPDATE OF h,s,e,q,r SKIP LOCKED
 """),
                     {
                         **params,
