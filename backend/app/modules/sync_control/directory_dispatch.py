@@ -261,6 +261,9 @@ def dispatch_directories_due(
 
             if review_unstarted_directory(session, run, now):
                 directory_outcome(session, run)
+                # 复核/延期也已服务这个头；不扣HTTP费用，但必须让回其它头。
+                # 否则同scope的多个周期副本反复占据最老位置，空闲实时池也拿不到任务。
+                head.last_dispatched_at = now
                 session.flush()
                 progressed = True
                 continue
