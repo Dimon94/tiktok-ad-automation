@@ -4255,3 +4255,10 @@ eb3d已上线；清理连续成功，素材7天补全22.0→2.4秒但完整页�
 
 - 最终 cf8aba771a12823d2f6c8bb5d96675ccea523d79 已发布生产（b3a17f3d 仅构建未上线）；追加草稿 12 项，共 68 项通过。11角色/9 Worker/唯一Beat/精确镜像/实际配置/原schema0099/HTTPS及两个文件摘要核对通过，Jenkins恢复。
 - 生产新 adapter 只读查询本批五部剧，5/5 唯一完整匹配。浏览器原草稿正常，旧结果保留待用户点击“解析并准备”；未代用户创建链接或广告。不备份、不恢复演练、不额外全量排空。验收说明见 docs/validation/2026-11-02-rongliang-title-match.md。
+
+### 2026-11-03 素材新中台凭据迁移与两个账号补建
+
+- 用户授权核验并处理新中台对接，追加授权新建 xuyin、rongliang。旧 Key 对四租户均 INVALID_PROVISIONING_KEY；新增 midplatform-20261103 引用，更新四条绑定指纹及引用、默认引用和本机生产私有副本。Secret CAS 只改两项素材配置，正式发布锁保护，无代码镜像切换或 DDL。
+- xingyu、junbo 原账号真实签发通过后迁移；xuyin、rongliang 用本轮独立稳定幂等键新建，均 201 / replayed=false，新 company/user/apiKey ID 与加密公司 Key 已绑定，旧标识审计留存，投放密码未改。未重放旧请求。
+- 四租户真实生产 service 签发与浏览器从原菜单进入均通过，公司分别为星屿映画、骏伯、xuyin、rongliang。新两公司目录/能力接口四次均 200；两公司内置取源平台尚未配置，需素材中台管理员按公司授权配置，未复制他公司凭据。未创建素材订单或广告。
+- 逐角色正常重建加载配置，保留 6b806aa4461efd1f6a02bfdc20de97d3ab592b0f 镜像、资源/退出宽限、并发、四开关；最终进程核验与发布锁释放记录见[验收](validation/2026-11-03-material-platform-migration.md)。未备份或恢复演练；运行凭据和截图只在工作区 .local/material-migration-20261103/。
