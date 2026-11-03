@@ -136,7 +136,7 @@ def test_final_page_and_concurrent_scanner_have_one_publisher(
                 and publisher.published_at is not None
             )
             generation = publisher.payload["claim_generation"]
-            assert generation > reading_generation
+            assert generation in {reading_generation, reading_generation + 1}
             heads = db.exec(
                 select(SyncSchedule).where(SyncSchedule.lease_execution_id == identity)
             ).all()
@@ -147,9 +147,14 @@ def test_final_page_and_concurrent_scanner_have_one_publisher(
                     SyncCostLedger.generation == generation,
                 )
             ).one()
-            assert ledger.reserved_units == 0
+            # 无竞争时原代交接；head正被扫描器短锁时允许规范换代恢复。
+            assert ledger.reserved_units == (
+                1 if generation == reading_generation else 0
+            )
         assert [name for name, _ in sent] == ["ads.publish_step"]
-        assert read_task.run(**read_message) == "IGNORED"
+        assert read_task.run(**read_message) == (
+            "WAIT" if generation == reading_generation else "IGNORED"
+        )
         assert tasks.publish_step.run(**sent[0][1]["kwargs"]) == "READY"
         with Session(database_engine) as db:
             assert db.get(AdDirectoryRun, identity).status == "COMPLETE"

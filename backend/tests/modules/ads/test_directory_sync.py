@@ -620,7 +620,7 @@ def test_terminal_fetch_commits_page_and_durable_publish_successor(
     assert run.published_version is None and run.claimed_until is None
     assert run.next_page == 2
     assert session.get(AdDirectoryPage, (run.id, 1)).complete
-    assert run.claim_generation > generation  # 同次refill已持久领取本地publisher。
+    assert run.claim_generation == generation  # 末页沿原规范领取直接交接本地publisher。
     generation = run.claim_generation
     dispatch = session.exec(
         select(PendingDispatch).where(
@@ -1053,7 +1053,7 @@ def test_directory_recovers_after_admission_wait_from_the_same_page(
     assert tasks.run_directory_step(**args) == "CONTINUE"
     session.refresh(run)
     assert run.next_page == 3 and run.error_code is None
-    assert run.claim_generation > generation
+    assert run.claim_generation == generation
     args["claim_generation"] = run.claim_generation
     assert tasks.run_directory_step(**args, publish_only=True) == "READY"
     session.refresh(run)

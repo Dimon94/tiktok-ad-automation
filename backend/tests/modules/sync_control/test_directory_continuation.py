@@ -1,4 +1,4 @@
-"""两页真实 SDK/PG/Redis：每页重回公平领取，只有 HTTP 传输替身。"""
+"""真实 SDK/PG/Redis：读取页公平重领，末页沿同代合法领取直接交接本地发布。"""
 
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -26,9 +26,10 @@ from tests.modules.accounts.conftest import app_config as app_config
 from tests.modules.accounts.conftest import policy as policy
 
 
+@pytest.mark.parametrize("expire_grant", [False, True])
 @pytest.mark.parametrize("gateway_case", ["OFFICIAL_API"], indirect=True)
 def test_two_pages_reclaim_fairness_and_keep_complete_publication(
-    database_engine, redis_client, gateway_case, gateway_wire, monkeypatch
+    database_engine, redis_client, gateway_case, gateway_wire, monkeypatch, expire_grant
 ):
     context, route, advertiser = gateway_case
     monkeypatch.setattr(tasks.settings, "ADS_SYNC_ENABLED", True)
@@ -60,6 +61,21 @@ def test_two_pages_reclaim_fairness_and_keep_complete_publication(
         },
     )
     run_id = None
+    original_transport = gateway_wire["before"]["callback"]
+
+    def response_boundary():
+        if expire_grant and len(gateway_wire["sdk_calls"]) == 1:
+            # HTTP已合法开始，返回末页时原head过期；真实第二PG连接改变到期时间。
+            with Session(database_engine) as db, db.begin():
+                head = db.exec(
+                    select(SyncSchedule).where(
+                        SyncSchedule.lease_execution_id == run_id
+                    )
+                ).one()
+                head.leased_until = datetime.now(UTC) - timedelta(seconds=1)
+        original_transport()
+
+    gateway_wire["before"]["callback"] = response_boundary
     try:
         with Session(database_engine) as db, db.begin():
             run = AdDirectoryRun(
@@ -149,23 +165,64 @@ def test_two_pages_reclaim_fairness_and_keep_complete_publication(
             tasks.run_directory_step(**arguments, claim_generation=next_generation)
             == "CONTINUE"
         )
-        assert committed[-1].refill and not committed[-1].deliver
+        assert committed[-1].refill and committed[-1].deliver is not expire_grant
         assert (
             tasks.run_directory_step(**arguments, claim_generation=next_generation)
             == "WAIT"
         )
-        with Session(database_engine) as db, db.begin():
-            assert (
-                dispatch_directories_due(
-                    db,
-                    redis_client,
-                    now=datetime.now(UTC) + timedelta(seconds=1),
-                    limit=1,
+        from app.jobs.models import PendingDispatch
+        from app.jobs.tasks import guard_sync_dispatch
+        from app.modules.sync_control.dispatch_envelope import dispatch_envelope
+
+        with Session(database_engine) as db:
+            run = db.get(AdDirectoryRun, run_id)
+            publish_generation = run.claim_generation
+            assert publish_generation == next_generation
+        if expire_grant:
+            # 末页必须仍已提交；只有恢复器重新取得规范grant后才签发发布消息。
+            with Session(database_engine) as db, db.begin():
+                assert db.exec(
+                    select(AdDirectoryPage).where(
+                        AdDirectoryPage.run_id == run_id,
+                        AdDirectoryPage.complete.is_(True),
+                    )
+                ).one()
+                assert (
+                    dispatch_directories_due(
+                        db,
+                        redis_client,
+                        now=datetime.now(UTC) + timedelta(seconds=1),
+                        limit=1,
+                    )
+                    == 1
                 )
-                == 1
+                publish_generation = db.get(AdDirectoryRun, run_id).claim_generation
+                assert publish_generation > next_generation
+        with Session(database_engine) as db:
+            publication_message = db.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.tenant_id == context.tenant_id,
+                    PendingDispatch.task_name == "ads.publish_step",
+                )
+            ).one()
+            assert guard_sync_dispatch(
+                database_engine=database_engine,
+                task_name=publication_message.task_name,
+                tenant_id=str(context.tenant_id),
+                actor_id=str(context.actor_id),
+                payload=publication_message.payload,
+                dispatch=dispatch_envelope(publication_message),
             )
-            publish_generation = db.get(AdDirectoryRun, run_id).claim_generation
-            assert publish_generation > next_generation
+            assert (
+                db.exec(
+                    select(SyncSchedule).where(
+                        SyncSchedule.lease_execution_id == run_id
+                    )
+                )
+                .one()
+                .lease_execution_generation
+                == publish_generation
+            )
         assert (
             tasks.run_directory_step(
                 **arguments, claim_generation=publish_generation, publish_only=True
@@ -197,19 +254,16 @@ def test_two_pages_reclaim_fairness_and_keep_complete_publication(
                 next_generation,
                 publish_generation,
             }
+            assert sum(row.observed_units for row in costs) == 2
+            assert all(row.closed for row in costs)
             publication = next(
                 row for row in costs if row.generation == publish_generation
             )
-            assert publication.reserved_units == publication.observed_units == 0
-            assert publication.closed
-            assert all(
-                row.reserved_units == 1 and row.observed_units == 1 and row.closed
-                for row in costs
-                if row.generation != publish_generation
-            ), [
-                (r.physical_endpoint, r.reserved_units, r.observed_units, r.closed)
-                for r in costs
-            ]
+            if expire_grant:
+                assert publication.reserved_units == publication.observed_units == 0
+            else:
+                assert publication.reserved_units == publication.observed_units == 1
+                assert len(publication.producers) >= 2
         assert len(gateway_wire["sdk_calls"]) == 2
     finally:
         with Session(database_engine) as db, db.begin():
@@ -269,3 +323,36 @@ def test_class_arriving_between_pages_is_in_the_next_cost_vector(
     assert len(costs) == 1 and costs[0].work_class == "realtime"
     assert costs[0].eligible_weights == {"directory": 15, "realtime": 50}
     assert session.get(AdDirectoryRun, run.id).next_page == 2
+
+
+def test_publication_handoff_cannot_reuse_a_transferred_head(
+    committed_sync_seed,
+):
+    from app.jobs.models import PendingDispatch
+    from app.modules.sync_control.directory_demand import handoff_directory_publication
+    from tests.modules.sync_control.test_schedule_fencing import _directory
+
+    seed, factory = committed_sync_seed
+    with factory() as db, db.begin():
+        first, newer = _directory(db, seed), _directory(db, seed)
+        head = db.exec(
+            select(SyncSchedule).where(SyncSchedule.tenant_id == seed.tenant_id)
+        ).one()
+        token = uuid4()
+        due = datetime.now(UTC) + timedelta(minutes=4)
+        head.lease_execution_id = newer.id
+        head.lease_execution_generation = newer.claim_generation
+        head.lease_token, head.leased_until = token, due
+        db.flush()
+        assert not handoff_directory_publication(db, first, now=datetime.now(UTC))
+        assert (
+            head.lease_execution_id == newer.id
+            and head.lease_token == token
+            and head.leased_until == due
+        )
+        assert not db.exec(
+            select(PendingDispatch).where(
+                PendingDispatch.tenant_id == seed.tenant_id,
+                PendingDispatch.task_name == "ads.publish_step",
+            )
+        ).all()

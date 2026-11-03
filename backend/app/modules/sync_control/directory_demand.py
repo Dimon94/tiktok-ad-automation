@@ -245,6 +245,34 @@ def directory_fence(
             raise DomainError("directory_claim_lost", "目录子桶执行代数已失效")
 
 
+def handoff_directory_publication(
+    session: Session, run: AdDirectoryRun, *, now: datetime
+) -> bool:
+    """末页沿当前规范grant交接本地发布，不重新争取HTTP轮次或延长租约。"""
+    from app.modules.ads.directory_dispatch import enqueue_directory_step
+
+    # HTTP开始时有资格，不代表返回时原head仍有效；锁不到或已失效就保留
+    # 已暂存末页，由既有到期头规范恢复，不能让签发失败回滚有效平台数据。
+    head = session.exec(
+        select(SyncSchedule)
+        .where(
+            col(SyncSchedule.tenant_id) == run.tenant_id,
+            col(SyncSchedule.lease_execution_id) == run.id,
+            col(SyncSchedule.lease_execution_generation) == run.claim_generation,
+            col(SyncSchedule.leased_until) > now,
+        )
+        .limit(1)
+        .with_for_update(of=SyncSchedule, skip_locked=True)
+    ).first()
+    if head is None:
+        return False
+    # 与grant检查使用同一签发时点；page、合法消息和原grant同事务保留。
+    enqueue_directory_step(
+        session, run, publish_only=True, dispatch_ready=True, dispatched_at=now
+    )
+    return True
+
+
 def directory_outcome(session: Session, run: AdDirectoryRun) -> None:
     from app.modules.sync_control.schedule import (
         pending_execution_dues,

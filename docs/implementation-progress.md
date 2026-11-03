@@ -4311,3 +4311,5 @@ bbda3c12已上线并核验全部角色/schema/配置，Jenkins恢复；正常收
 9d3aa86d已上线且通过基础版本/角色/schema/配置验收，但积压和固定旧样本未通过整体性能验收。后台4→5同镜像容量试验仅观察到步骤+21%、真实后台完成合计约+5%，类型与耗时有差异，未据此继续扩容；已恢复4个实际进程与typed4/12，Jenkins恢复。详见[容量对照](validation/2026-11-03-sync-capacity-controlled-trial.md)。
 
 只读对照确认UUID先分64头再页内按年龄选择会漏掉页外更老候选：约12小时与6.9天的真实合格候选差异，候选SQL约30ms。现统一全局服务时间keyset分页，并以同一个Redis值冻结扫描上界、允许旧空轮次刷新；不改执行资格/owner/代数/配额/schema。四个真实PG反例先失败，最终329项相关PG/Redis通过、2跳过，Ruff/单模块mypy及独立复核通过；生产结果待补；此前未发布的prefix/自动补链候选仍只私存，没有混入本次修改。详见[全局服务时间](validation/2026-11-03-directory-global-service-age.md)。
+
+8af153f4已完成生产版本/11角色/9Worker/单Beat/schema0099/配置验收。固定30分钟目录-859、报表-32、真实未满足-1424，三个原旧样本前进一页；32个更老样本23个前进，但12个末页已暂存未发布，整体仍未达标。读取末页释放grant后零HTTP发布也重排全局，是已观察到的阶段交接卡点。已改有效原grant同事务交接canonical发布outbox；过期/转移/短锁仍保存末页并规范恢复。386项相关PG/Redis及真实SDK边界回归通过、2跳过；Ruff/双模块mypy及独立复核通过，待生产验证。20秒实际端点active0—2/上限6，无额度拒绝增量，因此本轮不放宽QPS或并发。详见[交接验收](validation/2026-11-03-directory-publication-handoff.md)。
