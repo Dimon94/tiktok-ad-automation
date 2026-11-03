@@ -162,6 +162,7 @@ def dispatch_directories_due(
             if count >= claim_limit:
                 break
             candidates = []
+            scan_positions: dict[str, tuple[str, UUID]] = {}
             for work_class in ("realtime", "directory"):
                 row = _candidate(
                     session,
@@ -171,6 +172,7 @@ def dispatch_directories_due(
                     independent_only=background_blocked,
                     discover_only=True,
                     redis=redis,
+                    scan_positions=scan_positions,
                 )
                 if row is not None:
                     candidates.append(row)
@@ -208,6 +210,10 @@ def dispatch_directories_due(
             head, run = next(
                 row for row in eligible if row[0].work_class == chosen_class
             )
+            # 只让公平获选的头消费发现位置，未获选类保留机会。
+            # 领取中的SQL回滚仍越过本次尝试；预期后台槽拒绝则在下方归还位置。
+            scan_key, scan_before = scan_positions[head.work_class]
+            redis.set(scan_key, str(head.scope_id), ex=86400)
             # 发现阶段不持公平游标锁；取得游标后仅按确定的主键短锁复验。
             claimed = _candidate(
                 session,
@@ -288,6 +294,7 @@ def dispatch_directories_due(
                         tenant_id=run.tenant_id,
                         advertiser_id=run.advertiser_id,
                     )
+                    redis.set(scan_key, str(scan_before), ex=86400)
                     continue
             run.claim_generation = next_generation
             session.execute(
@@ -345,6 +352,7 @@ def _candidate(
     discover_only: bool = False,
     selected: tuple[UUID, UUID] | None = None,
     redis: Redis | None = None,
+    scan_positions: dict[str, tuple[str, UUID]] | None = None,
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
     # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
     # 选出ID后再按主键锁定并重新校验所有围栏；冲突回滚小保存点，继续下一候选。
@@ -358,7 +366,8 @@ def _candidate(
         "excluded": excluded,
     }
     # 普通和独立池均扫描64头窄页；范围再大也不全扫后才LIMIT。
-    # 两种发现游标独立，在Redis推进，事务预算回滚也不会永远重扫同一前缀。
+    # 两种游标独立，无资格页直接前进，事务回滚也不会永远重扫同一前缀。
+    # 合格候选仅在公平获选后消费位置，后台槽拒绝仍保留原有机会。
     # 游标仅影响发现顺序；真实领取仍按主键复验全部围栏，不保存执行授权。
     mode = "independent" if independent_only else "all"
     scan_key = f"sync:directory-discovery:v2:{tenant_id}:{work_class}:{mode}"
@@ -405,11 +414,13 @@ def _candidate(
                 if found
                 else None
             )
-            scan_cursor = row.scope_id if row is not None else rows[-1].scope_id
-            if redis is not None:
-                redis.set(scan_key, str(scan_cursor), ex=86400)
             if row is None:
+                scan_cursor = rows[-1].scope_id
+                if redis is not None:
+                    redis.set(scan_key, str(scan_cursor), ex=86400)
                 continue
+            if scan_positions is not None:
+                scan_positions[work_class] = (scan_key, scan_cursor)
         if row is None:
             return None
         if discover_only:

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlmodel import select
 
 from app.modules.sync_control.directory_dispatch import _candidate
@@ -88,3 +89,64 @@ def test_periodic_deferrals_rotate_before_processing_every_copy(
         == 1
     )
     assert head.lease_execution_id == ready.id
+
+
+def test_background_denial_does_not_consume_the_oldest_candidate_turn(
+    committed_sync_seed, redis_client
+):
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from app.modules.sync_control.worker_pool import lock_background_pool
+
+    seed, factory = committed_sync_seed
+    now = datetime.now(UTC)
+    with factory() as db, db.begin():
+        candidates = []
+        for advertiser in ("acc-1", "acc-2"):
+            run = _directory(db, seed, advertiser=advertiser)
+            run.workload = "background"
+            child = db.exec(
+                select(SyncExecutionScope).where(
+                    SyncExecutionScope.directory_run_id == run.id
+                )
+            ).one()
+            candidates.append((child.scope_id, run.id))
+        candidates.sort()
+        old_scope, old_id = candidates[0]
+        for index, (scope, _) in enumerate(candidates):
+            head = db.get(SyncSchedule, (scope, "directory"))
+            head.last_dispatched_at = now - timedelta(days=2) + timedelta(days=index)
+    args = {"now": now + timedelta(seconds=1), "limit": 40, "max_claims": 1}
+    with factory() as blocker, blocker.begin():
+        assert lock_background_pool(blocker)
+        with factory() as db, db.begin():
+            assert dispatch_directories_due(db, redis_client, **args) == 0
+    with factory() as db, db.begin():
+        assert dispatch_directories_due(db, redis_client, **args) == 1
+        assert (
+            db.get(SyncSchedule, (old_scope, "directory")).lease_execution_id == old_id
+        )
+        assert db.get(AdDirectoryRun, old_id).claim_generation == 2
+
+
+@pytest.mark.parametrize("independent_only", [False, True])
+def test_discovery_does_not_consume_a_candidate_before_fair_selection(
+    session, sync_seed, redis_client, independent_only
+):
+    first = _directory(session, sync_seed, advertiser="acc-1")
+    second = _directory(session, sync_seed, advertiser="acc-2")
+    positions = {}
+    args = {
+        "tenant_id": sync_seed.tenant_id,
+        "work_class": "directory",
+        "now": datetime.now(UTC) + timedelta(seconds=1),
+        "independent_only": independent_only,
+        "discover_only": True,
+        "redis": redis_client,
+        "scan_positions": positions,
+    }
+    chosen = _candidate(session, **args)[1].id
+    assert chosen in {first.id, second.id}
+    # 另一个工作类获选时，此候选尚无实际服务，下一次仍应获得原有机会。
+    assert _candidate(session, **args)[1].id == chosen
