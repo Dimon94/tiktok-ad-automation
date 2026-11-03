@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
 from sqlmodel import select
 
 from app.integrations.tiktok.platform_quotas import sdk_endpoint
@@ -12,27 +13,75 @@ from app.modules.sync_control.models import SyncCostLedger, SyncSchedule
 from tests.modules.sync_control.test_schedule_fencing import _directory
 
 
-def test_creative_primary_budget_matches_real_ad_operation(session, sync_seed):
+@pytest.mark.parametrize(
+    "kind,ad_type,operation,physical",
+    [
+        (
+            "campaign",
+            "REGULAR",
+            "ads.get_campaigns",
+            "GET /open_api/v1.3/campaign/get/",
+        ),
+        (
+            "campaign",
+            "LEGACY_SMART_PLUS",
+            "ads.get_campaigns",
+            "GET /open_api/v1.3/campaign/get/",
+        ),
+        (
+            "campaign",
+            "SMART_PLUS",
+            "build.get_campaigns",
+            "GET /open_api/v1.3/smart_plus/campaign/get/",
+        ),
+        (
+            "adgroup",
+            "REGULAR",
+            "build.get_regular_adgroups",
+            "GET /open_api/v1.3/adgroup/get/",
+        ),
+        (
+            "adgroup",
+            "LEGACY_SMART_PLUS",
+            "build.get_regular_adgroups",
+            "GET /open_api/v1.3/adgroup/get/",
+        ),
+        (
+            "adgroup",
+            "SMART_PLUS",
+            "build.get_adgroups",
+            "GET /open_api/v1.3/smart_plus/adgroup/get/",
+        ),
+        ("ad", "REGULAR", "ads.get_ads", "GET /open_api/v1.3/ad/get/"),
+        ("ad", "LEGACY_SMART_PLUS", "ads.get_ads", "GET /open_api/v1.3/ad/get/"),
+        ("ad", "SMART_PLUS", "build.get_ads", "GET /open_api/v1.3/smart_plus/ad/get/"),
+        ("creative", "SMART_PLUS", "ads.get_ads", "GET /open_api/v1.3/ad/get/"),
+    ],
+)
+def test_directory_primary_budget_matches_verified_sdk_contract(
+    session, sync_seed, kind, ad_type, operation, physical
+):
     from app.integrations.tiktok.adapters.ads_read import compile_query
     from app.integrations.tiktok.contracts.ads import DirectoryQuery
 
     run = _directory(session, sync_seed)
-    run.kind = "creative"
+    run.kind, run.ad_type = kind, ad_type
     run.query = {
         "advertiser_id": "acc-1",
-        "kind": "creative",
-        "ad_type": "SMART_PLUS",
+        "kind": kind,
+        "ad_type": ad_type,
         "page": 1,
         "page_size": 100,
         "ids": [],
         "parent_ids": [],
         "include_deleted": True,
     }
-    operation, _ = compile_query(
+    compiled, _ = compile_query(
         DirectoryQuery(**{**run.query, "ids": (), "parent_ids": ()})
     )
-    assert operation == "ads.get_ads"
-    assert directory_endpoint(run) == sdk_endpoint(operation)
+    assert compiled == operation
+    assert sdk_endpoint(compiled) == physical
+    assert directory_endpoint(run) == physical
 
 
 def test_stale_head_is_rejected_before_any_fair_budget_or_reservation(
@@ -130,8 +179,6 @@ def test_endpoint_repair_preserves_fences_and_skips_live_grants_and_claims(
         (heads[0].scope_id, "realtime"),
     }
     assert all(h.physical_endpoint == sdk_endpoint("build.get_ads") for h in heads)
-    import pytest
-
     with pytest.raises(ValueError, match="old dispatchers"):
         repair_directory_endpoint_batch(session, now=now, apply=True)
     changed = repair_directory_endpoint_batch(

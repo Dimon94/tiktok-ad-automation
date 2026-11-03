@@ -489,12 +489,20 @@ def _owner_observations(
     return observed
 
 
-def material_child_superseded(session: Session, run: AdDirectoryRun) -> bool:
+def material_child_superseded(
+    session: Session,
+    run: AdDirectoryRun,
+    *,
+    frozen_owners: tuple[AdEntity, ...] | None = None,
+) -> bool:
     """全体冻结主观察确已被替换时提前让出；缺失事实不能视为较新证据。"""
-    scope = material_child_scope(session, run, include_materials=False)
-    if scope is None:
-        return False
-    ads, _bridges = scope
+    if frozen_owners is None:
+        scope = material_child_scope(session, run, include_materials=False)
+        if scope is None:
+            return False
+        frozen_owners, _bridges = scope
+    # 调用方只在同次量子、相同冻结输入下提供已校验owner；当前事实必须重新查。
+    ads = frozen_owners
     observed = _owner_observations(session, run, [ad.ref.remote_id for ad in ads])
     return all(
         ad.ref.remote_id in observed and observed[ad.ref.remote_id] > ad.observed_at
