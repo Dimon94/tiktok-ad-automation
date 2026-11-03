@@ -299,7 +299,8 @@ def reserve_background_turn(
         SyncWorkerPool, "background", with_for_update=True, populate_existing=True
     )
     assert pool is not None
-    if background_lease_count(session, now=now) >= pool.capacity + pool.prefetch_slots:
+    occupied = background_lease_count(session, now=now)
+    if occupied >= pool.capacity + pool.prefetch_slots:
         return False
     eligible = _ready_categories(
         session,
@@ -313,7 +314,10 @@ def reserve_background_turn(
     for key in eligible:
         state[key] += POOL_WEIGHTS[key]
     chosen = max(sorted(eligible), key=lambda key: (state[key], POOL_WEIGHTS[key]))
-    if chosen != category:
+    # 公平份额约束排队竞争，不能让实际空闲Worker等待另一家族的派发入口。
+    # 空槽允许当前已通过平台准入的候选借用；仍扣当前类份额，后续拥塞时偿还。
+    # 物理槽满后保留原公平赢家和总预取上限，不能无限借用扩大后台并发。
+    if chosen != category and occupied >= pool.capacity:
         return False
     state[category] -= sum(POOL_WEIGHTS[key] for key in eligible)
     for key in POOL_WEIGHTS.keys() - eligible:
