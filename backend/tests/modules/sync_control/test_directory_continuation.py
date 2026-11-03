@@ -359,7 +359,13 @@ def test_publication_handoff_cannot_reuse_a_transferred_head(
 
 
 @pytest.mark.parametrize(
-    "total,want,restricted", [(7, 5, False), (2, 2, False), (7, 2, True)]
+    "total,want,restricted,legacy_creative",
+    [
+        (7, 5, False, False),
+        (2, 2, False, False),
+        (7, 2, True, False),
+        (2, 2, False, True),
+    ],
 )
 @pytest.mark.parametrize("gateway_case", ["OFFICIAL_API"], indirect=True)
 def test_background_quantum_uses_real_sdk_admission_for_every_page(
@@ -371,10 +377,12 @@ def test_background_quantum_uses_real_sdk_admission_for_every_page(
     total,
     want,
     restricted,
+    legacy_creative,
 ):
+    from app.integrations.tiktok.platform_quotas import sdk_endpoint
     from app.jobs.admission import admission_keys
     from app.modules.ads.directory_dispatch import directory_step_key
-    from app.modules.sync_control.directory_demand import directory_endpoint
+    from app.modules.sync_control import directory_demand, directory_dispatch
     from app.modules.sync_control.occupancy import occupancy_keys
 
     context, route, advertiser = gateway_case
@@ -401,13 +409,23 @@ def test_background_quantum_uses_real_sdk_admission_for_every_page(
         gateway_wire,
         "OFFICIAL_API",
         {
-            "campaign_get": [
+            ("ad_get" if legacy_creative else "campaign_get"): [
                 page(
                     [
                         {
                             "advertiser_id": advertiser,
-                            "campaign_id": f"quantum-{i}",
-                            "campaign_name": f"page-{i}",
+                            **(
+                                {
+                                    "ad_id": f"quantum-{i}",
+                                    "smart_plus_ad_id": f"asset-{i}",
+                                    "ad_name": f"page-{i}",
+                                }
+                                if legacy_creative
+                                else {
+                                    "campaign_id": f"quantum-{i}",
+                                    "campaign_name": f"page-{i}",
+                                }
+                            ),
                             "operation_status": "ENABLE",
                         }
                     ],
@@ -431,14 +449,14 @@ def test_background_quantum_uses_real_sdk_admission_for_every_page(
                 channel=route.channel,
                 frozen_route=route.model_dump(mode="json"),
                 partition_key=uuid4().hex * 2,
-                kind="campaign",
-                ad_type="REGULAR",
+                kind="creative" if legacy_creative else "campaign",
+                ad_type="SMART_PLUS" if legacy_creative else "REGULAR",
                 claim_generation=1,
                 workload="background",
                 query={
                     "advertiser_id": advertiser,
-                    "kind": "campaign",
-                    "ad_type": "REGULAR",
+                    "kind": "creative" if legacy_creative else "campaign",
+                    "ad_type": "SMART_PLUS" if legacy_creative else "REGULAR",
                     "page": 1,
                     "page_size": 1,
                     "ids": [],
@@ -449,16 +467,28 @@ def test_background_quantum_uses_real_sdk_admission_for_every_page(
             db.add(run)
             db.flush()
             identity = run.id
-            register_directory_run(db, run, new_execution=True)
-            assert (
-                dispatch_directories_due(
-                    db, redis_client, now=datetime.now(UTC), limit=1
+            with monkeypatch.context() as old_code:
+                if legacy_creative:
+                    # 旧head和queued保持原端点；新worker在实际发送边界交接到regular。
+                    def old_endpoint(_run):
+                        return sdk_endpoint("build.get_ads")
+
+                    old_code.setattr(
+                        directory_demand, "directory_endpoint", old_endpoint
+                    )
+                    old_code.setattr(
+                        directory_dispatch, "directory_endpoint", old_endpoint
+                    )
+                register_directory_run(db, run, new_execution=True)
+                assert (
+                    dispatch_directories_due(
+                        db, redis_client, now=datetime.now(UTC), limit=1
+                    )
+                    == 1
                 )
-                == 1
-            )
+                endpoint = directory_demand.directory_endpoint(run)
             generation = run.claim_generation
             reservation = directory_step_key(run)
-            endpoint = directory_endpoint(run)
         scope = (
             tasks.settings.TIKTOK_APP_ID,
             endpoint,
@@ -467,7 +497,14 @@ def test_background_quantum_uses_real_sdk_admission_for_every_page(
             endpoint,
         )
         queued = occupancy_keys(*scope)
-        active = admission_keys(*scope)
+        actual_endpoint = sdk_endpoint("ads.get_ads") if legacy_creative else endpoint
+        active = admission_keys(
+            tasks.settings.TIKTOK_APP_ID,
+            actual_endpoint,
+            context.tenant_id,
+            advertiser,
+            actual_endpoint,
+        )
         assert all(redis_client.zscore(key, reservation) is not None for key in queued)
         previous = gateway_wire["before"]["callback"]
         leases = []
@@ -515,16 +552,23 @@ def test_background_quantum_uses_real_sdk_admission_for_every_page(
                 )
                 == want
             )
-            ledger = db.exec(
+            ledgers = db.exec(
                 select(SyncCostLedger).where(
                     SyncCostLedger.directory_run_id == identity
                 )
-            ).one()
-            assert (
-                ledger.reserved_units == 5
-                and ledger.observed_units == want
-                and ledger.closed
+            ).all()
+            primary = next(row for row in ledgers if row.physical_endpoint == endpoint)
+            assert primary.reserved_units == 5 and all(row.closed for row in ledgers)
+            assert {row.physical_endpoint: row.observed_units for row in ledgers} == (
+                {endpoint: 0, actual_endpoint: want}
+                if legacy_creative
+                else {endpoint: want}
             )
+            if legacy_creative:
+                assert all(
+                    "/ad/get/" in call[1] and "/smart_plus/" not in call[1]
+                    for call in gateway_wire["sdk_calls"]
+                )
         assert committed[-1].refill and committed[-1].deliver == (total == 2)
         assert tasks.run_directory_step(**args) == ("FAILED" if restricted else "WAIT")
         assert len(gateway_wire["sdk_calls"]) == want

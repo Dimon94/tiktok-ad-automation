@@ -253,7 +253,19 @@ def run_directory_step(
                         .with_for_update(skip_locked=True)
                     ).one_or_none()
                     if queued is not None:
-                        endpoint = directory_endpoint(queued)
+                        from app.modules.sync_control.models import SyncSchedule
+
+                        endpoint = session.exec(
+                            select(SyncSchedule.physical_endpoint)
+                            .where(
+                                SyncSchedule.tenant_id == queued.tenant_id,
+                                SyncSchedule.lease_execution_id == queued.id,
+                                SyncSchedule.lease_execution_generation
+                                == queued.claim_generation,
+                                col(SyncSchedule.lease_token).is_not(None),
+                            )
+                            .limit(1)
+                        ).first() or directory_endpoint(queued)
                         release_dispatch(
                             redis_client,
                             reservation_id=directory_step_key(queued),
@@ -501,7 +513,11 @@ def _run_directory_step(
             # 业务run锁在前，scope/child完整围栏在领取后核验；这里只验证
             # canonical dispatcher持久授予本代HTTP资格，不能由旧消息自行续页。
             authorized = session.exec(
-                select(SyncSchedule.lease_token, SyncSchedule.leased_until)
+                select(
+                    SyncSchedule.lease_token,
+                    SyncSchedule.leased_until,
+                    SyncSchedule.physical_endpoint,
+                )
                 .join(SyncScope, col(SyncScope.id) == col(SyncSchedule.scope_id))
                 .join(
                     SyncExecutionScope,
@@ -525,7 +541,7 @@ def _run_directory_step(
                 .limit(1)
             ).first()
             if authorized is None or (
-                continuing and tuple(authorized) != work.head_fence
+                continuing and tuple(authorized[:2]) != work.head_fence
             ):
                 if continuing:
                     from app.modules.sync_control.directory_demand import (
@@ -547,11 +563,13 @@ def _run_directory_step(
                     work.refill = True
                 return "WAIT"
             if not continuing:
-                work.head_fence = cast(tuple[UUID, datetime], tuple(authorized))
+                work.head_fence = cast(tuple[UUID, datetime], tuple(authorized[:2]))
             from app.modules.ads.directory_dispatch import directory_step_key
             from app.modules.sync_control.directory_demand import directory_endpoint
 
-            endpoint = directory_endpoint(run)
+            # 原消息按规范head实际签发的端点预留；映射修正后的旧消息仍须
+            # 归还旧queued，真实发送由现有scope转换再逐次准入正确接口。
+            endpoint = authorized[2]
             work.reservation = work.reservation or (
                 directory_step_key(run),
                 {

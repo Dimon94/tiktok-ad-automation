@@ -111,7 +111,8 @@ def promote_directory_heads(session: Session, run_ids: Collection[UUID]) -> None
 
 def directory_endpoint(run: AdDirectoryRun) -> str:
     if run.kind == "creative":
-        return sdk_endpoint("build.get_ads")
+        # Smart+创意明细及素材子页均由官方ad/get读取；资产组才走smart_plus/ad/get。
+        return sdk_endpoint("ads.get_ads")
     if run.ad_type == "SMART_PLUS":
         return sdk_endpoint(
             {

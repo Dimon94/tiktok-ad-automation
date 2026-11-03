@@ -262,6 +262,11 @@ def _dispatch_directories_due(
                     excluded_run_ids=unavailable_run_ids,
                 )
                 if row is not None:
+                    if row[0].physical_endpoint != directory_endpoint(row[1]):
+                        # 持久头必须先完成端点校正；不能在A接口预算里给B接口记账。
+                        unavailable_run_ids.add(row[1].id)
+                        progressed = True
+                        continue
                     candidates.append(row)
             if not candidates:
                 continue
@@ -315,6 +320,11 @@ def _dispatch_directories_due(
                 progressed = True
                 continue
             head, run = claimed
+            if head.physical_endpoint != endpoint or directory_endpoint(run) != endpoint:
+                # 发现后还有一次短锁复验；外部校正不能让本次跨接口写成本。
+                unavailable_run_ids.add(run.id)
+                progressed = True
+                continue
             # 领取前沿用原完整覆盖/周期校准复验；唤醒不是已投递执行，
             # 真正有页、租约或本代消息的运行仍由原保护拒绝改写。
             from app.modules.ads.directory_backlog import review_unstarted_directory
