@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import NamedTuple
+import json
+from datetime import UTC, datetime, timedelta
+from typing import NamedTuple, cast
 from uuid import UUID, uuid4
 
 from redis import Redis
@@ -38,17 +39,34 @@ class CandidateKey(NamedTuple):
     id: UUID
 
 
+class DiscoveryCursor(NamedTuple):
+    at: datetime
+    scope_id: UUID
+    until: datetime
+
+    def encode(self) -> str:
+        return json.dumps(
+            [self.at.isoformat(), str(self.scope_id), self.until.isoformat()]
+        )
+
+
+DISCOVERY_START = datetime.min.replace(tzinfo=UTC)
+
+
 PAGED_CANDIDATES = """
 WITH heads AS MATERIALIZED (
  SELECT h.scope_id,h.work_class,h.tenant_id,s.advertiser_id,s.owner_epoch,
-        h.last_dispatched_at,h.oldest_pending_at
+        h.last_dispatched_at,h.oldest_pending_at,
+        coalesce(h.last_dispatched_at,h.oldest_pending_at,'epoch'::timestamptz) discovery_at
  FROM sync_schedule h JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
  WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class AND h.active IS TRUE
  AND h.next_eligible_at<=:now AND (h.leased_until IS NULL OR h.leased_until<=:now)
- AND h.scope_id>:scan_cursor AND s.resource LIKE 'directory:%'
- ORDER BY h.scope_id LIMIT 64
+ AND coalesce(h.last_dispatched_at,h.oldest_pending_at,'epoch'::timestamptz)<=:scan_until
+ AND (coalesce(h.last_dispatched_at,h.oldest_pending_at,'epoch'::timestamptz),h.scope_id)
+     >(:scan_at,:scan_cursor) AND s.resource LIKE 'directory:%'
+ ORDER BY coalesce(h.last_dispatched_at,h.oldest_pending_at,'epoch'::timestamptz),h.scope_id LIMIT 64
 )
-SELECT h.scope_id,h.work_class,h.last_dispatched_at,h.oldest_pending_at,
+SELECT h.scope_id,h.work_class,h.last_dispatched_at,h.oldest_pending_at,h.discovery_at,
        picked.id,picked.created_at FROM heads h
 LEFT JOIN LATERAL (
  SELECT r.id,r.created_at FROM sync_execution_scope e
@@ -65,7 +83,7 @@ LEFT JOIN LATERAL (
  OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0))
  OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
  ORDER BY r.created_at,r.id LIMIT 1
-) picked ON TRUE ORDER BY h.scope_id
+) picked ON TRUE ORDER BY h.discovery_at,h.scope_id
 """
 
 
@@ -172,7 +190,7 @@ def dispatch_directories_due(
             if count >= claim_limit:
                 break
             candidates = []
-            scan_positions: dict[str, tuple[str, UUID]] = {}
+            scan_positions: dict[str, tuple[str, str, str]] = {}
             for work_class in ("realtime", "directory"):
                 row = _candidate(
                     session,
@@ -225,8 +243,8 @@ def dispatch_directories_due(
             )
             # 只让公平获选的头消费发现位置，未获选类保留机会。
             # 领取中的SQL回滚仍越过本次尝试；预期后台槽拒绝则在下方归还位置。
-            scan_key, scan_before = scan_positions[head.work_class]
-            redis.set(scan_key, str(head.scope_id), ex=86400)
+            scan_key, scan_before, scan_after = scan_positions[head.work_class]
+            redis.set(scan_key, scan_after, ex=86400)
             # 发现阶段不持公平游标锁；取得游标后仅按确定的主键短锁复验。
             claimed = _candidate(
                 session,
@@ -311,7 +329,7 @@ def dispatch_directories_due(
                         tenant_id=run.tenant_id,
                         advertiser_id=run.advertiser_id,
                     )
-                    redis.set(scan_key, str(scan_before), ex=86400)
+                    redis.set(scan_key, scan_before, ex=86400)
                     continue
             run.claim_generation = next_generation
             session.execute(
@@ -369,7 +387,7 @@ def _candidate(
     discover_only: bool = False,
     selected: tuple[UUID, UUID] | None = None,
     redis: Redis | None = None,
-    scan_positions: dict[str, tuple[str, UUID]] | None = None,
+    scan_positions: dict[str, tuple[str, str, str]] | None = None,
     excluded_run_ids: set[UUID] | None = None,
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
     # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
@@ -383,18 +401,22 @@ def _candidate(
         "independent_only": independent_only,
         "excluded": excluded,
     }
-    # 普通和独立池均扫描64头窄页；范围再大也不全扫后才LIMIT。
-    # 两种游标独立，无资格页直接前进，事务回滚也不会永远重扫同一前缀。
-    # 合格候选仅在公平获选后消费位置，后台槽拒绝仍保留原有机会。
-    # 游标仅影响发现顺序；真实领取仍按主键复验全部围栏，不保存执行授权。
+    # 先按真实服务时间取64头窄页，再检查执行资格。UUID只消除同时间的歧义，
+    # 不能先按随机UUID分区后仅做页内年龄排序，否则整页外的数日旧头会被越过。
+    # 两种模式独立保存(服务时间,scope)发现位置；SQL回滚不会丢失无资格页进度。
+    # 扫描上界跨调用冻结，避免热点头服务时间不断更新使游标永远追赶now而不回绕。
+    # 未获公平工作类/后台槽仍保留完整原位置/上界，真实领取继续复验所有围栏。
     mode = "independent" if independent_only else "all"
-    scan_key = f"sync:directory-discovery:v2:{tenant_id}:{work_class}:{mode}"
-    scan_cursor = UUID(int=0)
+    scan_key = f"sync:directory-discovery-age:v1:{tenant_id}:{work_class}:{mode}"
+    scan_cursor = DiscoveryCursor(DISCOVERY_START, UUID(int=0), now)
     if redis is not None:
         value = redis.get(scan_key)
         if value:
-            scan_cursor = UUID(
-                value.decode() if isinstance(value, bytes) else str(value)
+            stamp, identity, until = json.loads(cast(bytes | str, value))
+            scan_cursor = DiscoveryCursor(
+                datetime.fromisoformat(stamp),
+                UUID(identity),
+                datetime.fromisoformat(until),
             )
     wrapped = False
     row: CandidateKey | None
@@ -406,21 +428,35 @@ def _candidate(
         else:
             rows = (
                 session.connection()
-                .execute(text(PAGED_CANDIDATES), {**params, "scan_cursor": scan_cursor})
+                .execute(
+                    text(PAGED_CANDIDATES),
+                    {
+                        **params,
+                        "scan_at": scan_cursor.at,
+                        "scan_cursor": scan_cursor.scope_id,
+                        "scan_until": scan_cursor.until,
+                    },
+                )
                 .all()
             )
             if not rows:
-                if wrapped or scan_cursor.int == 0:
+                if wrapped or (
+                    scan_cursor.at == DISCOVERY_START and scan_cursor.until >= now
+                ):
                     return None
-                scan_cursor, wrapped = UUID(int=0), True
+                # 已保存的空轮次也必须在后续调用重开，否则新任务会被旧上界永久挡住。
+                scan_cursor, wrapped = (
+                    DiscoveryCursor(DISCOVERY_START, UUID(int=0), now),
+                    True,
+                )
                 if redis is not None:
-                    redis.set(scan_key, str(scan_cursor), ex=86400)
+                    redis.set(scan_key, scan_cursor.encode(), ex=86400)
                 continue
-            # 页间按scope游标轮转，页内服务最久未获机会的真实候选。
+            # 页间与页内使用同一服务时间顺序；资格过滤仍只探测这64个头。
             found = min(
                 (r for r in rows if r.id is not None),
                 key=lambda r: (
-                    r.last_dispatched_at or r.oldest_pending_at or r.created_at,
+                    r.discovery_at,
                     r.scope_id,
                 ),
                 default=None,
@@ -431,12 +467,21 @@ def _candidate(
                 else None
             )
             if row is None:
-                scan_cursor = rows[-1].scope_id
+                scan_cursor = DiscoveryCursor(
+                    rows[-1].discovery_at, rows[-1].scope_id, scan_cursor.until
+                )
                 if redis is not None:
-                    redis.set(scan_key, str(scan_cursor), ex=86400)
+                    redis.set(scan_key, scan_cursor.encode(), ex=86400)
                 continue
             if scan_positions is not None:
-                scan_positions[work_class] = (scan_key, scan_cursor)
+                assert found is not None
+                scan_positions[work_class] = (
+                    scan_key,
+                    scan_cursor.encode(),
+                    DiscoveryCursor(
+                        found.discovery_at, found.scope_id, scan_cursor.until
+                    ).encode(),
+                )
         if row is None:
             return None
         if discover_only:
