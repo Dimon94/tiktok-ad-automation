@@ -968,3 +968,51 @@ def test_existing_incomplete_source_can_backfill_children_idempotently(
         )
     ).one()
     assert child.workload == source.workload and child.status == "QUEUED"
+
+
+@pytest.mark.parametrize(
+    ("service", "expected_children"),
+    [("status", 0), ("status_missing", 0), ("identity", 1)],
+)
+def test_refresh_purpose_controls_optional_material_children(
+    session, directory_seed, monkeypatch, service, expected_children
+):
+    monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+    _authority(session, directory_seed)
+    source = _run(session, directory_seed, kind="ad", ad_type="SMART_PLUS")
+    source.query = {**source.query, "directory_service_v1": service}
+    known = AdMaterialReference(
+        tenant_id=source.tenant_id,
+        advertiser_id=source.advertiser_id,
+        ad_remote_id="status-ad",
+        platform_material_id="video-status-ad",
+        ad_material_id="material-status-ad",
+        material_type="VIDEO",
+        name="known",
+        creative_ids=["creative-status-ad"],
+        complete=True,
+        published_version=1,
+    )
+    session.add(known)
+    session.flush()
+    stage_directory_page(
+        session,
+        run_id=source.id,
+        claim_generation=1,
+        page=_source_page(directory_seed, 1, [("status-ad", "group")], terminal=True),
+    )
+    publish_directory(session, run_id=source.id, claim_generation=1)
+    children = session.exec(
+        select(AdDirectoryRun).where(
+            AdDirectoryRun.tenant_id == source.tenant_id,
+            AdDirectoryRun.kind == "creative",
+        )
+    ).all()
+    assert len(children) == expected_children
+    session.refresh(known)
+    assert known.complete
+    ad = session.get(
+        AdObject, (source.tenant_id, source.advertiser_id, "ad", "status-ad")
+    )
+    assert ad is not None and ad.operation_status == "ENABLE"
+    assert source.status == "COMPLETE"
