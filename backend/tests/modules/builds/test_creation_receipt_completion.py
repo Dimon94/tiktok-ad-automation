@@ -9,6 +9,7 @@ from app.modules.builds import submission_catalog, submissions
 from app.modules.builds.execution_models import ExecutionStep, StepEvidence, Submission
 from app.modules.builds.execution_window import window_units
 from app.modules.builds.routes import save_attempt_context
+from tests.modules.builds.test_carousel_execution import carousel_case as carousel_case
 from tests.modules.builds.test_execution import executable as executable
 from tests.modules.builds.test_previews import prepared as prepared
 from tests.modules.builds.test_submission_queries import expanded
@@ -243,12 +244,19 @@ def test_legacy_delivery_is_acknowledged_without_get_or_altering_facts(
 
 @pytest.mark.parametrize("executable", [180], indirect=True)
 def test_historical_receipt_projection_keeps_180_unit_queries_bounded(
-    executable, record_property
+    executable, record_property, monkeypatch
 ):
     from sqlalchemy import event
 
+    from app.modules.builds import historical_read, recovery
+    from app.modules.builds.execution_schemas import Recovery
     from tests.modules.builds.legacy_readbacks import add_legacy_readbacks
 
+    # 本用例测真实列表/详情数量 SQL，恢复操作建议与其无关；小图行为用例仍走完整路径。
+    monkeypatch.setattr(recovery, "recovery_summary", lambda *_a, **_kw: Recovery())
+    monkeypatch.setattr(
+        historical_read, "historical_read_available", lambda *_a, **_kw: False
+    )
     engine, context, ids = executable
     with Session(engine) as session, session.begin():
         source = session.get(ExecutionStep, ids["CAMPAIGN"][0])
@@ -262,7 +270,10 @@ def test_historical_receipt_projection_keeps_180_unit_queries_bounded(
         connection = session.connection()
 
         def capture(_conn, _cursor, statement, parameters, _ctx, _many):
-            if statement.startswith("WITH catalog_submissions"):
+            if statement.startswith("WITH catalog_submissions") or (
+                statement.startswith("WITH scope_basis")
+                and "SELECT count(*) planned_c" in statement
+            ):
                 statements.append((statement, parameters))
 
         event.listen(connection, "before_cursor_execute", capture)
@@ -272,16 +283,21 @@ def test_historical_receipt_projection_keeps_180_unit_queries_bounded(
                 session, context=context, bc_id=row.bc_id, status_group="completed"
             )
             assert page.total == 1 and page.items[0].status == "COMPLETED"
+            summary = submissions.get_submission(
+                session, context=context, submission_id=row.id
+            )
+            assert page.items[0].submitted == summary.submitted
         finally:
             event.remove(connection, "before_cursor_execute", capture)
-        assert len(statements) == 1
+        assert len(statements) == 2
         window = window_units().compile(
             dialect=connection.dialect, compile_kwargs={"literal_binds": True}
         )
         statements.append((str(window), {}))
         # 用读取的数据块数约束查询规模：与机器负载无关，不像耗时那样在并行检查中波动。
-        # 实测约 13.8 万块和 8.5 千块，预算留约 3 倍余量，仍能发现退化为全量扫描。
-        budgets = (400_000, 50_000)
+        # 不先 ANALYZE：新预览写入或迁移后统计尚未刷新，也必须避免逐组合重扫。
+        # 列表预算保持不变；单提交数量汇总不得超过同量级窗口查询预算。
+        budgets = (400_000, 50_000, 50_000)
         for index, (statement, params) in enumerate(statements):
             plan = connection.exec_driver_sql(
                 "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + statement, params
@@ -294,3 +310,20 @@ def test_historical_receipt_projection_keeps_180_unit_queries_bounded(
             )
             record_property(f"receipt_projection_query_{index}_blocks", blocks)
             assert blocks < budgets[index], plan
+
+
+@pytest.mark.parametrize("carousel_case", [True], indirect=True)
+def test_carousel_exclusion_counts_match_catalog_and_summary(carousel_case):
+    engine, context, _, identity, _, _ = carousel_case
+    with Session(engine) as session:
+        summary = submissions.get_submission(
+            session, context=context, submission_id=identity
+        )
+        page = submission_catalog.list_submissions(
+            session, context=context, bc_id=summary.bc_id
+        )
+        assert page.total == 1
+        assert page.items[0].submitted == summary.submitted
+        assert summary.submitted.ad_count == 5
+        assert summary.submitted.adgroup_count == 2
+        assert summary.excluded.ad_count == 1
