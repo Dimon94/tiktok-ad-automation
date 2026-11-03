@@ -1,6 +1,6 @@
 # 大数据同步性能与积压运维参考
 
-2026-11-03后续：生产0f5c2160/schema0099/后台4与typed4/12。完整30分钟目录-3129、报表+2168、未满足桶+29089；目录下降但整体尚未通过净消化验收。真实每日回刷需求不作为垃圾删除。背景目录逐页重排造成的完成时延与有界连续读页候选见[本轮证据及实施](../validation/2026-11-03-directory-read-quantum.md)，前版公平账本见[验收](../validation/2026-11-03-endpoint-budget-dispatch.md)。4→8旧试验已恢复，没有永久扩容。
+2026-11-03后续：生产c615d2f3/schema0099/后台4与typed4/12，五页背景量子已生效。完整30分钟目录+1465、报表-265、未满足桶-6894，仍未通过整体验收。实际creative API是regular ad/get，调度头却误记SmartPlus ad/get；不能把主端点成本低读成漏计或已触平台限流。端点校正须先隔离五组旧派发进程、保留旧grant queued/ledger，再有界修正active/inactive头，屏障后只向前恢复；见[本轮证据与计划](../validation/2026-11-03-creative-endpoint-identity.md)。
 
 
 维护日期：2026-11-03。整体重构已上线，生产schema为0099；最新生产修复与固定版本窗口以本轮验收记录为准。需求放大、依赖等待复用、有界发现和公平轮转的实际过程见[本轮验收](../validation/2026-11-03-directory-arrival-fairness.md)与[需求减量](../validation/2026-11-03-demand-driven-material-enrichment.md)，旧窗口含未通过记录。当前固定版本的净消化验收继续进行，不能仅凭发布成功宣布整体解决。配置数值不是永久推荐值，每轮先核对镜像、策略与合同。
