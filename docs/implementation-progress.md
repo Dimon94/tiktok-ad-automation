@@ -4301,3 +4301,7 @@ bbda3c12已上线并核验全部角色/schema/配置，Jenkins恢复；正常收
 - 使用独立本地 PostgreSQL 测试库、`APP_ENV_FILE=/dev/null` 验证 `tests/modules/builds/test_creation_receipt_completion.py` 与 `tests/modules/builds/test_submission_queries.py`：29 passed（114.02 秒），包含180组合查询成本、轮播排除数量一致性及租户/BC边界；本轮专用测试库已删除。三个实现文件及变更测试的 Ruff、合并差异空白检查通过。
 - 核验提交全部进入 main 后删除本地 `feat/image-carousel-batch`、`feat/automation-rules-ux`、`feat/campaign-rename`、`fix/management-capability` 分支。`feat/automated-rules` 仍有未合入提交，保留。用户确认另一个任务正使用重新建立的 `sync-query-redesign` 工作树，保留它及 `fix/management-permission-simplify` 分支和新文件。
 - 原有四个前端未跟踪生成文件保留。本轮仅本地合并与清理，未推送、未发布。
+
+## 2026-11-03 同步拒绝路径与维护预算（待发布）
+
+维持4并发，未按资源快照盲目扩容。同刻采样发现空槽而broker基本空、outbox不足1秒、原额度可用；实际pool持锁profile40–300ms，未证实分钟级长锁。真实PG复现拒绝仍占新锁及维护预算被锁重试放大；已修正拒绝保存点释放、Redis发现游标独立于SQL回滚、逐租户维护预算。325项相关PG/Redis回归通过、2跳过，Ruff/两个模块定向mypy通过，独立复核无阻断。生产效果待验；原始运行目录并行清理后已恢复隔离工作树/必要凭据入口，不把丢失的原始日志声称仍在。详见 docs/validation/2026-11-03-sync-dispatch-lock-lifecycle.md。

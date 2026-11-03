@@ -150,3 +150,125 @@ def test_discovery_does_not_consume_a_candidate_before_fair_selection(
     assert chosen in {first.id, second.id}
     # 另一个工作类获选时，此候选尚无实际服务，下一次仍应获得原有机会。
     assert _candidate(session, **args)[1].id == chosen
+
+
+def test_extra_lock_retries_do_not_expand_periodic_deferral_work(
+    session, sync_seed, redis_client, monkeypatch
+):
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.ads.directory_calibration import PERIODIC_KEY
+    from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.directory_demand import register_directory_run
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from tests.modules.reporting.test_directory_reduction import (
+        case,
+        complete,
+        request,
+        runs,
+    )
+
+    now, _ = case(session, sync_seed, monkeypatch, active=False)
+    request(session, sync_seed, ad_types={"acc-1": {"REGULAR": ("campaign",)}})
+    complete(session, sync_seed, now - timedelta(days=2))
+    previous = runs(session, sync_seed)[0]
+    pending = []
+    for _ in range(10):
+        values = previous.model_dump(exclude={"id", "request_id", "request_sequence"})
+        values.update(
+            status="QUEUED",
+            published_version=None,
+            completed_at=None,
+            created_at=now - timedelta(days=2),
+            query=previous.query | {PERIODIC_KEY: True},
+        )
+        run = AdDirectoryRun(**values)
+        session.add(run)
+        session.flush()
+        register_directory_run(session, run)
+        pending.append(run)
+    assert (
+        dispatch_directories_due(
+            session,
+            redis_client,
+            now=now + timedelta(seconds=1),
+            limit=40,
+            max_claims=1,
+        )
+        == 0
+    )
+    # 锁冲突的额外重试不能把一次小批次变成长时间持锁的整头维护扫描。
+    assert sum(r.next_attempt_at is not None for r in pending) <= 2
+
+
+def test_other_tenant_lock_conflicts_do_not_expand_periodic_review_budget(
+    committed_sync_seed, redis_client, monkeypatch
+):
+    from contextlib import contextmanager
+
+    from sqlalchemy import text
+
+    from app.modules.ads import tasks  # noqa: F401
+    from app.modules.ads.directory_calibration import PERIODIC_KEY
+    from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.directory_demand import register_directory_run
+    from app.modules.sync_control.directory_dispatch import dispatch_directories_due
+    from tests.modules.reporting.sync_conftest import (
+        committed_sync_seed as seed_fixture,
+    )
+    from tests.modules.reporting.test_directory_reduction import (
+        case,
+        complete,
+        request,
+        runs,
+    )
+
+    locked_seed, factory = committed_sync_seed
+    with contextmanager(seed_fixture.__wrapped__)() as (review_seed, _):
+        with factory() as db, db.begin():
+            locked_ids = [_directory(db, locked_seed).id for _ in range(40)]
+            now, _ = case(db, review_seed, monkeypatch, active=False)
+            request(db, review_seed, ad_types={"acc-1": {"REGULAR": ("campaign",)}})
+            complete(db, review_seed, now - timedelta(days=2))
+            previous = runs(db, review_seed)[0]
+            pending_ids = []
+            for _ in range(10):
+                values = previous.model_dump(
+                    exclude={"id", "request_id", "request_sequence"}
+                )
+                values.update(
+                    status="QUEUED",
+                    published_version=None,
+                    completed_at=None,
+                    created_at=now - timedelta(days=2),
+                    query=previous.query | {PERIODIC_KEY: True},
+                )
+                run = AdDirectoryRun(**values)
+                db.add(run)
+                db.flush()
+                register_directory_run(db, run)
+                pending_ids.append(run.id)
+        with factory() as blocker, blocker.begin():
+            blocker.execute(
+                text(
+                    "SELECT id FROM ad_directory_run WHERE id=ANY(CAST(:ids AS uuid[])) FOR UPDATE"
+                ),
+                {"ids": locked_ids},
+            ).all()
+            with factory() as db, db.begin():
+                assert (
+                    dispatch_directories_due(
+                        db,
+                        redis_client,
+                        now=now + timedelta(seconds=1),
+                        limit=40,
+                        max_claims=1,
+                    )
+                    == 0
+                )
+                assert (
+                    sum(
+                        db.get(AdDirectoryRun, identity).next_attempt_at is not None
+                        for identity in pending_ids
+                    )
+                    <= 2
+                )

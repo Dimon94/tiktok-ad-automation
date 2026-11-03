@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from time import monotonic
+from typing import cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -203,7 +204,6 @@ def _ready_categories(
     session: Session,
     redis: Redis,
     *,
-    pool: SyncWorkerPool,
     category: str,
     now: datetime,
     allow_backfill: bool,
@@ -216,7 +216,7 @@ def _ready_categories(
 
     # 当前调用方已在同事务中成功reserve_dispatch，不因自己的queued预留被重复扣而排除。
     eligible = {category}
-    cursors = dict(pool.readiness_cursor)
+    cursor_key = f"sync:background-readiness:v2:{settings.TIKTOK_APP_ID}"
     stop = monotonic() + budget_seconds
     cache = {}
     zero = str(UUID(int=0))
@@ -224,21 +224,24 @@ def _ready_categories(
     for candidate in sorted(due - {category}):
         if monotonic() >= stop:
             break
-        cursor = cursors.get(candidate, zero)
+        stored = cast(bytes | str | None, redis.hget(cursor_key, candidate))
+        cursor = stored.decode() if isinstance(stored, bytes) else (stored or zero)
         rows = _readiness_candidates(
             session, category=candidate, cursor=cursor, now=now, limit=probe_limit
         )
         if not rows and cursor != zero:
+            cursor = zero
             rows = _readiness_candidates(
                 session, category=candidate, cursor=zero, now=now, limit=probe_limit
             )
+        next_cursor = cursor
         for index, (scope_id, tenant_id, endpoint, advertiser, runnable) in enumerate(
             rows
         ):
             # 即使SQL恰好用完软预算也至少探测一项，保证游标不会永远停在慢页前。
             if index and monotonic() >= stop:
                 break
-            cursors[candidate] = str(scope_id)
+            next_cursor = str(scope_id)
             if not runnable:
                 continue  # 失效/受保护前缀也推进游标，下轮继续探测，不假报可运行。
             key = (tenant_id, endpoint, advertiser)
@@ -259,8 +262,11 @@ def _ready_categories(
             if cache[key].capacity_hint > 0:
                 eligible.add(candidate)
                 break
-    # 不变更head due，不给未派发类虚扣公平余额；读探测游标独立持久推进。
-    pool.readiness_cursor = cursors
+        # 发现位置不承载执行授权；独立于SQL保存点，拒绝或回滚仍越过阻塞前缀。
+        # 不能回写池行，否则为保存一个读游标又取得了刚释放的公共行锁。
+        redis.hset(cursor_key, candidate, next_cursor)
+        redis.expire(cursor_key, 86400)
+    # 不变更head due，不给未派发类虚扣公平余额。
     return eligible
 
 
@@ -285,9 +291,33 @@ def reserve_background_turn(
     now: datetime,
     allow_backfill: bool = True,
 ) -> bool:
-    """同事务内准入后必须立即写对应typed租约；所有调用方共用这一个pool锁。"""
+    """成功保留分配锁到租约提交；拒绝释放本次新取的锁，不阻挡其它家族。"""
     if category not in POOL_WEIGHTS:
         raise ValueError("unknown background worker category")
+    # PostgreSQL子事务回滚释放本次取得的advisory/行锁。已在外层成功
+    # 分配的锁仍保留，不能在对应typed租约尚未提交时让其它事务超发。
+    with session.begin_nested() as attempt:
+        granted = _reserve_background_turn_locked(
+            session,
+            redis,
+            category=category,
+            now=now,
+            allow_backfill=allow_backfill,
+        )
+        if not granted:
+            attempt.rollback()
+        return granted
+
+
+def _reserve_background_turn_locked(
+    session: Session,
+    redis: Redis,
+    *,
+    category: str,
+    now: datetime,
+    allow_backfill: bool = True,
+) -> bool:
+    """同事务内准入后必须立即写对应typed租约；所有调用方共用这一个pool锁。"""
     if not lock_background_pool(session):
         return False
     session.connection().execute(
@@ -305,7 +335,6 @@ def reserve_background_turn(
     eligible = _ready_categories(
         session,
         redis,
-        pool=pool,
         category=category,
         now=now,
         allow_backfill=allow_backfill,
