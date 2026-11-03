@@ -356,3 +356,187 @@ def test_publication_handoff_cannot_reuse_a_transferred_head(
                 PendingDispatch.task_name == "ads.publish_step",
             )
         ).all()
+
+
+@pytest.mark.parametrize(
+    "total,want,restricted", [(7, 5, False), (2, 2, False), (7, 2, True)]
+)
+@pytest.mark.parametrize("gateway_case", ["OFFICIAL_API"], indirect=True)
+def test_background_quantum_uses_real_sdk_admission_for_every_page(
+    database_engine,
+    redis_client,
+    gateway_case,
+    gateway_wire,
+    monkeypatch,
+    total,
+    want,
+    restricted,
+):
+    from app.jobs.admission import admission_keys
+    from app.modules.ads.directory_dispatch import directory_step_key
+    from app.modules.sync_control.directory_demand import directory_endpoint
+    from app.modules.sync_control.occupancy import occupancy_keys
+
+    context, route, advertiser = gateway_case
+    monkeypatch.setattr(tasks.settings, "ADS_SYNC_ENABLED", True)
+    if restricted:
+        policies = tasks.settings.TIKTOK_CALL_POLICIES
+        monkeypatch.setattr(
+            tasks.settings,
+            "TIKTOK_CALL_POLICIES",
+            {
+                **policies,
+                "base": {
+                    **policies["base"],
+                    "endpoint_calls_per_window": 2,
+                    "window_ms": 60000,
+                },
+            },
+        )
+    committed = []
+    monkeypatch.setattr(
+        tasks, "_deliver_committed_work", lambda _engine, work: committed.append(work)
+    )
+    replies(
+        gateway_wire,
+        "OFFICIAL_API",
+        {
+            "campaign_get": [
+                page(
+                    [
+                        {
+                            "advertiser_id": advertiser,
+                            "campaign_id": f"quantum-{i}",
+                            "campaign_name": f"page-{i}",
+                            "operation_status": "ENABLE",
+                        }
+                    ],
+                    number=i,
+                    size=1,
+                    total=total,
+                )
+                for i in range(1, total + 1)
+            ]
+        },
+    )
+    identity = None
+    try:
+        with Session(database_engine) as db, db.begin():
+            run = AdDirectoryRun(
+                tenant_id=context.tenant_id,
+                actor_id=context.actor_id,
+                advertiser_id=advertiser,
+                bc_id=route.bc_id,
+                connection_id=route.connection_id,
+                channel=route.channel,
+                frozen_route=route.model_dump(mode="json"),
+                partition_key=uuid4().hex * 2,
+                kind="campaign",
+                ad_type="REGULAR",
+                claim_generation=1,
+                workload="background",
+                query={
+                    "advertiser_id": advertiser,
+                    "kind": "campaign",
+                    "ad_type": "REGULAR",
+                    "page": 1,
+                    "page_size": 1,
+                    "ids": [],
+                    "parent_ids": [],
+                    "include_deleted": False,
+                },
+            )
+            db.add(run)
+            db.flush()
+            identity = run.id
+            register_directory_run(db, run, new_execution=True)
+            assert (
+                dispatch_directories_due(
+                    db, redis_client, now=datetime.now(UTC), limit=1
+                )
+                == 1
+            )
+            generation = run.claim_generation
+            reservation = directory_step_key(run)
+            endpoint = directory_endpoint(run)
+        scope = (
+            tasks.settings.TIKTOK_APP_ID,
+            endpoint,
+            context.tenant_id,
+            advertiser,
+            endpoint,
+        )
+        queued = occupancy_keys(*scope)
+        active = admission_keys(*scope)
+        assert all(redis_client.zscore(key, reservation) is not None for key in queued)
+        previous = gateway_wire["before"]["callback"]
+        leases = []
+
+        def boundary():
+            # 保留真实gateway、SDK和Redis准入，仅替换PoolManager的HTTP发送。
+            index = len(gateway_wire["sdk_calls"])
+            assert all(redis_client.zscore(key, reservation) is None for key in queued)
+            assert redis_client.zcard(active[3]) == 1
+            assert (
+                int(redis_client.hget(active[1] + ":metrics", "granted:background"))
+                == index + 1
+            )
+            with Session(database_engine) as observer:
+                current = observer.get(AdDirectoryRun, identity)
+                leases.append((current.claim_token, current.claimed_until))
+                if index:
+                    assert observer.get(AdDirectoryPage, (identity, index)) is not None
+            previous()
+
+        gateway_wire["before"]["callback"] = boundary
+        args = {
+            "database_engine": database_engine,
+            "redis_client": redis_client,
+            "context": context,
+            "run_id": identity,
+            "claim_generation": generation,
+        }
+        assert tasks.run_directory_step(**args) == (
+            "WAIT" if restricted else "CONTINUE"
+        )
+        assert len(gateway_wire["sdk_calls"]) == want
+        assert len(set(leases)) == 1
+        assert all(redis_client.zcard(key) == 0 for key in queued + active[2:])
+        with Session(database_engine) as db:
+            current = db.get(AdDirectoryRun, identity)
+            assert current.next_page == want + 1 and current.claimed_until is None
+            assert (
+                len(
+                    db.exec(
+                        select(AdDirectoryPage).where(
+                            AdDirectoryPage.run_id == identity
+                        )
+                    ).all()
+                )
+                == want
+            )
+            ledger = db.exec(
+                select(SyncCostLedger).where(
+                    SyncCostLedger.directory_run_id == identity
+                )
+            ).one()
+            assert (
+                ledger.reserved_units == 5
+                and ledger.observed_units == want
+                and ledger.closed
+            )
+        assert committed[-1].refill and committed[-1].deliver == (total == 2)
+        assert tasks.run_directory_step(**args) == ("FAILED" if restricted else "WAIT")
+        assert len(gateway_wire["sdk_calls"]) == want
+    finally:
+        with Session(database_engine) as db, db.begin():
+            for model in (
+                SyncCostLedger,
+                SyncExecutionScope,
+                AdDirectoryPage,
+                AdDirectoryRun,
+                AdObject,
+                CampaignNameProjection,
+                ReportDispatchCursor,
+            ):
+                db.execute(delete(model).where(model.tenant_id == context.tenant_id))

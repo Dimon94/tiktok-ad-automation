@@ -1,6 +1,7 @@
 """后台共享池的短暂锁不能暂停独立实时读取/本地发布。"""
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import text
@@ -40,7 +41,9 @@ def test_background_fairness_rejection_falls_through_to_live_report(
     pool.fairness_state = {"directory": 100}
     session.add(pool)
     ids = []
-    for day, tier in [(now.date() - timedelta(days=2), "history"), (now.date(), "hot")]:
+    # acc-1使用香港时区；UTC16点后仍须构造账户当地“今天”的实时补链。
+    today = now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+    for day, tier in [(today - timedelta(days=2), "history"), (today, "hot")]:
         ids.append(
             enqueue_job(
                 session,

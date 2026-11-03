@@ -155,6 +155,7 @@ def _dispatch_directories_due(
     budgets: EndpointBudgets,
 ) -> int:
     from app.modules.ads.directory_dispatch import (
+        directory_read_pages,
         directory_step_key,
         enqueue_directory_step,
         is_live_directory,
@@ -424,7 +425,7 @@ def _dispatch_directories_due(
                 work_class=head.work_class,
                 eligible_weights={key: WEIGHTS[key] for key in accounting_classes},
                 state_after_unit_charge=state,
-                reserved_units=1 if terminal is None else 0,
+                reserved_units=directory_read_pages(run) if terminal is None else 0,
                 lease_until=head.leased_until,
             )
             # 服务后从尚未证明无资格的位置重新选最老候选；不能把临时跳过的旧头

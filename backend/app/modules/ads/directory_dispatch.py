@@ -1,12 +1,16 @@
 """定向回读与批量目录共用领取合同，但不共用批量读取的排队位置。"""
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
 from app.core.context import TenantContext
 from app.jobs.tasks import register_dispatch_task
 from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
+
+if TYPE_CHECKING:
+    from app.modules.ads.sync_models import AdDirectoryRun
 
 TARGETED_TASK_NAME = "ads.targeted_step"
 TASK_NAME = "ads.sync_step"
@@ -27,6 +31,11 @@ def is_targeted(run) -> bool:
 
 def is_live_directory(run) -> bool:
     return is_targeted(run) and run.workload == "live"
+
+
+def directory_read_pages(run: AdDirectoryRun) -> int:
+    """大目录一次有界读取五页；实时读取仍逐页归还，不占用更长槽位。"""
+    return 5 if run.workload == "background" else 1
 
 
 def directory_step_key(run) -> str:
