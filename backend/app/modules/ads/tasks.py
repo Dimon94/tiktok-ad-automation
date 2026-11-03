@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -21,7 +22,11 @@ from app.core.config import settings
 from app.core.context import TenantContext
 from app.core.db import engine
 from app.core.errors import DomainError
-from app.integrations.tiktok.contracts.ads import DirectoryQuery
+from app.integrations.tiktok.contracts.ads import (
+    AdEntity,
+    AdMaterialUsage,
+    DirectoryQuery,
+)
 from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.integrations.tiktok.gateway import open_tiktok_gateway
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
@@ -140,6 +145,35 @@ class _CommittedDirectoryWork:
     pages_read: int = 0
     resume_token: UUID | None = None
     head_fence: tuple[UUID, datetime] | None = None
+    material_scope: tuple[tuple[AdEntity, ...], tuple[AdMaterialUsage, ...]] | None = (
+        None
+    )
+    material_fingerprint: str | None = None
+
+
+def _material_fingerprint(run: AdDirectoryRun) -> str:
+    # 仅缓存当前任务内已验证的值对象；完整冻结输入有变必须拒绝复用。
+    # 不含逐页变化的游标/租约，但包含marker，不能靠移除子任务标记绕过核验。
+    return json.dumps(
+        [
+            str(run.id),
+            str(run.tenant_id),
+            str(run.actor_id),
+            run.bc_id,
+            str(run.connection_id),
+            run.channel,
+            run.advertiser_id,
+            run.kind,
+            run.ad_type,
+            run.query,
+            run.frozen_route,
+            run.workload,
+            run.owner_epoch,
+            run.partition_key,
+            run.request_sequence,
+        ],
+        sort_keys=True,
+    )
 
 
 def _deliver_committed_work(
@@ -582,6 +616,13 @@ def _run_directory_step(
             )
 
         work.failure_fence = (run.claim_generation, run.owner_epoch, run.claim_token)
+        if (
+            work.material_fingerprint is not None
+            and _material_fingerprint(run) != work.material_fingerprint
+        ):
+            raise DomainError(
+                "directory_scope_mismatch", "目录冻结范围在分页期间发生变化"
+            )
         if not continuing:
             run.claim_token = uuid4()
             run.claimed_until = now + timedelta(
@@ -606,7 +647,15 @@ def _run_directory_step(
         if run.next_page == 1:
             run.observed_at = now
         directory_fence(session, run, claim_token=claim_token, claim=True)
-        if directory_run_superseded(session, run):
+        # 冻结上下文只复用本任务已校验的值；当前owner观察仍每页查库，不能缓存。
+        superseded = (
+            directory_run_superseded(
+                session, run, frozen_material_owners=work.material_scope[0]
+            )
+            if work.material_scope is not None
+            else directory_run_superseded(session, run)
+        )
+        if superseded:
             return _finish_superseded_directory(session, run, work)
         terminal = session.exec(
             select(AdDirectoryPage.page)
@@ -633,7 +682,13 @@ def _run_directory_step(
             return "READY"
         if publish_only:
             raise DomainError("directory_incomplete", "目录发布缺少已暂存末页")
-        material_scope = material_child_scope(session, run)
+        material_scope = work.material_scope
+        if material_scope is None:
+            material_scope = material_child_scope(session, run)
+            if material_scope is not None:
+                # 首次先完成streaming过期判定，避免给已过期的大任务急切载入全部桥。
+                work.material_scope = material_scope
+                work.material_fingerprint = _material_fingerprint(run)
         query_data = dict(run.query)
         query_data.pop(MATERIAL_CHILD_KEY, None)
         query_data.pop(PERIODIC_KEY, None)

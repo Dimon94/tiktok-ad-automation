@@ -21,7 +21,7 @@ from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
 from app.core.errors import DomainError
-from app.integrations.tiktok.contracts.ads import DirectoryPage, EntityRef
+from app.integrations.tiktok.contracts.ads import AdEntity, DirectoryPage, EntityRef
 from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.modules.accounts.routing import verify_route
 from app.modules.ads.directory import append_campaign_name_projections
@@ -657,7 +657,12 @@ def _next_directory_version(session: Session) -> int:
     )
 
 
-def directory_run_superseded(session: Session, run: AdDirectoryRun) -> bool:
+def directory_run_superseded(
+    session: Session,
+    run: AdDirectoryRun,
+    *,
+    frozen_material_owners: tuple[AdEntity, ...] | None = None,
+) -> bool:
     """沿用发布顺序判定；已被更新发布取代的运行不再占读取与恢复窗口。"""
     from app.modules.ads.material_directory_children import (
         is_material_child,
@@ -666,7 +671,9 @@ def directory_run_superseded(session: Session, run: AdDirectoryRun) -> bool:
 
     # 子运行只覆盖冻结广告组的部分素材，不是全账户创意快照；不同子范围不能互相淘汰。
     if is_material_child(run):
-        return material_child_superseded(session, run)
+        return material_child_superseded(
+            session, run, frozen_owners=frozen_material_owners
+        )
     if run.request_sequence is None:
         return False
     from app.modules.ads.directory_supersession import superseding_directory_predicate

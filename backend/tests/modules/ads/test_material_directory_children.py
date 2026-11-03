@@ -326,9 +326,10 @@ def test_second_child_page_admission_resumes_without_replaying_primary_or_first_
             publish_only=publish_only,
         )
 
-    assert run(source_id, claim(source_id)) == "CONTINUE"
+    source_generation = claim(source_id)
+    assert run(source_id, source_generation) == "CONTINUE"
     assert len(business_calls(gateway_wire, "OFFICIAL_API")) == 1
-    assert run(source_id, claim(source_id), publish_only=True) == "READY"
+    assert run(source_id, source_generation, publish_only=True) == "READY"
     with Session(database_engine) as session, session.begin():
         source = session.get(AdDirectoryRun, source_id)
         assert source is not None
@@ -343,13 +344,21 @@ def test_second_child_page_admission_resumes_without_replaying_primary_or_first_
         session.connection().execute(
             delete(AdDirectoryPage).where(col(AdDirectoryPage.run_id) == source_id)
         )
-    child_generation = claim(child_id)
-    assert run(child_id, child_generation) == "CONTINUE"
-    assert len(business_calls(gateway_wire, "OFFICIAL_API")) == 2
     limited = policy.model_copy(update={"app_calls_per_window": 1, "window_ms": 60_000})
-    monkeypatch.setattr(
-        settings, "TIKTOK_CALL_POLICIES", {"base": limited.model_dump()}
-    )
+    original = gateway_wire["before"]["callback"]
+
+    def limit_after_first_child():
+        # 第一子页已准入后降低本地预算，让同一量子第二页在HTTP前被拒绝。
+        if len(business_calls(gateway_wire, "OFFICIAL_API")) == 1:
+            monkeypatch.setattr(
+                settings, "TIKTOK_CALL_POLICIES", {"base": limited.model_dump()}
+            )
+        original()
+
+    gateway_wire["before"]["callback"] = limit_after_first_child
+    child_generation = claim(child_id)
+    assert run(child_id, child_generation) == "WAIT"
+    assert len(business_calls(gateway_wire, "OFFICIAL_API")) == 2
     with Session(database_engine) as session, session.begin():
         assert (
             dispatch_directories_due(
@@ -372,15 +381,17 @@ def test_second_child_page_admission_resumes_without_replaying_primary_or_first_
     with Session(database_engine) as session:
         child = session.get(AdDirectoryRun, child_id)
         assert child is not None
-        assert child.next_page == 2 and child.status == "RUNNING"
+        assert child.next_page == 2 and child.status == "WAITING_REMOTE"
         assert (
-            child.claimed_until is None and child.claim_generation == child_generation
+            child.claimed_until is None
+            and child.claim_generation == child_generation + 1
         )
         assert session.get(AdDirectoryPage, (child_id, 1)) is not None
         assert session.get(AdDirectoryPage, (child_id, 2)) is None
     monkeypatch.setattr(settings, "TIKTOK_CALL_POLICIES", {"base": policy.model_dump()})
-    assert run(child_id, claim(child_id, now=resume_at)) == "CONTINUE"
-    assert run(child_id, claim(child_id), publish_only=True) == "READY"
+    resume_generation = claim(child_id, now=resume_at)
+    assert run(child_id, resume_generation) == "CONTINUE"
+    assert run(child_id, resume_generation, publish_only=True) == "READY"
     calls = business_calls(gateway_wire, "OFFICIAL_API")
     assert len(calls) == 3
     with Session(database_engine) as session:
