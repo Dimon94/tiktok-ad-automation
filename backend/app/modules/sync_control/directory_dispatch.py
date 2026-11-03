@@ -39,18 +39,48 @@ class CandidateKey(NamedTuple):
     id: UUID
 
 
+DISCOVERY_START = datetime.min.replace(tzinfo=UTC)
+
+
 class DiscoveryCursor(NamedTuple):
     at: datetime
     scope_id: UUID
     until: datetime
+    floor_at: datetime
+    floor_scope_id: UUID
+
+    @classmethod
+    def start(cls, now: datetime) -> DiscoveryCursor:
+        return cls(DISCOVERY_START, UUID(int=0), now, DISCOVERY_START, UUID(int=0))
 
     def encode(self) -> str:
         return json.dumps(
-            [self.at.isoformat(), str(self.scope_id), self.until.isoformat()]
+            [
+                self.at.isoformat(),
+                str(self.scope_id),
+                self.until.isoformat(),
+                self.floor_at.isoformat(),
+                str(self.floor_scope_id),
+            ]
         )
 
+    def after_empty_page(
+        self, at: datetime, scope_id: UUID, *, cacheable: bool
+    ) -> DiscoveryCursor:
+        # 只有真正无资格的前缀才能缓存。临时锁跳过的候选仍未服务，不能归入该前缀。
+        verified = cacheable and (self.at, self.scope_id) == (
+            self.floor_at,
+            self.floor_scope_id,
+        )
+        return self._replace(
+            at=at,
+            scope_id=scope_id,
+            floor_at=at if verified else self.floor_at,
+            floor_scope_id=scope_id if verified else self.floor_scope_id,
+        )
 
-DISCOVERY_START = datetime.min.replace(tzinfo=UTC)
+    def restart_qualified(self) -> DiscoveryCursor:
+        return self._replace(at=self.floor_at, scope_id=self.floor_scope_id)
 
 
 PAGED_CANDIDATES = """
@@ -190,7 +220,7 @@ def dispatch_directories_due(
             if count >= claim_limit:
                 break
             candidates = []
-            scan_positions: dict[str, tuple[str, str, str]] = {}
+            scan_positions: dict[str, tuple[str, DiscoveryCursor, DiscoveryCursor]] = {}
             for work_class in ("realtime", "directory"):
                 row = _candidate(
                     session,
@@ -244,7 +274,7 @@ def dispatch_directories_due(
             # 只让公平获选的头消费发现位置，未获选类保留机会。
             # 领取中的SQL回滚仍越过本次尝试；预期后台槽拒绝则在下方归还位置。
             scan_key, scan_before, scan_after = scan_positions[head.work_class]
-            redis.set(scan_key, scan_after, ex=86400)
+            redis.set(scan_key, scan_after.encode(), ex=86400)
             # 发现阶段不持公平游标锁；取得游标后仅按确定的主键短锁复验。
             claimed = _candidate(
                 session,
@@ -271,6 +301,7 @@ def dispatch_directories_due(
                 # 复核/延期也已服务这个头；不扣HTTP费用，但必须让回其它头。
                 # 否则同scope的多个周期副本反复占据最老位置，空闲实时池也拿不到任务。
                 head.last_dispatched_at = now
+                redis.set(scan_key, scan_after.restart_qualified().encode(), ex=86400)
                 session.flush()
                 progressed = True
                 continue
@@ -329,7 +360,7 @@ def dispatch_directories_due(
                         tenant_id=run.tenant_id,
                         advertiser_id=run.advertiser_id,
                     )
-                    redis.set(scan_key, scan_before, ex=86400)
+                    redis.set(scan_key, scan_before.encode(), ex=86400)
                     continue
             run.claim_generation = next_generation
             session.execute(
@@ -372,6 +403,9 @@ def dispatch_directories_due(
                 reserved_units=1 if terminal is None else 0,
                 lease_until=head.leased_until,
             )
+            # 服务后从尚未证明无资格的位置重新选最老候选；不能把临时跳过的旧头
+            # 留在已服务游标后等整轮结束。真正无资格的窄页前缀仍被缓存。
+            redis.set(scan_key, scan_after.restart_qualified().encode(), ex=86400)
         if not progressed and (blocked_before or not background_blocked):
             break
     return count
@@ -387,7 +421,8 @@ def _candidate(
     discover_only: bool = False,
     selected: tuple[UUID, UUID] | None = None,
     redis: Redis | None = None,
-    scan_positions: dict[str, tuple[str, str, str]] | None = None,
+    scan_positions: dict[str, tuple[str, DiscoveryCursor, DiscoveryCursor]]
+    | None = None,
     excluded_run_ids: set[UUID] | None = None,
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
     # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
@@ -407,16 +442,20 @@ def _candidate(
     # 扫描上界跨调用冻结，避免热点头服务时间不断更新使游标永远追赶now而不回绕。
     # 未获公平工作类/后台槽仍保留完整原位置/上界，真实领取继续复验所有围栏。
     mode = "independent" if independent_only else "all"
-    scan_key = f"sync:directory-discovery-age:v1:{tenant_id}:{work_class}:{mode}"
-    scan_cursor = DiscoveryCursor(DISCOVERY_START, UUID(int=0), now)
+    scan_key = f"sync:directory-discovery-age:v2:{tenant_id}:{work_class}:{mode}"
+    scan_cursor = DiscoveryCursor.start(now)
     if redis is not None:
         value = redis.get(scan_key)
         if value:
-            stamp, identity, until = json.loads(cast(bytes | str, value))
+            stamp, identity, until, floor_at, floor_id = json.loads(
+                cast(bytes | str, value)
+            )
             scan_cursor = DiscoveryCursor(
                 datetime.fromisoformat(stamp),
                 UUID(identity),
                 datetime.fromisoformat(until),
+                datetime.fromisoformat(floor_at),
+                UUID(floor_id),
             )
     wrapped = False
     row: CandidateKey | None
@@ -446,7 +485,7 @@ def _candidate(
                     return None
                 # 已保存的空轮次也必须在后续调用重开，否则新任务会被旧上界永久挡住。
                 scan_cursor, wrapped = (
-                    DiscoveryCursor(DISCOVERY_START, UUID(int=0), now),
+                    DiscoveryCursor.start(now),
                     True,
                 )
                 if redis is not None:
@@ -467,8 +506,8 @@ def _candidate(
                 else None
             )
             if row is None:
-                scan_cursor = DiscoveryCursor(
-                    rows[-1].discovery_at, rows[-1].scope_id, scan_cursor.until
+                scan_cursor = scan_cursor.after_empty_page(
+                    rows[-1].discovery_at, rows[-1].scope_id, cacheable=not excluded
                 )
                 if redis is not None:
                     redis.set(scan_key, scan_cursor.encode(), ex=86400)
@@ -477,10 +516,10 @@ def _candidate(
                 assert found is not None
                 scan_positions[work_class] = (
                     scan_key,
-                    scan_cursor.encode(),
-                    DiscoveryCursor(
-                        found.discovery_at, found.scope_id, scan_cursor.until
-                    ).encode(),
+                    scan_cursor,
+                    scan_cursor._replace(
+                        at=found.discovery_at, scope_id=found.scope_id
+                    ),
                 )
         if row is None:
             return None

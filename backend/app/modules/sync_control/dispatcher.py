@@ -424,6 +424,11 @@ def dispatch_due(
                         tenant_id=tenant_id,
                         advertiser_id=job.advertiser_ids[0],
                     )
+                    # 平台可调用而共享池未给轮次时，本次只继续填独立实时槽。
+                    # 不在同一公平状态上反复选中历史任务，也不跨池扩大后台窗口；
+                    # 下一次调度仍按原共享池竞争后台，当前日关联沿low_budget保留。
+                    background_remaining = 0
+                    progressed = True
                     continue
                 job.execution_pool = (
                     "background" if category is not None else "live-report"
