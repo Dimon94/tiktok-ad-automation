@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, literal, or_, union_all
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
@@ -206,30 +206,30 @@ def settle_costs(
 def cost_classes(
     session: Session, *, tenant_id: UUID, endpoint: str, now: datetime
 ) -> tuple[set[str], set[str]]:
-    retained = set(
-        session.exec(
-            select(col(SyncSchedule.work_class))
+    # 每次探测仍读取最新active/inflight，只把两次往返合为一次；不缓存到
+    # 整个dispatch，否则新ledger和worker收据关闭会被旧快照遮住。
+    rows = session.execute(
+        union_all(
+            select(col(SyncSchedule.work_class), literal(False).label("inflight"))
             .where(
                 col(SyncSchedule.tenant_id) == tenant_id,
                 col(SyncSchedule.physical_endpoint) == endpoint,
                 col(SyncSchedule.active).is_(True),
             )
-            .distinct()
-        ).all()
-    )
-    inflight = set(
-        session.exec(
-            select(col(SyncCostLedger.work_class))
+            .distinct(),
+            select(col(SyncCostLedger.work_class), literal(True).label("inflight"))
             .where(
                 col(SyncCostLedger.tenant_id) == tenant_id,
                 col(SyncCostLedger.physical_endpoint) == endpoint,
                 col(SyncCostLedger.closed).is_(False),
                 col(SyncCostLedger.lease_until) > now,
             )
-            .distinct()
-        ).all()
-    )
-    return retained | inflight, inflight
+            .distinct(),
+        )
+    ).all()
+    return {work_class for work_class, _ in rows}, {
+        work_class for work_class, inflight in rows if inflight
+    }
 
 
 class _LedgerObserver:

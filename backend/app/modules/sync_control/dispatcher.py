@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from redis import Redis
-from sqlalchemy import and_, case, func, or_, text, update
+from sqlalchemy import and_, case, func, or_, text, union_all, update
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
 
@@ -208,23 +208,28 @@ def _dispatch_due(
                 cursor = budgets.acquire(tenant_id, endpoint)
                 if cursor is None:
                     continue
-                heads = []
-                for candidate_class in (
-                    "realtime",
-                    "history",
-                    "directory",
-                    "maintenance",
-                ):
-                    if (candidate_class == "realtime" and not live_remaining) or (
-                        candidate_class == "history" and not background_remaining
-                    ):
-                        continue
-                    candidate = session.exec(
-                        select(SyncSchedule)
+                candidate_classes = [
+                    work_class
+                    for work_class in (
+                        "realtime",
+                        "history",
+                        "directory",
+                        "maintenance",
+                    )
+                    if not (
+                        (work_class == "realtime" and not live_remaining)
+                        or (work_class == "history" and not background_remaining)
+                    )
+                ]
+                # 四个类仍各做索引 LIMIT 1，只合成一次往返；不能用 DISTINCT ON
+                # 扫描/排序全部到期头，也不缓存候选或提前加锁。
+                candidates = union_all(
+                    *(
+                        select(SyncSchedule.scope_id, SyncSchedule.work_class)
                         .where(
                             *due,
-                            col(SyncSchedule.tenant_id) == tenant_id,
-                            col(SyncSchedule.work_class) == candidate_class,
+                            SyncSchedule.tenant_id == tenant_id,
+                            SyncSchedule.work_class == work_class,
                             col(SyncSchedule.scope_id).not_in(skipped_scopes),
                         )
                         .order_by(
@@ -232,9 +237,22 @@ def _dispatch_due(
                             col(SyncSchedule.oldest_pending_at).asc().nullsfirst(),
                         )
                         .limit(1)
-                    ).first()
-                    if candidate is not None:
-                        heads.append(candidate)
+                        for work_class in candidate_classes
+                    )
+                ).subquery()
+                heads = list(
+                    session.exec(
+                        select(SyncSchedule).join(
+                            candidates,
+                            and_(
+                                col(SyncSchedule.scope_id) == candidates.c.scope_id,
+                                col(SyncSchedule.work_class) == candidates.c.work_class,
+                            ),
+                        )
+                    ).all()
+                )
+                # 保持原工作类平局顺序；领取时仍按原路径短锁并刷新整组头。
+                heads.sort(key=lambda row: candidate_classes.index(row.work_class))
                 if not heads:
                     continue
                 retained, inflight_classes = cost_classes(
