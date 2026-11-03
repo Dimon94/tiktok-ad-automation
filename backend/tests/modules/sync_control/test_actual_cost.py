@@ -531,3 +531,72 @@ def test_open_receipt_exceeding_reservation_still_charges_immediately(
     assert settle_costs(session, cursor) == 1
     assert ledger.charged_units == 7 and not ledger.closed
     assert ledger.receipt_version == ledger.settled_version
+
+
+def test_cost_classes_one_round_trip_preserves_future_heads_and_fresh_receipts(
+    session, sync_seed
+):
+    from sqlalchemy import event
+
+    from app.modules.sync_control.costs import cost_classes
+    from app.modules.sync_control.models import SyncSchedule
+
+    now = datetime.now(UTC)
+    ledger, _ = reserve(session, sync_seed)
+    head = session.exec(
+        select(SyncSchedule).where(SyncSchedule.tenant_id == sync_seed.tenant_id)
+    ).one()
+    head.active = False
+    session.add(
+        SyncSchedule(
+            scope_id=head.scope_id,
+            tenant_id=sync_seed.tenant_id,
+            work_class="maintenance",
+            physical_endpoint=ENDPOINT,
+            active=True,
+            next_eligible_at=now + timedelta(days=1),
+        )
+    )
+
+    def another(generation, work_class, *, closed=False, expired=False):
+        row = SyncCostLedger(
+            tenant_id=sync_seed.tenant_id,
+            report_job_id=ledger.report_job_id,
+            generation=generation,
+            physical_endpoint=ENDPOINT,
+            work_class=work_class,
+            eligible_weights={work_class: 1},
+            endpoint_weights={ENDPOINT: {work_class: 1}},
+            lease_until=now + timedelta(minutes=-1 if expired else 4),
+            closed=closed,
+        )
+        session.add(row)
+        return row
+
+    another(2, "realtime", closed=True)
+    another(3, "directory", expired=True)
+    session.flush()
+    connection = session.connection()
+    statements = []
+
+    def capture(_conn, _cursor, sql, _params, _context, _many):
+        if sql.startswith("SELECT"):
+            statements.append(sql)
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        assert cost_classes(
+            session, tenant_id=sync_seed.tenant_id, endpoint=ENDPOINT, now=now
+        ) == ({"maintenance", "history"}, {"history"})
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert len(statements) == 1, len(statements)
+    # 同事务新收据/新ledger仍须下一轮可见，不能用整轮cache掩盖变化。
+    ledger.closed = True
+    another(4, "directory")
+    assert cost_classes(
+        session, tenant_id=sync_seed.tenant_id, endpoint=ENDPOINT, now=now
+    ) == ({"maintenance", "directory"}, {"directory"})
+    assert cost_classes(
+        session, tenant_id=sync_seed.tenant_id, endpoint="other-endpoint", now=now
+    ) == (set(), set())
