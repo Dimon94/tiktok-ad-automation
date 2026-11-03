@@ -344,6 +344,7 @@ def enqueue_report_requirements(
     pending = [
         row for row in requirements if row.satisfied_revision < row.desired_revision
     ]
+    due_by_requirement: dict[UUID, datetime] = {}
     existing: dict[UUID, tuple[ReportSyncJob, SyncExecutionScope]] = {}
     if pending:
         for job, child in session.exec(
@@ -402,12 +403,14 @@ def enqueue_report_requirements(
                         job.error_code = None
                 child.frozen_revision = requirement.desired_revision
                 child.frozen_requested_after = requirement.requested_after
-                job.priority, job.due_at = (
-                    min(job.priority, priority),
-                    min(job.due_at, due),
-                )
+                job.priority = min(job.priority, priority)
+                # 等待证据的退避由真实依赖变化唤醒，周期需求不能使无变化重扫。
+                if job.status != "WAITING":
+                    job.due_at = min(job.due_at, due)
+                due_by_requirement[requirement.id] = job.due_at
                 continue
             if child.frozen_revision >= requirement.desired_revision:
+                due_by_requirement[requirement.id] = job.due_at
                 continue
         missing[scope_accounts[requirement.scope_id]].append(requirement)
     jobs, children, included = [], [], set()
@@ -511,22 +514,31 @@ def enqueue_report_requirements(
                             execution_generation=0,
                         ).model_dump()
                     )
+                    due_by_requirement[requirement.id] = (
+                        merged.due_at if merged is not None else due
+                    )
     session.flush()
     if jobs:
         session.connection().execute(insert(ReportSyncJob), jobs)
     if children:
         session.connection().execute(insert(SyncExecutionScope), children)
-    active_scopes = {(row.scope_id, row.source) for row in pending}
+    active_scopes: dict[tuple[UUID, str], datetime] = {}
+    for row in pending:
+        head_key = (row.scope_id, row.source)
+        actual_due = due_by_requirement.get(row.id, due)
+        active_scopes[head_key] = min(
+            active_scopes.get(head_key, actual_due), actual_due
+        )
     heads = [
         SyncSchedule(
             scope_id=scope_id,
             tenant_id=tenant_id,
             work_class=work_class,
             physical_endpoint=report_endpoint(kind),
-            next_eligible_at=due,
+            next_eligible_at=scope_due,
             oldest_pending_at=requested,
         ).model_dump()
-        for scope_id, work_class in active_scopes
+        for (scope_id, work_class), scope_due in active_scopes.items()
     ]
     if heads:
         statement = insert(SyncSchedule)

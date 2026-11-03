@@ -152,10 +152,12 @@ def dispatch_directories_due(
     tenants = due_tenants(session, due, limit=min(64, limit))
     cursors: dict[UUID, ReportDispatchCursor | None] = {}
     count = 0
+    unavailable_run_ids: set[UUID] = set()
     background_blocked = False
     # 共享池拒绝后台候选后，额外一轮直接SQL筛选独立live/publisher；
     # 不能逐条跳过历史积压，也不能让最老后台头遮住有空闲执行池的候选。
-    for _ in range(claim_limit + 1):
+    # 领取失败可继续跳过本轮锁冲突；搜索次数有界，真实派发上限仍是claim_limit。
+    for _ in range(claim_limit + 32):
         progressed = False
         blocked_before = background_blocked
         for tenant_id in tenants:
@@ -173,6 +175,7 @@ def dispatch_directories_due(
                     discover_only=True,
                     redis=redis,
                     scan_positions=scan_positions,
+                    excluded_run_ids=unavailable_run_ids,
                 )
                 if row is not None:
                     candidates.append(row)
@@ -224,6 +227,8 @@ def dispatch_directories_due(
                 selected=(head.scope_id, run.id),
             )
             if claimed is None:
+                unavailable_run_ids.add(run.id)
+                progressed = True
                 continue
             head, run = claimed
             # 领取前沿用原完整覆盖/周期校准复验；唤醒不是已投递执行，
@@ -353,11 +358,12 @@ def _candidate(
     selected: tuple[UUID, UUID] | None = None,
     redis: Redis | None = None,
     scan_positions: dict[str, tuple[str, UUID]] | None = None,
+    excluded_run_ids: set[UUID] | None = None,
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
     # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
     # 选出ID后再按主键锁定并重新校验所有围栏；冲突回滚小保存点，继续下一候选。
     session.flush()
-    excluded: list[UUID] = []
+    excluded: list[UUID] = list(excluded_run_ids or ())
     params = {
         "tenant_id": tenant_id,
         "work_class": work_class,
