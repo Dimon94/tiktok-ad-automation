@@ -1,0 +1,83 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from sqlmodel import select
+
+from app.modules.reporting.jobs import enqueue_job
+from app.modules.reporting.store_models import ReportSyncJob
+from app.modules.sync_control.models import (
+    SyncExecutionScope,
+    SyncRequirement,
+    SyncSchedule,
+)
+from tests.modules.reporting.test_jobs import _route
+
+
+@pytest.mark.parametrize(
+    ("state", "cursor", "leased", "reusable"),
+    [
+        ("WAITING", False, False, True),
+        ("WAITING", True, False, False),
+        ("RUNNING", False, False, False),
+        ("WAITING", False, True, False),
+    ],
+)
+def test_new_link_demand_reuses_only_idle_dependency_wait(
+    session, sync_seed, state, cursor, leased, reusable
+):
+    now = datetime.now(UTC)
+    args = {
+        "tenant_id": sync_seed.tenant_id,
+        "actor_id": sync_seed.actor_id,
+        "bc_id": "bc-a",
+        "kind": "material_links",
+        "tier": "history",
+        "advertiser_ids": ["acc-1"],
+        "start": now.date() - timedelta(days=2),
+        "end": now.date() - timedelta(days=2),
+        "frozen_route": _route(sync_seed),
+    }
+    identity = enqueue_job(session, requested_at=now, **args)
+    job = session.get(ReportSyncJob, identity)
+    job.status = state
+    job.claim_generation = 3
+    job.claim_token = job.claimed_until = None
+    job.error_code = "material_directory_pending"
+    job.progress = {
+        "waiting_ids": ["VIDEO:post"],
+        "dependency_checked_at": now.isoformat(),
+        "dependency_signature": "old",
+        "dependency_attempts": 2,
+    }
+    if cursor:
+        job.progress = {**job.progress, "overview_next_page": 2}
+    child = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == identity)
+    ).one()
+    child.execution_generation = 3
+    child.observed_at = now
+    if leased:
+        from uuid import uuid4
+
+        head = session.get(SyncSchedule, (child.scope_id, "directory"))
+        head.lease_execution_id = job.id
+        head.lease_execution_generation = 3
+        head.lease_token = uuid4()
+        head.leased_until = now + timedelta(minutes=10)
+    session.flush()
+    new = enqueue_job(session, requested_at=now + timedelta(minutes=1), **args)
+    jobs = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
+    ).all()
+    assert len(jobs) == (1 if reusable else 2)
+    if reusable:
+        assert new is None
+        session.refresh(child)
+        requirement = session.get(SyncRequirement, child.requirement_id)
+        assert child.frozen_revision == requirement.desired_revision == 2
+        assert child.frozen_requested_after == now + timedelta(minutes=1)
+        assert job.error_code == "material_directory_pending"
+        assert child.observed_at is None
+    else:
+        session.refresh(child)
+        assert child.frozen_revision == 1 and child.observed_at == now

@@ -8,6 +8,8 @@ from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import and_, func, or_
+from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
 
@@ -17,7 +19,11 @@ from app.modules.reporting.store_models import (
     ReportSyncPage,
 )
 from app.modules.sync_control.contracts import BucketKey
-from app.modules.sync_control.models import SyncExecutionScope, SyncRequirement
+from app.modules.sync_control.models import (
+    SyncExecutionScope,
+    SyncRequirement,
+    SyncSchedule,
+)
 from app.modules.sync_control.requirements import (
     execution_owner_current,
     freeze_execution_scope,
@@ -48,6 +54,45 @@ def _strictly_unstarted() -> tuple[ColumnElement[bool], ...]:
             col(SyncExecutionScope.observed_at).is_not(None),
         )
         .exists(),
+    )
+
+
+def _idle_link_dependency_wait(now: datetime) -> ColumnElement[bool]:
+    # 只承接已经结束网络扫描、清掉分页续点且正在等待目录证据的补链任务。
+    # 在途网络读取和普通WAITING均不适用；不改查询日期/账户/授权范围。
+    allowed = [
+        "coalesced_v1",
+        "requested_at",
+        "initial_window",
+        "dependency_recovery_sequences",
+        "waiting_ids",
+        "dependency_checked_at",
+        "dependency_signature",
+        "dependency_attempts",
+        "dependency_probed_at",
+    ]
+    return and_(
+        col(ReportSyncJob.kind) == "material_links",
+        col(ReportSyncJob.status) == "WAITING",
+        col(ReportSyncJob.error_code).in_(
+            ["material_directory_pending", "material_identity_unavailable"]
+        ),
+        col(ReportSyncJob.claim_token).is_(None),
+        col(ReportSyncJob.claimed_until).is_(None),
+        func.jsonb_typeof(col(ReportSyncJob.progress)["waiting_ids"]) == "array",
+        col(ReportSyncJob.progress).op("?")("dependency_checked_at"),
+        col(ReportSyncJob.progress).op("-")(array(allowed)) == {},
+        ~select(col(ReportSyncPage.job_id))
+        .where(ReportSyncPage.job_id == ReportSyncJob.id)
+        .exists(),
+        ~select(col(SyncSchedule.scope_id))
+        .where(
+            SyncSchedule.lease_execution_id == ReportSyncJob.id,
+            col(SyncSchedule.lease_token).is_not(None),
+            col(SyncSchedule.leased_until) > now,
+        )
+        .exists(),
+        execution_owner_current(ReportSyncJob, "report_job_id"),
     )
 
 
@@ -313,21 +358,26 @@ def enqueue_report_requirements(
                 col(SyncExecutionScope.owner_epoch) == col(SyncScope.owner_epoch),
                 col(ReportSyncJob.owner_epoch) == col(SyncScope.owner_epoch),
                 col(ReportSyncJob.status).in_(["QUEUED", "RUNNING", "WAITING"]),
+                col(SyncExecutionScope.status) == "PENDING",
             )
             .order_by(col(ReportSyncJob.created_at).desc())
         ).all():
             existing.setdefault(child.requirement_id, (job, child))
-    unstarted_ids = (
-        set(
-            session.exec(
-                select(col(ReportSyncJob.id))
+    reusable_ids = (
+        {
+            locked.id
+            for locked in session.exec(
+                select(ReportSyncJob)
                 .where(
                     col(ReportSyncJob.id).in_({job.id for job, _ in existing.values()}),
-                    *_strictly_unstarted(),
+                    or_(and_(*_strictly_unstarted()), _idle_link_dependency_wait(now))
+                    if kind == "material_links"
+                    else and_(*_strictly_unstarted()),
                 )
                 .with_for_update(of=ReportSyncJob, skip_locked=True)
+                .execution_options(populate_existing=True)
             ).all()
-        )
+        }
         if existing
         else set()
     )
@@ -341,12 +391,15 @@ def enqueue_report_requirements(
             job, child = candidate
             # 只有今天/昨天的实时金额需从跨日历史任务拆出；补链和旧日期
             # 仍复用未启动执行。按tier误拆会在相邻归并时再次插入同一子桶。
-            if job.id in unstarted_ids and not (
+            if job.id in reusable_ids and not (
                 classes[scope_accounts[requirement.scope_id]] == "realtime"
                 and job.start_date != job.end_date
             ):
                 if child.frozen_revision < requirement.desired_revision:
-                    job.error_code = None
+                    if job.status == "WAITING":
+                        child.observed_at = None  # 新需求必须由下一代真实观察确认。
+                    else:
+                        job.error_code = None
                 child.frozen_revision = requirement.desired_revision
                 child.frozen_requested_after = requirement.requested_after
                 job.priority, job.due_at = (
