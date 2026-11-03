@@ -25,6 +25,18 @@ from app.modules.sync_control.schedule import wake_scope
 from app.modules.sync_control.scopes import ensure_scope
 
 
+def _refresh_scope_ages(session: Session, scope_ids: Collection[UUID]) -> None:
+    from app.modules.sync_control.directory_pending_age import (
+        refresh_directory_pending_age,
+    )
+
+    session.flush()
+    heads = session.exec(
+        select(SyncSchedule).where(col(SyncSchedule.scope_id).in_(scope_ids))
+    ).all()
+    refresh_directory_pending_age(session, heads)
+
+
 def promote_directory_heads(session: Session, run_ids: Collection[UUID]) -> None:
     """状态入口批量晋升已证明未开始的目录需求，SQL往返不随对象数增长。"""
     from sqlalchemy import func, update
@@ -107,6 +119,7 @@ def promote_directory_heads(session: Session, run_ids: Collection[UUID]) -> None
             )
             .values(active=remaining)
         )
+        _refresh_scope_ages(session, [row["scope_id"] for row in values])
 
 
 def directory_endpoint(run: AdDirectoryRun) -> str:
@@ -188,6 +201,7 @@ def register_directory_run(
             old_head = session.get(SyncSchedule, (scope.id, "directory"))
             if old_head is not None:
                 old_head.active = has_pending_execution(session, old_head)
+            _refresh_scope_ages(session, [scope.id])
         return
     scope = directory_scope(session, run)
     if new_execution:
@@ -216,6 +230,7 @@ def register_directory_run(
         due_at=run.next_attempt_at or datetime.now(UTC),
         oldest_pending_at=run.created_at,
     )
+    _refresh_scope_ages(session, [scope.id])
 
 
 def directory_fence(
@@ -297,6 +312,12 @@ def directory_outcome(
     due_by_head = pending_execution_dues(
         session, heads, "directory", now=datetime.now(UTC)
     )
+    from app.modules.sync_control.directory_pending_age import (
+        refresh_directory_pending_age,
+    )
+
+    # 即使不能清掉另一代grant，当前年龄缓存也只反映尚未满足的执行。
+    refresh_directory_pending_age(session, heads)
     for head in heads:
         if (
             expected_lease_token is not None

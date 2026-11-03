@@ -18,6 +18,11 @@ from app.modules.sync_control.occupancy import reservation_transaction
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def _directory_policy_key(endpoint: str) -> str:
+    # 独立root键：成本结算只处理物理接口余额，不接触调度机会/扫描状态。
+    return f"__directory_policy__:{endpoint}"
+
+
 class DispatchBudgetConflict(Exception):
     """同接口竞争或旧写入者改变余额；当前家族领取必须整体撤销。"""
 
@@ -27,13 +32,37 @@ class _Budget:
     base: dict[str, float]
     dispatched_at: datetime
     cursor: ReportDispatchCursor
+    policy_base: dict[str, float]
+    policy: dict[str, float]
 
 
 class EndpointBudgets:
     def __init__(self, session: Session) -> None:
         self.session = session
         self._items: dict[tuple[UUID, str], _Budget | None] = {}
+        self._policy_views: dict[UUID, dict[str, dict[str, float]]] = {}
         self.settled = 0
+
+    def peek_directory_policy(self, tenant_id: UUID, endpoint: str) -> dict[str, float]:
+        item = self._items.get((tenant_id, endpoint))
+        if item is not None:
+            return deepcopy(item.policy)
+        if tenant_id not in self._policy_views:
+            stored = self.session.get(
+                ReportDispatchCursor, tenant_id, populate_existing=True
+            )
+            self._policy_views[tenant_id] = deepcopy(
+                stored.fairness_state if stored else {}
+            )
+        return deepcopy(
+            self._policy_views[tenant_id].get(_directory_policy_key(endpoint), {})
+        )
+
+    def directory_policy(self, tenant_id: UUID, endpoint: str) -> dict[str, float]:
+        item = self._items.get((tenant_id, endpoint))
+        if item is None:
+            raise ValueError("directory policy requires the acquired endpoint budget")
+        return item.policy
 
     def acquire(self, tenant_id: UUID, endpoint: str) -> ReportDispatchCursor | None:
         key = (tenant_id, endpoint)
@@ -54,6 +83,11 @@ class EndpointBudgets:
             ReportDispatchCursor, tenant_id, populate_existing=True
         )
         base = deepcopy(stored.fairness_state.get(endpoint, {}) if stored else {})
+        policy_base = deepcopy(
+            stored.fairness_state.get(_directory_policy_key(endpoint), {})
+            if stored
+            else {}
+        )
         dispatched = stored.last_dispatched_at if stored else _EPOCH
         # 不入Session，后续成本结算/领取不会提前UPDATE并占住整个租户行。
         cursor = ReportDispatchCursor(
@@ -61,7 +95,9 @@ class EndpointBudgets:
             last_dispatched_at=dispatched,
             fairness_state={endpoint: deepcopy(base)},
         )
-        self._items[key] = _Budget(base, dispatched, cursor)
+        self._items[key] = _Budget(
+            base, dispatched, cursor, policy_base, deepcopy(policy_base)
+        )
         from app.modules.sync_control.costs import settle_costs
 
         self.settled += settle_costs(self.session, cursor, endpoint=endpoint)
@@ -73,6 +109,7 @@ class EndpointBudgets:
             if item is not None and (
                 item.cursor.fairness_state.get(endpoint, {}) != item.base
                 or item.cursor.last_dispatched_at != item.dispatched_at
+                or item.policy != item.policy_base
             ):
                 grouped.setdefault(tenant_id, {})[endpoint] = item
         # 成本/租约/outbox先准备；最后按统一租户顺序短锁，跨接口不能覆盖彼此的键。
@@ -121,12 +158,25 @@ class EndpointBudgets:
             # 旧版本或其它写入者可能在本次只读快照后已提交；绝不以旧同键覆盖它。
             if any(
                 stored.fairness_state.get(ep, {}) != item.base
+                or stored.fairness_state.get(_directory_policy_key(ep), {})
+                != item.policy_base
                 for ep, item in items.items()
             ):
                 raise DispatchBudgetConflict()
-            stored.fairness_state = stored.fairness_state | {
-                ep: item.cursor.fairness_state[ep] for ep, item in items.items()
+            updates = {
+                ep: item.cursor.fairness_state[ep]
+                for ep, item in items.items()
+                if item.cursor.fairness_state.get(ep, {}) != item.base
+                or item.cursor.last_dispatched_at != item.dispatched_at
             }
+            updates.update(
+                {
+                    _directory_policy_key(ep): item.policy
+                    for ep, item in items.items()
+                    if item.policy != item.policy_base
+                }
+            )
+            stored.fairness_state = stored.fairness_state | updates
             stored.last_dispatched_at = max(
                 stored.last_dispatched_at,
                 *(item.cursor.last_dispatched_at for item in items.values()),
