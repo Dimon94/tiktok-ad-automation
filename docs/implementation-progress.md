@@ -4293,3 +4293,11 @@ bbda3c12已上线并核验全部角色/schema/配置，Jenkins恢复；正常收
 
 
 99db0cca已完成生产版本/角色/schema0099/配置验收，Jenkins恢复；固定14:21→14:52无人工清理，目录-740、报表-589、真实缺口-3921，但老四样本未推进，未通过尾部验收。进一步修正身份用途被状态晋升覆盖、依赖等待周期需求绕过退避/错误头到期，以及精确锁冲突退出遮住同头下一任务。489项相关PG/Redis/SDK边界回归通过、2跳过，三个模块Ruff/mypy通过，独立复核无新增重要问题；待发布及持续业务验收。详见同日目录公平验收记录。
+
+
+## 2026-11-03 搭建数量统计合入与已合并分支清理
+
+- 按用户要求，将 `feat/image-carousel-batch` 的剩余提交 `66b7da98` 合入本地 main；合并提交 `e6e0bf4d`。列表与详情共用当前租户、预览、组合范围内的广告组/广告数量汇总，避免逐组合重复扫描；未涉及数据库结构变更。
+- 使用独立本地 PostgreSQL 测试库、`APP_ENV_FILE=/dev/null` 验证 `tests/modules/builds/test_creation_receipt_completion.py` 与 `tests/modules/builds/test_submission_queries.py`：29 passed（114.02 秒），包含180组合查询成本、轮播排除数量一致性及租户/BC边界；本轮专用测试库已删除。三个实现文件及变更测试的 Ruff、合并差异空白检查通过。
+- 核验提交全部进入 main 后删除本地 `feat/image-carousel-batch`、`feat/automation-rules-ux`、`feat/campaign-rename`、`fix/management-capability` 分支。`feat/automated-rules` 仍有未合入提交，保留。用户确认另一个任务正使用重新建立的 `sync-query-redesign` 工作树，保留它及 `fix/management-permission-simplify` 分支和新文件。
+- 原有四个前端未跟踪生成文件保留。本轮仅本地合并与清理，未推送、未发布。
