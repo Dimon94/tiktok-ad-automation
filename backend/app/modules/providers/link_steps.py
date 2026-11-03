@@ -56,6 +56,7 @@ ERROR_MESSAGES = {
     "provider_scope_busy": "该远端渠道正在处理另一项请求",
     "provider_session_expired": "版权方会话已过期，正在自动恢复",
     "provider_session_refreshing": "正在自动恢复版权方连接，随后继续当前步骤",
+    "provider_captcha_failed": "验证码自动识别未成功，请重新验证版权方连接",
     "provider_auth_failed": "版权方账号或密码不可用，请管理员更新连接凭据",
     "provider_session_refresh_failed": "版权方连接恢复暂未成功，请检查连接状态",
     "connection_unavailable": "版权方连接不可用，请检查连接状态",
@@ -325,6 +326,8 @@ def _validated_work(value: object) -> dict[str, Any]:
         "duiba_preview",
         "ggh_detail",
         "rl_detail",
+        "ml_visibility",
+        "ml_sections",
         "lookup",
         "create",
         "read_before",
@@ -497,7 +500,7 @@ _DRAMA_FACTS = {"free_episode_count", "episode_count"}
 def stage_after_resolution(kind: str) -> str:
     """剧目确定后进入的阶段：有逐剧参数的版权方先读详情，避免候选选择后跳过。"""
 
-    return {"duiba": "duiba_preview", "gangganhao": "ggh_detail", "rongliang": "rl_detail"}.get(
+    return {"duiba": "duiba_preview", "gangganhao": "ggh_detail", "rongliang": "rl_detail", "minglue": "ml_visibility"}.get(
         kind, "lookup"
     )
 
@@ -660,6 +663,10 @@ def _publish(
         _verified_duiba(data, work, prep.config)
     elif connection.kind == "gangganhao":
         _verified_gangganhao(data, work, prep.config)
+    elif connection.kind == "minglue":
+        from .minglue_steps import verify_data
+
+        verify_data(data, work)
     elif connection.kind == "rongliang":
         _verified_rongliang(data, work, prep.config)
     else:
@@ -1395,6 +1402,11 @@ def run_link_item(
             transport=transport,
         ) as provider:
             client = provider.client
+            if kind == "minglue":
+                from .minglue_steps import run_item
+
+                run_item(session, context, item_id, token, work, config, client, connection_id, application_id, raw_input)
+                return
             if kind == "duiba":
                 _run_duiba_item(
                     session,
@@ -1679,7 +1691,7 @@ def run_link_item(
             else "failed"
         )
         if (
-            kind in {"wangyan", "duiba", "gangganhao", "rongliang"}
+            kind in {"wangyan", "duiba", "gangganhao", "rongliang", "minglue"}
             and code
             not in {
                 "provider_rejected",

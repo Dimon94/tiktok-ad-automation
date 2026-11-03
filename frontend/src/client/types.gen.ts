@@ -6758,7 +6758,7 @@ export type ProviderConnectionCreate = {
     /**
      * Kind
      */
-    kind: 'wangyan' | 'jiashu' | 'duiba' | 'gangganhao' | 'rongliang';
+    kind: 'wangyan' | 'jiashu' | 'duiba' | 'gangganhao' | 'rongliang' | 'minglue';
     /**
      * Display Name
      */
@@ -13766,7 +13766,7 @@ export type providersListConnectionsData = {
         /**
          * Kind
          */
-        kind?: 'wangyan' | 'jiashu' | 'duiba' | 'gangganhao' | 'rongliang' | null;
+        kind?: 'wangyan' | 'jiashu' | 'duiba' | 'gangganhao' | 'rongliang' | 'minglue' | null;
         /**
          * Status
          */

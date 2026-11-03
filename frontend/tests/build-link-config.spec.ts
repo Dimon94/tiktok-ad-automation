@@ -47,3 +47,22 @@ test("刚刚好付费应用未设置支付模板时提示去连接设置", async
   ).toBeEnabled()
   await expect(page.getByRole("button", { name: "解析并准备" })).toBeDisabled()
 })
+
+test("明略默认起播集为 1，调整后沿用搭建草稿参数", async ({ page }) => {
+  const api = await buildsBoundary(page, { linkKind: "minglue" })
+  await page.goto(`/tenants/${T}/builds/new?bc_id=${BC}`)
+  await pickInputs(page)
+  const card = page.getByRole("region", { name: "自动取链参数" })
+  await expect(card.getByText("起播集 1（系统默认）")).toBeVisible()
+  await card.getByRole("button", { name: "本次单独调整" }).click()
+  await card.getByLabel("起播集").fill("3")
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect
+    .poll(
+      () =>
+        api.requests.find(
+          (r) => r.method === "POST" && r.path.endsWith("/build-drafts"),
+        )?.body.link_config,
+    )
+    .toEqual({ episode: 3 })
+})

@@ -878,3 +878,34 @@ test("应用表可设置取链默认值并刷新列表", async ({ page }) => {
     .toEqual({ link_defaults: { episode: 3 } })
   await expect(page.getByRole("dialog", { name: /取链默认值/ })).toHaveCount(0)
 })
+
+test("明略使用账号密码创建连接，保存后按现有流程验证", async ({ page }) => {
+  const { requests } = await boundary(page)
+  await page.goto(`/tenants/${tenantId}/providers`)
+  await page.getByRole("button", { name: "新增连接" }).click()
+  const sheet = page.getByRole("dialog")
+  await sheet.getByLabel("连接名称").fill("明略独立连接")
+  await sheet.getByRole("combobox").click()
+  await page.getByRole("option", { name: "明略", exact: true }).click()
+  await expect(sheet.getByLabel("账号", { exact: true })).toHaveAttribute(
+    "type",
+    "text",
+  )
+  await sheet.getByLabel("账号", { exact: true }).fill("minglue-fixture")
+  await sheet.getByLabel("密码", { exact: true }).fill("fixture-secret")
+  await sheet.getByRole("button", { name: "保存并验证" }).click()
+  await expect
+    .poll(() => requests.filter((r) => r.method === "POST").length)
+    .toBe(2)
+  const created = requests.find(
+    (r) => r.method === "POST" && r.path.endsWith("/connections"),
+  )!
+  expect(created.body).toEqual({
+    kind: "minglue",
+    display_name: "明略独立连接",
+    credentials: { account: "minglue-fixture", password: "fixture-secret" },
+  })
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
+    "fixture-secret",
+  )
+})

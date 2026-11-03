@@ -70,7 +70,7 @@ def _fields(kind: str, application: Any) -> list[LinkConfigField]:
     episode = LinkConfigField(
         name="episode", label="起播集", type="integer", default=1, source="application_default"
     )
-    if kind in {"jiashu", "wangyan"}:
+    if kind in {"jiashu", "wangyan", "minglue"}:
         return [episode]
     if kind == "duiba":
         return [

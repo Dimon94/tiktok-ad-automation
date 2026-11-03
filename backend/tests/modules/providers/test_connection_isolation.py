@@ -85,6 +85,7 @@ def transport(callback=None):
     ("kind", "credentials"),
     [
         ("duiba", {"account": "duiba-account", "password": "private-password"}),
+        ("minglue", {"account": "minglue-account", "password": "private-password"}),
         (
             "gangganhao",
             {

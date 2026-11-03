@@ -10,6 +10,7 @@ export const kinds: Record<string, string> = {
   duiba: "兑吧",
   gangganhao: "刚刚好",
   rongliang: "容量",
+  minglue: "明略",
 }
 export const connectionStates: Record<string, string> = {
   pending: "待验证",
@@ -41,6 +42,7 @@ const errors: Record<string, string> = {
   lookup_incomplete:
     "版权方历史链接尚不能完整核实，本次取链已停止，未创建新链接。",
   provider_unavailable: "版权方服务暂时不可用，请查看任务实际状态。",
+  provider_captcha_failed: "验证码自动识别未成功，请重新验证版权方连接。",
   provider_auth_failed: "版权方认证失败，请检查账号与密码。",
   provider_credentials_invalid: "认证信息不符合该版权方要求。",
   provider_forbidden: "该账号无权访问此应用。",

@@ -21,6 +21,7 @@ def names(kind, application=None):
 def test_fields_match_provider_backends():
     assert names("jiashu") == ["episode"]
     assert names("wangyan") == ["episode"]
+    assert names("minglue") == ["episode"]
     assert names("duiba") == ["episode", "card_point_episode"]
     assert names("gangganhao", app(delivery_mode="iaa")) == [
         "free_episode_count",

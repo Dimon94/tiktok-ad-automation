@@ -529,6 +529,24 @@ handle("providers-application_capabilities", ({ path }) => {
       application_defaults: {},
       schema_version: 2,
     },
+    minglue: {
+      provider_kind: "minglue",
+      fields: [
+        {
+          name: "episode",
+          label: "起播集",
+          type: "integer",
+          default: 1,
+          source: "application_default",
+          minimum: 1,
+          required: false,
+          options: [],
+        },
+      ],
+      defaults: { episode: 1 },
+      application_defaults: app.link_defaults ?? {},
+      schema_version: 2,
+    },
     jiashu: {
       provider_kind: "jiashu",
       fields: [],
@@ -618,6 +636,24 @@ handle("providers-patch_application_link_defaults", ({ path, body }) => {
       ],
       defaults: { episode: 1 },
       application_defaults: app.link_defaults,
+      schema_version: 2,
+    },
+    minglue: {
+      provider_kind: "minglue",
+      fields: [
+        {
+          name: "episode",
+          label: "起播集",
+          type: "integer",
+          default: 1,
+          source: "application_default",
+          minimum: 1,
+          required: false,
+          options: [],
+        },
+      ],
+      defaults: { episode: 1 },
+      application_defaults: app.link_defaults ?? {},
       schema_version: 2,
     },
     jiashu: {

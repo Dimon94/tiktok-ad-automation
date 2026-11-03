@@ -28,6 +28,7 @@ from .contract import (
 from .duiba import DuibaClient
 from .gangganhao import GangganhaoClient
 from .jiashu import JiashuClient
+from .minglue import MinglueClient
 from .rongliang import RongliangClient
 from .wangyan import WangyanClient
 
@@ -36,6 +37,7 @@ _CREDENTIAL_FIELDS: Mapping[str, frozenset[str]] = {
     "jiashu": frozenset({"username", "password"}),
     "duiba": frozenset({"account", "password"}),
     "gangganhao": frozenset({"portal_id", "username", "password"}),
+    "minglue": frozenset({"account", "password"}),
     "rongliang": frozenset({"email", "password"}),
 }
 
@@ -56,7 +58,8 @@ def adapter_for_kind(
     *,
     application_id: str = "",
     channel_prefix: str = "",
-) -> LegacyProviderAdapter | DuibaClient | GangganhaoClient | RongliangClient:
+    channel_config: JsonDict | None = None,
+) -> LegacyProviderAdapter | DuibaClient | GangganhaoClient | RongliangClient | MinglueClient:
     """Build a session adapter without falling back across provider kinds."""
 
     if kind == "jiashu":
@@ -76,6 +79,8 @@ def adapter_for_kind(
                 http, token=credentials["token"], application_id=application_id
             ),
         )
+    if kind == "minglue":
+        return MinglueClient(http, token=credentials["token"], application_id=application_id, channel_config=channel_config)
     if kind == "duiba":
         return DuibaClient(http, token=credentials["token"])
     if kind == "gangganhao":

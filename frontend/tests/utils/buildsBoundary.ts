@@ -58,6 +58,18 @@ const linkSchemas: Record<string, LinkConfigSchema> = {
     application_defaults: {},
     schema_version: 2,
   },
+  minglue: {
+    provider_kind: "minglue",
+    fields: [
+      intField("episode", "起播集", {
+        default: 1,
+        source: "application_default",
+      }),
+    ],
+    defaults: { episode: 1 },
+    application_defaults: {},
+    schema_version: 2,
+  },
   duiba: {
     provider_kind: "duiba",
     fields: [
@@ -144,7 +156,12 @@ export async function buildsBoundary(
     draftList?: boolean
     miniSelected?: boolean
     skippedMaterials?: boolean
-    linkKind?: "wangyan" | "duiba" | "rongliang" | "gangganhao-paid-no-template"
+    linkKind?:
+      | "minglue"
+      | "wangyan"
+      | "duiba"
+      | "rongliang"
+      | "gangganhao-paid-no-template"
   } = {},
 ) {
   const submissionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

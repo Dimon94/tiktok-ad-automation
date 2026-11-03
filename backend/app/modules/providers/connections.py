@@ -24,6 +24,7 @@ from .adapters.contract import ProviderClient, ProviderSession, failure
 from .adapters.duiba import DuibaClient
 from .adapters.gangganhao import GangganhaoClient
 from .adapters.jiashu import JiashuClient
+from .adapters.minglue import MinglueClient
 from .adapters.registry import adapter_for_kind, credential_fields
 from .adapters.rongliang import RongliangClient
 from .adapters.wangyan import WangyanClient
@@ -66,7 +67,7 @@ def save_connection(
     except DomainError:
         raise failure("provider_request_invalid") from None
     if (
-        kind not in {"jiashu", "wangyan", "duiba", "gangganhao", "rongliang"}
+        kind not in {"jiashu", "wangyan", "duiba", "gangganhao", "rongliang", "minglue"}
         or not isinstance(credentials, dict)
         or set(credentials) != fields
         or any(
@@ -160,7 +161,7 @@ def verify_connection(
         row.error_code = None
     logged_in = False
     try:
-        if kind not in {"jiashu", "wangyan", "duiba", "gangganhao", "rongliang"}:
+        if kind not in {"jiashu", "wangyan", "duiba", "gangganhao", "rongliang", "minglue"}:
             raise failure("provider_unavailable", retryable=True)
         with httpx.Client(
             transport=transport, trust_env=False, follow_redirects=False, timeout=30
@@ -174,6 +175,11 @@ def verify_connection(
                 logged_in = True
                 applications = client.discover_applications()
                 credentials["session"] = client.session
+            elif kind == "minglue":
+                minglue = MinglueClient.login(http, account=credentials["account"], password=credentials["password"])
+                logged_in = True
+                applications = minglue.discover_applications()
+                credentials["token"] = minglue.token
             elif kind == "duiba":
                 duiba = DuibaClient.login(
                     http,
@@ -351,13 +357,13 @@ def open_provider_session(
             transport=transport, trust_env=False, follow_redirects=False, timeout=30
         ) as http:
             client: ProviderClient
-            if kind not in {"jiashu", "wangyan", "duiba", "gangganhao", "rongliang"}:
+            if kind not in {"jiashu", "wangyan", "duiba", "gangganhao", "rongliang", "minglue"}:
                 raise failure("provider_unavailable", retryable=True)
-            if kind in {"duiba", "gangganhao", "rongliang"}:
+            if kind in {"duiba", "gangganhao", "rongliang", "minglue"}:
                 adapter = adapter_for_kind(
-                    kind, http, credentials, application_id=application_id
+                    kind, http, credentials, application_id=application_id, channel_config=app.channel_config
                 )
-                if not isinstance(adapter, (DuibaClient, GangganhaoClient, RongliangClient)):
+                if not isinstance(adapter, (DuibaClient, GangganhaoClient, RongliangClient, MinglueClient)):
                     raise failure("provider_state_invalid")
                 client = adapter
                 if isinstance(client, GangganhaoClient):

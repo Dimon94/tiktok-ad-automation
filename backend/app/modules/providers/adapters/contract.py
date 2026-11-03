@@ -152,7 +152,7 @@ def failure(code: str, *, retryable: bool = False) -> DomainError:
 
 
 def request_json(
-    http: httpx.Client, method: str, url: str, *, write: bool = False, **kwargs: Any
+    http: httpx.Client, method: str, url: str, *, write: bool = False, timeout: float = 30, **kwargs: Any
 ) -> tuple[JsonDict, httpx.Response]:
     # httpcore DEBUG response-header traces can include login Set-Cookie.
     for name in (
@@ -168,7 +168,7 @@ def request_json(
         logging.getLogger(name).disabled = True
     try:
         response = http.request(
-            method, url, timeout=30, follow_redirects=False, **kwargs
+            method, url, timeout=timeout, follow_redirects=False, **kwargs
         )
         if response.status_code in {401, 403}:
             raise failure(

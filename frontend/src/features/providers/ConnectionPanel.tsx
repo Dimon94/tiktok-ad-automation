@@ -350,7 +350,7 @@ function ConnectionEditor({
   const accountKey =
     kind === "jiashu" || kind === "gangganhao"
       ? "username"
-      : kind === "duiba"
+      : kind === "duiba" || kind === "minglue"
         ? "account"
         : "email"
   const submit = async () => {
@@ -461,6 +461,7 @@ function ConnectionEditor({
                   <SelectItem value="duiba">兑吧</SelectItem>
                   <SelectItem value="gangganhao">刚刚好</SelectItem>
                   <SelectItem value="rongliang">容量</SelectItem>
+                  <SelectItem value="minglue">明略</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -483,7 +484,7 @@ function ConnectionEditor({
             <FieldLabel htmlFor="provider-account">
               {kind === "jiashu" || kind === "gangganhao"
                 ? "用户名"
-                : kind === "duiba"
+                : kind === "duiba" || kind === "minglue"
                   ? "账号"
                   : "邮箱"}
             </FieldLabel>
