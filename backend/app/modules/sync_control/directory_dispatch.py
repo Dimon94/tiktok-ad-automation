@@ -38,54 +38,20 @@ class CandidateKey(NamedTuple):
     id: UUID
 
 
-ORDERED_CANDIDATES = """
-        SELECT h.scope_id, h.work_class, picked.id
-        FROM sync_schedule h
-        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
-        CROSS JOIN LATERAL (
-            SELECT r.id, r.created_at
-            FROM ad_directory_run r
-            WHERE r.tenant_id=h.tenant_id AND r.advertiser_id=s.advertiser_id
-                AND r.owner_epoch=s.owner_epoch AND r.id <> ALL(CAST(:excluded AS uuid[]))
-                AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
-                AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
-                AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
-                AND (NOT :independent_only OR (
-                    r.workload='live' AND (
-                        coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR
-                        coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)
-                    ) OR EXISTS (SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
-                AND EXISTS (
-                    SELECT 1 FROM sync_execution_scope e
-                    JOIN sync_requirement q ON q.id=e.requirement_id
-                    WHERE e.directory_run_id=r.id AND e.scope_id=h.scope_id
-                        AND e.tenant_id=h.tenant_id AND e.status='PENDING'
-                        AND e.owner_epoch=s.owner_epoch AND q.source=h.work_class
-                    LIMIT 1
-                )
-            ORDER BY r.created_at,r.id
-            LIMIT 1
-        ) picked
-        WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class
-            AND h.active IS TRUE AND h.next_eligible_at<=:now
-            AND (h.leased_until IS NULL OR h.leased_until<=:now)
-        ORDER BY coalesce(h.last_dispatched_at,h.oldest_pending_at,picked.created_at),h.oldest_pending_at,
-            picked.created_at,picked.id
-        LIMIT 1
-    """
-
-INDEPENDENT_CANDIDATES = """
+PAGED_CANDIDATES = """
 WITH heads AS MATERIALIZED (
- SELECT h.scope_id,h.work_class,h.tenant_id,s.advertiser_id,s.owner_epoch
+ SELECT h.scope_id,h.work_class,h.tenant_id,s.advertiser_id,s.owner_epoch,
+        h.last_dispatched_at,h.oldest_pending_at
  FROM sync_schedule h JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
  WHERE h.tenant_id=:tenant_id AND h.work_class=:work_class AND h.active IS TRUE
  AND h.next_eligible_at<=:now AND (h.leased_until IS NULL OR h.leased_until<=:now)
  AND h.scope_id>:scan_cursor AND s.resource LIKE 'directory:%'
  ORDER BY h.scope_id LIMIT 64
 )
-SELECT h.scope_id,h.work_class,picked.id FROM heads h
+SELECT h.scope_id,h.work_class,h.last_dispatched_at,h.oldest_pending_at,
+       picked.id,picked.created_at FROM heads h
 LEFT JOIN LATERAL (
- SELECT r.id FROM sync_execution_scope e
+ SELECT r.id,r.created_at FROM sync_execution_scope e
  JOIN sync_requirement q ON q.id=e.requirement_id
  CROSS JOIN LATERAL (SELECT * FROM ad_directory_run WHERE id=e.directory_run_id OFFSET 0) r
  WHERE e.scope_id=h.scope_id AND e.status='PENDING' AND e.owner_epoch=h.owner_epoch
@@ -95,7 +61,7 @@ LEFT JOIN LATERAL (
  AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
  AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
  AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
- AND ((r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0
+ AND (NOT :independent_only OR (r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0
  OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0))
  OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
  ORDER BY r.created_at,r.id LIMIT 1
@@ -391,11 +357,13 @@ def _candidate(
         "independent_only": independent_only,
         "excluded": excluded,
     }
-    # 独立池只扫描64个头的窄页，游标在Redis推进，即使事务预算回滚也不会永远重扫同一前缀。
+    # 普通和独立池均扫描64头窄页；范围再大也不全扫后才LIMIT。
+    # 两种发现游标独立，在Redis推进，事务预算回滚也不会永远重扫同一前缀。
     # 游标仅影响发现顺序；真实领取仍按主键复验全部围栏，不保存执行授权。
-    scan_key = f"sync:directory-discovery:v1:{tenant_id}:{work_class}"
+    mode = "independent" if independent_only else "all"
+    scan_key = f"sync:directory-discovery:v2:{tenant_id}:{work_class}:{mode}"
     scan_cursor = UUID(int=0)
-    if independent_only and redis is not None:
+    if redis is not None:
         value = redis.get(scan_key)
         if value:
             scan_cursor = UUID(
@@ -408,11 +376,11 @@ def _candidate(
             row = CandidateKey(
                 scope_id=selected[0], work_class=work_class, id=selected[1]
             )
-        elif independent_only:
+        else:
             rows = (
                 session.connection()
                 .execute(
-                    text(INDEPENDENT_CANDIDATES), {**params, "scan_cursor": scan_cursor}
+                    text(PAGED_CANDIDATES), {**params, "scan_cursor": scan_cursor}
                 )
                 .all()
             )
@@ -423,7 +391,15 @@ def _candidate(
                 if redis is not None:
                     redis.set(scan_key, str(scan_cursor), ex=86400)
                 continue
-            found = next((r for r in rows if r.id is not None), None)
+            # 页间按scope游标轮转，页内服务最久未获机会的真实候选。
+            found = min(
+                (r for r in rows if r.id is not None),
+                key=lambda r: (
+                    r.last_dispatched_at or r.oldest_pending_at or r.created_at,
+                    r.scope_id,
+                ),
+                default=None,
+            )
             row = (
                 CandidateKey(found.scope_id, found.work_class, found.id)
                 if found
@@ -434,15 +410,6 @@ def _candidate(
                 redis.set(scan_key, str(scan_cursor), ex=86400)
             if row is None:
                 continue
-        else:
-            found = (
-                session.connection().execute(text(ORDERED_CANDIDATES), params).first()
-            )
-            row = (
-                CandidateKey(found.scope_id, found.work_class, found.id)
-                if found
-                else None
-            )
         if row is None:
             return None
         if discover_only:
