@@ -18,7 +18,12 @@ from app.integrations.tiktok.contracts.ads import (
     MaterialUseRef,
 )
 from app.modules.ads.directory_requests import _partition_key
-from app.modules.ads.directory_services import IDENTITY_SERVICE, SERVICE_KEY
+from app.modules.ads.directory_services import (
+    IDENTITY_SERVICE,
+    SERVICE_KEY,
+    STATUS_SERVICE,
+    directory_service,
+)
 from app.modules.ads.models import AdObject
 from app.modules.ads.sync_models import AdDirectoryPage, AdDirectoryRun
 
@@ -216,6 +221,11 @@ def ensure_material_directory_children(
         or source.kind != "ad"
         or source.ad_type != "SMART_PLUS"
     ):
+        return 0
+    # 状态轮询的素材字段不完整，并不代表产生了新的素材详情需求。
+    # 保存主目录与现有桥接即可；真正缺关系的报表由request_link_directory以identity用途补读。
+    # 避免每次状态刷新都把同一广告重新展开为整批视频/图片身份查询。
+    if directory_service(source) == STATUS_SERVICE:
         return 0
     # source_run_id在JSON里没有外键；与归档DELETE共享父行锁防止悬空引用。
     if (
