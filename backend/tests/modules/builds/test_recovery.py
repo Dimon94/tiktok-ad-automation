@@ -137,7 +137,7 @@ def test_read_recovery_does_not_require_new_create_permission(executable):
         {
             "lease_token": uuid4(),
         },
-        {"error_code": "scene_intent_changed"},
+        {"error_code": "new_preview_required"},
     ],
 )
 def test_unsafe_or_changed_intent_never_retries(executable, changes):
@@ -151,6 +151,39 @@ def test_unsafe_or_changed_intent_never_retries(executable, changes):
     submission_id, _ = setup_failure(executable, **changes)
     with pytest.raises(DomainError, check=lambda e: e.code == "recovery_no_candidates"):
         request(executable, submission_id)
+
+
+@pytest.mark.parametrize("business_changed", [False, True])
+def test_scene_mismatch_retry_rechecks_current_frozen_intent(
+    executable, monkeypatch, business_changed
+):
+    from dataclasses import replace
+
+    from app.modules.builds import execution
+
+    submission_id, step_id = setup_failure(
+        executable, error_code="scene_intent_changed"
+    )
+    original = execution.read_scene_context
+
+    def refreshed(*args, **kwargs):
+        scene = original(*args, **kwargs)
+        return replace(
+            scene,
+            field_constraints={**scene.field_constraints, "revision": "new-policy"},
+            cta_fields={"asset_ids": ["changed"]}
+            if business_changed
+            else scene.cta_fields,
+        )
+
+    monkeypatch.setattr(execution, "read_scene_context", refreshed)
+    receipt = request(executable, submission_id)
+    run(executable, receipt)
+    with Session(executable[0]) as session:
+        step = session.get(ExecutionStep, step_id)
+        assert step.request_body is None
+        assert step.status == ("FAILED" if business_changed else "QUEUED")
+        assert bool(step.dispatch_id) is (not business_changed)
 
 
 def test_historical_armed_evidence_also_prevents_retry(executable):

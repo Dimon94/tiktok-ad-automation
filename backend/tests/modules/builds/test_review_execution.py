@@ -287,6 +287,35 @@ def test_review_scene_business_change_after_admission_does_not_arm(
         assert step.error_code == "scene_intent_changed" and step.request_body is None
 
 
+def test_scene_policy_metadata_update_preserves_frozen_execution(
+    executable, redis_client, monkeypatch
+):
+    from dataclasses import replace
+
+    from app.modules.builds import execution
+
+    calls = success_wire(monkeypatch)
+    original = execution.read_scene_context
+
+    def refreshed(*args, **kwargs):
+        scene = original(*args, **kwargs)
+        return replace(
+            scene,
+            field_constraints={
+                **scene.field_constraints,
+                "revision": "new-policy-revision",
+                "targeting_optimization_modes": ["AUTOMATIC"],
+            },
+        )
+
+    monkeypatch.setattr(execution, "read_scene_context", refreshed)
+    run(executable, redis_client, "CTA")
+    assert len(calls) == 1
+    with Session(executable[0]) as session:
+        step = session.get(ExecutionStep, executable[2]["CTA"][0])
+        assert step.status == "SUCCEEDED"
+
+
 def test_review_pre_arm_commit_rejection_never_reaches_transport(
     executable, redis_client, monkeypatch
 ):

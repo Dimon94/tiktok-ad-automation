@@ -50,7 +50,7 @@ LEASE_SECONDS = 90
 REPAIR_SECONDS = 120
 
 # These are repairs of frozen input, not retryable transport failures.
-INTENT_ERRORS = "'scene_intent_changed','scene_no_longer_supported','new_preview_required','copy_too_long','blank_copy','invalid_copy'"
+INTENT_ERRORS = "'scene_no_longer_supported','new_preview_required','copy_too_long','blank_copy','invalid_copy'"
 COVER_SCOPE = """c.id=s.cover_job_id AND c.tenant_id=s.tenant_id AND c.bc_id=s.bc_id AND c.superseded_by_id IS NULL
 AND c.material_id=s.material_id AND c.advertiser_id=u.advertiser_id AND c.connection_id=u.connection_id"""
 COVER_RETRY = f"""EXISTS (SELECT 1 FROM material_cover_job c WHERE {COVER_SCOPE}
@@ -803,6 +803,20 @@ def _schedule(
     if job.kind == "RECONCILE" and step.kind == "MATERIAL":
         return _material_reconciliation(session, step=step, unit=unit, context=original)
     if job.kind == "RETRY":
+        if step.error_code == "scene_intent_changed":
+            from .execution import _current_scene
+            from .submissions import load_execution_unit
+
+            # 发版后的元数据误差可显式重试，但真实业务变化仍不得续建；
+            # 过期证据交执行器按原路线刷新，发送前仍会再次核对冻结意图。
+            frozen = load_execution_unit(
+                session, context=original, submission_id=row.id, unit_id=step.unit_id
+            ).frozen
+            try:
+                _current_scene(session, original, frozen)
+            except DomainError as error:
+                if error.code != "scene_refresh_required":
+                    return False
         frozen_retry = step.request_body is not None
         # 结果未知但已核实未创建的系列/广告组：批准一次原样重发（同 request_id）。
         absent = frozen_retry and confirmed_absent_attempt(session, step=step)

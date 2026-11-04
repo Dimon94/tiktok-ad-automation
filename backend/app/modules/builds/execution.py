@@ -210,6 +210,12 @@ def _current_scene(
     # New evidence IDs alone must not change frozen business intent. New facts do.
     def comparable(value: dict[str, Any], key: str) -> object:
         item = value.get(key)
+        if key == "field_constraints" and isinstance(item, dict):
+            item = dict(item)
+            # 规则版本和已退役的本地能力列表不是用户投放意图；
+            # 实际定向、身份、预算上下限等字段仍逐项严格比较。
+            item.pop("revision", None)
+            item.pop("targeting_optimization_modes", None)
         # 旧 Minis 快照的 catalog=false 是冗余参数，移除它不改变投放意图。
         if key == "campaign_fields" and isinstance(item, dict):
             item = dict(item)
@@ -1085,7 +1091,7 @@ def process_step(
                     )
 
                     assets = body_assets(body)
-                    ready = verify_carousel_ad(
+                    carousel_ready = verify_carousel_ad(
                         claim.route,
                         claim.advertiser_id,
                         assets,
@@ -1093,8 +1099,8 @@ def process_step(
                         gateway=gateway,
                         budget=_budget(task_deadline, claim.route, "music.get"),
                     )
-                    if not ready.ready:
-                        raise CarouselNotReady(ready)
+                    if not carousel_ready.ready:
+                        raise CarouselNotReady(carousel_ready)
                     carousel_proof = music_proof(claim, assets)
                 with (
                     bounded_session(
