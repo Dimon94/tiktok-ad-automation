@@ -33,6 +33,7 @@ import { Route as LayoutTenantsTenantIdAdManagementTasksRouteImport } from './ro
 import { Route as LayoutTenantsTenantIdAdsRouteImport } from './routes/_layout/tenants.$tenantId.ads'
 import { Route as LayoutTenantsTenantIdAutomationRulesRouteImport } from './routes/_layout/tenants.$tenantId.automation-rules'
 import { Route as LayoutTenantsTenantIdBuildTasksRouteImport } from './routes/_layout/tenants.$tenantId.build-tasks'
+import { Route as LayoutTenantsTenantIdBusinessRouteImport } from './routes/_layout/tenants.$tenantId.business'
 import { Route as LayoutTenantsTenantIdMaterialsRouteImport } from './routes/_layout/tenants.$tenantId.materials'
 import { Route as LayoutTenantsTenantIdMembersRouteImport } from './routes/_layout/tenants.$tenantId.members'
 import { Route as LayoutTenantsTenantIdNotificationsRouteImport } from './routes/_layout/tenants.$tenantId.notifications'
@@ -175,6 +176,12 @@ const LayoutTenantsTenantIdBuildTasksRoute =
     path: '/build-tasks',
     getParentRoute: () => LayoutTenantsTenantIdRoute,
   } as any)
+const LayoutTenantsTenantIdBusinessRoute =
+  LayoutTenantsTenantIdBusinessRouteImport.update({
+    id: '/business',
+    path: '/business',
+    getParentRoute: () => LayoutTenantsTenantIdRoute,
+  } as any)
 const LayoutTenantsTenantIdMaterialsRoute =
   LayoutTenantsTenantIdMaterialsRouteImport.update({
     id: '/materials',
@@ -289,6 +296,7 @@ export interface FileRoutesByFullPath {
   '/tenants/$tenantId/ads': typeof LayoutTenantsTenantIdAdsRoute
   '/tenants/$tenantId/automation-rules': typeof LayoutTenantsTenantIdAutomationRulesRoute
   '/tenants/$tenantId/build-tasks': typeof LayoutTenantsTenantIdBuildTasksRouteWithChildren
+  '/tenants/$tenantId/business': typeof LayoutTenantsTenantIdBusinessRoute
   '/tenants/$tenantId/materials': typeof LayoutTenantsTenantIdMaterialsRoute
   '/tenants/$tenantId/members': typeof LayoutTenantsTenantIdMembersRoute
   '/tenants/$tenantId/notifications': typeof LayoutTenantsTenantIdNotificationsRoute
@@ -326,6 +334,7 @@ export interface FileRoutesByTo {
   '/tenants/$tenantId/accounts': typeof LayoutTenantsTenantIdAccountsRoute
   '/tenants/$tenantId/ads': typeof LayoutTenantsTenantIdAdsRoute
   '/tenants/$tenantId/automation-rules': typeof LayoutTenantsTenantIdAutomationRulesRoute
+  '/tenants/$tenantId/business': typeof LayoutTenantsTenantIdBusinessRoute
   '/tenants/$tenantId/materials': typeof LayoutTenantsTenantIdMaterialsRoute
   '/tenants/$tenantId/members': typeof LayoutTenantsTenantIdMembersRoute
   '/tenants/$tenantId/notifications': typeof LayoutTenantsTenantIdNotificationsRoute
@@ -367,6 +376,7 @@ export interface FileRoutesById {
   '/_layout/tenants/$tenantId/ads': typeof LayoutTenantsTenantIdAdsRoute
   '/_layout/tenants/$tenantId/automation-rules': typeof LayoutTenantsTenantIdAutomationRulesRoute
   '/_layout/tenants/$tenantId/build-tasks': typeof LayoutTenantsTenantIdBuildTasksRouteWithChildren
+  '/_layout/tenants/$tenantId/business': typeof LayoutTenantsTenantIdBusinessRoute
   '/_layout/tenants/$tenantId/materials': typeof LayoutTenantsTenantIdMaterialsRoute
   '/_layout/tenants/$tenantId/members': typeof LayoutTenantsTenantIdMembersRoute
   '/_layout/tenants/$tenantId/notifications': typeof LayoutTenantsTenantIdNotificationsRoute
@@ -409,6 +419,7 @@ export interface FileRouteTypes {
     | '/tenants/$tenantId/ads'
     | '/tenants/$tenantId/automation-rules'
     | '/tenants/$tenantId/build-tasks'
+    | '/tenants/$tenantId/business'
     | '/tenants/$tenantId/materials'
     | '/tenants/$tenantId/members'
     | '/tenants/$tenantId/notifications'
@@ -446,6 +457,7 @@ export interface FileRouteTypes {
     | '/tenants/$tenantId/accounts'
     | '/tenants/$tenantId/ads'
     | '/tenants/$tenantId/automation-rules'
+    | '/tenants/$tenantId/business'
     | '/tenants/$tenantId/materials'
     | '/tenants/$tenantId/members'
     | '/tenants/$tenantId/notifications'
@@ -486,6 +498,7 @@ export interface FileRouteTypes {
     | '/_layout/tenants/$tenantId/ads'
     | '/_layout/tenants/$tenantId/automation-rules'
     | '/_layout/tenants/$tenantId/build-tasks'
+    | '/_layout/tenants/$tenantId/business'
     | '/_layout/tenants/$tenantId/materials'
     | '/_layout/tenants/$tenantId/members'
     | '/_layout/tenants/$tenantId/notifications'
@@ -682,6 +695,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LayoutTenantsTenantIdBuildTasksRouteImport
       parentRoute: typeof LayoutTenantsTenantIdRoute
     }
+    '/_layout/tenants/$tenantId/business': {
+      id: '/_layout/tenants/$tenantId/business'
+      path: '/business'
+      fullPath: '/tenants/$tenantId/business'
+      preLoaderRoute: typeof LayoutTenantsTenantIdBusinessRouteImport
+      parentRoute: typeof LayoutTenantsTenantIdRoute
+    }
     '/_layout/tenants/$tenantId/materials': {
       id: '/_layout/tenants/$tenantId/materials'
       path: '/materials'
@@ -853,6 +873,7 @@ interface LayoutTenantsTenantIdRouteChildren {
   LayoutTenantsTenantIdAdsRoute: typeof LayoutTenantsTenantIdAdsRoute
   LayoutTenantsTenantIdAutomationRulesRoute: typeof LayoutTenantsTenantIdAutomationRulesRoute
   LayoutTenantsTenantIdBuildTasksRoute: typeof LayoutTenantsTenantIdBuildTasksRouteWithChildren
+  LayoutTenantsTenantIdBusinessRoute: typeof LayoutTenantsTenantIdBusinessRoute
   LayoutTenantsTenantIdMaterialsRoute: typeof LayoutTenantsTenantIdMaterialsRoute
   LayoutTenantsTenantIdMembersRoute: typeof LayoutTenantsTenantIdMembersRoute
   LayoutTenantsTenantIdNotificationsRoute: typeof LayoutTenantsTenantIdNotificationsRoute
@@ -873,6 +894,7 @@ const LayoutTenantsTenantIdRouteChildren: LayoutTenantsTenantIdRouteChildren = {
     LayoutTenantsTenantIdAutomationRulesRoute,
   LayoutTenantsTenantIdBuildTasksRoute:
     LayoutTenantsTenantIdBuildTasksRouteWithChildren,
+  LayoutTenantsTenantIdBusinessRoute: LayoutTenantsTenantIdBusinessRoute,
   LayoutTenantsTenantIdMaterialsRoute: LayoutTenantsTenantIdMaterialsRoute,
   LayoutTenantsTenantIdMembersRoute: LayoutTenantsTenantIdMembersRoute,
   LayoutTenantsTenantIdNotificationsRoute:

@@ -50,6 +50,7 @@ celery_app.conf.update(
         "app.modules.ad_management.tasks",
         "app.modules.ad_management.submissions",
         "app.modules.automation_rules.tasks",
+        "app.modules.business.tasks",
     ),
     task_queues=(
         Queue("resources"),
@@ -68,6 +69,8 @@ celery_app.conf.update(
     task_default_queue="control",
     task_create_missing_queues=False,
     task_routes={
+        "business.schedule": {"queue": "control"},
+        "business.work": {"queue": "ads-reporting"},
         "material_production.provision": {"queue": "control"},
         "material_production.recover": {"queue": "control"},
         "jobs.flush_dispatch": {"queue": "builds", "priority": 0},
@@ -99,6 +102,16 @@ celery_app.conf.update(
         "automation.send_summary": {"queue": "control"},
     },
     beat_schedule={
+        "schedule-business-accounting": {
+            "task": "business.schedule",
+            "schedule": 60.0,
+            "options": {"queue": "control"},
+        },
+        "advance-business-accounting": {
+            "task": "business.work",
+            "schedule": 5.0,
+            "options": {"queue": "ads-reporting"},
+        },
         # 冷审计最多占一个control进程；过期唤醒不堆积，未配置私有桶时不删除源。
         "archive-terminal-sync-runs": {
             "task": "sync.archive_runs",

@@ -720,6 +720,46 @@ export type Body_login_login_access_token = {
 };
 
 /**
+ * BusinessRow
+ */
+export type BusinessRow = {
+    /**
+     * Key
+     */
+    key: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Provider Name
+     */
+    provider_name?: string;
+    /**
+     * Provider Id
+     */
+    provider_id?: string | null;
+    /**
+     * Drama Id
+     */
+    drama_id?: string | null;
+    /**
+     * Advertiser Id
+     */
+    advertiser_id?: string | null;
+    /**
+     * Campaign Id
+     */
+    campaign_id?: string | null;
+    /**
+     * Values
+     */
+    values: {
+        [key: string]: string | null;
+    };
+};
+
+/**
  * CandidateAdded
  */
 export type CandidateAdded = {
@@ -1734,6 +1774,132 @@ export type CreativeEditPublic = {
 };
 
 /**
+ * DashboardFilter
+ */
+export type DashboardFilter = {
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Start Date
+     */
+    start_date: string;
+    /**
+     * End Date
+     */
+    end_date: string;
+    /**
+     * Dimension
+     */
+    dimension?: 'campaign' | 'drama' | 'provider' | 'day';
+    /**
+     * Scenario
+     */
+    scenario?: 'base' | 'comic' | 'other' | 'existing';
+    /**
+     * Advertiser Ids
+     */
+    advertiser_ids?: Array<string>;
+    /**
+     * Campaign Id
+     */
+    campaign_id?: string | null;
+    /**
+     * Drama Id
+     */
+    drama_id?: string | null;
+    /**
+     * Provider Id
+     */
+    provider_id?: string | null;
+    /**
+     * Unmapped Only
+     */
+    unmapped_only?: boolean;
+    /**
+     * Currency
+     */
+    currency?: string;
+    /**
+     * Query
+     */
+    query?: string;
+    /**
+     * Sort By
+     */
+    sort_by?: 'name' | 'spend' | 'revenue' | 'business_revenue' | 'compensation' | 'subsidy_comic' | 'subsidy_other' | 'subsidy_existing';
+    /**
+     * Descending
+     */
+    descending?: boolean;
+    /**
+     * Offset
+     */
+    offset?: number;
+    /**
+     * Limit
+     */
+    limit?: number;
+    /**
+     * Run Ids
+     */
+    run_ids?: Array<string> | null;
+};
+
+/**
+ * DashboardPublic
+ */
+export type DashboardPublic = {
+    /**
+     * Rows
+     */
+    rows: Array<BusinessRow>;
+    /**
+     * Totals
+     */
+    totals: {
+        [key: string]: string | null;
+    };
+    /**
+     * Total
+     */
+    total: number;
+    /**
+     * Run Ids
+     */
+    run_ids: Array<string>;
+    /**
+     * Currency
+     */
+    currency: string;
+    /**
+     * End Date
+     */
+    end_date: string;
+    /**
+     * Currencies
+     */
+    currencies?: Array<string>;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+    /**
+     * Issues
+     */
+    issues?: Array<string>;
+    /**
+     * Missing Dates
+     */
+    missing_dates?: Array<string>;
+    /**
+     * Pending
+     */
+    pending?: boolean;
+};
+
+/**
  * DefaultConnectionRequest
  */
 export type DefaultConnectionRequest = {
@@ -2464,6 +2630,58 @@ export type EntityRef = {
 };
 
 /**
+ * EvidenceInput
+ */
+export type EvidenceInput = {
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Campaign Id
+     */
+    campaign_id: string;
+    /**
+     * Stat Date
+     */
+    stat_date: string;
+    /**
+     * Bid
+     */
+    bid?: number | string | null;
+    /**
+     * Eligible
+     */
+    eligible?: boolean | null;
+    /**
+     * Source
+     */
+    source: string;
+};
+
+/**
+ * EvidencePublic
+ */
+export type EvidencePublic = {
+    /**
+     * Bid
+     */
+    bid?: string | null;
+    /**
+     * Eligible
+     */
+    eligible?: boolean | null;
+    /**
+     * Source
+     */
+    source?: string;
+};
+
+/**
  * Exclude
  */
 export type Exclude = {
@@ -2539,30 +2757,6 @@ export type ExportCreate = {
      * Idempotency Key
      */
     idempotency_key: string;
-};
-
-/**
- * ExportPublic
- */
-export type ExportPublic = {
-    /**
-     * Id
-     */
-    id: string;
-    /**
-     * Status
-     */
-    status: 'QUEUED' | 'RUNNING' | 'COMPLETE' | 'FAILED' | 'EXPIRED';
-    /**
-     * Coverage
-     */
-    coverage?: {
-        [key: string]: unknown;
-    };
-    /**
-     * Expires At
-     */
-    expires_at: string;
 };
 
 /**
@@ -4510,6 +4704,28 @@ export type ManualLinkPatch = {
 };
 
 /**
+ * MappingInput
+ */
+export type MappingInput = {
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Campaign Id
+     */
+    campaign_id: string;
+    /**
+     * Drama Id
+     */
+    drama_id: string;
+};
+
+/**
  * MaterialPublic
  */
 export type MaterialPublic = {
@@ -4801,6 +5017,28 @@ export type McpSyncResult = {
      * Discovery Run Id
      */
     discovery_run_id: string;
+};
+
+/**
+ * MemberInput
+ */
+export type MemberInput = {
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Start Date
+     */
+    start_date: string;
+    /**
+     * End Date
+     */
+    end_date?: string | null;
 };
 
 /**
@@ -7042,6 +7280,76 @@ export type QuerySnapshotPublic = {
     publication_versions?: {
         [key: string]: number;
     };
+};
+
+/**
+ * RateInput
+ */
+export type RateInput = {
+    /**
+     * Kind
+     */
+    kind: 'provider' | 'rebate';
+    /**
+     * Scope Id
+     */
+    scope_id: string;
+    /**
+     * Effective Date
+     */
+    effective_date: string;
+    /**
+     * Rate
+     */
+    rate: number | string;
+};
+
+/**
+ * RatePublic
+ */
+export type RatePublic = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Kind
+     */
+    kind: string;
+    /**
+     * Scope Id
+     */
+    scope_id: string;
+    /**
+     * Effective Date
+     */
+    effective_date: string;
+    /**
+     * Rate
+     */
+    rate: string;
+    /**
+     * Revision
+     */
+    revision: number;
+};
+
+/**
+ * RebuildInput
+ */
+export type RebuildInput = {
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Start Date
+     */
+    start_date: string;
+    /**
+     * End Date
+     */
+    end_date: string;
 };
 
 /**
@@ -9986,6 +10294,48 @@ export type VersionPublic = {
      * Request Id
      */
     request_id: string;
+};
+
+/**
+ * ExportPublic
+ */
+export type app__modules__business__schemas__ExportPublic = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Expires At
+     */
+    expires_at: string;
+};
+
+/**
+ * ExportPublic
+ */
+export type app__modules__reporting__schemas__ExportPublic = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Status
+     */
+    status: 'QUEUED' | 'RUNNING' | 'COMPLETE' | 'FAILED' | 'EXPIRED';
+    /**
+     * Coverage
+     */
+    coverage?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Expires At
+     */
+    expires_at: string;
 };
 
 /**
@@ -14602,7 +14952,7 @@ export type adsReportingListReportExportsResponses = {
      *
      * Successful Response
      */
-    200: Array<ExportPublic>;
+    200: Array<app__modules__reporting__schemas__ExportPublic>;
 };
 
 export type adsReportingListReportExportsResponse = adsReportingListReportExportsResponses[keyof adsReportingListReportExportsResponses];
@@ -14637,7 +14987,7 @@ export type adsReportingCreateReportExportResponses = {
     /**
      * Successful Response
      */
-    200: ExportPublic;
+    200: app__modules__reporting__schemas__ExportPublic;
 };
 
 export type adsReportingCreateReportExportResponse = adsReportingCreateReportExportResponses[keyof adsReportingCreateReportExportResponses];
@@ -14676,7 +15026,7 @@ export type adsReportingGetReportExportResponses = {
     /**
      * Successful Response
      */
-    200: ExportPublic;
+    200: app__modules__reporting__schemas__ExportPublic;
 };
 
 export type adsReportingGetReportExportResponse = adsReportingGetReportExportResponses[keyof adsReportingGetReportExportResponses];
@@ -14795,6 +15145,511 @@ export type adsReportingGetAdSyncStatusResponses = {
 };
 
 export type adsReportingGetAdSyncStatusResponse = adsReportingGetAdSyncStatusResponses[keyof adsReportingGetAdSyncStatusResponses];
+
+export type businessDashboardData = {
+    body: DashboardFilter;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/query';
+};
+
+export type businessDashboardErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessDashboardError = businessDashboardErrors[keyof businessDashboardErrors];
+
+export type businessDashboardResponses = {
+    /**
+     * Successful Response
+     */
+    200: DashboardPublic;
+};
+
+export type businessDashboardResponse = businessDashboardResponses[keyof businessDashboardResponses];
+
+export type businessRebuildData = {
+    body: RebuildInput;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/rebuild';
+};
+
+export type businessRebuildErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessRebuildError = businessRebuildErrors[keyof businessRebuildErrors];
+
+export type businessRebuildResponses = {
+    /**
+     * Response Business-Rebuild
+     *
+     * Successful Response
+     */
+    202: {
+        [key: string]: Array<string>;
+    };
+};
+
+export type businessRebuildResponse = businessRebuildResponses[keyof businessRebuildResponses];
+
+export type businessOptionsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Bc Id
+         */
+        bc_id: string;
+    };
+    url: '/api/tenants/{tenant_id}/business/options';
+};
+
+export type businessOptionsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessOptionsError = businessOptionsErrors[keyof businessOptionsErrors];
+
+export type businessOptionsResponses = {
+    /**
+     * Response Business-Options
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type businessOptionsResponse = businessOptionsResponses[keyof businessOptionsResponses];
+
+export type businessDramasData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: {
+        /**
+         * Q
+         */
+        q?: string;
+        /**
+         * Provider Id
+         */
+        provider_id?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/tenants/{tenant_id}/business/dramas';
+};
+
+export type businessDramasErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessDramasError = businessDramasErrors[keyof businessDramasErrors];
+
+export type businessDramasResponses = {
+    /**
+     * Response Business-Dramas
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type businessDramasResponse = businessDramasResponses[keyof businessDramasResponses];
+
+export type businessRatesData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Kind
+         */
+        kind: string;
+        /**
+         * Scope Id
+         */
+        scope_id: string;
+    };
+    url: '/api/tenants/{tenant_id}/business/rates';
+};
+
+export type businessRatesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessRatesError = businessRatesErrors[keyof businessRatesErrors];
+
+export type businessRatesResponses = {
+    /**
+     * Response Business-Rates
+     *
+     * Successful Response
+     */
+    200: Array<RatePublic>;
+};
+
+export type businessRatesResponse = businessRatesResponses[keyof businessRatesResponses];
+
+export type businessSetRateData = {
+    body: RateInput;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/rates';
+};
+
+export type businessSetRateErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessSetRateError = businessSetRateErrors[keyof businessSetRateErrors];
+
+export type businessSetRateResponses = {
+    /**
+     * Successful Response
+     */
+    200: RatePublic;
+};
+
+export type businessSetRateResponse = businessSetRateResponses[keyof businessSetRateResponses];
+
+export type businessMappingData = {
+    body: MappingInput;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/mapping';
+};
+
+export type businessMappingErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessMappingError = businessMappingErrors[keyof businessMappingErrors];
+
+export type businessMappingResponses = {
+    /**
+     * Response Business-Mapping
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type businessMappingResponse = businessMappingResponses[keyof businessMappingResponses];
+
+export type businessReadEvidenceData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Bc Id
+         */
+        bc_id: string;
+        /**
+         * Advertiser Id
+         */
+        advertiser_id: string;
+        /**
+         * Campaign Id
+         */
+        campaign_id: string;
+        /**
+         * Stat Date
+         */
+        stat_date: string;
+    };
+    url: '/api/tenants/{tenant_id}/business/evidence';
+};
+
+export type businessReadEvidenceErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessReadEvidenceError = businessReadEvidenceErrors[keyof businessReadEvidenceErrors];
+
+export type businessReadEvidenceResponses = {
+    /**
+     * Successful Response
+     */
+    200: EvidencePublic;
+};
+
+export type businessReadEvidenceResponse = businessReadEvidenceResponses[keyof businessReadEvidenceResponses];
+
+export type businessEvidenceData = {
+    body: EvidenceInput;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/evidence';
+};
+
+export type businessEvidenceErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessEvidenceError = businessEvidenceErrors[keyof businessEvidenceErrors];
+
+export type businessEvidenceResponses = {
+    /**
+     * Response Business-Evidence
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type businessEvidenceResponse = businessEvidenceResponses[keyof businessEvidenceResponses];
+
+export type businessMemberData = {
+    body: MemberInput;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/member';
+};
+
+export type businessMemberErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessMemberError = businessMemberErrors[keyof businessMemberErrors];
+
+export type businessMemberResponses = {
+    /**
+     * Response Business-Member
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type businessMemberResponse = businessMemberResponses[keyof businessMemberResponses];
+
+export type businessRunsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Bc Id
+         */
+        bc_id: string;
+    };
+    url: '/api/tenants/{tenant_id}/business/runs';
+};
+
+export type businessRunsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessRunsError = businessRunsErrors[keyof businessRunsErrors];
+
+export type businessRunsResponses = {
+    /**
+     * Response Business-Runs
+     *
+     * Successful Response
+     */
+    200: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type businessRunsResponse = businessRunsResponses[keyof businessRunsResponses];
+
+export type businessExportData = {
+    body: DashboardFilter;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/exports';
+};
+
+export type businessExportErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessExportError = businessExportErrors[keyof businessExportErrors];
+
+export type businessExportResponses = {
+    /**
+     * Successful Response
+     */
+    202: app__modules__business__schemas__ExportPublic;
+};
+
+export type businessExportResponse = businessExportResponses[keyof businessExportResponses];
+
+export type businessExportStatusData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Export Id
+         */
+        export_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/exports/{export_id}';
+};
+
+export type businessExportStatusErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessExportStatusError = businessExportStatusErrors[keyof businessExportStatusErrors];
+
+export type businessExportStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: app__modules__business__schemas__ExportPublic;
+};
+
+export type businessExportStatusResponse = businessExportStatusResponses[keyof businessExportStatusResponses];
+
+export type businessDownloadData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Export Id
+         */
+        export_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/business/exports/{export_id}/download';
+};
+
+export type businessDownloadErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type businessDownloadError = businessDownloadErrors[keyof businessDownloadErrors];
+
+export type businessDownloadResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
 
 export type automationRulesGetSettingsData = {
     body?: never;

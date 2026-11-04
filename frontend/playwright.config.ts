@@ -9,7 +9,7 @@ const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${port}`
 // 本地调试两者是同一个开发服务器。
 const sourcePort = process.env.CI ? (process.env.PLAYWRIGHT_SOURCE_PORT ?? '5174') : port
 const sourceURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${sourcePort}`
-const workspaceSpecs = /(workspace-shell|tenants-accounts|providers|strategies|materials|r2-ingest|upload-foundation|image-composition|image-delivery|build-preparation|build-preview|build-task-pages|build-channels|build-link-config|ads-workspace|ads-reporting|ad-management|ads-metric-catalog|ads-column-prefs|ads-detail|ads-detail-config|automation-rule-form|automation-rules)\.spec\.ts/
+const workspaceSpecs = /(business-dashboard|workspace-shell|tenants-accounts|providers|strategies|materials|r2-ingest|upload-foundation|image-composition|image-delivery|build-preparation|build-preview|build-task-pages|build-channels|build-link-config|ads-workspace|ads-reporting|ad-management|ads-metric-catalog|ads-column-prefs|ads-detail|ads-detail-config|automation-rule-form|automation-rules)\.spec\.ts/
 // 按标题路径（含文件名）与标签匹配：upload-foundation 整个文件，加上标记 @dev-server 的单个用例。
 const devServerOnly = /upload-foundation\.spec\.ts|@dev-server/
 

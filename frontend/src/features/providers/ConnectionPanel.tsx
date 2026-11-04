@@ -49,6 +49,7 @@ import {
 } from "@/features/tenants/shared"
 import { useTenantScope } from "@/features/tenants/TenantScope"
 import { ApplicationLinkDefaults } from "./ApplicationLinkDefaults"
+import { RateSettings } from "@/features/business/RateSettings"
 import {
   connectionStates,
   kinds,
@@ -69,6 +70,7 @@ export function ConnectionPanel({
     [search, setSearch] = useState(""),
     [kindFilter, setKindFilter] = useState("all"),
     [statusFilter, setStatusFilter] = useState("all")
+  const [businessRate, setBusinessRate] = useState<ProviderConnectionPublic | null>(null)
   const query = useQuery({
     ...connectionsQuery(tenantId!, paging.cursor, paging.limit, {
       query: search,
@@ -168,6 +170,9 @@ export function ConnectionPanel({
               <>
                 <Button variant="ghost" size="sm" onClick={() => setEditing(r)}>
                   编辑连接
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setBusinessRate(r)}>
+                  抽成设置
                 </Button>
                 <Button
                   variant="outline"
@@ -290,6 +295,8 @@ export function ConnectionPanel({
           onClose={() => setEditing(null)}
         />
       )}{" "}
+      {businessRate && <RateSettings tenantId={tenantId!} kind="provider" scopeId={businessRate.id}
+        name={businessRate.display_name} onClose={() => setBusinessRate(null)} />}
       {detail && (
         <ManagementSheet
           title="版权方连接详情"

@@ -13,6 +13,7 @@ from app.modules.builds.submission_api import router as submission_router
 from app.modules.builds.submission_catalog_api import (
     router as submission_catalog_router,
 )
+from app.modules.business.api import router as business_router
 from app.modules.material_production.api import router as material_production_router
 from app.modules.materials.ingest_api import router as ingest_router
 from app.modules.materials.push_api import router as material_push_router
@@ -43,6 +44,7 @@ api_router.include_router(material_source_router)
 api_router.include_router(material_reissue_router)
 api_router.include_router(providers_router)
 api_router.include_router(reporting_router)
+api_router.include_router(business_router)
 api_router.include_router(automation_rules_router)
 api_router.include_router(strategies_router)
 api_router.include_router(builds_router)

@@ -67,6 +67,7 @@ export function workspaceNavigation({
         ...(prefix
           ? [
               { icon: BarChart3, title: "广告报表", path: `${prefix}/ads` },
+              { icon: BarChart3, title: "经营看板", path: `${prefix}/business` },
               {
                 icon: History,
                 title: "操作记录",
