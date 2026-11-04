@@ -1,3 +1,8 @@
+## 2026-11-04 同步发布恢复及后续领取批量调整
+
+- b9统一发布后原5个大素材批次均COMPLETE/完整coverage/正式发布版本，原5报表14桶也全发布；固定窗pub WAIT0、READY步骤51→602（非canonical行数或整体倍数），SDK仍未持续上限。精确交接、严格窗口纠正和实际回读见[发布预算结果](validation/2026-11-04-material-publish-statement-budget.md)。
+- 后台持续样本只1/12满8且broker始终0，不扩Worker。正常领取4/8采样支持摊薄往返；仅后续轮次预算>2秒时8，首轮/短回调仍4，余额原批；11项PG/Redis定点回归、Ruff通过，mypy1旧错无新增，独立审查完成，准备精确单参数观察。见[领取参数计划](validation/2026-11-04-adaptive-dispatch-batches.md)。
+
 ## 2026-11-04 本地修改整合生产发布完成
 
 应用`b9db7a6af1ddb4c2ac40da73b65d7077b551c0c1`/schema0101已发布，包含经营识别与紧凑布局/排序、自由命名回执归组及素材发布90秒预算等全部本地源码修改，并合并公司7035生产修复。11角色Ready、9Worker、唯一Beat、精确镜像/配置/四开关/数据库池/HTTPS200及实际8/typed8/prefetch12核对通过；原strategy/资源/额度保持，发布锁释放。按用户要求未运行任何测试，仅构建和必要上线核验；无DDL、新备份或恢复演练。公司main推送成功，GitHub认证拒绝尚未同步。详见[本轮实际发布记录](validation/2026-11-04-combined-fast-production.md)。

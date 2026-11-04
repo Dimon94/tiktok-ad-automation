@@ -65,6 +65,7 @@ logger = logging.getLogger(__name__)
 REPORT_DISPATCH_WINDOW = 36
 # 按小批摊销窗口/租户发现，批间提交释放锁；不能一次锁住整个候补窗口。
 DISPATCH_COMMIT_BATCH = 4
+DISPATCH_LARGE_COMMIT_BATCH = 8
 # 一轮周期目录分批推进；此游标不占用账户筛选或规则相位的进度键。
 DIRECTORY_PLAN_PROGRESS = "directory_cycle_v1"
 # 批量上限配合查询预算保护数据库；不再按固定分钟额度延迟必要任务发现。
@@ -910,7 +911,7 @@ def _dispatch_pending(
     )
     with Redis.from_url(settings.REDIS_URL) as redis:
         exhausted: set[str] = set()
-        for _ in range(8):
+        for round_index in range(8):
             current = 0
             for family in families:
                 # 空家族/锁冲突在下一次唤醒重试；本轮不随另一类的每个续步重复扫描。
@@ -919,6 +920,13 @@ def _dispatch_pending(
                 remaining = stop - time.monotonic()
                 if remaining <= 0:
                     return count
+                # 首轮报告/目录仍各至多四个，余额原批量不变；两秒回调不扩大。
+                # 后续预算充足才用八个摊薄发现/围栏往返，超时仍只撤销当前批。
+                batch_limit = (
+                    DISPATCH_LARGE_COMMIT_BATCH
+                    if round_index > 0 and remaining > 2
+                    else DISPATCH_COMMIT_BATCH
+                )
                 try:
                     # 每类派发独立提交：后续查询耗尽总预算不能撤销前面已领取的
                     # 工作。租约、成本和outbox仍同事务；异常同步撤销Redis占位。
@@ -934,7 +942,7 @@ def _dispatch_pending(
                                 session,
                                 now,
                                 allow_backfill=allow_backfill,
-                                max_claims=DISPATCH_COMMIT_BATCH,
+                                max_claims=batch_limit,
                                 redis_client=redis,
                             )
                         elif family == "directory":
@@ -942,7 +950,7 @@ def _dispatch_pending(
                                 session,
                                 now,
                                 allow_backfill=allow_backfill,
-                                max_claims=DISPATCH_COMMIT_BATCH,
+                                max_claims=batch_limit,
                                 redis_client=redis,
                             )
                         else:

@@ -2,6 +2,7 @@
 
 import os
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -16,6 +17,90 @@ from app.modules.reporting.query_budget import QueryBudgetExceeded
 from app.modules.reporting.store_models import ReportSyncJob
 from app.modules.sync_control.occupancy import occupancy_keys, reserve_dispatch
 from tests.modules.reporting.test_jobs import D, _route
+
+
+@pytest.mark.parametrize("budget,second_batch", [(2, 4), (4, 8)])
+def test_later_batch_keeps_first_family_opportunities_and_rollback_boundary(
+    committed_sync_seed, redis_client, monkeypatch, budget, second_batch
+):
+    from app.modules.sync_control import balance_demand
+    from app.modules.sync_control.occupancy import dispatch_readiness
+    from app.modules.sync_control.schedule import report_endpoint
+    from tests.modules.sync_control.test_dispatch_batch_efficiency import seed_jobs
+
+    seed, factory = committed_sync_seed
+    monkeypatch.setattr(job_tasks.settings, "REDIS_URL", os.environ["TEST_REDIS_URL"])
+    jobs, now = seed_jobs(factory, seed, 14)
+    # 只固定本函数的选批时钟，PG语句期限和Redis时间仍真实，避免慢CI改变分支。
+    monkeypatch.setattr(job_tasks, "time", SimpleNamespace(monotonic=lambda: 0.0))
+    original_report = job_tasks._dispatch_report_jobs
+    original_directory = job_tasks._dispatch_directories
+    original_balance = balance_demand.dispatch_balances_due
+    opportunities = set()
+    calls = 0
+
+    def directory(*args, **kwargs):
+        opportunities.add("directory")
+        return original_directory(*args, **kwargs)
+
+    def balance(*args, **kwargs):
+        opportunities.add("balance")
+        return original_balance(*args, **kwargs)
+
+    def report(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert kwargs["max_claims"] == 4
+            return original_report(*args, **kwargs)
+        # 报表第二批前，目录/余额必须都已获得首轮机会，不能被首批8抢走。
+        assert opportunities == {"directory", "balance"}
+        assert kwargs["max_claims"] == second_batch
+        endpoint = report_endpoint("ad_day")
+        available = dispatch_readiness(
+            redis_client,
+            policy=admission_policy(
+                "reports.integrated", channel="OFFICIAL_API", physical_endpoint=endpoint
+            ),
+            app_scope=job_tasks.settings.TIKTOK_APP_ID,
+            endpoint=endpoint,
+            tenant_id=seed.tenant_id,
+            advertiser_id="batch-4",
+            rate_group=endpoint,
+        )
+        # Basic额度仍可能把8缩为6，扩大批量不能越过剩余额度。
+        assert original_report(*args, **kwargs) == min(
+            second_batch, available.capacity_hint
+        )
+        raise QueryBudgetExceeded()
+
+    monkeypatch.setattr(job_tasks, "_dispatch_report_jobs", report)
+    monkeypatch.setattr(job_tasks, "_dispatch_directories", directory)
+    monkeypatch.setattr(balance_demand, "dispatch_balances_due", balance)
+    assert job_tasks._dispatch_pending(engine, now, budget_seconds=budget) == 4
+    with factory() as db:
+        assert (
+            sum(
+                db.get(ReportSyncJob, identity).status == "RUNNING" for identity in jobs
+            )
+            == 4
+        )
+        assert (
+            len(
+                db.exec(
+                    select(PendingDispatch).where(
+                        PendingDispatch.tenant_id == seed.tenant_id
+                    )
+                ).all()
+            )
+            == 4
+        )
+    endpoint = report_endpoint("ad_day")
+    keys = occupancy_keys(
+        job_tasks.settings.TIKTOK_APP_ID, endpoint, seed.tenant_id, "batch-0", endpoint
+    )
+    # 八个后续领取及其Redis预留被撤销，原已提交的四个仍保留。
+    assert redis_client.zcard(keys[0]) == redis_client.zcard(keys[1]) == 4
 
 
 @pytest.mark.parametrize("failure", ["budget", "statement_timeout"])
