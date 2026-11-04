@@ -22,6 +22,123 @@ from tests.modules.reporting.test_jobs import _route
 D = date(2026, 10, 1)
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "pending",
+        "superseded",
+        "published",
+        "generation",
+        "observed",
+        "version",
+        "owner",
+    ],
+)
+def test_overlapping_unstarted_merge_reuses_only_unfrozen_children(
+    committed_sync_seed, evidence
+):
+    from app.modules.sync_control.models import SyncRequirement
+
+    seed, factory = committed_sync_seed
+    now = datetime.now(UTC)
+    common = {
+        "tenant_id": seed.tenant_id,
+        "bc_id": "bc-a",
+        "actor_id": seed.actor_id,
+        "frozen_route": _route(seed),
+        "kind": "material_links",
+        "tier": "history",
+        "advertiser_ids": ["acc-1"],
+    }
+    with factory() as db, db.begin():
+        old_id = enqueue_job(
+            db, **common, start=D, end=D + timedelta(days=1), requested_at=now
+        )
+    # 旧父任务被其他事务短锁时，规范入口允许为新需求创建另一冻结执行。
+    with factory() as locked, locked.begin():
+        locked.get(ReportSyncJob, old_id, with_for_update=True)
+        with factory() as db, db.begin():
+            newer_id = enqueue_job(
+                db,
+                **common,
+                start=D + timedelta(days=1),
+                end=D + timedelta(days=1),
+                requested_at=now + timedelta(seconds=1),
+            )
+            assert newer_id is not None and newer_id != old_id
+            newer = db.get(ReportSyncJob, newer_id)
+            newer.status, newer.claim_generation = "RUNNING", 1
+            newer.progress = {"overview_next_page": 2}
+    with factory() as db, db.begin():
+        old = db.get(ReportSyncJob, old_id)
+        old_children = db.exec(
+            select(SyncExecutionScope)
+            .where(SyncExecutionScope.report_job_id == old_id)
+            .order_by(SyncExecutionScope.requirement_id)
+        ).all()
+        changed = old_children[0]
+        if evidence in {"superseded", "published"}:
+            changed.status = evidence.upper()
+        elif evidence == "generation":
+            changed.execution_generation = 1
+        elif evidence == "observed":
+            changed.observed_at = now
+        elif evidence == "version":
+            changed.published_version = 1
+        elif evidence == "owner":
+            changed.owner_epoch += 1
+        db.flush()
+        old_before = old.model_dump()
+        old_children_before = {child.id: child.model_dump() for child in old_children}
+        newer = db.get(ReportSyncJob, newer_id)
+        newer_before = newer.model_dump()
+        newer_child = db.exec(
+            select(SyncExecutionScope).where(
+                SyncExecutionScope.report_job_id == newer_id
+            )
+        ).one()
+        child_before = newer_child.model_dump()
+        # 最新执行不可变，但更早的未启动执行仍可承接；其已有子桶不能重复INSERT。
+        result = enqueue_job(
+            db,
+            **common,
+            start=D + timedelta(days=1),
+            end=D + timedelta(days=2),
+            requested_at=now + timedelta(seconds=2),
+        )
+        db.flush()
+        if evidence != "pending":
+            assert result is not None and result not in {old_id, newer_id}
+            db.refresh(old)
+            assert old.model_dump() == old_before
+            for child in old_children:
+                db.refresh(child)
+                assert child.model_dump() == old_children_before[child.id]
+            db.refresh(newer)
+            db.refresh(newer_child)
+            assert newer.model_dump() == newer_before
+            assert newer_child.model_dump() == child_before
+            return
+        assert result is None
+        children = db.exec(
+            select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == old_id)
+        ).all()
+        assert len(children) == len({child.requirement_id for child in children}) == 3
+        assert set(old_children_before) < {child.id for child in children}
+        for child in children:
+            requirement = db.get(SyncRequirement, child.requirement_id)
+            assert child.frozen_revision == requirement.desired_revision
+            assert child.frozen_requested_after == requirement.requested_after
+            assert child.status == "PENDING" and child.observed_at is None
+            assert requirement.satisfied_revision == 0
+        db.refresh(newer)
+        db.refresh(newer_child)
+        assert newer.model_dump() == newer_before
+        assert newer_child.model_dump() == child_before
+        assert db.get(ReportSyncJob, old_id).claim_generation == 0
+        assert db.get(ReportSyncJob, old_id).end_date == D + timedelta(days=2)
+
+
 def test_adjacent_unstarted_requests_save_a_real_read_with_same_daily_facts(
     committed_sync_seed,
 ):

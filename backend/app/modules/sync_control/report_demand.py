@@ -413,7 +413,9 @@ def enqueue_report_requirements(
                 due_by_requirement[requirement.id] = job.due_at
                 continue
         missing[scope_accounts[requirement.scope_id]].append(requirement)
-    jobs, children, included = [], [], set()
+    jobs: list[dict[str, Any]] = []
+    children: list[dict[str, Any]] = []
+    included: set[str] = set()
     epoch_groups = []
     for group in groups:
         for epoch in sorted({scopes[advertiser].owner_epoch for advertiser in group}):
@@ -455,6 +457,31 @@ def enqueue_report_requirements(
                         for account in window_accounts
                     ),
                 )
+            merged_children: dict[UUID, SyncExecutionScope] = {}
+            if merged is not None:
+                # 最新执行已启动时，missing仍可能被更早的未启动父承接。
+                # 先检查全部旧引用（含终态），不能重复插入或复活已发布/被替代子桶。
+                references = session.exec(
+                    select(SyncExecutionScope)
+                    .where(col(SyncExecutionScope.report_job_id) == merged.id)
+                    .execution_options(populate_existing=True)
+                ).all()
+                allowed_scopes = {scopes[account].id for account in window_accounts}
+                if any(
+                    child.tenant_id != tenant_id
+                    or child.scope_id not in allowed_scopes
+                    or child.owner_epoch != merged.owner_epoch
+                    or child.status != "PENDING"
+                    or child.execution_generation != 0
+                    or child.observed_at is not None
+                    or child.published_version is not None
+                    for child in references
+                ):
+                    merged = None
+                else:
+                    merged_children = {
+                        child.requirement_id: child for child in references
+                    }
             if merged is not None:
                 merged.start_date, merged.end_date = (
                     min(merged.start_date, window_start),
@@ -502,18 +529,26 @@ def enqueue_report_requirements(
                         <= window_end
                     ):
                         continue
-                    children.append(
-                        SyncExecutionScope(
-                            tenant_id=tenant_id,
-                            scope_id=scope.id,
-                            requirement_id=requirement.id,
-                            report_job_id=identity,
-                            frozen_revision=requirement.desired_revision,
-                            frozen_requested_after=requirement.requested_after,
-                            owner_epoch=scope.owner_epoch,
-                            execution_generation=0,
-                        ).model_dump()
-                    )
+                    merged_child = merged_children.get(requirement.id)
+                    if merged_child is not None:
+                        # 只升级锁定且未启动执行的冻结需求；保留原引用ID及发布证据边界。
+                        merged_child.frozen_revision = requirement.desired_revision
+                        merged_child.frozen_requested_after = (
+                            requirement.requested_after
+                        )
+                    else:
+                        children.append(
+                            SyncExecutionScope(
+                                tenant_id=tenant_id,
+                                scope_id=scope.id,
+                                requirement_id=requirement.id,
+                                report_job_id=identity,
+                                frozen_revision=requirement.desired_revision,
+                                frozen_requested_after=requirement.requested_after,
+                                owner_epoch=scope.owner_epoch,
+                                execution_generation=0,
+                            ).model_dump()
+                        )
                     due_by_requirement[requirement.id] = (
                         merged.due_at if merged is not None else due
                     )
