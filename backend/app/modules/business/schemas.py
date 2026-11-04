@@ -54,6 +54,7 @@ class DashboardFilter(RebuildInput):
     scenario: Literal["base", "comic", "other", "existing"] = "base"
     advertiser_ids: list[str] = Field(default_factory=list, max_length=1000)
     campaign_id: str | None = Field(default=None, max_length=128)
+    drama_key: str | None = Field(default=None, max_length=255)
     drama_id: UUID | None = None
     provider_id: UUID | None = None
     unmapped_only: bool = False
@@ -63,6 +64,11 @@ class DashboardFilter(RebuildInput):
         "name",
         "spend",
         "revenue",
+        "provider_share",
+        "net_revenue",
+        "rebate",
+        "platform_roas",
+        "business_roas",
         "business_revenue",
         "compensation",
         "subsidy_comic",

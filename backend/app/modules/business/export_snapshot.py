@@ -8,7 +8,7 @@ from app.core.context import TenantContext
 from app.modules.business.calculation import AMOUNT_KEYS, SUBSIDY_KEYS
 from app.modules.business.models import BusinessExport, BusinessExportRow
 from app.modules.business.queries import query_dashboard, resolve_runs
-from app.modules.business.query_plan import build_query_plan
+from app.modules.business.query_plan import build_query_plan, sort_expression
 from app.modules.business.schemas import DashboardFilter
 
 
@@ -25,7 +25,7 @@ def freeze_rows(session: Session, row: BusinessExport, context: TenantContext) -
         runs=list(runs),
     )
     grouped = plan.grouped
-    order = getattr(grouped.c, filters.sort_by)
+    order = sort_expression(grouped, filters)
     ordering = [
         order.desc().nulls_last() if filters.descending else order.asc().nulls_last(),
         grouped.c.key,
@@ -44,7 +44,7 @@ def freeze_rows(session: Session, row: BusinessExport, context: TenantContext) -
         pairs.extend([literal(name), cast(getattr(grouped.c, name), Text)])
     payload = func.jsonb_build_object(*pairs)
     rounding = (
-        func.coalesce(grouped.c.drama_id, grouped.c.key)
+        grouped.c.rounding_drama_key
         if filters.dimension == "campaign"
         else literal("period")
         if filters.dimension == "day"

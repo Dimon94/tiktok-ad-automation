@@ -37,6 +37,11 @@ from app.modules.business.calculation import (
     tier_amounts,
 )
 from app.modules.business.configuration import scope_accounts
+from app.modules.business.identity import (
+    catalog_snapshot,
+    identify_campaign,
+    unresolved_name,
+)
 from app.modules.business.models import (
     BusinessDay,
     BusinessEvidence,
@@ -144,6 +149,21 @@ def request_rebuild(
     session.add(scope)
     session.flush()
     discover_exact_mappings(session, scope, allowed)
+    # 剧库与解析规则变更必须整段重算，并让已发布季度统一切换，不能复用旧待归属前缀。
+    catalog = catalog_snapshot(session, scope.tenant_id)
+    if scope.published_revision == scope.revision and any(
+        old
+        and (
+            old.inputs.get("calculation_revision") != 2
+            or old.inputs.get("identity_catalog") != catalog
+        )
+        for old in (
+            session.get(BusinessRun, UUID(value))
+            for value in scope.published_runs.values()
+        )
+    ):
+        scope.revision += 1
+        session.add(scope)
     results = []
     targets = {}
     quarter = quarter_start(start_date)
@@ -241,6 +261,9 @@ def _reuse_prefix(session: Session, run: BusinessRun) -> None:
     if (
         old
         and old.scope_revision == run.scope_revision
+        and old.inputs.get("calculation_revision")
+        == run.inputs.get("calculation_revision")
+        and old.inputs.get("identity_catalog") == run.inputs.get("identity_catalog")
         and {
             a: {k: v for k, v in meta.items() if k != "complete_through"}
             for a, meta in old.inputs["accounts"].items()
@@ -388,12 +411,15 @@ def _base_page(session: Session, run: BusinessRun) -> None:
         ).all()
     }
     rows = []
+    catalog = run.inputs.get("identity_catalog", {"providers": [], "dramas": []})
     for f in facts:
-        mapping = mappings.get((f.advertiser_id, f.campaign_id))
+        mapping = mappings.get((f.advertiser_id, f.campaign_id)) or identify_campaign(
+            f.campaign_name or "", catalog
+        )
         identity = mapping or {
             "drama_id": None,
             "drama_key": f"unmapped:{f.advertiser_id}:{f.campaign_id}",
-            "drama_name": "待归属",
+            "drama_name": unresolved_name(f.campaign_name or f.campaign_id, catalog),
             "provider_id": None,
             "provider_name": "待归属",
         }
@@ -404,9 +430,11 @@ def _base_page(session: Session, run: BusinessRun) -> None:
             effective.get(("rebate", run.bc_id), ZERO),
         )
         issues = []
-        if mapping is None:
+        if identity["provider_id"] is None:
             issues.append("DRAMA_UNMAPPED")
             values.update(provider_share=None, net_revenue=None, business_revenue=None)
+        if mapping and mapping["drama_id"] is None:
+            issues.append("DRAMA_FROM_REPORT_NAME")
         ev = evidence.get((f.advertiser_id, f.campaign_id))
         compensation = compensation_amount(
             f.spend,
@@ -433,7 +461,7 @@ def _base_page(session: Session, run: BusinessRun) -> None:
                 provider_rate=effective.get(
                     ("provider", str(identity["provider_id"])), ZERO
                 )
-                if mapping
+                if identity["provider_id"] is not None
                 else None,
                 rebate_rate=effective.get(("rebate", run.bc_id), ZERO),
                 compensation_bid=ev.bid if ev else None,
@@ -474,6 +502,7 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
             func.max(col(B.provider_name)),
             func.max(col(B.timezone)),
             func.min(cast(col(B.provider_id), Text)),
+            func.min(cast(col(B.drama_id), Text)),
         )
         .where(col(B.run_id) == run.id, col(B.stat_date) <= run.cursor)
         .group_by(
@@ -484,8 +513,13 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
         )
     ).all()
     groups = defaultdict(list)
+    series_identities = defaultdict(set)
     for r in records:
         groups[r[0]].append(r)
+        series_identities[(r[1], r[2])].add(r[0])
+    conflicting_series = {
+        key for key, identities in series_identities.items() if len(identities) > 1
+    }
     complete = _prefix_complete(run, run.cursor)
     existing = {
         (r.advertiser_id, r.campaign_id): r
@@ -500,9 +534,11 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
     uncertainty_changed = False
     # 身份无需重复跨表查询，沿用本版本中已冻结的系列元数据。
     for drama_key, series in groups.items():
+        identity_conflict = any((r[1], r[2]) in conflicting_series for r in series)
         unknown = (
-            not complete
-            or drama_key.startswith("unmapped:")
+            identity_conflict
+            or not complete
+            or drama_key.startswith(("unmapped:", "named:"))
             or any(r[3] != "USD" or r[6] for r in series)
         )
         current = sum((r[4] or ZERO for r in series), ZERO)
@@ -514,7 +550,9 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
                 uncertain[drama_key] = {
                     "from": run.cursor.isoformat(),
                     "providers": sorted({r[11] or "unmapped" for r in series}),
-                    "reason": "SUBSIDY_SCOPE_INCOMPLETE"
+                    "reason": "DRAMA_IDENTITY_CONFLICT"
+                    if identity_conflict
+                    else "SUBSIDY_SCOPE_INCOMPLETE"
                     if unknown
                     else "SUBSIDY_POLICY_UNCONFIGURED",
                 }
@@ -543,7 +581,7 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
                     campaign_id=key[1],
                     stat_date=run.cursor,
                     drama_key=drama_key,
-                    drama_id=UUID(drama_key),
+                    drama_id=UUID(r[12]) if r[12] else None,
                     drama_name=r[7],
                     campaign_name=r[8],
                     provider_name=r[9],
@@ -557,7 +595,14 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
                 setattr(row, name, amount)
             if unknown:
                 row.issues = list(
-                    dict.fromkeys([*row.issues, "SUBSIDY_SCOPE_INCOMPLETE"])
+                    dict.fromkeys(
+                        [
+                            *row.issues,
+                            "DRAMA_IDENTITY_CONFLICT"
+                            if identity_conflict
+                            else "SUBSIDY_SCOPE_INCOMPLETE",
+                        ]
+                    )
                 )
             session.add(row)
 

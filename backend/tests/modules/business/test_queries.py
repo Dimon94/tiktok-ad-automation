@@ -108,3 +108,47 @@ def test_drama_and_provider_daily_summaries_are_precomputed(session, business_ca
     for kind in ("drama", "provider"):
         assert sum(r.spend for r in rows if r.kind == kind) == 2000
         assert sum(r.subsidy_comic for r in rows if r.kind == kind) == 800
+
+
+def test_all_metric_columns_sort_in_sql_before_pagination(session, business_case):
+    from sqlmodel import select
+
+    from app.modules.business.models import BusinessDay
+    from app.modules.business.queries import query_dashboard
+    from app.modules.business.schemas import DashboardFilter
+
+    c = business_case
+    prepared(session, c)
+    rows = session.exec(select(BusinessDay).where(BusinessDay.spend > 0)).all()
+    for row in rows:
+        row.revenue = D(900) if row.campaign_id == "a" else D(800)
+        row.net_revenue = row.revenue
+        row.business_revenue = row.revenue
+        row.provider_share = D(100) if row.campaign_id == "a" else D(200)
+        session.add(row)
+    session.flush()
+    for metric, high in [
+        ("platform_roas", "a"),
+        ("business_roas", "a"),
+        ("provider_share", "b"),
+        ("net_revenue", "a"),
+    ]:
+        for descending, expected in [
+            (True, high),
+            (False, "b" if high == "a" else "a"),
+        ]:
+            result = query_dashboard(
+                session,
+                context=c.context,
+                filters=DashboardFilter(
+                    bc_id=c.bc_id,
+                    start_date=date(2026, 11, 1),
+                    end_date=c.day,
+                    dimension="campaign",
+                    sort_by=metric,
+                    descending=descending,
+                    limit=1,
+                ),
+            )
+            assert result.rows[0].campaign_id == expected
+            assert result.total == 2

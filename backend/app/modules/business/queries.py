@@ -26,7 +26,12 @@ from app.modules.business.models import (
     BusinessScope,
 )
 from app.modules.business.projection import _days, _source_complete, next_quarter
-from app.modules.business.query_plan import build_query_plan, nullable_sum
+from app.modules.business.publication import cohort_signature
+from app.modules.business.query_plan import (
+    build_query_plan,
+    nullable_sum,
+    sort_expression,
+)
 from app.modules.business.schemas import BusinessRow, DashboardFilter, DashboardPublic
 
 
@@ -83,7 +88,10 @@ def resolve_runs(
         )
         ids = [UUID(value) for value in scope.published_runs.values()] if scope else []
         runs = session.exec(statement.where(col(BusinessRun.id).in_(ids))).all()
-    if len({r.scope_revision for r in runs}) > 1:
+    if (
+        len({r.scope_revision for r in runs}) > 1
+        or len({cohort_signature(r) for r in runs}) > 1
+    ):
         raise HTTPException(409, "计算版本混用商业配置修订，请刷新")
     return allowed, selected, end, runs
 
@@ -130,7 +138,7 @@ def query_dashboard(
     B, predicates, grouped = plan.model, plan.predicates, plan.grouped
     run_ids = [r.id for r in runs]
     total = session.exec(select(func.count()).select_from(grouped)).one()
-    order = getattr(grouped.c, filters.sort_by)
+    order = sort_expression(grouped, filters)
     rows = (
         session.execute(
             sa_select(grouped)

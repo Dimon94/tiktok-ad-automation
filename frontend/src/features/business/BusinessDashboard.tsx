@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import type { ColumnDef } from "@tanstack/react-table"
-import { Download, RefreshCw, Settings } from "lucide-react"
+import { Download, MoreHorizontal, RefreshCw, Settings } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   type BusinessRow,
@@ -19,6 +19,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -31,18 +38,19 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { SortableHead } from "@/features/ads/SortableHead"
 import { ManagementSheet } from "@/features/tenants/ManagementSheet"
 import { canManage, isForbidden, ServerTable } from "@/features/tenants/shared"
 import { useTenantScope } from "@/features/tenants/TenantScope"
 import { WorkspaceEmpty } from "@/features/workspace/WorkspaceEmpty"
 import { WorkspacePageTitle } from "@/features/workspace/WorkspacePageTitle"
+import { BusinessNotes, MetricHint } from "./BusinessHelp"
 import { EvidenceEditor } from "./EvidenceEditor"
 import { MappingEditor } from "./MappingEditor"
 import {
   type BusinessOptions,
   businessKey,
   formatValue,
-  ISSUE_LABELS,
   optionsQuery,
   shiftedDay,
 } from "./queries"
@@ -81,8 +89,8 @@ function Picker({
   onChange: (value: string) => void
 }) {
   return (
-    <Field className="w-full sm:w-44">
-      <FieldLabel>{label}</FieldLabel>
+    <Field className="w-full sm:w-32">
+      <FieldLabel className="text-xs">{label}</FieldLabel>
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger aria-label={label}>
           <SelectValue />
@@ -185,6 +193,8 @@ function Dashboard({
     currency: options.accounts[0]?.currency ?? "USD",
     offset: 0,
     limit: 50,
+    sort_by: "spend",
+    descending: true,
   })
   const [settings, setSettings] = useState(false)
   const [mapping, setMapping] = useState<BusinessRow | null>(null)
@@ -340,17 +350,44 @@ function Dashboard({
       setBusy(false)
     }
   }
+  const sort = useCallback((key: string) => {
+    setFilters((f) => ({
+      ...f,
+      sort_by: key as DashboardFilter["sort_by"],
+      descending: f.sort_by === key ? !f.descending : true,
+      offset: 0,
+    }))
+  }, [])
+  const heading = useCallback(
+    (label: string, key: string, metric = false) => (
+      <div className="flex items-center gap-1">
+        <SortableHead
+          label={label}
+          sortBy={key}
+          activeSortBy={filters.sort_by}
+          direction={filters.descending ? "desc" : "asc"}
+          onSort={sort}
+        />
+        {metric && <MetricHint label={label} metric={key} />}
+      </div>
+    ),
+    [filters.sort_by, filters.descending, sort],
+  )
   const columns = useMemo<ColumnDef<BusinessRow>[]>(
     () => [
       {
-        header:
-          filters.dimension === "campaign"
-            ? "广告系列"
-            : filters.dimension === "provider"
-              ? "版权方"
-              : "剧目",
+        id: "name",
+        header: () =>
+          heading(
+            filters.dimension === "campaign"
+              ? "广告系列"
+              : filters.dimension === "provider"
+                ? "版权方"
+                : "剧目",
+            "name",
+          ),
         cell: ({ row: { original: r } }) => (
-          <div className="flex min-w-48 max-w-72 flex-col gap-1">
+          <div className="grid min-w-48 max-w-72 grid-cols-[1fr_auto] items-center gap-x-1">
             <Button
               variant="link"
               className="h-auto justify-start p-0 whitespace-normal text-left"
@@ -359,25 +396,40 @@ function Dashboard({
               {r.name}
             </Button>
             {filters.dimension !== "provider" && (
-              <span className="text-xs text-muted-foreground">
+              <span className="col-start-1 text-xs text-muted-foreground">
                 {r.provider_name}
               </span>
             )}
             {manage && filters.dimension === "campaign" && (
-              <Button variant="ghost" size="sm" onClick={() => setMapping(r)}>
-                设置归属
-              </Button>
-            )}
-            {manage && filters.dimension === "campaign" && (
-              <Button variant="ghost" size="sm" onClick={() => setEvidence(r)}>
-                赔付依据
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`${r.name}操作`}
+                    className="col-start-2 row-start-1"
+                  >
+                    <MoreHorizontal />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem onSelect={() => setMapping(r)}>
+                      设置归属
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setEvidence(r)}>
+                      赔付依据
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
         ),
       },
       ...MONEY_COLUMNS.map(([key, title]) => ({
-        header: title,
+        id: key,
+        header: () => heading(title, key, true),
         cell: ({
           row: { original: r },
         }: {
@@ -389,7 +441,7 @@ function Dashboard({
         ),
       })),
     ],
-    [filters.dimension, manage],
+    [filters.dimension, manage, heading],
   )
   const totals = data?.totals ?? {}
   const page = Math.floor((filters.offset ?? 0) / (filters.limit ?? 50)) + 1
@@ -400,17 +452,24 @@ function Dashboard({
     ]),
   ]
   return (
-    <>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col gap-1">
           <WorkspacePageTitle>经营看板</WorkspacePageTitle>
-          <p className="text-sm text-muted-foreground">
-            {bcName} · T+1完整日经营数据
-          </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {(data?.pending || busy) && (
+            <span role="status" className="text-xs text-muted-foreground">
+              核算中…
+            </span>
+          )}
+          <BusinessNotes
+            issues={data?.issues ?? []}
+            pending={!!data?.pending || busy}
+          />
           <Button
             variant="outline"
+            size="sm"
             disabled={busy || !!exportId || !data?.total || query.isFetching}
             onClick={() => void startExport()}
           >
@@ -419,6 +478,7 @@ function Dashboard({
           </Button>
           <Button
             variant="outline"
+            size="sm"
             disabled={busy || !valid}
             onClick={() => void rebuild()}
           >
@@ -426,7 +486,11 @@ function Dashboard({
             重新核算
           </Button>
           {manage && (
-            <Button variant="outline" onClick={() => setSettings(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSettings(true)}
+            >
               <Settings data-icon="inline-start" />
               经营设置
             </Button>
@@ -438,15 +502,9 @@ function Dashboard({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <Card>
-        <CardHeader>
-          <CardTitle>查看范围</CardTitle>
-          <CardDescription>
-            按账户当地日期统计，不包含当天；返点按消耗计算，版权方抽成按平台收入计算。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-end gap-3">
-          <Field className="w-full sm:w-40">
+      <Card className="gap-0 py-3 lg:py-3">
+        <CardContent className="flex flex-wrap items-end gap-2 px-4 lg:px-4">
+          <Field className="w-full sm:w-36">
             <FieldLabel htmlFor="business-start">开始日期</FieldLabel>
             <Input
               id="business-start"
@@ -456,7 +514,7 @@ function Dashboard({
               onChange={(e) => update({ start_date: e.target.value })}
             />
           </Field>
-          <Field className="w-full sm:w-40">
+          <Field className="w-full sm:w-36">
             <FieldLabel htmlFor="business-end">结束日期</FieldLabel>
             <Input
               id="business-end"
@@ -499,15 +557,6 @@ function Dashboard({
               update({ scenario: scenario as DashboardFilter["scenario"] })
             }
           />
-          <Field className="w-full sm:w-56">
-            <FieldLabel htmlFor="business-search">名称搜索</FieldLabel>
-            <Input
-              id="business-search"
-              placeholder="剧名、系列名或版权方"
-              value={filters.query ?? ""}
-              onChange={(e) => update({ query: e.target.value })}
-            />
-          </Field>
         </CardContent>
       </Card>
       {!valid && (
@@ -517,27 +566,9 @@ function Dashboard({
           </AlertDescription>
         </Alert>
       )}
-      {(data?.pending || busy) && (
-        <Alert>
-          <AlertTitle>后台正在核算</AlertTitle>
-          <AlertDescription>
-            最近区间优先生成，历史分批补齐。已有结果继续可查，完成后点击刷新查看。
-          </AlertDescription>
-        </Alert>
-      )}
-      {!!data?.issues?.length && (
-        <Alert>
-          <AlertTitle>数据说明</AlertTitle>
-          <AlertDescription className="flex flex-col gap-1">
-            {data.issues?.map((issue) => (
-              <p key={issue}>{ISSUE_LABELS[issue] ?? issue}</p>
-            ))}
-          </AlertDescription>
-        </Alert>
-      )}
       <div
         data-testid="business-cards"
-        className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5"
+        className="grid min-w-0 grid-cols-2 gap-2 lg:grid-cols-5"
       >
         {[
           ["平台消耗", "spend"],
@@ -546,30 +577,47 @@ function Dashboard({
           ["经营收入", "scenario_revenue"],
           ["经营 ROAS", "scenario_roas"],
         ].map(([label, key]) => (
-          <Card key={key}>
-            <CardHeader>
-              <CardDescription>{label}</CardDescription>
+          <Card key={key} className="gap-1 py-3 lg:gap-1 lg:py-3">
+            <CardHeader className="px-3 lg:px-3">
+              <CardDescription className="flex items-center gap-1">
+                {label}
+                <MetricHint
+                  metric={key}
+                  label={label}
+                  note={
+                    data?.missing_dates?.length
+                      ? "当前存在日报缺口，展示已核算小计；详见数据说明。"
+                      : undefined
+                  }
+                />
+              </CardDescription>
             </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tabular-nums">
+            <CardContent className="px-3 lg:px-3">
+              <p className="text-xl font-semibold tabular-nums">
                 {formatValue(totals[key], key.endsWith("roas"))}
               </p>
             </CardContent>
-            <CardFooter>
-              <span className="text-xs text-muted-foreground">
-                {key.endsWith("roas")
-                  ? "合计收入 ÷ 合计消耗"
-                  : filters.currency}
-                {data?.missing_dates?.length ? " · 已核算小计" : ""}
-              </span>
-            </CardFooter>
           </Card>
         ))}
       </div>
-      <Card className="min-w-0">
-        <CardHeader className="gap-3">
+      <Card
+        className="min-w-0 gap-3 py-3 lg:gap-3 lg:py-3"
+        data-testid="business-detail-table"
+      >
+        <CardHeader className="gap-1 px-4 lg:px-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle>经营明细</CardTitle>
+            <Field className="w-full sm:w-48">
+              <FieldLabel htmlFor="business-search" className="sr-only">
+                名称搜索
+              </FieldLabel>
+              <Input
+                id="business-search"
+                placeholder="剧名、系列名或版权方"
+                value={filters.query ?? ""}
+                onChange={(e) => update({ query: e.target.value })}
+              />
+            </Field>
             <ToggleGroup
               type="single"
               variant="outline"
@@ -587,9 +635,6 @@ function Dashboard({
               <ToggleGroupItem value="provider">版权方</ToggleGroupItem>
             </ToggleGroup>
           </div>
-          <CardDescription>
-            三种新剧补贴为备选情景，不相加。列表展示所选期间的预计补贴增量；系列为按季度消耗占比分摊的预估金额。
-          </CardDescription>
         </CardHeader>
         <CardContent className="min-w-0">
           <ServerTable
@@ -683,7 +728,7 @@ function Dashboard({
           onClose={() => setDetail(null)}
         />
       )}
-    </>
+    </div>
   )
 }
 
@@ -706,11 +751,10 @@ function BusinessDetail({
     limit: 100,
     sort_by: "name" as const,
     descending: false,
-    ...(filters.dimension === "campaign" ||
-    (filters.dimension === "drama" && !row.drama_id)
+    ...(filters.dimension === "campaign"
       ? { advertiser_ids: [row.advertiser_id!], campaign_id: row.campaign_id! }
       : filters.dimension === "drama"
-        ? { drama_id: row.drama_id }
+        ? { drama_key: row.key }
         : row.provider_id
           ? { provider_id: row.provider_id }
           : { unmapped_only: true }),
@@ -729,7 +773,13 @@ function BusinessDetail({
   const columns: ColumnDef<BusinessRow>[] = [
     { header: "当地日期", accessorKey: "name" },
     ...MONEY_COLUMNS.map(([key, title]) => ({
-      header: title,
+      id: key,
+      header: () => (
+        <span className="inline-flex items-center gap-1">
+          {title}
+          <MetricHint label={title} metric={key} />
+        </span>
+      ),
       cell: ({ row: { original: r } }: { row: { original: BusinessRow } }) =>
         formatValue(r.values[key], key.endsWith("roas")),
     })),

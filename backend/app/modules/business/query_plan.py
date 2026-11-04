@@ -57,6 +57,7 @@ def build_query_plan(
         filters.dimension in {"drama", "provider"}
         and not filters.campaign_id
         and not filters.drama_id
+        and not filters.drama_key
         and not filters.query.strip()
     ):
         B = BusinessSummaryDay
@@ -76,6 +77,8 @@ def build_query_plan(
         predicates.append(col(B.provider_id) == filters.provider_id)
     if filters.unmapped_only:
         predicates.append(col(B.provider_id).is_(None))
+    if filters.drama_key:
+        predicates.append(col(B.drama_key) == filters.drama_key)
     if filters.drama_id:
         predicates.append(col(B.drama_id) == filters.drama_id)
     if filters.campaign_id:
@@ -145,7 +148,9 @@ def build_query_plan(
         for drama_key, info in run.coverage.get("subsidy_unknown", {}).items():
             if date.fromisoformat(info["from"]) > high:
                 continue
-            relevant = not filters.drama_id or str(filters.drama_id) == drama_key
+            relevant = (
+                not filters.drama_id or str(filters.drama_id) == drama_key
+            ) and (not filters.drama_key or filters.drama_key == drama_key)
             relevant &= (
                 not filters.provider_id or str(filters.provider_id) in info["providers"]
             )
@@ -192,6 +197,7 @@ def build_query_plan(
         sa_select(
             key.label("key"),
             func.max(name).label("name"),
+            func.min(col(B.drama_key)).label("rounding_drama_key"),
             func.max(col(B.provider_name)).label("provider_name"),
             func.min(cast(col(B.provider_id), Text)).label("provider_id"),
             func.min(cast(col(B.drama_id), Text)).label("drama_id"),
@@ -211,3 +217,15 @@ def build_query_plan(
         .subquery()
     )
     return QueryPlan(B, predicates, grouped, uncertain_selection, issues)
+
+
+def sort_expression(grouped: Subquery, filters: DashboardFilter) -> Any:
+    """排序与导出都在SQL聚合后执行；ROAS按合计比值排序，空值置后。"""
+    if filters.sort_by in {"platform_roas", "business_roas"}:
+        numerator = (
+            grouped.c.revenue
+            if filters.sort_by == "platform_roas"
+            else grouped.c.business_revenue
+        )
+        return numerator / func.nullif(grouped.c.spend, 0)
+    return getattr(grouped.c, filters.sort_by)

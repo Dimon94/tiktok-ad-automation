@@ -217,7 +217,8 @@ test("系列赔付按指定当地日登记历史依据", async ({ page }) => {
   const calls = await boundary(page)
   await page.goto(`/tenants/${TENANT}/business?bc_id=${BC}`)
   await page.getByRole("radio", { name: "广告系列", exact: true }).click()
-  await page.getByRole("button", { name: "赔付依据", exact: true }).click()
+  await page.getByRole("button", { name: "测试系列操作", exact: true }).click()
+  await page.getByRole("menuitem", { name: "赔付依据", exact: true }).click()
   await page.getByLabel("核算日期", { exact: true }).fill("2026-11-02")
   await page.getByLabel("当日最低 ROAS 出价", { exact: true }).fill("1.06")
   await page.getByRole("combobox", { name: "当日核验依据" }).click()
@@ -280,4 +281,50 @@ test("版权方连接中独立保存抽成，不触发凭据验证", async ({ pa
     rate: "0.08",
   })
   expect(verifications).toEqual([])
+})
+
+test("13寸屏幕保留列表空间，说明按需查看且列可排序", async ({ page }) => {
+  const calls = await boundary(page)
+  await page.setViewportSize({ width: 1366, height: 768 })
+  await page.goto(`/tenants/${TENANT}/business?bc_id=${BC}`)
+  await expect(
+    page.getByRole("button", { name: "测试剧", exact: true }),
+  ).toBeVisible()
+  for (const width of [1366, 1280]) {
+    await page.setViewportSize({ width, height: 720 })
+    const cards = await page.getByTestId("business-cards").boundingBox()
+    expect(cards!.height).toBeLessThan(110)
+    const table = await page.getByTestId("business-detail-table").boundingBox()
+    expect(table!.y).toBeLessThan(400)
+  }
+  await expect(
+    page.getByText("合计收入 ÷ 合计消耗", { exact: true }),
+  ).toHaveCount(0)
+  await page
+    .getByTestId("business-cards")
+    .getByRole("button", { name: "平台 ROAS说明", exact: true })
+    .hover()
+  await expect(page.getByRole("tooltip")).toContainText("平台总收入 ÷ 总消耗")
+  await page
+    .getByRole("button", { name: "平台 ROAS，点击排序", exact: true })
+    .click()
+  await expect.poll(() => calls.queries.at(-1)?.sort_by).toBe("platform_roas")
+  await expect.poll(() => calls.queries.at(-1)?.descending).toBe(true)
+  await page
+    .getByRole("button", { name: "平台 ROAS，当前降序", exact: true })
+    .click()
+  await expect.poll(() => calls.queries.at(-1)?.descending).toBe(false)
+  await page.getByRole("button", { name: "数据说明", exact: true }).click()
+  await expect(
+    page.getByRole("dialog", { name: "数据说明", exact: true }),
+  ).toContainText("账户当地日期")
+  await page.keyboard.press("Escape")
+  await expect(
+    page.getByRole("dialog", { name: "数据说明", exact: true }),
+  ).toHaveCount(0)
+  await page.mouse.move(0, 0)
+  await page.screenshot({
+    path: test.info().outputPath("dashboard-13inch.png"),
+    fullPage: true,
+  })
 })

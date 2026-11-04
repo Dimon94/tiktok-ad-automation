@@ -425,3 +425,149 @@ def test_new_complete_day_reuses_prior_daily_projection(session, business_case):
         if advance_run(session, newer.id, now=now):
             break
     assert newer.status == "COMPLETE"
+
+
+def test_historical_number_mapping_and_catalog_change_rebuild_full_prefix(
+    session, business_case
+):
+    from app.modules.business.models import BusinessDay
+    from app.modules.business.queries import query_dashboard
+    from app.modules.business.schemas import DashboardFilter
+
+    c = business_case
+    seed_days(session, c)
+    c.drama.external_drama_id = "108345"
+    session.add(c.drama)
+    for fact in session.exec(select(CampaignReportDay)).all():
+        fact.campaign_name = "jiashu-Historical title-108345-1101-01-owner"
+        session.add(fact)
+    session.flush()
+    first = build(session, c)[0]
+    values = session.exec(
+        select(BusinessDay).where(BusinessDay.run_id == first.id, BusinessDay.spend > 0)
+    ).all()
+    assert all(row.drama_id == c.drama.id for row in values)
+    page = query_dashboard(
+        session,
+        context=c.context,
+        filters=DashboardFilter(
+            bc_id=c.bc_id, start_date=date(2026, 11, 1), end_date=c.day
+        ),
+    )
+    assert page.total == 1 and page.totals["business_revenue"] == D(1600)
+    c.drama.title = "Corrected catalog title"
+    session.add(c.drama)
+    session.flush()
+    second = build(session, c)[0]
+    assert second.id != first.id and second.scope_revision > first.scope_revision
+    assert second.inputs["dirty_start"] == "2026-10-01"
+    values = session.exec(
+        select(BusinessDay).where(
+            BusinessDay.run_id == second.id, BusinessDay.spend > 0
+        )
+    ).all()
+    assert all(row.drama_name == "Corrected catalog title" for row in values)
+    assert (
+        session.get(BusinessDay, (first.id, date(2026, 11, 1), c.advertiser_id, "a"))
+        is not None
+    )
+
+
+def test_unlisted_number_and_report_name_keep_provider_finance_and_exact_details(
+    session, business_case
+):
+    from app.modules.business.models import BusinessDay
+    from app.modules.business.queries import query_dashboard
+    from app.modules.business.schemas import DashboardFilter
+
+    c = business_case
+    seed_days(session, c)
+    for fact in session.exec(select(CampaignReportDay)).all():
+        fact.campaign_name = "jiashu-Unlisted historical drama-999999-1101-01-owner"
+        session.add(fact)
+    session.flush()
+    run = build(session, c)[0]
+    filters = DashboardFilter(
+        bc_id=c.bc_id, start_date=date(2026, 11, 1), end_date=c.day
+    )
+    page = query_dashboard(session, context=c.context, filters=filters)
+    assert page.total == 1
+    assert page.rows[0].drama_id is None and page.rows[0].provider_id == c.provider.id
+    assert page.totals["business_revenue"] == D(1600)
+    assert page.totals["subsidy_comic"] == D(800)
+    # 跨档补贴产生无当日消耗系列行，不能把外部身份键强转为UUID，也不能漏掉该行明细。
+    synthetic = session.get(
+        BusinessDay, (run.id, date(2026, 11, 2), c.advertiser_id, "a")
+    )
+    assert synthetic.spend == 0 and synthetic.subsidy_comic == D(400)
+    detail = query_dashboard(
+        session,
+        context=c.context,
+        filters=filters.model_copy(
+            update={"dimension": "day", "drama_key": page.rows[0].key}
+        ),
+    )
+    assert detail.totals["spend"] == D(2000)
+    assert detail.totals["subsidy_comic"] == D(800)
+    provider = query_dashboard(
+        session,
+        context=c.context,
+        filters=filters.model_copy(update={"provider_id": c.provider.id}),
+    )
+    assert provider.totals["spend"] == D(2000)
+    # 没有可靠编号时沿广告报表剧名分组，基础经营可查；不能把应用/合集名当新剧补贴门槛。
+    for fact in session.exec(select(CampaignReportDay)).all():
+        fact.campaign_name = "jiashu-Collection-remarks"
+        session.add(fact)
+    from app.modules.reporting.store_models import ReportSyncState
+
+    for state in session.exec(select(ReportSyncState)).all():
+        state.publication_version += 1
+        session.add(state)
+    session.flush()
+    build(session, c)
+    named = query_dashboard(session, context=c.context, filters=filters)
+    assert named.total == 1 and named.rows[0].name == "Collection"
+    assert named.totals["business_revenue"] == D(1600)
+    assert named.totals["subsidy_comic"] is None
+
+
+def test_same_campaign_multiple_drama_identities_never_overwrite_subsidy(
+    session, business_case
+):
+    from app.modules.business.queries import query_dashboard
+    from app.modules.business.schemas import DashboardFilter
+
+    c = business_case
+    seed_days(session, c)
+    facts = session.exec(select(CampaignReportDay)).all()
+    for fact in facts:
+        fact.campaign_name = "jiashu-Drama A-999999-1101-01-owner"
+        session.add(fact)
+    session.add(
+        CampaignReportDay(
+            tenant_id=c.context.tenant_id,
+            advertiser_id=c.advertiser_id,
+            campaign_id="a",
+            campaign_name="jiashu-Drama B-888888-1102-01-owner",
+            stat_date=date(2026, 11, 2),
+            currency="USD",
+            timezone="UTC",
+            spend=D(2000),
+            revenue_total=D(800),
+            fetched_at=datetime(2026, 11, 4, tzinfo=UTC),
+            sync_job_id=uuid4(),
+        )
+    )
+    session.flush()
+    build(session, c)
+    result = query_dashboard(
+        session,
+        context=c.context,
+        filters=DashboardFilter(
+            bc_id=c.bc_id, start_date=date(2026, 11, 1), end_date=c.day
+        ),
+    )
+    assert result.totals["spend"] == D(4000)
+    assert result.totals["subsidy_comic"] is None
+    assert "DRAMA_IDENTITY_CONFLICT" in result.issues

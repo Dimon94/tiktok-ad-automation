@@ -1806,6 +1806,10 @@ export type DashboardFilter = {
      */
     campaign_id?: string | null;
     /**
+     * Drama Key
+     */
+    drama_key?: string | null;
+    /**
      * Drama Id
      */
     drama_id?: string | null;
@@ -1828,7 +1832,7 @@ export type DashboardFilter = {
     /**
      * Sort By
      */
-    sort_by?: 'name' | 'spend' | 'revenue' | 'business_revenue' | 'compensation' | 'subsidy_comic' | 'subsidy_other' | 'subsidy_existing';
+    sort_by?: 'name' | 'spend' | 'revenue' | 'provider_share' | 'net_revenue' | 'rebate' | 'platform_roas' | 'business_roas' | 'business_revenue' | 'compensation' | 'subsidy_comic' | 'subsidy_other' | 'subsidy_existing';
     /**
      * Descending
      */

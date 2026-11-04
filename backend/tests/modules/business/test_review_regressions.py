@@ -246,3 +246,75 @@ def test_missing_source_windows_use_observation_time_and_account_bounds():
     )
     windows = missing_source_windows(run, {"account", "still_today"})
     assert windows == [("account", date(2026, 11, 1), date(2026, 11, 2))]
+
+
+@pytest.mark.parametrize("action", ["publish", "query"])
+def test_same_revision_cannot_mix_catalogs_across_quarters(
+    session, business_case, action
+):
+    from app.modules.business.models import (
+        BusinessPublication,
+        BusinessRun,
+        BusinessScope,
+    )
+    from app.modules.business.publication import publish_ready_manifest
+    from app.modules.business.queries import resolve_runs
+
+    c = business_case
+    scope = BusinessScope(
+        tenant_id=c.context.tenant_id,
+        bc_id=c.bc_id,
+        actor_id=c.context.actor_id,
+        start_date=date(2026, 7, 1),
+        revision=3,
+    )
+    session.add(scope)
+    session.flush()
+    runs = []
+    for quarter, end, label in [
+        (date(2026, 7, 1), date(2026, 9, 30), "before"),
+        (date(2026, 10, 1), c.day, "after"),
+    ]:
+        run = BusinessRun(
+            tenant_id=c.context.tenant_id,
+            bc_id=c.bc_id,
+            actor_id=c.context.actor_id,
+            quarter=quarter,
+            end_date=end,
+            cursor=end,
+            scope_revision=3,
+            status="COMPLETE",
+            source_signature=label,
+            inputs={
+                "accounts": {},
+                "calculation_revision": 2,
+                "identity_catalog": {"providers": [label], "dramas": []},
+            },
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            BusinessPublication(
+                tenant_id=c.context.tenant_id,
+                bc_id=c.bc_id,
+                quarter=quarter,
+                run_id=run.id,
+            )
+        )
+        runs.append(run)
+    session.flush()
+    if action == "publish":
+        assert not publish_ready_manifest(session, scope)
+        assert not scope.published_runs
+    else:
+        with pytest.raises(HTTPException):
+            resolve_runs(
+                session,
+                c.context,
+                DashboardFilter(
+                    bc_id=c.bc_id,
+                    start_date=date(2026, 9, 30),
+                    end_date=c.day,
+                    run_ids=[r.id for r in runs],
+                ),
+            )

@@ -57,7 +57,12 @@ export const optionsQuery = (tenantId: string, bcId: string) => ({
 })
 
 export const ISSUE_LABELS: Record<string, string> = {
-  DRAMA_UNMAPPED: "部分系列尚未归属剧目，相关经营收入暂不核算",
+  DRAMA_UNMAPPED:
+    "部分系列的版权方标签无对应连接或存在歧义，相关经营收入暂不核算",
+  DRAMA_IDENTITY_CONFLICT:
+    "部分系列在期间内出现不同剧目身份，相关补贴暂留空，请核对系列归属",
+  DRAMA_FROM_REPORT_NAME:
+    "部分历史剧目按广告报表命名识别；没有可靠剧编号的分组暂不预计新剧补贴",
   COMPENSATION_EVIDENCE_MISSING:
     "部分赔付缺少当日出价或资格依据，预计金额暂留空",
   SUBSIDY_SCOPE_INCOMPLETE:
