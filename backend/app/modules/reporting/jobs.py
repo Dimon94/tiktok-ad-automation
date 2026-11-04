@@ -889,6 +889,9 @@ def _admission_delay(
     job: ReportSyncJob, counted: _CountingReader, deferred: AccountAdmissionDeferred
 ) -> int:
     _clear_completed_throttle(job, counted)
+    if deferred.shared_throttle_probe:
+        # 未知报表限流只有共享接口探测轮这一份权威，不能被每个job的首轮五秒覆盖。
+        return max(1000, deferred.retry_after_ms)
     if deferred.admission_source != "provider" or deferred.admission_reason not in {
         "40100",
         "http_429",

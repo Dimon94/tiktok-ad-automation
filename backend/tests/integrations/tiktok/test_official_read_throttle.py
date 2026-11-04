@@ -123,10 +123,10 @@ def test_business_code_40100_defers_instead_of_failing(message):
 @pytest.mark.parametrize(
     "message,headers,reason,expected",
     [
-        ("Too many requests", {}, "40100", 300_000),
+        ("Too many requests", {}, "40100", 5_000),
         ("Too many requests", {"Retry-After": "7"}, "retry_after", 7000),
         ("Too many requests", {"Retry-After": "3600"}, "retry_after", 3_600_000),
-        ("Too many requests", {"Retry-After": "invalid"}, "40100", 300_000),
+        ("Too many requests", {"Retry-After": "invalid"}, "40100", 5_000),
         ("QPS exceeded", {"Retry-After": "7"}, "qps", 7000),
         ("QPM exceeded", {"Retry-After": "7"}, "qpm", 300_000),
     ],
@@ -166,3 +166,42 @@ def test_retry_after_http_date_is_respected_for_429():
         )
     assert 590_000 < caught.value.retry_after_ms <= 600_000
     assert caught.value.admission_reason == "retry_after"
+
+
+def test_unknown_report_throttle_uses_shared_probe_instead_of_five_minute_pause():
+    import json
+
+    requests = _requests()
+    response = SimpleNamespace(
+        data=json.dumps({"code": 40100, "message": "Too many requests", "data": {}}),
+        getheaders=lambda: {},
+    )
+    with pytest.raises(AccountAdmissionDeferred) as caught:
+        requests.invoke(
+            "reports.material_breakdown",
+            "adv",
+            lambda _: requests.client.deserialize(response, "object"),
+        )
+    # 未知类别只是探测策略，不冒称平台QPS；共享域还须限制后续探测轮次。
+    assert caught.value.retry_after_ms == 5_000
+    assert caught.value.admission_reason == "40100"
+    assert caught.value.shared_throttle_probe is True
+
+
+@pytest.mark.parametrize(
+    "operation", ["ads.get_ads", "accounts.get_advertisers", "music.get"]
+)
+def test_unknown_nonreport_throttle_retains_conservative_wait(operation):
+    import json
+
+    requests = _requests()
+    response = SimpleNamespace(
+        data=json.dumps({"code": 40100, "message": "Unknown quota type", "data": {}}),
+        getheaders=lambda: {},
+    )
+    with pytest.raises(AccountAdmissionDeferred) as caught:
+        requests.invoke(
+            operation, "adv", lambda _: requests.client.deserialize(response, "object")
+        )
+    assert caught.value.retry_after_ms == 300_000
+    assert caught.value.shared_throttle_probe is False

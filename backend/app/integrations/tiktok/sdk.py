@@ -80,12 +80,18 @@ def begin_connection_setup_tracking(client: Any) -> None:
 
 class AccountAdmissionDeferred(DomainError):
     def __init__(
-        self, retry_after_ms: int, *, source: str = "local", reason: str | None = None
+        self,
+        retry_after_ms: int,
+        *,
+        source: str = "local",
+        reason: str | None = None,
+        shared_throttle_probe: bool = False,
     ):
         super().__init__("admission_deferred", "调用额度暂不可用", retryable=True)
         self.retry_after_ms = retry_after_ms
         self.admission_source = source
         self.admission_reason = reason
+        self.shared_throttle_probe = shared_throttle_probe
 
 
 def checked_data(response: object) -> dict[str, Any]:
