@@ -29,7 +29,8 @@ export function StrategyNamingExample({
       <CardHeader>
         <CardTitle>广告命名示例</CardTitle>
         <CardDescription>
-          同一格式，“版权方＋剧名”和“版权方拼音”按对应版权方自动生成。
+          标签按填写顺序生成；网眼的版权方标识使用完整归因标识，版权方拼音使用
+          wangyan。
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5 text-sm">

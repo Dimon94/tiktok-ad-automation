@@ -1359,15 +1359,15 @@ test("统一命名使用中文字段并保存，恢复后仍为同一格式", as
   await page
     .getByRole("button", { name: "添加版权方＋剧名", exact: true })
     .click()
-  await expect(template).toHaveValue("[版权方＋剧名]-[剧目 ID]")
+  await expect(template).toHaveValue("[剧目 ID]-[版权方＋剧名]")
   const generic = page.getByRole("region", { name: "嘉书", exact: true })
   await expect(generic.locator("dd").first()).toHaveText(
-    "jiashu-The Bond-106001-A7K2",
+    "106001-jiashu-The Bond-A7K2",
   )
   await template.fill("[版权方＋剧名]-[剧目 ID]-[日期")
   await expect(template).toHaveAttribute("aria-invalid", "true")
   await template.fill("[日期]-[版权方＋剧名]-[剧目 ID]")
-  await expect(template).toHaveAttribute("aria-invalid", "true")
+  await expect(template).not.toHaveAttribute("aria-invalid", "true")
   await template.fill("[版权方＋剧名]-[剧目 ID]-[批次编号]")
   await expect(template).toHaveAttribute("aria-invalid", "true")
   await expect(
@@ -1715,4 +1715,35 @@ test("结构示例读取服务器预算，试算失败后不显示旧广告数",
   expect(observed.unit_counts).toEqual([23])
   expect(observed.account_count).toBe(1)
   expect(observed.config.creative_count).toBe(3)
+})
+
+test("独立剧名和版权方标识可任意排列、预览并保存", async ({ page }) => {
+  const { requests } = await boundary(page)
+  await page.goto(editUrl)
+  const template = page.getByLabel("广告名称格式", { exact: true })
+  await template.fill("[剧名]-[版权方标识]-[剧目 ID]-[日期]")
+  await expect(template).not.toHaveAttribute("aria-invalid", "true")
+  const wangyan = page.getByRole("region", { name: "网眼", exact: true })
+  await expect(wangyan.locator("dd")).toHaveText([
+    "The Bond-{b30008/s328302/c3}-328302-20260913-A7K2",
+    "The Bond-{b30008/s328302/c3}-328302-20260913-A7K2-g01",
+    "The Bond-{b30008/s328302/c3}-328302-20260913-A7K2-g01-sp1",
+  ])
+  await template.fill("[日期]_[剧目 ID]_[版权方标识]_[剧名]")
+  await expect(wangyan.locator("dd").first()).toHaveText(
+    "20260913_328302_{b30008/s328302/c3}_The Bond-A7K2",
+  )
+  await template.fill("[剧名]-[剧目 ID]")
+  await expect(template).toHaveAttribute("aria-invalid", "true")
+  await template.fill("[版权方＋剧名]-[剧名]-[剧目 ID]")
+  await expect(template).toHaveAttribute("aria-invalid", "true")
+  await template.fill("[剧名]-[版权方标识]-[剧目 ID]-[日期]")
+  await page.getByRole("button", { name: "保存为新版本", exact: true }).click()
+  await expect(page.getByText("已保存 v2", { exact: true })).toBeVisible()
+  expect(
+    requests.find((r) => r.method === "POST" && r.path.endsWith("/versions"))!
+      .body.config.campaign_name_template,
+  ).toBe("{drama_name}-{provider_label}-{drama_id}-{YYYYMMDD}")
+  await page.goto(editUrl)
+  await expect(template).toHaveValue("[剧名]-[版权方标识]-[剧目 ID]-[日期]")
 })

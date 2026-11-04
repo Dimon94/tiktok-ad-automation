@@ -1585,3 +1585,117 @@ def test_preview_freezes_effective_structure_override(session, context, prepared
         )
         == 72
     )
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{drama_name}-{provider_label}-{drama_id}-{YYYYMMDD}",
+        "{YYYYMMDD}_{drama_id}_{provider_label}_{drama_name}",
+    ],
+)
+def test_free_naming_survives_preview_and_directory_identity(
+    session, context, prepared, template
+):
+    from datetime import UTC, datetime
+
+    from app.integrations.tiktok.contracts.ads import EntityRef
+    from app.modules.ads.directory import append_campaign_name_projection
+    from app.modules.ads.models import AdObject
+    from app.modules.builds import submissions
+    from app.modules.builds.execution_models import ExecutionStep
+    from app.modules.builds.naming_identity import built_campaign_identities
+    from app.modules.builds.preview_models import PreviewDrama
+
+    draft = session.get(BuildDraft, prepared)
+    version = session.get(StrategyVersion, draft.strategy_version_id)
+    draft.strategy_version_id = append_version(
+        session,
+        context=context,
+        strategy_id=version.strategy_id,
+        config=config(
+            budget="100",
+            ads_per_group=1,
+            creative_count=2,
+            campaign_name_template=template,
+        ),
+    )
+    session.add(draft)
+    session.flush()
+    identity = previews.generate_preview(
+        session, context=context, draft_id=prepared, expected_revision=1
+    )
+    drain(session, context, identity)
+    summary = previews.get_preview_summary(
+        session, context=context, preview_id=identity
+    )
+    assert summary.status == "FROZEN"
+    unit = session.exec(
+        select(BuildUnit).where(BuildUnit.preview_id == identity)
+    ).first()
+    drama = session.get(PreviewDrama, (context.tenant_id, identity, unit.drama_id))
+    if template.startswith("{drama_name}"):
+        assert unit.campaign_name.startswith(drama.title + "-")
+    else:
+        assert unit.campaign_name.split("_", 1)[0].isdigit()
+    receipt = submissions.submit_preview(
+        session, context=context, preview_id=identity, request_id=uuid4()
+    )
+    while not submissions.expand_submission(
+        session, context=context, submission_id=receipt.submission_id, limit=100
+    ):
+        pass
+    step = session.exec(
+        select(ExecutionStep).where(
+            ExecutionStep.unit_id == unit.id, ExecutionStep.kind == "CAMPAIGN"
+        )
+    ).one()
+    step.remote_id = "fixture-campaign"
+    session.add(step)
+    session.add(
+        AdObject(
+            tenant_id=context.tenant_id,
+            advertiser_id=unit.advertiser_id,
+            kind="campaign",
+            remote_id=step.remote_id,
+            name=unit.campaign_name,
+            ad_type="SMART_PLUS",
+            observed_at=datetime.now(UTC),
+            published_version=1,
+        )
+    )
+    session.flush()
+    ref = EntityRef(context.tenant_id, unit.advertiser_id, "campaign", step.remote_id)
+    projection = append_campaign_name_projection(
+        session, campaign_ref=ref, raw_name=unit.campaign_name, parser_revision=1
+    )
+    assert projection.drama_name == drama.title
+    assert projection.status == "VALID"
+    # 同名跨租户/账户不继承回执身份，平台改名也不继续套用原名称快照。
+    assert (
+        built_campaign_identities(
+            session,
+            (
+                (
+                    EntityRef(uuid4(), ref.advertiser_id, "campaign", ref.remote_id),
+                    unit.campaign_name,
+                ),
+            ),
+        )
+        == {}
+    )
+    assert (
+        built_campaign_identities(
+            session,
+            (
+                (
+                    EntityRef(
+                        ref.tenant_id, "other-account", "campaign", ref.remote_id
+                    ),
+                    unit.campaign_name,
+                ),
+            ),
+        )
+        == {}
+    )
+    assert built_campaign_identities(session, ((ref, "external-renamed"),)) == {}

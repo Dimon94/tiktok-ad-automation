@@ -1130,7 +1130,8 @@ export function StrategyForm({
             <CardHeader>
               <CardTitle>广告命名</CardTitle>
               <CardDescription>
-                所有版权方共用一个格式；网眼自动将“版权方＋剧名”替换为归因名称。
+                剧名、版权方标识、剧目
+                ID、日期可自由排列；网眼归因标识会完整保留。
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -1139,7 +1140,7 @@ export function StrategyForm({
                   "campaign_name_template",
                   displayNameTemplate(nameTemplate),
                   (value) => setNameTemplate(parseNameTemplate(value)),
-                  "版权方＋剧名固定在开头，剧目 ID 必须保留。其后可调整顺序、分隔符和固定文字，日期和版权方拼音按需添加（如 wangyan）。剧目 ID 取对应版权方的剧目 ID。",
+                  "可直接编辑标签顺序、分隔符和固定文字。例如：[剧名]-[版权方标识]-[剧目 ID]-[日期]。使用独立标签时，请先删除“版权方＋剧名”组合标签；剧目 ID 必须保留。",
                 )}
                 {!readonly && (
                   <div className="flex flex-wrap gap-2">
@@ -1159,13 +1160,11 @@ export function StrategyForm({
                             "campaign_name_template",
                             setNameTemplate,
                           )(
-                            field === "provider_drama"
-                              ? `{${field}}${nameTemplate ? "-" : ""}${nameTemplate}`
-                              : nameTemplate +
-                                  (nameTemplate && !nameTemplate.endsWith("-")
-                                    ? "-"
-                                    : "") +
-                                  `{${field}}`,
+                            nameTemplate +
+                              (nameTemplate && !nameTemplate.endsWith("-")
+                                ? "-"
+                                : "") +
+                              `{${field}}`,
                           )
                         }
                       >
@@ -1191,7 +1190,8 @@ export function StrategyForm({
             </CardHeader>
             <CardContent className="flex flex-col gap-2 text-sm">
               <p>
-                先分广告组，再按创意单元生成基础广告，最后按文案版本数 K 复制广告。
+                先分广告组，再按创意单元生成基础广告，最后按文案版本数 K
+                复制广告。
               </p>
               <p>本批所有有效剧目覆盖全部有效目标账户。策略不保存账户池。</p>
               <p>提交具体搭建预览后，Campaign、Ad Group、Ad 直接启用。</p>

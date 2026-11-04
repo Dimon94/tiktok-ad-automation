@@ -40,8 +40,6 @@ def test_custom_date_order_and_literal_text_apply_to_both_providers(protected):
 @pytest.mark.parametrize(
     "template",
     [
-        "{YYYYMMDD}-{provider_drama}-{drama_id}",
-        "前缀-{provider_drama}-{drama_id}",
         "{provider_drama}",
         "{drama_id}",
         "{{provider_drama}}-{drama_id}",
@@ -121,3 +119,58 @@ def test_provider_pinyin_tag_uses_provider_context_and_preserves_attribution(
     base = protected or f"{provider}-The Bond"
     campaign = f"{base}-106001-20260913-{provider}-A7K2"
     assert names == (campaign, campaign + "-g01", campaign + "-g01-sp2")
+
+
+@pytest.mark.parametrize(
+    "protected,label",
+    [
+        ("", "jiashu"),
+        (ARGS["protected_base"], "{b30008/s328302/c3}"),
+        ("opaque-marker", "opaque-marker"),
+    ],
+)
+@pytest.mark.parametrize(
+    "template,expected",
+    [
+        (
+            "{drama_name}-{provider_label}-{drama_id}-{YYYYMMDD}",
+            "The Bond-{label}-106001-20260913-A7K2",
+        ),
+        (
+            "{YYYYMMDD}_{drama_id}_{provider_label}_{drama_name}",
+            "20260913_106001_{label}_The Bond-A7K2",
+        ),
+    ],
+)
+def test_independent_fields_can_move_without_changing_attribution(
+    protected, label, template, expected
+):
+    names = render_names(**{**ARGS, "protected_base": protected}, template=template)
+    assert names == (
+        expected.format(label=label),
+        expected.format(label=label) + "-g01",
+        expected.format(label=label) + "-g01-sp2",
+    )
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["{YYYYMMDD}-{provider_drama}-{drama_id}", "前缀-{provider_drama}-{drama_id}"],
+)
+def test_combined_field_can_also_move(template):
+    assert render_names(**ARGS, template=template)[0].endswith("-106001-A7K2")
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{drama_name}-{drama_id}",
+        "{provider_label}-{drama_id}",
+        "{provider_drama}-{drama_name}-{drama_id}",
+        "{provider_drama}-{provider_label}-{drama_id}",
+        "{drama_name}-{provider_label}-{drama_id}-{drama_name}",
+    ],
+)
+def test_split_fields_require_both_and_cannot_mix_with_combined(template):
+    with pytest.raises(DomainError, match="invalid_name_template"):
+        render_names(**ARGS, template=template)

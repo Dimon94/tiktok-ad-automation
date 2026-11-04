@@ -6,6 +6,8 @@ export const MAX_FIXED_GROUP_COUNT = 100
 export const MAX_FIXED_ADS_PER_GROUP = 100
 export const NAME_LABELS: Record<string, string> = {
   provider_drama: "版权方＋剧名",
+  provider_label: "版权方标识",
+  drama_name: "剧名",
   drama_id: "剧目 ID",
   YYYYMMDD: "日期",
   provider_pinyin: "版权方拼音",
@@ -54,7 +56,7 @@ function templateError(
     const end = value.indexOf("}", i + 1),
       field = value.slice(i + 1, end)
     if (end < 0 || !allowed.includes(field))
-      return "请使用版权方＋剧名、剧目 ID、日期、版权方拼音字段；批次编号由系统自动添加。"
+      return "请使用剧名、版权方标识、剧目 ID、日期或版权方拼音字段；批次编号由系统自动添加。"
     if (fields.has(field)) return `${NAME_LABELS[field]}只能出现一次。`
     fields.add(field)
     i = end
@@ -64,12 +66,18 @@ function templateError(
     return `请保留${missing.map((name) => NAME_LABELS[name]).join("、")}字段。`
 }
 export function nameTemplateError(value: string) {
-  return (
-    templateError(value, NAME_FIELDS, ["provider_drama", "drama_id"]) ||
-    (!value.startsWith("{provider_drama}")
-      ? "版权方＋剧名须保留在开头，以保持归因名称完整。"
-      : undefined)
+  const error = templateError(value, NAME_FIELDS, ["drama_id"])
+  if (error) return error
+  // 排除转义的字面花括号，再校验组合字段与拆分字段互斥。
+  const fields = new Set(
+    Array.from(value.matchAll(/\{\{|\}\}|\{([^{}]+)\}/g), (match) => match[1]),
   )
+  if (fields.has("provider_drama")) {
+    if (fields.has("provider_label") || fields.has("drama_name"))
+      return "版权方＋剧名与独立的版权方标识、剧名字段不能同时使用。"
+  } else if (!fields.has("provider_label") || !fields.has("drama_name")) {
+    return "请保留版权方标识、剧名字段，或使用版权方＋剧名组合字段。"
+  }
 }
 export function renderNameExample(
   value: string,
@@ -82,6 +90,10 @@ export function renderNameExample(
     "{{": "{",
     "}}": "}",
     "{provider_drama}": providerDrama,
+    "{provider_label}": providerDrama.endsWith("-The Bond")
+      ? providerDrama.slice(0, -"-The Bond".length)
+      : providerDrama,
+    "{drama_name}": "The Bond",
     "{drama_id}": dramaId,
     "{provider_pinyin}": providerPinyin,
     "{YYYYMMDD}": "20260913",

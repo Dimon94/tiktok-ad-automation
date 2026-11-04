@@ -4,7 +4,16 @@ from uuid import UUID
 from app.core.errors import DomainError
 
 DEFAULT_NAME_TEMPLATE = "{provider_drama}-{drama_id}"
-NAME_FIELDS = frozenset({"provider_drama", "drama_id", "YYYYMMDD", "provider_pinyin"})
+NAME_FIELDS = frozenset(
+    {
+        "provider_drama",
+        "provider_label",
+        "drama_name",
+        "drama_id",
+        "YYYYMMDD",
+        "provider_pinyin",
+    }
+)
 # 没有版权方剧目 ID 的手动剧目在命名时使用系统编号，前缀区分于版权方编号。
 LOCAL_DRAMA_ID_PREFIX = "ada-"
 
@@ -15,22 +24,44 @@ def local_display_drama_id(drama_id: UUID) -> str:
 
 
 def validate_name_template(template: str) -> None:
-    # 版权方与剧名作为整体，确保专用归因基础名只替换这一部分。
+    # 可使用组合字段，或拆成标识和剧名；所有字段均可自由排列。
     try:
         parts = tuple(Formatter().parse(template))
     except ValueError, TypeError:
         raise DomainError("invalid_name_template", "invalid_name_template") from None
     fields = [field for _, field, _, _ in parts if field is not None]
     if (
-        not template.startswith("{provider_drama}")
-        or len(template) > 1000
+        len(template) > 1000
         or set(fields) - NAME_FIELDS
-        or not {"provider_drama", "drama_id"}.issubset(fields)
+        or "drama_id" not in fields
+        or not (
+            (
+                "provider_drama" in fields
+                and not {"provider_label", "drama_name"}.intersection(fields)
+            )
+            or (
+                "provider_drama" not in fields
+                and {"provider_label", "drama_name"}.issubset(fields)
+            )
+        )
         or len(fields) != len(set(fields))
         or any(spec or conversion for _, _, spec, conversion in parts)
         or any(ord(char) < 32 or ord(char) == 127 for char in template)
     ):
         raise DomainError("invalid_name_template", "invalid_name_template")
+
+
+def naming_parts(
+    protected_base: str, title: str, provider_pinyin: str
+) -> tuple[str, str]:
+    """只拆分已知剧名后缀，归因标识内部文字/花括号完整保留，不猜测分隔段。"""
+    if not protected_base:
+        return provider_pinyin, title
+    suffix = f"-{title}"
+    if title and protected_base.endswith(suffix):
+        return protected_base[: -len(suffix)], title
+    # 版权方也可能直接提供不带剧名的归因名称，将完整原值作为标识。
+    return protected_base, title
 
 
 def render_names(
@@ -61,12 +92,19 @@ def render_names(
         or (not protected_base and (not provider_pinyin.strip() or not title.strip()))
     ):
         raise DomainError("naming_context_missing", "缺少有效版权方数字剧目 ID")
-    # 网眼仅替换“版权方＋剧名”；独立拼音标签使用冻结的版权方标识，不从归因开头猜取。
+    provider_label, drama_name = naming_parts(protected_base, title, provider_pinyin)
+    if "{provider_label}" in template and (
+        not provider_label.strip() or not drama_name.strip()
+    ):
+        raise DomainError("naming_context_missing", "缺少版权方标识或剧名")
+    # 网眼归因标识整体移动；独立拼音标签始终使用冻结的版权方拼音。
     # 插入值是字面文本，归因花括号不会被再次解析。批次编号由系统统一追加。
     campaign = (
         template.format_map(
             {
                 "provider_drama": protected_base or f"{provider_pinyin}-{title}",
+                "provider_label": provider_label,
+                "drama_name": drama_name,
                 "drama_id": drama_id,
                 "provider_pinyin": provider_pinyin,
                 "YYYYMMDD": date_text,

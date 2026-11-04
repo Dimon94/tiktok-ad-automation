@@ -1158,7 +1158,7 @@ def continue_preview(
     if (
         not is_current_batch_number(preview.batch_short_id)
         or "campaign_suffix" in preview.config
-        or "{provider_drama}" not in preview.config.get("campaign_name_template", "")
+        or not preview.config.get("campaign_name_template")
         or preview.progress.get("naming_drama_id") != "display"
     ):
         # 旧版未冻结预览不可混用新规则；冻结及已提交名称继续读取原记录。

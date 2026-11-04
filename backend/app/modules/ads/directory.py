@@ -176,9 +176,24 @@ def append_campaign_name_projections(
             (p.tenant_id, p.advertiser_id, p.campaign_remote_id): p
             for p in previous_rows
         }
+        # 自由命名无法靠前两段识别；本工具搭建的系列按远端回执读取冻结身份。
+        from app.modules.builds.naming_identity import built_campaign_identities
+
+        built_identities = built_campaign_identities(
+            session,
+            tuple(
+                (EntityRef(t, a, "campaign", r), identities[t, a, r])
+                for t, a, r in batch
+                if (previous := previous_by_key.get((t, a, r))) is None
+                or (previous.raw_name, previous.parser_revision)
+                != (identities[t, a, r], parser_revision)
+            ),
+        )
         for tenant_id, advertiser_id, remote_id in batch:
             raw_name = identities[tenant_id, advertiser_id, remote_id]
-            identity = parse_campaign_name(raw_name)
+            identity = built_identities.get(
+                EntityRef(tenant_id, advertiser_id, "campaign", remote_id)
+            ) or parse_campaign_name(raw_name)
             previous = previous_by_key.get((tenant_id, advertiser_id, remote_id))
             if previous and (previous.raw_name, previous.parser_revision) == (
                 raw_name,
