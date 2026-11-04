@@ -394,3 +394,26 @@ def test_other_execution_head_lease_is_preserved(session, sync_seed):
         head.lease_execution_generation,
         head.leased_until,
     ) == values
+
+
+def test_discovery_groups_matching_jobs_across_keyset_pages(session, sync_seed):
+    from app.modules.sync_control.pending_report_compaction import (
+        discover_pending_report_pairs,
+    )
+
+    old, newer = pair(session, sync_seed)
+    old.job_key, newer.job_key = "000-first", "zzz-last"
+    for number in range(260):
+        session.add(
+            ReportSyncJob.model_validate(
+                old.model_dump()
+                | {
+                    "id": uuid4(),
+                    "job_key": f"middle-{number:04}",
+                    "kind": "ad_day",
+                }
+            )
+        )
+    session.flush()
+    pairs, truncated = discover_pending_report_pairs(session)
+    assert pairs == [(old.id, newer.id)] and not truncated
