@@ -107,3 +107,100 @@ def test_explicit_provider_wait_is_never_shortened(committed_sync_seed, reason, 
     progress = _wait(factory, job.id, delay)
     assert "provider_throttle" not in progress
     assert progress["last_admission"]["retry_after_ms"] == delay
+
+
+def test_real_sdk_shared_throttle_controls_different_jobs_due_at(
+    committed_sync_seed, redis_client
+):
+    import json
+    from contextlib import contextmanager
+    from datetime import UTC, timedelta
+    from hashlib import sha256
+    from time import sleep
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from business_api_client import ApiClient
+
+    from app.integrations.tiktok.official.accounts import OfficialReadRequests
+    from app.integrations.tiktok.platform_quotas import sdk_endpoint
+    from app.jobs.admission import AdmissionPolicy, admission_keys, admitted_scope
+    from tests.modules.reporting.test_material_resume import DAY
+
+    seed, factory = committed_sync_seed
+    app_scope = f"sdk-job-throttle-test-{uuid4()}"
+    endpoint = sdk_endpoint("reports.material_breakdown")
+    policy = AdmissionPolicy(
+        app_max_inflight=50,
+        endpoint_max_inflight=50,
+        tenant_max_inflight=50,
+        advertiser_max_inflight=50,
+        app_calls_per_window=50,
+        endpoint_calls_per_window=50,
+        window_ms=1000,
+        lease_ms=60000,
+    )
+    cooldown = (
+        admission_keys(app_scope, endpoint, seed.tenant_id, "acc-1")[1] + ":cooldown"
+    )
+
+    @contextmanager
+    def scope(advertiser_id, operation, _deadline):
+        assert sdk_endpoint(operation) == endpoint
+        with admitted_scope(
+            redis_client,
+            app_scope=app_scope,
+            endpoint=endpoint,
+            rate_group=endpoint,
+            tenant_id=seed.tenant_id,
+            advertiser_id=advertiser_id,
+            policy=policy,
+            denied_error=AccountAdmissionDeferred,
+        ):
+            yield
+
+    client = ApiClient()
+    requests = OfficialReadRequests(
+        client, request_scope=scope, deadline=datetime.now(UTC) + timedelta(seconds=30)
+    )
+    response = SimpleNamespace(
+        data=json.dumps({"code": 40100, "message": "Unknown quota type", "data": {}}),
+        getheaders=lambda: {},
+    )
+
+    class Reader:
+        def material_day(self, *, advertiser_id, start, end, page):
+            return requests.invoke(
+                "reports.material_breakdown",
+                advertiser_id,
+                lambda _: client.deserialize(response, "object"),
+            )
+
+    try:
+        for offset, expected in enumerate([5000, 10000]):
+            redis_client.delete(cooldown)
+            sleep(0.005)
+            day = DAY + timedelta(days=offset)
+            job = enqueue(factory, seed, start=day, end=day)
+            assert run(factory, job, Reader()) == "WAITING"
+            with factory() as session:
+                saved = session.get(ReportSyncJob, job.id)
+                progress = saved.progress
+                admission = progress["last_admission"]
+                assert expected <= admission["retry_after_ms"] <= expected + 100
+                at = datetime.fromisoformat(admission["at"])
+                assert (
+                    abs(
+                        (saved.due_at - at).total_seconds() * 1000
+                        - admission["retry_after_ms"]
+                    )
+                    < 10
+                )
+                assert saved.status == "WAITING" and saved.attempts == 0
+                assert "provider_throttle" not in progress
+                assert admission["reason"] == "40100"
+    finally:
+        digest = sha256(app_scope.encode()).hexdigest()
+        keys = list(redis_client.scan_iter(match=f"tiktok:{{{digest}}}:*"))
+        if keys:
+            redis_client.delete(*keys)

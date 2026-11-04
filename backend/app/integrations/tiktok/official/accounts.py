@@ -87,10 +87,19 @@ def _strict_sdk_envelope(
             elif retry_after is not None:
                 delay, reason = retry_after, "retry_after"
             else:
-                # 非报表调用方保持保守等待；报表任务有持久化、有界的短重试预算。
-                delay, reason = 300_000, "40100"
+                # 报表未知类型交共享探测轮退避；不能先写五分钟冷却再让任务五秒重试。
+                # 非报表继续保守等待，不把未知类型冒充平台QPS。
+                delay = (
+                    5_000 if operation and operation.startswith("reports.") else 300_000
+                )
+                reason = "40100"
             raise AccountAdmissionDeferred(
-                max(delay, retry_after or 0), source="provider", reason=reason
+                max(delay, retry_after or 0),
+                source="provider",
+                reason=reason,
+                shared_throttle_probe=bool(
+                    reason == "40100" and operation and operation.startswith("reports.")
+                ),
             )
         if (
             operation == "scene.get_identity_video"

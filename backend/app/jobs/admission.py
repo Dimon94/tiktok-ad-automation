@@ -294,6 +294,10 @@ def admitted_scope(
     except Exception as error:
         if getattr(error, "admission_source", None) == "provider":
             # 平台拒绝发生在真实发送之后，与本地未发送的拒绝分开观测。
+            provider_error = cast(Any, error)
+            original_delay = getattr(provider_error, "retry_after_ms", None)
+            if getattr(provider_error, "shared_throttle_probe", False):
+                provider_error.retry_after_ms = max(original_delay or 0, 300000)
             try:
                 key = (
                     admission_keys(app_scope, endpoint, tenant_id, advertiser_id)[1]
@@ -301,23 +305,21 @@ def admitted_scope(
                 )
                 redis_client.hincrby(key, f"provider_denied:{workload}", 1)
                 redis_client.expire(key, 172800)
-                delay = getattr(error, "retry_after_ms", None)
+                delay = original_delay
                 if type(delay) is int and delay > 0:
-                    # Redis服务器时钟和原子max：并发的短QPS退避不能缩短既有QPD暂停。
-                    redis_client.eval(
-                        """
-                        local stamp = redis.call('TIME')
-                        local now = tonumber(stamp[1])*1000 + math.floor(tonumber(stamp[2])/1000)
-                        local until_at = now + tonumber(ARGV[1])
-                        local previous = tonumber(redis.call('GET', KEYS[1])) or 0
-                        if until_at > previous then
-                            redis.call('SET', KEYS[1], tostring(until_at), 'PX', ARGV[1])
-                        end
-                        return 1
-                    """,
-                        1,
-                        key.removesuffix(":metrics") + ":cooldown",
-                        delay,
+                    from app.jobs.provider_cooldown import record_provider_cooldown
+
+                    probe = bool(getattr(error, "shared_throttle_probe", False))
+                    # Redis协调失败时保留上方已设置的保守延期。
+                    provider_error.retry_after_ms = record_provider_cooldown(
+                        redis_client,
+                        admission_keys=admission_keys(
+                            app_scope, endpoint, tenant_id, advertiser_id, rate_group
+                        ),
+                        lease_id=lease_id,
+                        lease_ms=policy.lease_ms,
+                        delay_ms=delay,
+                        adaptive_probe=probe,
                     )
             except RedisError, DomainError:
                 logging.getLogger(__name__).warning("admission_metric_failed")
