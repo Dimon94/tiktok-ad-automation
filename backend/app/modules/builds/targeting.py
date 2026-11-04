@@ -26,22 +26,16 @@ def apply_targeting(
     ):
         reasons.append("targeting_regions_unavailable")
     group = dict(scene.adgroup_fields)
-    # Minis 默认的不限性别/年龄/语言定向不发送这些冗余字段。TikTok 的
-    # Smart+ Minis 创建接口对 targeting_optimization_mode 的接受范围比回读
-    # 字段更窄；只在用户确实选择了额外限制时显式使用 MANUAL。
+    # Minis 默认的不限性别/年龄/语言定向不发送这些冗余字段。
+    # 用户选择额外限制时明确发送 MANUAL，保留原始定向意图；
+    # 不再用本地未核验标记提前阻断，实际支持范围由创建接口返回。
     restrictive = (
         bool(selected.languages)
         or bool(selected.age_groups)
         or selected.gender != "GENDER_UNLIMITED"
     )
     if restrictive:
-        allowed_modes = scene.field_constraints.get("targeting_optimization_modes")
-        if isinstance(allowed_modes, (list, tuple, set)) and "MANUAL" not in allowed_modes:
-            # 账户未证明支持 MANUAL 时在预览阶段阻断，避免先建 Campaign
-            # 再让 Ad Group 返回 40002，留下无法继续的孤立对象。
-            reasons.append("targeting_manual_unverified")
-        else:
-            group["targeting_optimization_mode"] = "MANUAL"
+        group["targeting_optimization_mode"] = "MANUAL"
     group["targeting_spec"] = {
         "location_ids": sorted(mapping[code] for code in countries if code in mapping),
         **(

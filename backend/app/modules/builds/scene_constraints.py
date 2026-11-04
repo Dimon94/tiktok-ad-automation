@@ -6,7 +6,7 @@ limits its English copy pool to 1..100 characters; it is not a TikTok quota.
 
 from typing import Any
 
-REVISION = "minis-unit-constraints-2026-10-29-v5"
+REVISION = "minis-unit-constraints-2026-11-04-v6"
 PLATFORM_COPY_LENGTH_LIMIT: int | None = None
 COPY_LENGTH_LIMIT = 100
 COPY_LENGTH_MEASUREMENT = "characters"
@@ -34,9 +34,6 @@ def constraints_for(
         "max_creatives_per_ad": 50,
         "max_images_per_unit": 35 if media_kind == "CAROUSEL" else None,
         "max_ads_per_adgroup": 30,
-        # 当前 Smart+ Minis 账户回读事实仅证明 AUTOMATIC；在取得账户级
-        # MANUAL allowlist 证据前，不能把手动性别/年龄/语言选择发送到创建接口。
-        "targeting_optimization_modes": ("AUTOMATIC",),
         "roas_bid": {"minimum": "0.01", "maximum": "1000"},
         # 金额范围沿用现有 USD 规则，不再额外读取广告组目录。
         "adgroup_daily_budget": (

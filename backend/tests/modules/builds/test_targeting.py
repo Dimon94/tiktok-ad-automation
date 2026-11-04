@@ -181,9 +181,11 @@ def test_targeting_resolves_only_the_common_country_ids_and_blocks_unavailable()
         AudienceTargeting(gender="GENDER_FEMALE"),
         ["US"],
     )
-    assert not minis_automatic_only.supported
-    assert "targeting_manual_unverified" in minis_automatic_only.reason_codes
-    assert "targeting_optimization_mode" not in minis_automatic_only.adgroup_fields
+    # 旧快照中的自动模式标记不再阻断用户明确选择的手动定向。
+    assert minis_automatic_only.supported
+    assert "targeting_manual_unverified" not in minis_automatic_only.reason_codes
+    assert minis_automatic_only.adgroup_fields["targeting_optimization_mode"] == "MANUAL"
+    assert minis_automatic_only.adgroup_fields["targeting_spec"]["gender"] == "GENDER_FEMALE"
 
 
 def test_new_preview_freezes_effective_targeting(session, context, prepared):
