@@ -1,3 +1,9 @@
+# 2026-11-04 最新生产：搭建场景元数据误拦截修复
+
+应用 `da9d0487338218bdc214dadde0cf714fa3a982f2` / schema `0101_business_dashboard` 已上线。规则revision及退役能力列表不再被误当作投放意图变化，显式恢复仍重新核验真实冻结条件。70项相关回归及Ruff/格式/mypy通过，11角色/9Worker/唯一Beat、镜像/实际配置/四开关/DB池及HTTPS验收通过。生产8CKQ已COMPLETED：63系列、63广告组、126广告全成功，失败/待核实0；原成功对象及未知组原request_id/正文摘要保持。原资源/额度/配置不变，无DDL/备份/恢复演练；锁释放、Jenkins恢复。详见[本轮故障与恢复验收](../validation/2026-11-04-build-scene-recovery.md)。
+
+以下为历史发布记录，旧“最新/当前”不代表最新状态。
+
 # 2026-11-04 最新生产：手动定向开放与main整批发布
 
 应用 `c95bfc52bb62f74dc6aa86589df0877212dee426` / schema `0101_business_dashboard` 已上线，包含经营看板、明略接入、同步修复与手动定向本地未核验阻断移除。11角色Ready、9Worker就绪、唯一Beat、镜像/实际配置/四开关/DB池及HTTPS200核对通过，发布锁释放；资源/配额/配置保持。按用户要求本轮不运行任何测试，未备份或恢复演练。旧预览不改写，需重新准备生成。详见[本轮发布记录](../validation/2026-11-04-business-dashboard-production.md)。
