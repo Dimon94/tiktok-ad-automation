@@ -53,7 +53,7 @@ def dashboard(
     tenant_id: UUID, body: DashboardFilter, session: SessionDep, user: CurrentUser
 ) -> DashboardPublic:
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     return query_dashboard(session, context=context, filters=body)
 
@@ -62,9 +62,9 @@ def dashboard(
 def rebuild(
     tenant_id: UUID, body: RebuildInput, session: SessionDep, user: CurrentUser
 ) -> dict[str, list[str]]:
-    # 生成本地只读投影不等于修改广告，普通查询角色可初始化自身已授权范围。
+    # 经营数据与重算均仅管理员可用，仍保留BC和账户授权边界。
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     runs = request_rebuild(session, context=context, **body.model_dump())
     session.commit()
@@ -76,7 +76,7 @@ def options(
     tenant_id: UUID, bc_id: str, session: SessionDep, user: CurrentUser
 ) -> dict[str, Any]:
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     allowed = scope_accounts(session, context, bc_id)
     accounts = (
@@ -133,7 +133,7 @@ def dramas(
     provider_id: UUID | None = None,
     limit: int = Query(default=50, ge=1, le=100),
 ) -> list[dict[str, Any]]:
-    require_tenant(session, actor_id=user.id, tenant_id=tenant_id, action="read")
+    require_tenant(session, actor_id=user.id, tenant_id=tenant_id, action="manage")
     statement = select(ProviderDrama).where(col(ProviderDrama.tenant_id) == tenant_id)
     if provider_id:
         statement = statement.where(col(ProviderDrama.connection_id) == provider_id)
@@ -164,7 +164,7 @@ def dramas(
 def rates(
     tenant_id: UUID, kind: str, scope_id: str, session: SessionDep, user: CurrentUser
 ) -> Sequence[BusinessRate]:
-    require_tenant(session, actor_id=user.id, tenant_id=tenant_id, action="read")
+    require_tenant(session, actor_id=user.id, tenant_id=tenant_id, action="manage")
     return session.exec(
         select(BusinessRate)
         .where(
@@ -215,7 +215,7 @@ def read_evidence(
     from app.modules.business.evidence import read_evidence as read
 
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     row = read(
         session,
@@ -294,7 +294,7 @@ def runs(
     tenant_id: UUID, bc_id: str, session: SessionDep, user: CurrentUser
 ) -> list[dict[str, Any]]:
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     scope_accounts(session, context, bc_id)
     scope = session.get(BusinessScope, (tenant_id, bc_id))
@@ -326,7 +326,7 @@ def export(
     tenant_id: UUID, body: DashboardFilter, session: SessionDep, user: CurrentUser
 ) -> ExportPublic:
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     row = create_export(session, context=context, filters=body)
     session.commit()
@@ -338,7 +338,7 @@ def export_status(
     tenant_id: UUID, export_id: UUID, session: SessionDep, user: CurrentUser
 ) -> ExportPublic:
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     row = check_export(session, context=context, export_id=export_id)
     return ExportPublic(id=row.id, status=row.status, expires_at=row.expires_at)
@@ -349,7 +349,7 @@ def download(
     tenant_id: UUID, export_id: UUID, session: SessionDep, user: CurrentUser
 ) -> StreamingResponse:
     context = require_tenant(
-        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+        session, actor_id=user.id, tenant_id=tenant_id, action="manage"
     )
     return StreamingResponse(
         export_chunks(session, context=context, export_id=export_id),

@@ -78,7 +78,10 @@ def test_export_resume_and_display_rounding(session, business_case):
     session.add(BusinessDay(**clone))
     session.flush()
     filters = DashboardFilter(
-        bc_id=c.bc_id, start_date=date(2026, 11, 2), end_date=c.day, dimension="campaign"
+        bc_id=c.bc_id,
+        start_date=date(2026, 11, 2),
+        end_date=c.day,
+        dimension="campaign",
     )
     page = query_dashboard(session, context=c.context, filters=filters)
     export = create_export(
@@ -107,3 +110,40 @@ def test_export_resume_and_display_rounding(session, business_case):
     assert len(values) == 3
     assert sum(D(row["新开漫剧预计"]) for row in values) == D("800.00")
     assert "uncommitted-extra-bytes" not in content
+
+
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_previous_admin_export_denied_after_role_downgrade(
+    session, business_case, role
+):
+    from app.core.errors import DomainError
+    from app.modules.business.exports import (
+        create_export,
+        export_content,
+        process_pending_export,
+    )
+    from app.modules.business.queries import query_dashboard
+    from app.modules.business.schemas import DashboardFilter
+    from app.modules.tenants.models import TenantMembership
+
+    c = business_case
+    prepared(session, c)
+    filters = DashboardFilter(
+        bc_id=c.bc_id, start_date=date(2026, 11, 1), end_date=c.day
+    )
+    page = query_dashboard(session, context=c.context, filters=filters)
+    export = create_export(
+        session,
+        context=c.context,
+        filters=filters.model_copy(update={"run_ids": page.run_ids}),
+    )
+    process_pending_export(session)
+    assert export.status == "COMPLETE"
+    member = session.get(TenantMembership, (c.context.tenant_id, c.context.actor_id))
+    member.role = role
+    session.add(member)
+    session.flush()
+    with pytest.raises(DomainError):
+        export_content(session, context=c.context, export_id=export.id)
+    with pytest.raises(DomainError):
+        query_dashboard(session, context=c.context, filters=filters)

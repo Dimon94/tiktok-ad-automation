@@ -25,7 +25,7 @@ from app.modules.tenants.permissions import require_tenant
 
 def scope_accounts(session: Session, context: TenantContext, bc_id: str) -> list[str]:
     require_tenant(
-        session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="read"
+        session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="manage"
     )
     bc = session.get(TenantBC, (context.tenant_id, bc_id), populate_existing=True)
     if bc is None or bc.ownership_conflict:

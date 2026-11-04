@@ -106,8 +106,16 @@ export function BusinessDashboard() {
   const options = useQuery({
     ...optionsQuery(tenantId ?? "", bc?.bc_id ?? ""),
     queryKey: [...businessKey(tenantId ?? ""), "options", bc?.bc_id, user.id],
-    enabled: !!tenantId && !!bc,
+    enabled: !!tenantId && !!bc && canManage(scope?.role),
   })
+  // 角色变化时立即隐藏缓存金额，直接访问地址也不发起经营查询。
+  if (!canManage(scope?.role))
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>无权访问经营看板</AlertTitle>
+        <AlertDescription>仅管理员可以查看经营报表。</AlertDescription>
+      </Alert>
+    )
   if (!tenantId || !bc)
     return (
       <WorkspaceEmpty

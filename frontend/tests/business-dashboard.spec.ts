@@ -22,7 +22,7 @@ const values = {
 
 async function boundary(
   page: Page,
-  role: "tenant_admin" | "viewer" = "tenant_admin",
+  role: "tenant_admin" | "viewer" | "operator" = "tenant_admin",
 ) {
   await automationBoundary(page, { role })
   const queries: Record<string, unknown>[] = []
@@ -191,19 +191,27 @@ test("返点默认0且按生效日保存，小屏保持页面可用", async ({ p
   })
 })
 
-test("读者可导出但不能修改商业配置", async ({ page }) => {
-  await boundary(page, "viewer")
-  await page.goto(`/tenants/${TENANT}/business?bc_id=${BC}`)
-  await expect(
-    page.getByRole("button", { name: "测试剧", exact: true }),
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "经营设置", exact: true }),
-  ).toHaveCount(0)
-  const download = page.waitForEvent("download")
-  await page.getByRole("button", { name: "导出 CSV" }).click()
-  expect((await download).suggestedFilename()).toContain("business")
-})
+for (const role of ["viewer", "operator"] as const) {
+  test(`${role}不能查看经营看板或导出`, async ({ page }) => {
+    await boundary(page, role)
+    const requests: string[] = []
+    page.on("request", (request) => {
+      if (
+        new URL(request.url()).pathname.startsWith("/api/") &&
+        request.url().includes("/business/")
+      )
+        requests.push(request.url())
+    })
+    await page.goto(`/tenants/${TENANT}/business?bc_id=${BC}`)
+    await expect(page.getByText("仅管理员可以查看经营报表。")).toBeVisible()
+    await expect(
+      page.getByRole("link", { name: "经营看板", exact: true }),
+    ).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "导出 CSV" })).toHaveCount(0)
+    await expect(page.getByText("2,000.00", { exact: true })).toHaveCount(0)
+    expect(requests).toEqual([])
+  })
+}
 
 test("系列赔付按指定当地日登记历史依据", async ({ page }) => {
   const calls = await boundary(page)

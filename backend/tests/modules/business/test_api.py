@@ -43,18 +43,19 @@ def test_api_admin_rate_validation_and_tenant_boundary(
     assert business_client.post(other, json=body).status_code == 403
 
 
-def test_viewer_reads_but_cannot_change_rates_or_mapping(
-    business_client, session, business_case
+@pytest.mark.parametrize("role", ["viewer", "operator"])
+def test_non_admin_cannot_read_or_change_business(
+    business_client, session, business_case, role
 ):
     c = business_case
     member = session.get(TenantMembership, (c.context.tenant_id, c.context.actor_id))
-    member.role = "viewer"
+    member.role = role
     session.add(member)
     session.flush()
     base = f"/api/tenants/{c.context.tenant_id}/business"
     assert (
         business_client.get(f"{base}/options", params={"bc_id": c.bc_id}).status_code
-        == 200
+        == 403
     )
     assert (
         business_client.get(
@@ -62,6 +63,19 @@ def test_viewer_reads_but_cannot_change_rates_or_mapping(
         ).status_code
         == 403
     )
+    from uuid import uuid4
+
+    for path, params in [
+        ("rates", {"kind": "provider", "scope_id": str(c.provider.id)}),
+        ("dramas", {}),
+        ("runs", {"bc_id": c.bc_id}),
+        (f"exports/{uuid4()}", {}),
+        (f"exports/{uuid4()}/download", {}),
+    ]:
+        assert business_client.get(f"{base}/{path}", params=params).status_code == 403
+    filters = {"bc_id": c.bc_id, "start_date": "2026-11-01", "end_date": str(c.day)}
+    for path in ("query", "rebuild", "exports"):
+        assert business_client.post(f"{base}/{path}", json=filters).status_code == 403
     assert (
         business_client.post(
             f"{base}/rates",
