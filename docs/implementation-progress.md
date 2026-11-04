@@ -1,3 +1,9 @@
+## 2026-11-04 本地修改整合生产发布完成
+
+应用`b9db7a6af1ddb4c2ac40da73b65d7077b551c0c1`/schema0101已发布，包含经营识别与紧凑布局/排序、自由命名回执归组及素材发布90秒预算等全部本地源码修改，并合并公司7035生产修复。11角色Ready、9Worker、唯一Beat、精确镜像/配置/四开关/数据库池/HTTPS200及实际8/typed8/prefetch12核对通过；原strategy/资源/额度保持，发布锁释放。按用户要求未运行任何测试，仅构建和必要上线核验；无DDL、新备份或恢复演练。公司main推送成功，GitHub认证拒绝尚未同步。详见[本轮实际发布记录](validation/2026-11-04-combined-fast-production.md)。
+
+以下保留历史阶段，旧“未发布/当前”以本段精确版本为准。
+
 ## 2026-11-04 同步回滚已修复，大批次发布预算受控试验
 
 - 7035cd10/schema0101全11角色/9Celery/唯一Beat/镜像/配置/四开关/HTTPS/实际8及typed8/12验收；锁释放且CI恢复。原5个历史material_day现全COMPLETE，14子桶全PUBLISHED/PENDING0，修复前代数75–110仍未提交。见[实际回读](validation/2026-11-04-link-demand-overlap.md)。
