@@ -1,3 +1,8 @@
+## 2026-11-04 同步回滚已修复，大批次发布预算受控试验
+
+- 7035cd10/schema0101全11角色/9Celery/唯一Beat/镜像/配置/四开关/HTTPS/实际8及typed8/12验收；锁释放且CI恢复。原5个历史material_day现全COMPLETE，14子桶全PUBLISHED/PENDING0，修复前代数75–110仍未提交。见[实际回读](validation/2026-11-04-link-demand-overlap.md)。
+- 发布仍有真实瓶颈：4个publisher固定窗约77%槽时耗于19次超时重试，13k–31k批次失败7–48次。仅canonical素材整批写拟用90秒，保留20/180/195/210秒锁/总事务/任务/租约；真实PG超时与回滚、58项相关回归/新增总预算例/Ruff通过，mypy9旧错无新增，独立审查通过。见[试验与退出标准](validation/2026-11-04-material-publish-statement-budget.md)，生产收益待验收。
+
 ## 2026-11-04 同步提速：e211生产验收及补链回滚修复
 
 - e211844c/schema0101已完成11角色/9Celery/唯一Beat/镜像/配置/四开关/HTTPS/实际8与typed8/12验收；发布租约收敛28–40，锁释放且CI恢复。SDK首段固定窗2791→1881，任务混合变化，接口仍未持续跑满，不宣称提速目标已完成。见[实际观察](validation/2026-11-04-sync-eligibility-throughput.md)。
