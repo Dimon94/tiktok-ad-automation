@@ -223,6 +223,8 @@ def test_read_to_publish_handoff_obeys_publisher_window(
         == publisher_count
     )
     reading = _directory(session, sync_seed)
+    # 39/40个真实PG发布领取可能超过一秒；后创建的读取不能沿用旧扫描时点。
+    now = datetime.now(UTC) + timedelta(seconds=1)
     assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 1
     reading_generation = reading.claim_generation
     stage_directory_page(
@@ -232,6 +234,7 @@ def test_read_to_publish_handoff_obeys_publisher_window(
         claim_generation=reading_generation,
     )
     reading.next_page = 2
+    now = datetime.now(UTC) + timedelta(seconds=1)
     if publisher_count == 39:
         assert handoff_directory_publication(session, reading, now=now) is True
         assert (
@@ -262,6 +265,7 @@ def test_read_to_publish_handoff_obeys_publisher_window(
     # 释放一个真实发布位置后，原暂存末页由规范dispatcher换代恢复，无需重读HTTP。
     publishers[0].status = "COMPLETE"
     directory_outcome(session, publishers[0])
+    now = datetime.now(UTC) + timedelta(seconds=1)
     assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 1
     assert reading.claim_generation == reading_generation + 1
     messages = session.exec(
