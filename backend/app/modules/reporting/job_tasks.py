@@ -56,12 +56,11 @@ from app.modules.reporting.store_models import (
     ReportSyncJob,
     ReportSyncPage,
 )
+from app.modules.sync_control.directory_dispatch import DIRECTORY_DISPATCH_WINDOW
 from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 
 logger = logging.getLogger(__name__)
 
-# 目录读取和本地发布各有40个候补，发布排队不挤占读取；Worker和实际发送额度独立约束。
-DIRECTORY_DISPATCH_WINDOW = 40
 # 合并旧24+2+4+6个报表候补为统一物理窗口，工作类份额由持久公平游标分配。
 REPORT_DISPATCH_WINDOW = 36
 # 按小批摊销窗口/租户发现，批间提交释放锁；不能一次锁住整个候补窗口。
@@ -1319,7 +1318,9 @@ def _cleanup_category(session, *, category, now, cursors):
     from app.modules.sync_control.models import SyncExecutionScope
 
     if category == "covered_directories":
-        from app.modules.sync_control.directory_retirement import retire_covered_directories
+        from app.modules.sync_control.directory_retirement import (
+            retire_covered_directories,
+        )
 
         count, position = retire_covered_directories(
             session, now=now, cursor=cursors.get(category),

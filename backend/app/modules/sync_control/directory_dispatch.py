@@ -43,6 +43,54 @@ from app.modules.sync_control.worker_pool import (
     reserve_background_turn,
 )
 
+DIRECTORY_DISPATCH_WINDOW = 40
+
+
+def directory_window_occupancy(session: Session, *, now: datetime) -> dict[bool, int]:
+    """按规范有效租约区分读取/发布，主调度和末页交接共用同一计数。"""
+    session.flush()
+    return {
+        bool(publishing): int(count)
+        for publishing, count in session.connection()
+        .execute(
+            text("""
+        SELECT publishing,count(*) FROM (
+        SELECT DISTINCT r.id,EXISTS(SELECT 1 FROM ad_directory_page p
+            WHERE p.run_id=r.id AND p.complete IS TRUE) publishing
+        FROM sync_schedule h
+        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
+        JOIN ad_directory_run r ON r.id=h.lease_execution_id AND r.tenant_id=h.tenant_id
+        WHERE h.work_class IN ('realtime','directory') AND h.lease_token IS NOT NULL
+            AND h.lease_execution_generation=r.claim_generation
+            AND r.owner_epoch=s.owner_epoch
+            AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
+            AND (r.claimed_until>:now OR (r.claimed_until IS NULL AND h.leased_until>:now))
+        ) executions GROUP BY publishing
+        """),
+            {"now": now},
+        )
+        .all()
+    }
+
+
+def publication_handoff_available(session: Session, *, now: datetime) -> bool:
+    """末页只try-lock；发布满或调度竞争时保留暂存页，交还规范调度恢复。"""
+    if (
+        not session.connection()
+        .execute(
+            text(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended('tkada:sync-v2-directory',0))"
+            )
+        )
+        .scalar_one()
+    ):
+        return False
+    # 当前末页已在本事务暂存，计数已经包含自己的原读取grant，所以允许等于上限。
+    return (
+        directory_window_occupancy(session, now=now).get(True, 0)
+        <= DIRECTORY_DISPATCH_WINDOW
+    )
+
 
 def dispatch_directories_due(
     session: Session,
@@ -102,28 +150,7 @@ def _dispatch_directories_due(
     # 租约可能同时挂在晋升前后的两个工作类头上，
     # 仍只计一个执行；终态、旧owner/旧代数及已超时Worker不继续占槽。
     session.flush()
-    inflight = {
-        bool(publishing): int(count)
-        for publishing, count in session.connection()
-        .execute(
-            text("""
-        SELECT publishing,count(*) FROM (
-        SELECT DISTINCT r.id,EXISTS(SELECT 1 FROM ad_directory_page p
-            WHERE p.run_id=r.id AND p.complete IS TRUE) publishing
-        FROM sync_schedule h
-        JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
-        JOIN ad_directory_run r ON r.id=h.lease_execution_id AND r.tenant_id=h.tenant_id
-        WHERE h.work_class IN ('realtime','directory') AND h.lease_token IS NOT NULL
-            AND h.lease_execution_generation=r.claim_generation
-            AND r.owner_epoch=s.owner_epoch
-            AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
-            AND (r.claimed_until>:now OR (r.claimed_until IS NULL AND h.leased_until>:now))
-        ) executions GROUP BY publishing
-        """),
-            {"now": now},
-        )
-        .all()
-    }
+    inflight = directory_window_occupancy(session, now=now)
     read_remaining = max(0, limit - inflight.get(False, 0))
     publish_remaining = max(0, limit - inflight.get(True, 0))
     limit = min(limit, read_remaining + publish_remaining)

@@ -264,8 +264,11 @@ def directory_fence(
 def handoff_directory_publication(
     session: Session, run: AdDirectoryRun, *, now: datetime
 ) -> bool:
-    """末页沿当前规范grant交接本地发布，不重新争取HTTP轮次或延长租约。"""
+    """末页在发布窗口有余量时沿原grant交接，满时由规范发布调度恢复。"""
     from app.modules.ads.directory_dispatch import enqueue_directory_step
+    from app.modules.sync_control.directory_dispatch import (
+        publication_handoff_available,
+    )
 
     # HTTP开始时有资格，不代表返回时原head仍有效；锁不到或已失效就保留
     # 已暂存末页，由既有到期头规范恢复，不能让签发失败回滚有效平台数据。
@@ -273,6 +276,7 @@ def handoff_directory_publication(
         select(SyncSchedule)
         .where(
             col(SyncSchedule.tenant_id) == run.tenant_id,
+            col(SyncSchedule.lease_token).is_not(None),
             col(SyncSchedule.lease_execution_id) == run.id,
             col(SyncSchedule.lease_execution_generation) == run.claim_generation,
             col(SyncSchedule.leased_until) > now,
@@ -281,6 +285,10 @@ def handoff_directory_publication(
         .with_for_update(of=SyncSchedule, skip_locked=True)
     ).first()
     if head is None:
+        return False
+    # 两阶段拆分后，直接交接也必须遵守发布容量；不能用原读取grant绕过上限。
+    # try-lock失败只交还已暂存的末页，不在Worker里等待公共调度锁。
+    if not publication_handoff_available(session, now=now):
         return False
     # 与grant检查使用同一签发时点；page、合法消息和原grant同事务保留。
     enqueue_directory_step(

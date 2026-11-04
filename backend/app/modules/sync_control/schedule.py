@@ -193,7 +193,12 @@ def wake_report_job(session: Session, job: ReportSyncJob) -> None:
 
 
 def pending_execution_dues(
-    session: Session, heads: Sequence[SyncSchedule], kind: str, *, now: datetime
+    session: Session,
+    heads: Sequence[SyncSchedule],
+    kind: str,
+    *,
+    now: datetime,
+    respect_claims: bool = False,
 ) -> dict[tuple[UUID, str], datetime]:
     """一页退避不能推迟同scope另一到期桶；同时排除失去任何子scope的旧批次。"""
     from app.modules.sync_control.requirements import execution_owner_current
@@ -245,11 +250,21 @@ def pending_execution_dues(
         .cte("valid_executions")
         .prefix_with("MATERIALIZED")
     )
+    # 只有领取失败的资格纠正才尊重有效worker租约。正常outcome在调用后才清
+    # 当前租约，不能把即将释放的租约写成下一次due、延迟正常分页和短退避。
+    due = (
+        func.greatest(
+            func.coalesce(getattr(model, due_field), now),
+            func.coalesce(col(ReportSyncJob.claimed_until), now),
+        )
+        if kind == "report" and respect_claims
+        else func.coalesce(getattr(model, due_field), now)
+    )
     rows = session.exec(
         select(
             col(SyncExecutionScope.scope_id),
             col(SyncRequirement.source),
-            func.min(func.coalesce(getattr(model, due_field), now)),
+            func.min(due),
         )
         .select_from(SyncExecutionScope)
         .join(model, getattr(SyncExecutionScope, reference) == col(model.id))

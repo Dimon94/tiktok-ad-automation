@@ -170,6 +170,9 @@ def enqueue_sync_dispatch(
             select(SyncSchedule.scope_id)
             .where(
                 col(SyncSchedule.tenant_id) == run.tenant_id,
+                # 真正领取才有token；显式谓词也让检查只走有效租约部分索引，
+                # 避免每条投递在全局领取锁内并行扫描十万级调度头。
+                col(SyncSchedule.lease_token).is_not(None),
                 col(SyncSchedule.lease_execution_id) == run.id,
                 col(SyncSchedule.lease_execution_generation) == run.claim_generation,
                 col(SyncSchedule.leased_until) > now,

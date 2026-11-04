@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlmodel import select
 
 from app.modules.sync_control.directory_dispatch import dispatch_directories_due
@@ -182,3 +183,91 @@ def test_phase_discovery_cursors_do_not_hide_other_stage(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("publisher_count", [39, 40])
+def test_read_to_publish_handoff_obeys_publisher_window(
+    session, sync_seed, redis_client, publisher_count
+):
+    from app.integrations.tiktok.contracts.ads import CallEvidence, DirectoryPage
+    from app.jobs.models import PendingDispatch
+    from app.modules.accounts.models import AdvertiserAccount
+    from app.modules.ads.sync import stage_directory_page
+    from app.modules.sync_control.directory_demand import (
+        directory_outcome,
+        handoff_directory_publication,
+    )
+
+    publishers = []
+    for index in range(publisher_count):
+        advertiser = f"publisher-{index}"
+        session.add(
+            AdvertiserAccount(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id=advertiser,
+                timezone="UTC",
+            )
+        )
+        session.flush()
+        run = _directory(session, sync_seed, advertiser=advertiser)
+        stage_directory_page(
+            session,
+            run_id=run.id,
+            page=DirectoryPage((), (), None, True, CallEvidence()),
+            claim_generation=run.claim_generation,
+        )
+        publishers.append(run)
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    assert (
+        dispatch_directories_due(session, redis_client, now=now, limit=40)
+        == publisher_count
+    )
+    reading = _directory(session, sync_seed)
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 1
+    reading_generation = reading.claim_generation
+    stage_directory_page(
+        session,
+        run_id=reading.id,
+        page=DirectoryPage((), (), None, True, CallEvidence()),
+        claim_generation=reading_generation,
+    )
+    reading.next_page = 2
+    if publisher_count == 39:
+        assert handoff_directory_publication(session, reading, now=now) is True
+        assert (
+            len(
+                session.exec(
+                    select(PendingDispatch).where(
+                        PendingDispatch.task_name == "ads.publish_step"
+                    )
+                ).all()
+            )
+            == 40
+        )
+        return
+    # 已领取的读取完成末页也必须受同一个发布上限约束，不能直接挤进第41个。
+    assert handoff_directory_publication(session, reading, now=now) is False
+    directory_outcome(session, reading)
+    assert (
+        len(
+            session.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.task_name == "ads.publish_step"
+                )
+            ).all()
+        )
+        == 40
+    )
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 0
+    # 释放一个真实发布位置后，原暂存末页由规范dispatcher换代恢复，无需重读HTTP。
+    publishers[0].status = "COMPLETE"
+    directory_outcome(session, publishers[0])
+    assert dispatch_directories_due(session, redis_client, now=now, limit=40) == 1
+    assert reading.claim_generation == reading_generation + 1
+    messages = session.exec(
+        select(PendingDispatch).where(
+            PendingDispatch.task_name == "ads.publish_step",
+            PendingDispatch.payload["run_id"].astext == str(reading.id),
+        )
+    ).all()
+    assert len(messages) == 1

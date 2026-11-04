@@ -53,6 +53,33 @@ def test_canonical_dispatch_freezes_envelope_and_reenqueue_does_not_extend(
     assert (row.issued_at, row.valid_until) == frozen
 
 
+def test_canonical_dispatch_requires_the_head_lease_token(
+    session, sync_seed, redis_client
+):
+    from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
+
+    run, row = _claimed(session, sync_seed, redis_client)
+    head = session.exec(
+        select(SyncSchedule).where(SyncSchedule.lease_execution_id == run.id)
+    ).one()
+    token = head.lease_token
+    head.lease_token = None
+    session.flush()
+    args = {
+        "context": sync_seed.context,
+        "task_name": row.task_name,
+        "task_key": row.task_key + ":guard-test",
+        "payload": row.payload,
+        "execution": run,
+    }
+    # 残留执行ID和未来时间不能替代真实领取token，也不能签发新消息。
+    with pytest.raises(DomainError, match="旧同步领取"):
+        enqueue_sync_dispatch(session, **args)
+    head.lease_token = token
+    session.flush()
+    assert enqueue_sync_dispatch(session, **args) is not None
+
+
 def test_expired_broker_message_is_ignored_and_demand_reclaims_new_generation(
     session, sync_seed, redis_client, monkeypatch
 ):

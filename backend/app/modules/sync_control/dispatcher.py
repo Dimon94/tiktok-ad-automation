@@ -38,7 +38,7 @@ from app.modules.sync_control.models import (
 )
 from app.modules.sync_control.occupancy import release_dispatch, reserve_dispatch
 from app.modules.sync_control.requirements import execution_owner_current
-from app.modules.sync_control.schedule import report_endpoint
+from app.modules.sync_control.schedule import pending_execution_dues, report_endpoint
 from app.modules.sync_control.worker_pool import (
     background_lease_count,
     report_background_category,
@@ -208,6 +208,9 @@ def _dispatch_due(
                 cursor = budgets.acquire(tenant_id, endpoint)
                 if cursor is None:
                     continue
+                # 这是租户获得调度机会的轮转时间；无可执行候选也必须让回其他租户。
+                # HTTP公平成本仍只由真实领取/发送收据推进，不能给未派发任务虚扣次数。
+                cursor.last_dispatched_at = max(cursor.last_dispatched_at, now)
                 candidate_classes = [
                     work_class
                     for work_class in (
@@ -382,12 +385,6 @@ def _dispatch_due(
                     .limit(1)
                     .with_for_update(of=ReportSyncJob, skip_locked=True)
                 ).first()
-                if job is None and low_budget:
-                    # 暂时没有此物理池的空槽/本轮禁后台，不代表该head没有执行。
-                    # 只跳过当前候选，不能把真实due推迟1秒造成每轮释放后空转。
-                    skipped_scopes.add(head.scope_id)
-                    progressed = True
-                    continue
                 if job is None:
                     # 单头修正也只在拿到锁并刷新之后做，不能以发现时的旧状态覆盖outcome。
                     locked_head = session.exec(
@@ -407,8 +404,27 @@ def _dispatch_due(
                         progressed = True
                         continue
                     head = locked_head
-                    # 其他scope可能已派同一个合法BASIC批次，头不应继续占本轮选择。
-                    head.next_eligible_at = now + timedelta(seconds=1)
+                    # 旧due头不等于执行已就绪：按真实执行due/有效worker租约纠正，
+                    # 避免每秒重查同一未来等待前缀，持公共锁却派不出请求。
+                    dues = pending_execution_dues(
+                        session, [head], "report", now=now, respect_claims=True
+                    )
+                    next_execution_due = dues.get((head.scope_id, head.work_class))
+                    head.last_dispatched_at = now
+                    if (
+                        low_budget
+                        and next_execution_due is not None
+                        and next_execution_due <= now
+                    ):
+                        # 原执行真实已到期，只是池/低预算筛选暂不可运行：保持due，
+                        # 但持久轮转服务年龄，不能每次又被同一前缀挡住后方就绪任务。
+                        skipped_scopes.add(head.scope_id)
+                        progressed = True
+                        continue
+                    head.next_eligible_at = max(
+                        now + timedelta(seconds=1),
+                        next_execution_due or now + timedelta(seconds=5),
+                    )
                     head.active = (
                         session.exec(
                             select(col(SyncRequirement.id))
@@ -422,6 +438,7 @@ def _dispatch_due(
                         ).first()
                         is not None
                     )
+                    progressed = True
                     continue
                 execution_heads = _lock_execution_heads(session, job, head, now=now)
                 if execution_heads is None:
