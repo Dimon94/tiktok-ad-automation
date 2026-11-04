@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from redis import Redis
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlmodel import select
@@ -42,6 +43,8 @@ def _terminal(
             status="RUNNING",
             next_page=page_count + 1,
             claim_generation=generation,
+            # 旧投递的需求也必须已在旧时点创建，不能要求调度领取未来需求。
+            created_at=now - timedelta(minutes=dispatch_age),
             next_attempt_at=now - timedelta(minutes=dispatch_age),
         )
         session.add(run)
@@ -66,12 +69,13 @@ def _terminal(
         register_directory_run(session, run)
         session.flush()
         # 从真实派发取得调度头租约，再模拟该投递的经过时间。
-        assert (
-            dispatch_directories_due(
-                session, None, now=now - timedelta(minutes=dispatch_age), limit=1
+        with Redis.from_url(settings.REDIS_URL) as redis:
+            assert (
+                dispatch_directories_due(
+                    session, redis, now=now - timedelta(minutes=dispatch_age), limit=1
+                )
+                == 1
             )
-            == 1
-        )
         run.claimed_until = lease
         dispatch = session.exec(
             select(PendingDispatch).where(

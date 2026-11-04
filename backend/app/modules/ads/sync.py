@@ -533,17 +533,34 @@ def _stage_material_batch(session, staged, materials, *, run, version):
         )
 
 
-def _publish_staged_materials(session, run, staged):
-    session.connection().execute(text(f"ANALYZE {staged}"))
+def _publish_staged_materials(session, run, staged, *, statement_timeout_ms=None):
+    connection = session.connection()
+    connection.execute(text(f"ANALYZE {staged}"))
+    previous_timeout = None
+    if statement_timeout_ms is not None:
+        previous_timeout = connection.execute(
+            text("SHOW statement_timeout")
+        ).scalar_one()
+        connection.execute(
+            text("SELECT set_config('statement_timeout',:timeout,true)"),
+            {"timeout": f"{statement_timeout_ms}ms"},
+        )
     # 每个完整运行仅一次canonical集合写；非空INSERT/UPDATE触发器保留历史候选，
     # 不能直接以incoming替代历史候选，否则会把正确的完整素材关系覆盖为部分观察。
-    session.connection().execute(
+    connection.execute(
         text(
             _material_upsert_sql(
                 "ad_material_reference", f"SELECT {_MATERIAL_COLUMNS} FROM {staged}"
             )
         )
     )
+    # 只延长这一条原子集合写及其触发器；后续查询恢复原预算。
+    # 失败时事务已中止，不在finally执行SET覆盖原错误，交给原savepoint/事务回滚。
+    if previous_timeout is not None:
+        connection.execute(
+            text("SELECT set_config('statement_timeout',:timeout,true)"),
+            {"timeout": previous_timeout},
+        )
     for obj in list(session.identity_map.values()):
         if isinstance(obj, AdMaterialReference):
             state = inspect(obj).dict
@@ -842,7 +859,13 @@ def _material_owner_objects(session, run, materials, staged):
     ]
 
 
-def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) -> int:
+def publish_directory(
+    session: Session,
+    *,
+    run_id: UUID,
+    claim_generation: int,
+    material_statement_timeout_ms: int | None = None,
+) -> int:
     """验证完整分页后原子发布；返回本运行使用的单一 published_version。"""
     if type(claim_generation) is not int or claim_generation < 1:
         raise _domain("directory_claim_invalid", "目录 claim 代数无效")
@@ -983,7 +1006,12 @@ def publish_directory(session: Session, *, run_id: UUID, claim_generation: int) 
             _stage_material_batch(
                 session, staged_materials, materials, run=run, version=version
             )
-        _publish_staged_materials(session, run, staged_materials)
+        _publish_staged_materials(
+            session,
+            run,
+            staged_materials,
+            statement_timeout_ms=material_statement_timeout_ms,
+        )
         material_incomplete = stale_materials or any(
             page.coverage in {"PARTIAL_MATERIALS", "MATERIALS_INCOMPLETE"}
             for page in ordered

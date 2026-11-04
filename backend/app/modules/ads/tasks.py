@@ -61,6 +61,7 @@ _PUBLISH_LEASE_SECONDS = 210
 _LOCK_TIMEOUT = "20s"
 _TRANSACTION_TIMEOUT = "45s"
 _PUBLISH_TRANSACTION_TIMEOUT = "180s"
+_MATERIAL_PUBLISH_STATEMENT_TIMEOUT_MS = 90_000
 logger = logging.getLogger(__name__)
 
 
@@ -84,7 +85,8 @@ def _directory_session(
             )
             session.connection().execute(text("SET LOCAL statement_timeout = '30s'"))
             # 仅单槽本地发布给大目录累计IO独立预算；读取/实时定向仍是45秒。
-            # 180秒从领取前开始，早于195秒软限及210秒发布租约；不延长单语句或等锁。
+            # 180秒从领取前开始，早于195秒软限及210秒发布租约；等锁仍20秒。
+            # 仅canonical素材写可用90秒，其他单语句仍30秒，不重开事务期限。
             timeout = (
                 _PUBLISH_TRANSACTION_TIMEOUT if publish_only else _TRANSACTION_TIMEOUT
             )
@@ -669,7 +671,13 @@ def _run_directory_step(
             # 末页已持久化：独占一次任务期限做本地发布，恢复时也不再读远端。
             try:
                 publish_directory(
-                    session, run_id=run_id, claim_generation=claim_generation
+                    session,
+                    run_id=run_id,
+                    claim_generation=claim_generation,
+                    # 仅本地publisher的素材整批写使用独立单语句预算；读取任务不放宽。
+                    material_statement_timeout_ms=(
+                        _MATERIAL_PUBLISH_STATEMENT_TIMEOUT_MS if publish_only else None
+                    ),
                 )
             except DomainError as error:
                 if error.code != "directory_run_stale":
