@@ -3424,3 +3424,37 @@ test("platform can retry failed material provisioning in tenant details", async 
   ).toHaveLength(1)
   expect(requests.filter((r) => r.method === "PATCH")).toHaveLength(0)
 })
+
+test("工作台菜单恢复标签查询条件，切换 BC 清空旧标签", async ({ page }) => {
+  await accountBoundary(page)
+  await page.goto(`/tenants/${A}/accounts?tab=connections&bc_id=${BC1}`)
+  await expect(
+    page.getByRole("tab", { name: "授权管理", exact: true }),
+  ).toHaveAttribute("data-state", "active")
+  await page
+    .getByRole("navigation", { name: "设置", exact: true })
+    .getByRole("link", { name: "成员管理", exact: true })
+    .click()
+  await expect(
+    page.getByRole("tablist", { name: "已打开的页面" }).getByRole("tab"),
+  ).toHaveCount(2)
+  await page
+    .getByRole("navigation", { name: "设置", exact: true })
+    .getByRole("link", { name: "账户与授权", exact: true })
+    .click()
+  await expect(page).toHaveURL(
+    new RegExp(`tab=connections.*bc_id=${BC1}|bc_id=${BC1}.*tab=connections`),
+  )
+  await expect(
+    page.getByRole("tab", { name: "授权管理", exact: true }),
+  ).toHaveAttribute("data-state", "active")
+  await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
+  await page.getByRole("option", { name: /业务 BC 二/ }).click()
+  await expect(page).toHaveURL(new RegExp(`bc_id=${BC2}`))
+  await expect(
+    page.getByRole("tablist", { name: "已打开的页面" }).getByRole("tab"),
+  ).toHaveCount(1)
+  await expect(
+    page.getByRole("tab", { name: "成员管理", exact: true }),
+  ).toHaveCount(0)
+})

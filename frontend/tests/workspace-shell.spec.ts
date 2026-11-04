@@ -497,3 +497,48 @@ for (const target of [
     await expect(page).toHaveURL("/")
     await expect(page.getByText("尚未接入租户", { exact: true })).toBeVisible()
   })
+
+test("页面标签随菜单打开、去重、历史切换与关闭，窄屏没有横向溢出", async ({
+  page,
+}) => {
+  await apiBoundary(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto("/materials")
+  const tabs = page.getByRole("tablist", { name: "已打开的页面" })
+  await expect(
+    tabs.getByRole("tab", { name: "素材库", exact: true }),
+  ).toHaveAttribute("aria-selected", "true")
+  // 窄屏通过真实侧栏进入其他功能。
+  await page.getByRole("button", { name: "切换导航" }).click()
+  await expect(
+    page
+      .getByRole("dialog", { name: "TK-ADA 导航" })
+      .getByRole("link", { name: "投放策略", exact: true }),
+  ).toHaveAttribute("data-slot", "sidebar-menu-button")
+  await page
+    .getByRole("dialog", { name: "TK-ADA 导航" })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  await expect(tabs.getByRole("tab")).toHaveCount(2)
+  await page.getByRole("tab", { name: "素材库", exact: true }).click()
+  await expect(page).toHaveURL("/materials")
+  await page.goBack()
+  await expect(page).toHaveURL("/strategies")
+  await expect(
+    tabs.getByRole("tab", { name: "投放策略", exact: true }),
+  ).toHaveAttribute("aria-selected", "true")
+  await expect(tabs.getByRole("tab")).toHaveCount(2)
+  await page
+    .getByRole("button", { name: "关闭标签：投放策略", exact: true })
+    .click()
+  await expect(page).toHaveURL("/materials")
+  await expect(tabs.getByRole("tab")).toHaveCount(1)
+  await expect(
+    page.getByRole("button", { name: "关闭标签：素材库", exact: true }),
+  ).toBeDisabled()
+  await expectNoOverflow(page)
+  await page.screenshot({
+    path: test.info().outputPath("workspace-tabs-mobile.png"),
+    fullPage: true,
+  })
+})

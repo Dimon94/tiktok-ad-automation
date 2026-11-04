@@ -1,10 +1,10 @@
-import { demoStructureEstimate } from "../src/demo/fixtures/structure-estimate"
 import { expect, type Page, test } from "@playwright/test"
 import type {
   StrategyConfig_Output,
   StrategyPublic,
   VersionPublic,
 } from "../src/client"
+import { demoStructureEstimate } from "../src/demo/fixtures/structure-estimate"
 
 const A = "11111111-1111-4111-8111-111111111111",
   B = "22222222-2222-4222-8222-222222222222",
@@ -1746,4 +1746,131 @@ test("独立剧名和版权方标识可任意排列、预览并保存", async ({
   ).toBe("{drama_name}-{provider_label}-{drama_id}-{YYYYMMDD}")
   await page.goto(editUrl)
   await expect(template).toHaveValue("[剧名]-[版权方标识]-[剧目 ID]-[日期]")
+})
+
+test("工作台标签保留未保存策略和列表筛选，菜单重复打开不新增标签", async ({
+  page,
+}) => {
+  await boundary(page)
+  await page.goto(`/tenants/${A}/strategies`)
+  const search = page.getByPlaceholder("搜索策略名称")
+  await search.fill("租户")
+  await page.getByRole("link", { name: "租户策略", exact: true }).click()
+  await page.getByLabel("日预算", { exact: true }).fill("321.00")
+  await page
+    .getByRole("navigation", { name: "投放准备" })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(search).toHaveValue("租户")
+  const tabs = page.getByRole("tablist", { name: "已打开的页面" })
+  await expect(tabs.getByRole("tab")).toHaveCount(2)
+  await tabs.getByRole("tab", { name: "投放策略 · 详情", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("321.00")
+  await page
+    .getByRole("navigation", { name: "投放准备" })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  await expect(tabs.getByRole("tab")).toHaveCount(2)
+  await page
+    .getByRole("button", { name: "关闭标签：投放策略 · 详情", exact: true })
+    .click()
+  await expect(
+    page.getByRole("dialog", { name: "有未保存的内容" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "留在当前页", exact: true }).click()
+  await expect(tabs.getByRole("tab")).toHaveCount(2)
+  await page
+    .getByRole("button", { name: "关闭标签：投放策略 · 详情", exact: true })
+    .click()
+  await page.getByRole("button", { name: "丢弃并关闭", exact: true }).click()
+  await expect(tabs.getByRole("tab")).toHaveCount(1)
+  await page.getByRole("link", { name: "租户策略", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("100.00")
+  await page.screenshot({
+    path: test.info().outputPath("workspace-tabs-desktop.png"),
+    fullPage: true,
+  })
+})
+
+test("隐藏标签的未保存内容保护租户切换和刷新，确认切换后清除全部旧标签", async ({
+  page,
+}) => {
+  await boundary(page)
+  await page.goto(editUrl)
+  await page.getByLabel("日预算", { exact: true }).fill("321.00")
+  await page
+    .getByRole("navigation", { name: "投放准备" })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  expect(
+    await page.evaluate(
+      () =>
+        !window.dispatchEvent(new Event("beforeunload", { cancelable: true })),
+    ),
+  ).toBe(true)
+  await page.getByRole("combobox", { name: "当前租户" }).click()
+  await page.getByRole("option", { name: /策略租户乙/ }).click()
+  await expect(
+    page.getByRole("dialog", { name: "有未保存的内容" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "留在当前页", exact: true }).click()
+  await page.getByRole("tab", { name: "投放策略 · 详情", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("321.00")
+  await page.getByRole("combobox", { name: "当前租户" }).click()
+  await page.getByRole("option", { name: /策略租户乙/ }).click()
+  await page
+    .getByRole("button", { name: "丢弃未保存修改", exact: true })
+    .click()
+  await expect(page).toHaveURL(new RegExp(`/tenants/${B}/strategies`))
+  await expect(
+    page.getByRole("tablist", { name: "已打开的页面" }).getByRole("tab"),
+  ).toHaveCount(1)
+})
+
+test("多张编辑表单的标签互不覆盖，关闭当前脏标签确认后切到相邻标签", async ({
+  page,
+}) => {
+  await boundary(page)
+  const errors: string[] = []
+  page.on("pageerror", (error) => errors.push(error.message))
+  await page.goto(editUrl)
+  await page.getByLabel("日预算", { exact: true }).fill("321.00")
+  await page
+    .getByRole("navigation", { name: "投放准备" })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  await page.getByRole("link", { name: "新建策略", exact: true }).click()
+  await page.getByLabel("日预算", { exact: true }).fill("789.00")
+  await page.getByLabel("策略名称", { exact: true }).fill("独立新策略")
+  const duplicates = await page.evaluate(() => {
+    const ids = [...document.querySelectorAll("#workspace-main [id]")].map(
+      (element) => element.id,
+    )
+    return ids.filter((id, index) => ids.indexOf(id) !== index)
+  })
+  expect(duplicates).toEqual([])
+  await page.getByRole("tab", { name: "投放策略 · 详情", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("321.00")
+  await page.getByRole("tab", { name: "投放策略 · 新建", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("789.00")
+  await expect(page.getByLabel("策略名称", { exact: true })).toHaveValue(
+    "独立新策略",
+  )
+  await page
+    .getByRole("button", { name: "关闭标签：投放策略 · 新建", exact: true })
+    .click()
+  await page.getByRole("button", { name: "留在当前页", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("789.00")
+  await page
+    .getByRole("button", { name: "关闭标签：投放策略 · 新建", exact: true })
+    .click()
+  await page.getByRole("button", { name: "丢弃并关闭", exact: true }).click()
+  await expect(page).toHaveURL(new RegExp(`/tenants/${A}/strategies$`))
+  await expect(
+    page.getByRole("tab", { name: "投放策略 · 新建", exact: true }),
+  ).toHaveCount(0)
+  await page.getByRole("tab", { name: "投放策略 · 详情", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("321.00")
+  expect(errors).toEqual([])
 })

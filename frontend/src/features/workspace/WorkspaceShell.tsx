@@ -13,6 +13,8 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
+import { WorkspaceTabBar } from "./WorkspaceTabs"
+
 // P02 supplies the resolved tenant/BC and scoped routes. No example context is used.
 export interface WorkspaceContext {
   tenant: { id: string; name: string }
@@ -105,6 +107,7 @@ export function WorkspaceShell({
             )}
           </div>
         </header>
+        <WorkspaceTabBar />
         <div
           id="workspace-main"
           tabIndex={-1}

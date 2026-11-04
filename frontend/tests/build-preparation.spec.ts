@@ -273,7 +273,7 @@ test("保存的搭建可从草稿箱找回完整输入，刷新后默认回到�
   expect(api.requests.filter((r) => r.method !== "GET")).toHaveLength(1)
 })
 
-test("打开关闭草稿箱保留新建输入，加载其他草稿才提示离页", async ({ page }) => {
+test("打开关闭草稿箱保留新建输入，其他草稿在独立标签打开", async ({ page }) => {
   const api = await buildsBoundary(page, { draftList: true })
   api.summary.status = "DRAFT"
   await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
@@ -304,17 +304,18 @@ test("打开关闭草稿箱保留新建输入，加载其他草稿才提示离�
   )
   await page.getByRole("button", { name: "草稿箱", exact: true }).click()
   await page.getByRole("link", { name: "继续搭建" }).click()
+  await expect(page).toHaveURL(new RegExp(`/build-drafts/${D}`))
   await expect(
     page.getByRole("dialog", { name: "有未保存的修改", exact: true }),
-  ).toBeVisible()
-  await page.getByRole("button", { name: "留在当前页" }).click()
+  ).toHaveCount(0)
+  await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(
+    api.originals.drama.join("\n"),
+  )
+  await page.getByRole("tab", { name: "广告搭建", exact: true }).click()
   await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(
     "尚未保存的剧名",
   )
-  await page.getByRole("button", { name: "草稿箱", exact: true }).click()
-  await page.getByRole("link", { name: "继续搭建" }).click()
-  await page.getByRole("button", { name: "丢弃未保存修改" }).click()
-  await expect(page).toHaveURL(new RegExp(`/build-drafts/${D}`))
+  await page.getByRole("tab", { name: "广告搭建 · 草稿", exact: true }).click()
   await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(
     api.originals.drama.join("\n"),
   )
@@ -482,7 +483,9 @@ for (const width of [390, 1440]) {
   })
 }
 
-test("输入页保持剧目和账户批量原文，离开守卫取消保留输入", async ({ page }) => {
+test("输入页切换标签保留剧目和账户批量原文，关闭标签可取消", async ({
+  page,
+}) => {
   await buildsBoundary(page)
   await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
   await page
@@ -493,8 +496,13 @@ test("输入页保持剧目和账户批量原文，离开守卫取消保留输�
     .fill("90071992547409939999\n账户乙")
   await expect(page.getByText("全部剧目将覆盖同一批全部有效账户")).toBeVisible()
   await page.getByRole("link", { name: "素材库", exact: true }).click()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await page.getByRole("tab", { name: "广告搭建", exact: true }).click()
+  await page
+    .getByRole("button", { name: "关闭标签：广告搭建", exact: true })
+    .click()
   await expect(
-    page.getByRole("dialog", { name: "有未保存的修改" }),
+    page.getByRole("dialog", { name: "有未保存的内容" }),
   ).toBeVisible()
   await page.getByRole("button", { name: "留在当前页" }).click()
   await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(

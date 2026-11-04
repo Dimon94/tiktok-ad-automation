@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { useWorkspacePageGuard } from "@/features/workspace/WorkspaceTabs"
 import { handleApiError } from "@/lib/api-feedback"
 export function BuildGuard({
   dirty,
@@ -23,10 +24,12 @@ export function BuildGuard({
   description?: string
   leaveLabel?: string
 }) {
+  const retainsPage = useWorkspacePageGuard(dirty)
   const blocker = useBlocker({
     // A forced 401 login transition must retain the request ledger without
     // being trapped by the unsaved-input prompt. Authorization remains server-owned.
-    shouldBlockFn: () => dirty && !!localStorage.getItem("access_token"),
+    shouldBlockFn: ({ next }) =>
+      dirty && !!localStorage.getItem("access_token") && !retainsPage(next),
     enableBeforeUnload: () => dirty && !!localStorage.getItem("access_token"),
     withResolver: true,
   })

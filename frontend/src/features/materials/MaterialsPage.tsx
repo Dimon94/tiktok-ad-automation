@@ -18,10 +18,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RequestError } from "@/features/tenants/shared"
 import { useTenantScope } from "@/features/tenants/TenantScope"
 import { WorkspacePageTitle } from "@/features/workspace/WorkspacePageTitle"
-import { CarouselPresetList } from "./CarouselPresetList"
+import { useWorkspacePageGuard } from "@/features/workspace/WorkspaceTabs"
 import { AssetDetails } from "./AssetDetails"
 import { BatchHistory } from "./BatchHistory"
 import { BatchUploadSheet } from "./BatchUploadSheet"
+import { CarouselPresetList } from "./CarouselPresetList"
 import { MaterialTable } from "./MaterialTable"
 import { materialKey, namingHint, uploadKey } from "./presentation"
 import { UploadQueue } from "./UploadQueue"
@@ -307,9 +308,12 @@ function UploadWorkspace({
       })
     }
   }, [manager, onSheet, onStarted])
+  // 本地文件传输需保持上传控制器挂载；离开前继续使用原有传输守卫。
+  const retainsPage = useWorkspacePageGuard(active, false)
   const blocker = useBlocker({
     shouldBlockFn: ({ next }) =>
       active &&
+      !retainsPage(next) &&
       (next.pathname !== `/tenants/${tenantId}/materials` ||
         (!!(next.search as { batch_id?: string }).batch_id &&
           (next.search as { batch_id?: string }).batch_id !== batchId &&

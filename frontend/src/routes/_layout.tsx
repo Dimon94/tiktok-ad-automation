@@ -1,9 +1,4 @@
-import {
-  createFileRoute,
-  Outlet,
-  redirect,
-  useRouterState,
-} from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { workspaceNavigation } from "@/components/Sidebar/navigation"
 import { BCSelector } from "@/features/accounts/BCSelector"
 import { useMaterialProduction } from "@/features/material-production/useMaterialProduction"
@@ -16,6 +11,10 @@ import {
 } from "@/features/tenants/TenantScope"
 import { ApiFeedback } from "@/features/workspace/ApiFeedback"
 import { WorkspaceShell } from "@/features/workspace/WorkspaceShell"
+import {
+  WorkspaceTabPages,
+  WorkspaceTabsProvider,
+} from "@/features/workspace/WorkspaceTabs"
 import useAuth, { isLoggedIn } from "@/hooks/useAuth"
 import { rememberLoginReturn } from "@/lib/login-return"
 
@@ -48,9 +47,6 @@ function Layout() {
   )
 }
 function ScopedLayout() {
-  const pathname = useRouterState({
-    select: (state) => state.location.pathname,
-  })
   const { scope, tenant, tenantId, user, platform, bc } = useTenantScope()
   const materialProduction = useMaterialProduction(tenantId ?? undefined)
   const prefix = `/tenants/${tenantId}`
@@ -66,30 +62,32 @@ function ScopedLayout() {
       ? []
       : undefined
   return (
-    <WorkspaceShell
-      user={user}
-      platform={platform}
-      context={
-        tenant && scope
-          ? {
-              tenant: { id: tenant.id, name: tenant.name },
-              bc: bc ? { id: bc.bc_id, name: bc.name } : null,
-              roleLabel: roleLabels[scope.role],
-              managedByPlatform: scope.role === "platform_admin",
-            }
-          : null
-      }
-      contextSelector={tenantId ? <TenantSelector /> : undefined}
-      bcSelector={tenant ? <BCSelector key={tenantId} /> : undefined}
-      groups={groups}
+    <WorkspaceTabsProvider
+      key={`${user.id}:${tenantId ?? (platform ? "platform" : "global")}:${scope?.bcId ?? ""}:${scope?.role ?? ""}`}
+      groups={groups ?? workspaceNavigation({ manage: !!user.is_superuser })}
     >
-      <ApiFeedback />
-      <TenantAccessGate>
-        {/* 素材目录只随租户切换；上传管理器单独保存批次 BC。 */}
-        <Outlet
-          key={`${tenantId ?? "global"}:${pathname.endsWith("/materials") ? "materials" : (scope?.bcId ?? "")}`}
-        />
-      </TenantAccessGate>
-    </WorkspaceShell>
+      <WorkspaceShell
+        user={user}
+        platform={platform}
+        context={
+          tenant && scope
+            ? {
+                tenant: { id: tenant.id, name: tenant.name },
+                bc: bc ? { id: bc.bc_id, name: bc.name } : null,
+                roleLabel: roleLabels[scope.role],
+                managedByPlatform: scope.role === "platform_admin",
+              }
+            : null
+        }
+        contextSelector={tenantId ? <TenantSelector /> : undefined}
+        bcSelector={tenant ? <BCSelector key={tenantId} /> : undefined}
+        groups={groups}
+      >
+        <ApiFeedback />
+        <TenantAccessGate>
+          <WorkspaceTabPages />
+        </TenantAccessGate>
+      </WorkspaceShell>
+    </WorkspaceTabsProvider>
   )
 }

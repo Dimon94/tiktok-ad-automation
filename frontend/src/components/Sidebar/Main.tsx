@@ -1,6 +1,5 @@
 import { Link as RouterLink, useRouterState } from "@tanstack/react-router"
 import { Loader2, type LucideIcon } from "lucide-react"
-
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -10,6 +9,8 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { useWorkspaceTabHref } from "@/features/workspace/WorkspaceTabs"
+import { parseWorkspaceSearch } from "@/lib/search-params"
 
 export type Item = {
   icon: LucideIcon
@@ -28,6 +29,27 @@ export type NavGroup = {
 interface MainProps {
   label?: string
   items: Item[]
+}
+
+function MenuLink({
+  item,
+  children,
+  ...props
+}: React.ComponentProps<"a"> & { item: Item }) {
+  const href = useWorkspaceTabHref(item.path)
+  return (
+    <RouterLink
+      {...props}
+      to={item.path!}
+      search={
+        href
+          ? parseWorkspaceSearch(new URL(href, window.location.origin).search)
+          : undefined
+      }
+    >
+      {children}
+    </RouterLink>
+  )
 }
 
 export function Main({ items, label }: MainProps) {
@@ -75,10 +97,10 @@ export function Main({ items, label }: MainProps) {
                   }
                 >
                   {item.path ? (
-                    <RouterLink to={item.path} onClick={handleMenuClick}>
+                    <MenuLink item={item} onClick={handleMenuClick}>
                       <item.icon />
                       <span>{item.title}</span>
-                    </RouterLink>
+                    </MenuLink>
                   ) : (
                     <>
                       {item.pendingLabel ? (

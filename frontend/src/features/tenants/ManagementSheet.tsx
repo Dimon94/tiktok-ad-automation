@@ -17,6 +17,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { useWorkspacePageGuard } from "@/features/workspace/WorkspaceTabs"
 import { cn } from "@/lib/utils"
 
 // Guards both router transitions (including browser Back) and every Sheet close path.
@@ -43,8 +44,9 @@ export function ManagementSheet({
 }) {
   const [closing, setClosing] = useState(false)
   const opener = useRef<HTMLElement | null>(null)
+  const retainsPage = useWorkspacePageGuard(dirty || pending, !pending)
   const blocker = useBlocker({
-    shouldBlockFn: () => dirty || pending,
+    shouldBlockFn: ({ next }) => (dirty || pending) && !retainsPage(next),
     enableBeforeUnload: dirty || pending,
     withResolver: true,
   })

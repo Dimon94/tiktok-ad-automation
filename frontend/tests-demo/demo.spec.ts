@@ -187,10 +187,9 @@ test("报表引导在鼠标按下触发维度切换后仍能前进", async ({ pa
   await card.getByRole("button", { name: "下一步", exact: true }).click()
   await expect(card.locator("h2")).toHaveText("按系列查看")
   await page.locator('[data-demo-tour-target="click"]').click()
-  await expect(page.getByRole("tab", { name: "系列", exact: true })).toHaveAttribute(
-    "data-state",
-    "active",
-  )
+  await expect(
+    page.getByRole("tab", { name: "系列", exact: true }),
+  ).toHaveAttribute("data-state", "active")
   await expect(card.locator("h2")).toHaveText("系列明细", { timeout: 10_000 })
 })
 
@@ -288,4 +287,34 @@ test("图片演示取消匹配、复制与轮播库加载有合成反馈", async
   expect(state.errors).toEqual([])
   expect(await gaps(page)).toEqual([])
   expectIsolated(state, new URL(baseURL as string).origin)
+})
+
+test("体验版标签切换保留筛选与 hash 路由，且不产生真实请求", async ({
+  page,
+  baseURL,
+}) => {
+  const state = watch(page)
+  await enter(page)
+  await expect(
+    page.getByRole("heading", { name: "账户与授权", exact: true }),
+  ).toBeVisible()
+  await page
+    .getByRole("navigation", { name: "投放准备", exact: true })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  const search = page.getByPlaceholder("搜索策略名称")
+  await search.fill("标签筛选")
+  await page
+    .getByRole("navigation", { name: "广告投放", exact: true })
+    .getByRole("link", { name: "广告搭建", exact: true })
+    .click()
+  await page
+    .getByRole("tablist", { name: "已打开的页面" })
+    .getByRole("tab", { name: "投放策略", exact: true })
+    .click()
+  await expect(page).toHaveURL(/#\/tenants\/[^/]+\/strategies\?bc_id=/)
+  await expect(search).toHaveValue("标签筛选")
+  expectIsolated(state, new URL(baseURL as string).origin)
+  expect(state.errors).toEqual([])
+  expect(await gaps(page)).toEqual([])
 })

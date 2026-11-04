@@ -53,6 +53,7 @@ import {
 import { ManagementSheet } from "@/features/tenants/ManagementSheet"
 import { useTenantScope } from "@/features/tenants/TenantScope"
 import { WorkspacePageTitle } from "@/features/workspace/WorkspacePageTitle"
+import { useWorkspacePageGuard } from "@/features/workspace/WorkspaceTabs"
 import { handleApiError } from "@/lib/api-feedback"
 import { CopyPoolSheet } from "./CopyPoolSheet"
 import { StrategyError as RequestError } from "./feedback"
@@ -353,8 +354,15 @@ export function StrategyForm({
     )
       setConflict(strategy)
   }, [strategy, strategyId, readonly, completed, baseNumber])
+  const retainsPage = useWorkspacePageGuard(
+    !completed && (dirty || pending || !!unknownRequest),
+    !pending,
+  )
   const blockers = useBlocker({
-    shouldBlockFn: () => !completed && (dirty || pending || !!unknownRequest),
+    shouldBlockFn: ({ next }) =>
+      !completed &&
+      (dirty || pending || !!unknownRequest) &&
+      !retainsPage(next),
     enableBeforeUnload: !completed && (dirty || pending || !!unknownRequest),
     withResolver: true,
   })
