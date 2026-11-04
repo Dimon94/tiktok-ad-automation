@@ -1,7 +1,8 @@
 """用真实搭建回执和冻结剧目识别自定义名称，避免按字段位置猜测归属。"""
 
+from sqlalchemy import select as sa_select
 from sqlalchemy import tuple_
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col
 
 from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.ads.naming import CampaignIdentity
@@ -16,8 +17,17 @@ def built_campaign_identities(
     names = dict(campaigns)
     if not names:
         return {}
-    rows = session.exec(
-        select(ExecutionStep, BuildUnit, PreviewDrama)
+    rows = session.execute(
+        # 目录每批会重验晚到回执，仅取身份列，避免加载完整执行输入和预览正文。
+        sa_select(
+            col(ExecutionStep.tenant_id),
+            col(BuildUnit.advertiser_id),
+            col(ExecutionStep.remote_id),
+            col(BuildUnit.campaign_name),
+            col(PreviewDrama.protected_base),
+            col(PreviewDrama.title),
+            col(PreviewDrama.provider_pinyin),
+        )
         .join(
             BuildUnit,
             (col(BuildUnit.tenant_id) == ExecutionStep.tenant_id)
@@ -32,7 +42,7 @@ def built_campaign_identities(
             & (col(PreviewDrama.drama_id) == BuildUnit.drama_id),
         )
         .where(
-            ExecutionStep.kind == "CAMPAIGN",
+            col(ExecutionStep.kind) == "CAMPAIGN",
             col(ExecutionStep.remote_id).is_not(None),
             tuple_(
                 col(ExecutionStep.tenant_id),
@@ -42,15 +52,13 @@ def built_campaign_identities(
         )
     ).all()
     result: dict[EntityRef, CampaignIdentity] = {}
-    for step, unit, drama in rows:
-        assert step.remote_id is not None
-        ref = EntityRef(step.tenant_id, unit.advertiser_id, "campaign", step.remote_id)
+    for tenant, advertiser, remote_id, frozen_name, base, title, provider in rows:
+        assert remote_id is not None
+        ref = EntityRef(tenant, advertiser, "campaign", remote_id)
         # 平台另行改名后不沿用原冻结身份；外部广告继续走既有名称解析规则。
-        if names[ref] != unit.campaign_name:
+        if names[ref] != frozen_name:
             continue
-        label, title = naming_parts(
-            drama.protected_base, drama.title, drama.provider_pinyin
-        )
+        label, title = naming_parts(base, title, provider)
         if label.strip() and title.strip():
             result[ref] = CampaignIdentity(label, title, "VALID")
     return result

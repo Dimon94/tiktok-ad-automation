@@ -27,3 +27,8 @@
 - 浏览器 `strategies.spec.ts --project workspace`：53通过，包含独立字段预览、保存、刷新回读、桌面/移动端布局。
 - `tsc -p tsconfig.build.json`、正式与演示 Vite 构建通过。
 - 变更 Python 的 Ruff 检查通过；`naming.py`、`naming_identity.py` 严格 mypy（follow-imports=silent）通过。
+
+
+## 报表与经营联动追加核验
+
+自由命名的目录先到/搭建回执后到场景已补修，名称不变也会根据新到的真实回执纠正名称归组；经营回执归属已验证支持任意字段排列。验证及本地待发布边界见[联动核验](2026-11-04-flexible-report-recognition.md)。

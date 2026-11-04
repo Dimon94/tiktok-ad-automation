@@ -1,4 +1,4 @@
-"""系列名固定取前两段；备注不参与剧归组。"""
+"""历史外部系列的标准格式解析；本工具自由命名通过搭建回执读取冻结身份。"""
 
 import unicodedata
 from dataclasses import dataclass
@@ -26,7 +26,7 @@ class CampaignIdentity:
 def parse_campaign_name(name: str) -> CampaignIdentity:
     if type(name) is not str:
         raise ValueError("campaign name must be a string")
-    # 保留空段：嘉书--备注必须判为无效，不能将备注前移充当剧名。
+    # 此函数不反向猜测自由模板字段。保留历史格式空段，不能将备注前移充当剧名。
     parts = name.split("-", 2)
     if len(parts) < 2:
         return CampaignIdentity(None, None, "INVALID")

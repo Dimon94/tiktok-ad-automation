@@ -1592,12 +1592,17 @@ def test_preview_freezes_effective_structure_override(session, context, prepared
     [
         "{drama_name}-{provider_label}-{drama_id}-{YYYYMMDD}",
         "{YYYYMMDD}_{drama_id}_{provider_label}_{drama_name}",
+        "{drama_name}::{drama_id}::{provider_label}",
+        "{drama_id}/{provider_pinyin}/{provider_drama}/{YYYYMMDD}",
+        "{drama_name}{provider_label}{drama_id}",
     ],
 )
+@pytest.mark.parametrize("receipt_late", [False, True])
+@pytest.mark.parametrize("attributed", [False, True])
 def test_free_naming_survives_preview_and_directory_identity(
-    session, context, prepared, template
+    session, context, prepared, template, receipt_late, attributed
 ):
-    from datetime import UTC, datetime
+    from datetime import UTC, date, datetime
 
     from app.integrations.tiktok.contracts.ads import EntityRef
     from app.modules.ads.directory import append_campaign_name_projection
@@ -1606,7 +1611,18 @@ def test_free_naming_survives_preview_and_directory_identity(
     from app.modules.builds.execution_models import ExecutionStep
     from app.modules.builds.naming_identity import built_campaign_identities
     from app.modules.builds.preview_models import PreviewDrama
+    from app.modules.providers.models import PromotionLink, ProviderDrama
+    from app.modules.strategies.naming import naming_parts
 
+    # 使用真实形态的不同版权方标识与剧名，避免测试夹具恰好同名掩盖字段互换。
+    for link in session.exec(
+        select(PromotionLink).where(PromotionLink.tenant_id == context.tenant_id)
+    ).all():
+        title = session.get(ProviderDrama, link.drama_id).title
+        label = "{b30008/s328302/c3}" if attributed else "jiashu"
+        link.protected_base = f"{label}-{title}"
+        session.add(link)
+    session.flush()
     draft = session.get(BuildDraft, prepared)
     version = session.get(StrategyVersion, draft.strategy_version_id)
     draft.strategy_version_id = append_version(
@@ -1635,9 +1651,11 @@ def test_free_naming_survives_preview_and_directory_identity(
     ).first()
     drama = session.get(PreviewDrama, (context.tenant_id, identity, unit.drama_id))
     if template.startswith("{drama_name}"):
-        assert unit.campaign_name.startswith(drama.title + "-")
-    else:
+        assert unit.campaign_name.startswith(drama.title)
+    elif template.startswith("{YYYYMMDD}"):
         assert unit.campaign_name.split("_", 1)[0].isdigit()
+    else:
+        assert unit.campaign_name.startswith(drama.display_drama_id + "/")
     receipt = submissions.submit_preview(
         session, context=context, preview_id=identity, request_id=uuid4()
     )
@@ -1650,14 +1668,15 @@ def test_free_naming_survives_preview_and_directory_identity(
             ExecutionStep.unit_id == unit.id, ExecutionStep.kind == "CAMPAIGN"
         )
     ).one()
-    step.remote_id = "fixture-campaign"
+    remote_id = "fixture-campaign"
+    step.remote_id = None if receipt_late else remote_id
     session.add(step)
     session.add(
         AdObject(
             tenant_id=context.tenant_id,
             advertiser_id=unit.advertiser_id,
             kind="campaign",
-            remote_id=step.remote_id,
+            remote_id=remote_id,
             name=unit.campaign_name,
             ad_type="SMART_PLUS",
             observed_at=datetime.now(UTC),
@@ -1665,12 +1684,63 @@ def test_free_naming_survives_preview_and_directory_identity(
         )
     )
     session.flush()
-    ref = EntityRef(context.tenant_id, unit.advertiser_id, "campaign", step.remote_id)
+    ref = EntityRef(context.tenant_id, unit.advertiser_id, "campaign", remote_id)
+    if receipt_late:
+        original = append_campaign_name_projection(
+            session, campaign_ref=ref, raw_name=unit.campaign_name, parser_revision=1
+        )
+        step.remote_id = remote_id
+        session.add(step)
+        session.flush()
     projection = append_campaign_name_projection(
         session, campaign_ref=ref, raw_name=unit.campaign_name, parser_revision=1
     )
     assert projection.drama_name == drama.title
+    assert (
+        projection.provider_label
+        == naming_parts(drama.protected_base, drama.title, drama.provider_pinyin)[0]
+    )
     assert projection.status == "VALID"
+    from app.modules.reporting.read_models.models import CampaignNameCurrent
+
+    current = session.get(
+        CampaignNameCurrent,
+        (ref.tenant_id, ref.advertiser_id, ref.remote_id),
+        populate_existing=True,
+    )
+    assert current.drama_name == drama.title
+    replay = append_campaign_name_projection(
+        session, campaign_ref=ref, raw_name=unit.campaign_name, parser_revision=1
+    )
+    assert replay.name_revision == projection.name_revision
+    if receipt_late:
+        assert projection.name_revision == original.name_revision + 1
+    # 经营归属也直接用真实回执关联规范剧目，不受分隔符或字段顺序影响。
+    from app.modules.business.models import BusinessScope
+    from app.modules.business.source import discover_exact_mappings, mapping_catalog
+
+    scope = BusinessScope(
+        tenant_id=context.tenant_id,
+        bc_id=draft.bc_id,
+        actor_id=context.actor_id,
+        start_date=date(2026, 9, 13),
+    )
+    session.add(scope)
+    session.flush()
+    discover_exact_mappings(session, scope, [unit.advertiser_id])
+    mapped = mapping_catalog(session, context.tenant_id, draft.bc_id)[
+        unit.advertiser_id, remote_id
+    ]
+    assert mapped["drama_id"] == drama.drama_id
+    canonical = session.get(ProviderDrama, drama.drama_id)
+    assert mapped["provider_id"] == canonical.connection_id
+    wrong_bc_scope = BusinessScope(
+        tenant_id=context.tenant_id,
+        bc_id="unrelated-bc",
+        actor_id=context.actor_id,
+        start_date=date(2026, 9, 13),
+    )
+    assert discover_exact_mappings(session, wrong_bc_scope, [unit.advertiser_id]) == 0
     # 同名跨租户/账户不继承回执身份，平台改名也不继续套用原名称快照。
     assert (
         built_campaign_identities(

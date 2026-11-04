@@ -405,3 +405,46 @@ def test_external_material_metadata_roundtrip(session, directory_seed):
         "library-vid",
         "ad-inner-id",
     )
+
+
+def test_unchanged_resolved_name_keeps_identity_when_receipt_is_not_available(
+    session, directory_seed
+):
+    ref = EntityRef(
+        directory_seed.ref.tenant_id,
+        directory_seed.ref.advertiser_id,
+        "campaign",
+        "free-name-history",
+    )
+    session.add(
+        AdObject(
+            tenant_id=ref.tenant_id,
+            advertiser_id=ref.advertiser_id,
+            kind="campaign",
+            remote_id=ref.remote_id,
+            name="剧名_版权方_1234",
+            ad_type="REGULAR",
+            observed_at=datetime.now(UTC),
+            published_version=1,
+        )
+    )
+    session.flush()
+    previous = CampaignNameProjection(
+        tenant_id=ref.tenant_id,
+        advertiser_id=ref.advertiser_id,
+        campaign_remote_id=ref.remote_id,
+        raw_name="剧名_版权方_1234",
+        provider_label="嘉书",
+        drama_name="剧名",
+        status="VALID",
+        parser_revision=1,
+        name_revision=1,
+        grouping_revision=1,
+    )
+    session.add(previous)
+    session.flush()
+    replay = append_campaign_name_projection(
+        session, campaign_ref=ref, raw_name=previous.raw_name, parser_revision=1
+    )
+    assert replay.name_revision == 1 and replay.grouping_revision == 1
+    assert replay.provider_label == "嘉书" and replay.drama_name == "剧名"

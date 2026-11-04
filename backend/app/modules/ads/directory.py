@@ -184,23 +184,31 @@ def append_campaign_name_projections(
             tuple(
                 (EntityRef(t, a, "campaign", r), identities[t, a, r])
                 for t, a, r in batch
-                if (previous := previous_by_key.get((t, a, r))) is None
-                or (previous.raw_name, previous.parser_revision)
-                != (identities[t, a, r], parser_revision)
             ),
         )
         for tenant_id, advertiser_id, remote_id in batch:
             raw_name = identities[tenant_id, advertiser_id, remote_id]
             identity = built_identities.get(
                 EntityRef(tenant_id, advertiser_id, "campaign", remote_id)
-            ) or parse_campaign_name(raw_name)
+            )
             previous = previous_by_key.get((tenant_id, advertiser_id, remote_id))
-            if previous and (previous.raw_name, previous.parser_revision) == (
-                raw_name,
-                parser_revision,
+            same_name_version = previous is not None and (
+                previous.raw_name,
+                previous.parser_revision,
+            ) == (raw_name, parser_revision)
+            # 回执晚于目录时，名称未变也须纠正归属；没有新增身份依据则保留原审计，避免重复版本或身份退化。
+            if (
+                same_name_version
+                and previous is not None
+                and (
+                    identity is None
+                    or (previous.provider_label, previous.drama_name, previous.status)
+                    == (identity.provider_label, identity.drama_name, identity.status)
+                )
             ):
                 result.append(previous)
                 continue
+            identity = identity or parse_campaign_name(raw_name)
             changed = previous is not None and (
                 previous.provider_label,
                 previous.drama_name,
