@@ -60,7 +60,7 @@ from app.modules.sync_control.dispatch_envelope import enqueue_sync_dispatch
 
 logger = logging.getLogger(__name__)
 
-# 保留原实时32+后台8的总目录候补预算；实际发送受原平台账本及queued占位限制。
+# 目录读取和本地发布各有40个候补，发布排队不挤占读取；Worker和实际发送额度独立约束。
 DIRECTORY_DISPATCH_WINDOW = 40
 # 合并旧24+2+4+6个报表候补为统一物理窗口，工作类份额由持久公平游标分配。
 REPORT_DISPATCH_WINDOW = 36

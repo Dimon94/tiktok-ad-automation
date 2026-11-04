@@ -97,15 +97,19 @@ def _dispatch_directories_due(
         .scalar_one()
     ):
         return 0
-    # limit是跨扫描共享的总窗口。租约可能同时挂在晋升前后的两个工作类头上，
+    # 远端读取与本地发布各自有界，不能让慢发布的排队租约封死空闲读取Worker。
+    # limit仍限制本轮工作量；两个阶段各最多limit个有效执行，不新增Worker或HTTP额度。
+    # 租约可能同时挂在晋升前后的两个工作类头上，
     # 仍只计一个执行；终态、旧owner/旧代数及已超时Worker不继续占槽。
-    # 本地发布也占执行窗口，只是不消耗平台接口额度。
     session.flush()
-    inflight = (
-        session.connection()
+    inflight = {
+        bool(publishing): int(count)
+        for publishing, count in session.connection()
         .execute(
             text("""
-        SELECT count(DISTINCT r.id)
+        SELECT publishing,count(*) FROM (
+        SELECT DISTINCT r.id,EXISTS(SELECT 1 FROM ad_directory_page p
+            WHERE p.run_id=r.id AND p.complete IS TRUE) publishing
         FROM sync_schedule h
         JOIN sync_scope s ON s.id=h.scope_id AND s.tenant_id=h.tenant_id
         JOIN ad_directory_run r ON r.id=h.lease_execution_id AND r.tenant_id=h.tenant_id
@@ -114,12 +118,15 @@ def _dispatch_directories_due(
             AND r.owner_epoch=s.owner_epoch
             AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
             AND (r.claimed_until>:now OR (r.claimed_until IS NULL AND h.leased_until>:now))
+        ) executions GROUP BY publishing
         """),
             {"now": now},
         )
-        .scalar_one()
-    )
-    limit = max(0, limit - int(inflight))
+        .all()
+    }
+    read_remaining = max(0, limit - inflight.get(False, 0))
+    publish_remaining = max(0, limit - inflight.get(True, 0))
+    limit = min(limit, read_remaining + publish_remaining)
     if not limit:
         return 0
     # 窗口约束总在途数；提交批量只约束本事务新增数，不能混为缩小Worker窗口。
@@ -181,6 +188,15 @@ def _dispatch_directories_due(
                 )
             )
             for endpoint in endpoints:
+                if not read_remaining and not publish_remaining:
+                    break
+                phase: Literal["all", "read", "publish"] = (
+                    "all"
+                    if read_remaining and publish_remaining
+                    else "read"
+                    if read_remaining
+                    else "publish"
+                )
                 if periodic_reviews.get(tenant_id, 0) >= claim_limit + 1:
                     break  # 多接口仍共享本租户维护上限，不能扩大事务持锁扫描。
                 policy_before = budgets.peek_directory_policy(tenant_id, endpoint)
@@ -194,6 +210,7 @@ def _dispatch_directories_due(
                         independent_only=background_blocked,
                         policy=policy_before,
                         excluded=unavailable_run_ids,
+                        phase=phase,
                     )
                 )
                 if not candidates and policy_after == policy_before:
@@ -214,6 +231,7 @@ def _dispatch_directories_due(
                             independent_only=background_blocked,
                             policy=policy,
                             excluded=unavailable_run_ids,
+                            phase=phase,
                         )
                     )
                 policy.clear()
@@ -251,6 +269,7 @@ def _dispatch_directories_due(
                     independent_only=background_blocked,
                     selected=(head.scope_id, run.id),
                     endpoint=endpoint,
+                    phase=phase,
                 )
                 if claimed is None:
                     unavailable_run_ids.add(run.id)
@@ -375,6 +394,10 @@ def _dispatch_directories_due(
                         completion=run.id == completion_id,
                     )
                 count += 1
+                if terminal is None:
+                    read_remaining -= 1
+                else:
+                    publish_remaining -= 1
                 progressed = True
                 cursor.last_dispatched_at = now
                 reserve_execution_cost(
@@ -434,6 +457,7 @@ def _discover_endpoint(
     independent_only: bool,
     policy: dict[str, float],
     excluded: set[UUID],
+    phase: Literal["all", "read", "publish"] = "all",
 ) -> EndpointDiscovery:
     from copy import deepcopy
 
@@ -446,6 +470,7 @@ def _discover_endpoint(
         if (
             work_class == "directory"
             and not independent_only
+            and phase != "publish"
             and completion_opportunity(policy_after)
         ):
             row = completion_candidate(
@@ -470,6 +495,7 @@ def _discover_endpoint(
                 scan_positions=positions,
                 endpoint=endpoint,
                 excluded_run_ids=excluded,
+                phase=phase,
             )
         if row is not None:
             if row[0].physical_endpoint != directory_endpoint(row[1]):

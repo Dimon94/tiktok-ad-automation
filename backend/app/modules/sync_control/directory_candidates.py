@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 from uuid import UUID
 
 from redis import Redis
@@ -95,6 +95,8 @@ LEFT JOIN LATERAL (
  AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE')
  AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
  AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
+ AND (:phase='all' OR (:phase='publish') = EXISTS(
+     SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
  AND (NOT :independent_only OR (r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0
  OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0))
  OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
@@ -137,6 +139,7 @@ def _candidate(
     | None = None,
     excluded_run_ids: set[UUID] | None = None,
     endpoint: str | None = None,
+    phase: Literal["all", "read", "publish"] = "all",
 ) -> tuple[SyncSchedule, AdDirectoryRun] | None:
     # 发现阶段不加锁：LATERAL内的行锁会在外层排序/LIMIT前锁住整个候选集。
     # 选出ID后再按主键锁定并重新校验所有围栏；冲突回滚小保存点，继续下一候选。
@@ -149,6 +152,7 @@ def _candidate(
         "independent_only": independent_only,
         "excluded": excluded,
         "endpoint": endpoint,
+        "phase": phase,
     }
     # 先按真实服务时间取64头窄页，再检查执行资格。UUID只消除同时间的歧义，
     # 不能先按随机UUID分区后仅做页内年龄排序，否则整页外的数日旧头会被越过。
@@ -156,7 +160,8 @@ def _candidate(
     # 扫描上界跨调用冻结，避免热点头服务时间不断更新使游标永远追赶now而不回绕。
     # 未获公平工作类/后台槽仍保留完整原位置/上界，真实领取继续复验所有围栏。
     mode = "independent" if independent_only else "all"
-    scan_key = f"sync:directory-discovery-age:v3:{tenant_id}:{endpoint or 'all'}:{work_class}:{mode}"
+    # 窗口满时只发现另一阶段；过滤后的空前缀不能遮住恢复空槽的发布/读取。
+    scan_key = f"sync:directory-discovery-age:v4:{tenant_id}:{endpoint or 'all'}:{work_class}:{mode}:{phase}"
     scan_cursor = DiscoveryCursor.start(now)
     if redis is not None:
         value = redis.get(scan_key)
@@ -261,6 +266,7 @@ AND h.next_eligible_at<=:now AND (h.leased_until IS NULL OR h.leased_until<=:now
 AND {current_execution}
 AND (r.next_attempt_at IS NULL OR r.next_attempt_at<=:now)
 AND (r.claimed_until IS NULL OR r.claimed_until<=:now)
+AND (:phase='all' OR (:phase='publish') = EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
 AND (NOT :independent_only OR (r.workload='live' AND (coalesce(jsonb_array_length(r.query->'ids'),0)>0 OR coalesce(jsonb_array_length(r.query->'parent_ids'),0)>0)) OR EXISTS(SELECT 1 FROM ad_directory_page p WHERE p.run_id=r.id AND p.complete IS TRUE))
 ORDER BY coalesce(h.last_dispatched_at,h.oldest_pending_at,r.created_at),h.oldest_pending_at,r.created_at,r.id LIMIT 1 FOR UPDATE OF h,s,e,q,r SKIP LOCKED
 """.replace("{current_execution}", CURRENT_DIRECTORY_EXECUTION_SQL)
@@ -322,6 +328,7 @@ def completion_candidate(
                     "scan_cursor": scan.scope_id,
                     "scan_until": scan.until,
                     "independent_only": False,
+                    "phase": "read",
                     "excluded": list(excluded_run_ids),
                     "excluded_account": None if include_last else excluded_account,
                 },
