@@ -53,12 +53,12 @@ function BuildForm({
 }) {
   const [draftBoxOpen, setDraftBoxOpen] = useState(false)
   return (
-    <div className="flex min-w-0 flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <WorkspacePageTitle>广告搭建</WorkspacePageTitle>
-          <p className="text-sm text-muted-foreground">
-            批量输入剧目和账户，自动准备推广链接与素材。
+          <p className="text-xs text-muted-foreground">
+            填写剧目与账户，准备本次投放。
           </p>
         </div>
         <Sheet open={draftBoxOpen} onOpenChange={setDraftBoxOpen}>

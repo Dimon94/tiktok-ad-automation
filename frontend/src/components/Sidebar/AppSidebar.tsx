@@ -23,7 +23,7 @@ export function AppSidebar({
   const navigation =
     groups ?? workspaceNavigation({ manage: !!user?.is_superuser })
   return (
-    <Sidebar collapsible="icon" variant="inset">
+    <Sidebar collapsible="icon" variant="sidebar">
       <SidebarHeader>
         <WorkspaceBrand />
       </SidebarHeader>

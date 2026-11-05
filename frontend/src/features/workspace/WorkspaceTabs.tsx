@@ -279,7 +279,7 @@ export function WorkspaceTabBar() {
   return (
     <div
       ref={bar}
-      className="min-w-0 overflow-x-auto border-b bg-background px-4 py-2 lg:px-6"
+      className="min-w-0 overflow-x-auto border-b bg-background px-4 py-1 lg:px-5"
       data-slot="workspace-tabs"
     >
       <Tabs
@@ -299,7 +299,7 @@ export function WorkspaceTabBar() {
                 id={`workspace-tab-${encodeURIComponent(tab.path)}`}
                 aria-controls={`workspace-panel-${encodeURIComponent(tab.path)}`}
                 value={tab.path}
-                className="h-8 max-w-56"
+                className="h-7 max-w-56"
                 title={tab.title}
                 onKeyDown={(event) => {
                   if (event.key === "Delete") {

@@ -1,6 +1,53 @@
 import { expect, test } from "@playwright/test"
 import { BC, buildsBoundary, pickInputs, T } from "./utils/buildsBoundary"
 
+test("搭建页还原紧凑布局，侧栏收窄且宽屏不留大块空白", async ({
+  page,
+}, testInfo) => {
+  await buildsBoundary(page, { linkKind: "duiba" })
+  await page.goto(`/tenants/${T}/builds/new?bc_id=${BC}`)
+  await pickInputs(page)
+  await expect(
+    page
+      .getByRole("region", { name: "自动取链参数" })
+      .getByText("起播集 2（应用默认）"),
+  ).toBeVisible()
+  for (const width of [1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 })
+    const sidebar = page.locator('[data-slot="sidebar-container"]')
+    const config = page.getByRole("region", { name: "投放配置", exact: true })
+    const steps = page.getByRole("list", { name: "搭建步骤" })
+    const operations = page.getByRole("region", { name: "搭建操作" })
+    await expect
+      .poll(async () => Math.round((await sidebar.boundingBox())!.width))
+      .toBe(194)
+    const bounds = (await config.boundingBox())!
+    expect(bounds.height).toBeLessThanOrEqual(230)
+    expect(width - bounds.x - bounds.width).toBeLessThanOrEqual(24)
+    expect((await steps.boundingBox())!.height).toBeLessThanOrEqual(26)
+    expect((await operations.boundingBox())!.height).toBeLessThanOrEqual(70)
+    await expect(
+      page.getByRole("button", { name: "下一步：准备链接与素材" }),
+    ).toBeInViewport()
+    await page.screenshot({
+      path: testInfo.outputPath(`compact-build-${width}.png`),
+      fullPage: true,
+      animations: "disabled",
+    })
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true)
+  await page.screenshot({
+    path: testInfo.outputPath("compact-build-390.png"),
+    fullPage: true,
+    animations: "disabled",
+  })
+})
+
 test("取链参数默认只读展示来源，调整后只提交填写的字段", async ({ page }) => {
   const api = await buildsBoundary(page, { linkKind: "duiba" })
   await page.goto(`/tenants/${T}/builds/new?bc_id=${BC}`)

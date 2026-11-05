@@ -18,7 +18,7 @@ export function BuildStrategySummary({ version }: { version: VersionPublic }) {
       ? `目标 ROAS ${config.target_roas}`
       : "最高价值"
   return (
-    <div className="mt-3 flex items-start gap-4 border-t pt-3">
+    <div className="mt-2 flex items-center gap-3 border-t pt-2">
       <span className="shrink-0 text-xs text-muted-foreground">
         策略摘要 · v{version.number}
       </span>
@@ -30,7 +30,7 @@ export function BuildStrategySummary({ version }: { version: VersionPublic }) {
       </p>
       <Dialog>
         <DialogTrigger asChild>
-          <Button variant="ghost" size="sm">
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">
             查看详情
           </Button>
         </DialogTrigger>

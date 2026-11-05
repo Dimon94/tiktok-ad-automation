@@ -319,7 +319,7 @@ export function BuildInputPage({
     }
   }
   return (
-    <div className="flex w-full min-w-0 max-w-7xl flex-col gap-6">
+    <div className="flex w-full min-w-0 flex-col gap-4">
       <BuildSteps step={1} />
       <BuildGuard dirty={!leaving && (dirty || busy || !!pending)} />
       {!!error && <BuildError error={error} />}
@@ -379,9 +379,13 @@ export function BuildInputPage({
         </Alert>
       )}
       {!write && <p role="status">当前为只读角色，可以查看已保存草稿。</p>}
-      <Card className="min-w-0">
-        <CardContent>
-          <FieldGroup className="grid min-w-0 gap-6 md:grid-cols-3">
+      <Card
+        role="region"
+        aria-label="投放配置"
+        className="min-w-0 gap-3 rounded-lg py-4 shadow-none lg:gap-3 lg:py-4"
+      >
+        <CardContent className="px-5 lg:px-5">
+          <FieldGroup className="grid min-w-0 gap-x-5 gap-y-4 md:grid-cols-3 [&_[data-slot=field]]:gap-2 [&_[data-slot=field-label]]:text-xs">
             {sourceSummary && (
               <Button
                 variant="outline"
@@ -399,8 +403,13 @@ export function BuildInputPage({
                 以另一类型新建草稿
               </Button>
             )}
-            <FieldSet className="md:col-span-3">
-              <FieldLegend variant="label">素材类型</FieldLegend>
+            <FieldSet className="block md:col-span-3">
+              <FieldLegend
+                variant="label"
+                className="float-left mr-6 mb-0 leading-5 data-[variant=label]:text-xs"
+              >
+                素材类型
+              </FieldLegend>
               <RadioGroup
                 aria-label="素材类型"
                 className="flex gap-6"
@@ -537,8 +546,8 @@ export function BuildInputPage({
             </Field>
           </FieldGroup>
           {values.connection !== "other" && capabilities.data && (
-            <section className="mt-4 border-t pt-3" aria-label="自动取链参数">
-              <div className="flex items-start justify-between gap-4">
+            <section className="mt-3 border-t pt-2" aria-label="自动取链参数">
+              <div className="flex items-center justify-between gap-3">
                 <span className="shrink-0 text-xs text-muted-foreground">
                   取链参数
                 </span>
@@ -554,6 +563,7 @@ export function BuildInputPage({
                     type="button"
                     variant="ghost"
                     size="sm"
+                    className="h-6 px-2 text-xs"
                     disabled={disabled}
                     aria-expanded={
                       adjusting ||
@@ -589,11 +599,14 @@ export function BuildInputPage({
           {version.data && <BuildStrategySummary version={version.data} />}
         </CardContent>
       </Card>
-      <div className="grid min-w-0 gap-6 md:grid-cols-2">
+      <div className="grid min-w-0 gap-4 md:grid-cols-2">
         {(["drama", "account"] as const).map((kind) => (
-          <Card key={kind} className="min-w-0">
-            <CardContent className="flex min-w-0 flex-col gap-3">
-              <Field>
+          <Card
+            key={kind}
+            className="min-w-0 gap-3 rounded-lg py-4 shadow-none lg:gap-3 lg:py-4"
+          >
+            <CardContent className="flex min-w-0 flex-col gap-2 px-5 lg:px-5">
+              <Field className="gap-2">
                 <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
                   <FieldLabel htmlFor={`build-${kind}`}>
                     {kind === "drama" ? "剧目名称" : "广告账户"}
@@ -620,7 +633,7 @@ export function BuildInputPage({
                 </div>
                 <Textarea
                   id={`build-${kind}`}
-                  className="min-h-44 resize-y font-mono"
+                  className="min-h-40 resize-y font-mono"
                   spellCheck={false}
                   value={values[kind]}
                   disabled={disabled}
@@ -630,7 +643,7 @@ export function BuildInputPage({
               {kind === "drama" && (
                 <>
                   {!!values.manualLinks.length && (
-                    <p className="text-sm">
+                    <p className="text-xs text-muted-foreground">
                       已添加{" "}
                       {
                         values.drama.split("\n").filter((line) => line.trim())
@@ -655,19 +668,21 @@ export function BuildInputPage({
                 </>
               )}
               <p className="text-xs text-muted-foreground">
-                {values[kind] ? values[kind].split("\n").length : 0}{" "}
-                行（输入计数，尚未核实） ·{" "}
                 {kind === "drama"
-                  ? "每行一部完整剧名；可在“填写更多剧目信息”中补充链接与素材标识。"
+                  ? "每行一部剧，可直接粘贴一整列剧名。"
                   : "每行一个完整账户 ID 或完整名称；重复账户将自动去重。"}
               </p>
             </CardContent>
           </Card>
         ))}
       </div>
-      <Card className="sticky bottom-0 min-w-0">
-        <CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">
+      <Card
+        role="region"
+        aria-label="搭建操作"
+        className="sticky bottom-0 min-w-0 rounded-lg py-3 shadow-none lg:py-3"
+      >
+        <CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-5 lg:px-5">
+          <p className="text-xs text-muted-foreground">
             {values.drama.split("\n").filter((line) => line.trim()).length} 部剧
             ·{" "}
             {

@@ -42,15 +42,16 @@ export function WorkspaceShell({
   bcSelector,
   platform = false,
 }: WorkspaceShellProps) {
+  // 按确认原型保留紧凑的 194px 桌面导航；移动抽屉和图标折叠沿用原交互。
   return (
-    <SidebarProvider style={{ "--sidebar-width": "18rem" } as CSSProperties}>
+    <SidebarProvider style={{ "--sidebar-width": "194px" } as CSSProperties}>
       <a href="#workspace-main" className="skip-link">
         跳转到主要内容
       </a>
       <AppSidebar user={user} groups={groups} />
       <SidebarInset>
-        <header className="sticky top-0 z-20 grid shrink-0 grid-cols-1 items-center gap-x-6 rounded-t-[inherit] border-b bg-background px-4 text-sm lg:px-6 xl:grid-cols-[minmax(10rem,1fr)_auto]">
-          <div className="flex h-12 min-w-0 items-center gap-2">
+        <header className="sticky top-0 z-20 grid shrink-0 grid-cols-1 items-center gap-x-4 border-b bg-background px-4 text-sm lg:px-5 xl:grid-cols-[minmax(10rem,1fr)_auto]">
+          <div className="flex h-11 min-w-0 items-center gap-2">
             <SidebarTrigger aria-label="切换导航" className="-ml-1" />
             <Separator
               orientation="vertical"
@@ -111,7 +112,7 @@ export function WorkspaceShell({
         <div
           id="workspace-main"
           tabIndex={-1}
-          className="flex min-w-0 flex-1 flex-col gap-6 rounded-b-[inherit] bg-muted p-4 outline-none lg:p-6"
+          className="flex min-w-0 flex-1 flex-col gap-4 bg-muted/40 p-4 outline-none lg:p-5"
         >
           {children}
         </div>

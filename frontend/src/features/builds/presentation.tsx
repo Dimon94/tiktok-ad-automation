@@ -2,7 +2,6 @@ import { useBlocker } from "@tanstack/react-router"
 import { AxiosError } from "axios"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -13,6 +12,7 @@ import {
 } from "@/components/ui/dialog"
 import { useWorkspacePageGuard } from "@/features/workspace/WorkspaceTabs"
 import { handleApiError } from "@/lib/api-feedback"
+import { cn } from "@/lib/utils"
 export function BuildGuard({
   dirty,
   title = "有未保存的修改",
@@ -129,29 +129,36 @@ export const unknownOutcome = (error: unknown) =>
   !error.response ||
   error.response.status >= 500
 export function BuildSteps({ step }: { step: 1 | 2 | 3 }) {
+  // 步骤只提示当前位置，不再用整张卡片叠加默认上下留白。
   return (
-    <Card className="min-w-0">
-      <CardContent>
-        <ol
-          aria-label="搭建步骤"
-          className="grid min-w-0 grid-cols-3 gap-2 text-sm"
+    <ol
+      aria-label="搭建步骤"
+      className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-xs"
+    >
+      {["批量输入", "准备与调整", "搭建预览"].map((label, i) => (
+        <li
+          key={label}
+          aria-current={i + 1 === step ? "step" : undefined}
+          className={cn(
+            "flex items-center gap-2 after:ml-1 after:h-px after:w-4 after:bg-border last:after:hidden sm:after:w-10",
+            i + 1 === step
+              ? "font-medium text-foreground"
+              : "text-muted-foreground",
+          )}
         >
-          {["批量输入", "准备与调整", "搭建预览"].map((label, i) => (
-            <li
-              key={label}
-              aria-current={i + 1 === step ? "step" : undefined}
-              className={
-                i + 1 === step
-                  ? "font-semibold text-primary"
-                  : "text-muted-foreground"
-              }
-            >
-              {i + 1} · {label}
-            </li>
-          ))}
-        </ol>
-      </CardContent>
-    </Card>
+          <span
+            className={cn(
+              "flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px]",
+              i + 1 === step &&
+                "border-primary bg-primary text-primary-foreground",
+            )}
+          >
+            {i + 1}
+          </span>
+          {label}
+        </li>
+      ))}
+    </ol>
   )
 }
 
