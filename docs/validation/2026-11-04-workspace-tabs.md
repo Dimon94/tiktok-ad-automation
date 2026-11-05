@@ -16,4 +16,4 @@
 - TypeScript `tsc -p tsconfig.build.json --noEmit`、正式版及体验版 Vite 构建通过。Biome 检查应用及测试文件；UI 源码沿用仓库的排除约定，以类型检查、构建及实际浏览器覆盖。
 - 检查桌面和390px截图。所有业务接口由测试 HTTP 边界模拟，不作为真实 TikTok/版权方联调证据。
 
-仅本地修改与提交；未推送、未部署、未写线上数据。
+2026-11-05 已推送并发布生产；上线边界与证据见[生产发布记录](2026-11-05-workspace-tabs-production.md)。
