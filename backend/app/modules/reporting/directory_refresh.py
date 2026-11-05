@@ -94,7 +94,7 @@ def refresh_report_directory(
         frozen_route=job.frozen_route,
         advertiser_ids=job.advertiser_ids,
         now=now,
-        _single_account_report=True,
+        _report_refresh=True,
     ).created
 
 
@@ -108,11 +108,11 @@ def refresh_account_directory(
     advertiser_ids: Sequence[str],
     now: datetime | None = None,
     max_refs: int | None = None,
-    _single_account_report: bool = False,
+    _report_refresh: bool = False,
 ) -> DirectoryRefreshResult:
     """复用已发布事实补目录；已排请求充当续读断点。
 
-    单户热报入口在其事务内只调用一次；不能先走该共享围栏，再在同事务
+    报表入口在其事务内只调用一次；不能先走该共享围栏，再在同事务
     调用默认的BC排他规划，以免并发锁升级死锁。健康轮转始终用默认路径。
     """
     if not settings.ADS_SYNC_ENABLED or not advertiser_ids:
@@ -120,25 +120,24 @@ def refresh_account_directory(
     from app.modules.reporting.planner import REFRESH_MARGIN
 
     now = now or datetime.now(UTC)
-    # 单户热报只互斥同户；BC共享围栏让不同户并行，仍与跨户健康规划互斥。
+    # 报表先锁整批账户，重叠批次互斥；BC共享围栏允许不重叠批次并行。
     # 健康修复同事务会轮转多户，必须保留BC排他锁，避免账户锁反序等待。
     # 原BC排他键也保护滚动发布期间尚未退出的旧进程，不留下规划去重空窗。
-    account_report = _single_account_report and len(set(advertiser_ids)) == 1
+    report_accounts = sorted(set(advertiser_ids)) if _report_refresh else []
     with diagnostics.stage("directory_lock"):
         session.connection().execute(
             text(
                 "SELECT pg_advisory_xact_lock_shared(hashtextextended(:scope, 0))"
-                if account_report
+                if report_accounts
                 else "SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"
             ),
             {"scope": f"report-directory:{tenant_id}:{bc_id}"},
         )
-        if account_report:
+        # 与财务发布账户锁保持同一排序，输入顺序不同也不能形成账户锁环。
+        for advertiser in report_accounts:
             session.connection().execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
-                {
-                    "scope": f"report-directory-account:{tenant_id}:{bc_id}:{advertiser_ids[0]}"
-                },
+                {"scope": f"report-directory-account:{tenant_id}:{bc_id}:{advertiser}"},
             )
     with diagnostics.stage("directory_rules"):
         strict_accounts = rule_accounts(

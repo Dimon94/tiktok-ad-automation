@@ -4473,3 +4473,8 @@ bbda3c12已上线并核验全部角色/schema/配置，Jenkins恢复；正常收
 ## 2026-11-05 热报补目录账户并行（候选验证）
 
 用户要求继续提速。实时热报directory_lock阶段230次累计290.6秒/p955.82秒，真实多连接复现不同账户被同BC排他规划锁阻塞。单户热报改原BC shared→账户exclusive，health/default/多户保留BCexclusive；同户去重、新旧滚动、健康跨户顺序保持。没有资源/额度/结构或开关变化，后台仍8。新增9并发例通过；相关111例110通过1个精确旧源同样失败的陈旧identity断言，已按既有合同修测试并定点复验。Ruff通过、mypy同5旧项无新增、独立审查无阻断；待精确生产发布及效果观察。详见[锁粒度验证](validation/2026-11-05-report-directory-lock-scope.md)。
+
+
+## 2026-11-05 整批热报目录锁（候选）
+
+faf单户修复已完成生产验收，但首窗目录规划等待未改善，不称成功。进一步140次高峰锁采样确认61个BC排他等待采样行均为持ad_day发布锁的报表进程；249个热报中多户约89%，_split仅异常分支使用，已纠正“常规拆户”误判。所有报告改BC shared→整批账户全排序exclusive，health/default保留BCexclusive。真实不重叠双户在faf先失败；反向重叠批次及旧版/health围栏验证中。资源/额度/结构不变，后台仍8；详见[整批规划锁](validation/2026-11-05-report-batch-directory-lock.md)。

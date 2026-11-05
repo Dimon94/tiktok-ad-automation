@@ -1,3 +1,9 @@
+## 2026-11-05 热报目录账户并行已上线
+
+当前精确应用`fafccb43d2c2ebd6e3ef602fa172d0083cd28b12`/schema0101。11角色Ready、9Celery、唯一Beat、精确镜像/配置/四开关/DB池/HTTPS、实际8与typed8/prefetch12均验收，原资源/策略/退出宽限保持；发布锁释放，CI恢复。单户热报BC shared→账户exclusive，health/default/多户保留BCexclusive，新旧版本互斥无去重空窗。没有迁移、配置/额度/Worker扩容或新备份/恢复演练；固定窗口业务结果见[验证与观察](../validation/2026-11-05-report-directory-lock-scope.md)。
+
+以下保留历史阶段，旧“当前/最新”以本段精确版本为准。
+
 ## 2026-11-05 工作台标签生产发布完成
 
 应用 `4d51143b9a00f9e066cca31cd556fcf40593f93c` 已上线，schema仍0101。11角色Ready、9Worker、唯一Beat、精确镜像/有效配置/四开关/数据库池/HTTPS及实际8/typed8/prefetch12验收通过，原资源/策略保持，独占锁已释放。线上隔离体验版标签交互验证通过，不代表真实广告/OAuth联调。未备份或恢复演练。详见[本轮生产发布](../validation/2026-11-05-workspace-tabs-production.md)。
