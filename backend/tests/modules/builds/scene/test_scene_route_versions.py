@@ -313,7 +313,7 @@ def test_scene_formats_and_compiler_versions_never_share_cache(
             locally_operable=True,
         )
         assert not scene.supported
-        assert "carousel_format_unverified" in scene.reason_codes
+        assert "carousel_format_unverified" not in scene.reason_codes
         assert scene.creative_fields["creative_info"]["ad_format"] == "CAROUSEL_ADS"
     basis = scene_scope_basis(route=case["route"], business={}, media_kind="CAROUSEL")
     assert basis != scene_scope_basis(

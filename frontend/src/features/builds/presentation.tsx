@@ -176,8 +176,6 @@ export const reasonLabels: Record<string, string> = {
     "音乐：可提交；将在提交后、发送前核验目标账户的原选曲目。",
   carousel_music_read_failed: "音乐：读取暂时失败，重试将继续核验原曲目。",
   carousel_ads_unavailable: "图片：此账户的所有图片广告均已排除。",
-  carousel_format_unverified:
-    "账户：当前场景的图片轮播资格尚未核验，不能提交。",
   identity_unavailable: "身份：请检查当前账户可用身份并重新准备。",
   image_rules_not_applied: "图片：请应用当前组合规则。",
   image_composition_pending: "图片：组合仍在准备中。",

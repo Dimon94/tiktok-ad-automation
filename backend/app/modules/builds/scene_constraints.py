@@ -6,7 +6,7 @@ limits its English copy pool to 1..100 characters; it is not a TikTok quota.
 
 from typing import Any
 
-REVISION = "minis-unit-constraints-2026-11-04-v6"
+REVISION = "minis-unit-constraints-2026-11-05-v7"
 PLATFORM_COPY_LENGTH_LIMIT: int | None = None
 COPY_LENGTH_LIMIT = 100
 COPY_LENGTH_MEASUREMENT = "characters"
@@ -17,9 +17,8 @@ def constraints_for(
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     # 预算是本地参数规则；历史广告组不是账户资格，新账户也能直接配置预算。
     reasons: list[str] = []
-    if media_kind == "CAROUSEL":
-        # 单账户历史创建不能证明本账户/本合同的轮播资格，待独立格式证据后开放。
-        reasons.append("carousel_format_unverified")
+    # 图片轮播允许直接提交，由 TikTok 创建接口判定场景资格；
+    # 图片完整性、目标账户素材和音乐检查仍由各自准备/执行链路处理。
     minimum, maximum, precision = "50", "10000000", "0.01"
     constraints: dict[str, Any] = {
         "revision": REVISION,

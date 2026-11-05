@@ -551,7 +551,7 @@ def test_carousel_preview_uses_frozen_units_through_async_expansion(
         "read_scene_context",
         lambda *a, **k: SceneContext(
             supported=False,
-            reason_codes=("carousel_format_unverified",),
+            reason_codes=("identity_unavailable",),
             media_kind="CAROUSEL",
             creative_limit=50,
             capability_revision="test",
@@ -617,7 +617,7 @@ def test_carousel_preview_uses_frozen_units_through_async_expansion(
         ).all()
     ] == frozen_music
     unit = session.exec(select(BuildUnit).where(BuildUnit.preview_id == identity)).one()
-    assert "carousel_format_unverified" in unit.reason_codes
+    assert "identity_unavailable" in unit.reason_codes
     groups = previews.get_frozen_groups(session, context=context, unit_id=unit.id).items
     from app.models import User
     from app.modules.builds.api import frozen_ads
