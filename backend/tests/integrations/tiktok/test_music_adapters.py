@@ -273,16 +273,31 @@ def test_strict_item_schema(music_sdk, change):
         b'{"code":0,"code":0,"data":{}}',
         json.dumps(envelope(code=False)).encode(),
         json.dumps(envelope(data={"list": [], "page_info": {}})).encode(),
-        json.dumps(envelope([music_row(), music_row()])).encode(),
         json.dumps(envelope([], total=101)).encode(),
     ],
 )
-def test_strict_envelope_page_and_duplicates(music_sdk, raw):
+def test_strict_envelope_and_page(music_sdk, raw):
     opened, replies, _, budget, _, _ = music_sdk
     replies.append(raw)
     with pytest.raises(DomainError) as error:
         opened().search(advertiser_id="123", keyword="k", cursor=None, budget=budget)
     assert error.value.code == "unsupported_music_schema"
+
+
+@pytest.mark.parametrize("method", ["search", "recommend", "read"])
+def test_music_material_duplicates_are_deduplicated_after_page_validation(
+    music_sdk, method
+):
+    opened, replies, _, budget, _, _ = music_sdk
+    replies.append(envelope([music_row(), music_row()]))
+    args = {
+        "search": {"keyword": "letter", "cursor": None},
+        "recommend": {"image_urls": ("https://images.test/1", "https://images.test/2")},
+        "read": {"music_ids": ("music-1",)},
+    }[method]
+    result = getattr(opened(), method)(advertiser_id="123", budget=budget, **args)
+    assert len(result.items) == 1 and result.items[0].music_id == "music-1"
+    assert result.next_cursor is None
 
 
 def test_budget_mismatch_and_expiry_prevent_http(music_sdk):

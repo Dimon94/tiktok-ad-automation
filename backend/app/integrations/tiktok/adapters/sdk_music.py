@@ -117,6 +117,15 @@ def _item(row: object) -> MusicItem:
     )
 
 
+def _distinct_music(rows: tuple[MusicItem, ...]) -> tuple[MusicItem, ...]:
+    # 平台可按不同素材记录重复返回同一曲目；展示/选曲使用 music_id，
+    # 去重在原始分页验证之后进行，不能用去重数量改写平台总数和游标。
+    unique: dict[str, MusicItem] = {}
+    for item in rows:
+        unique.setdefault(item.music_id, item)
+    return tuple(unique.values())
+
+
 @contextmanager
 def _bounded_error_responses(client: Any) -> Iterator[None]:
     """在 SDK 创建 ApiException 前丢弃非成功正文，避免其 .data 无界读取。"""
@@ -229,7 +238,7 @@ class SDKMusicOperations:
             advertiser_id, "SEARCH_BY_KEYWORD", {"keyword": keyword}, page, budget
         )
         return MusicPage(
-            result.rows,
+            _distinct_music(result.rows),
             self._cursor(context, page + 1) if page < result.total_pages else None,
             result.evidence,
         )
@@ -261,7 +270,10 @@ class SDKMusicOperations:
             budget,
         )
         return MusicPage(
-            result.rows, None, result.evidence, truncated=result.total_pages > 1
+            _distinct_music(result.rows),
+            None,
+            result.evidence,
+            truncated=result.total_pages > 1,
         )
 
     def read(
@@ -298,7 +310,7 @@ class SDKMusicOperations:
                 "music_read_incomplete", effect="UNKNOWN", evidence=result.evidence
             )
         # 缺失 ID 保持缺失；调用方不能用曲名或历史 URL 补出平台未返回的音乐。
-        return MusicPage(result.rows, None, result.evidence)
+        return MusicPage(_distinct_music(result.rows), None, result.evidence)
 
     def _read(
         self,
@@ -435,8 +447,6 @@ class SDKMusicOperations:
             ):
                 raise ValueError("unexpected page")
             rows = tuple(_item(row) for row in data["musics"])
-            if len({row.music_id for row in rows}) != len(rows):
-                raise ValueError("duplicate identity")
             return MaterialPage(
                 rows,
                 page,

@@ -206,7 +206,7 @@ export function ImageBatchConfig({
                     ? "生成失败，原结果保留，请重新查看生成结果后重试。"
                     : activeRun.status === "CANCELLED"
                       ? "已取消生成，原结果保留。"
-                      : "轮播已生成，正在准备音乐。"}
+                      : "轮播已生成，请核对下方配乐状态。"}
                 {working && (
                   <Button
                     variant="outline"

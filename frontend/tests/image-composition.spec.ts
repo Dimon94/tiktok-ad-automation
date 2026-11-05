@@ -987,6 +987,7 @@ for (const failure of [
 ] as const) {
   test(`轮播缩略图有界授权回退 ${failure}`, async ({ page }) => {
     await imageBoundary(page)
+    let recovered = false
     const reads: string[] = [],
       writes: string[] = []
     await page.route("**/materials/**", async (route) => {
@@ -1010,7 +1011,7 @@ for (const failure of [
                 bc_id: BC,
                 image_id: "platform-image",
                 url:
-                  failure === "remote-url"
+                  failure === "remote-url" && !recovered
                     ? "/missing-remote.png"
                     : "/thumbnail.svg",
               },
@@ -1046,6 +1047,18 @@ for (const failure of [
     }
     expect(reads.filter((v) => v === "original")).toHaveLength(3)
     expect(reads.filter((v) => v === "remote")).toHaveLength(3)
+    if (failure === "remote-url") {
+      recovered = true
+      await sheet
+        .getByRole("button", { name: "重试图片 1 预览", exact: true })
+        .click()
+      const image = sheet.getByRole("img", { name: "图片 1", exact: true })
+      await expect
+        .poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth))
+        .toBe(80)
+      expect(reads.filter((v) => v === "original")).toHaveLength(3)
+      expect(reads.filter((v) => v === "remote")).toHaveLength(4)
+    }
     expect(writes).toEqual([])
   })
 }

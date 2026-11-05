@@ -729,6 +729,9 @@ def _expand_unit(
             raise DomainError(
                 "account_not_in_bc", "所选冻结连接不包含该账户，请重新准备草稿"
             )
+        media_kind = preview_contract(
+            session, tenant_id=preview.tenant_id, preview_id=preview.id
+        ).media_kind
         try:
             verify_route(
                 session,
@@ -760,9 +763,7 @@ def _expand_unit(
                 link_id=drama.link_id,
                 route=route,
                 selected_identity=p.get("selected_identity"),
-                media_kind=preview_contract(
-                    session, tenant_id=preview.tenant_id, preview_id=preview.id
-                ).media_kind,
+                media_kind=media_kind,
             )
         except DomainError as error:
             if error.code not in {
@@ -780,6 +781,7 @@ def _expand_unit(
                 supported=False,
                 reason_codes=(error.code,),
                 capability_revision="unavailable",
+                media_kind=media_kind,
             )
         scene = apply_targeting(
             scene, config.targeting, p.get("targeting_region_codes", [])
@@ -807,7 +809,8 @@ def _expand_unit(
             unit,
             [
                 *drama.reason_codes,
-                *scene_reasons(config, scene, account.currency),
+                # 校验使用冻结预览的素材类型；图片场景不能落入默认 VIDEO 比较。
+                *scene_reasons(config, scene, account.currency, media_kind=media_kind),
                 *name_reasons(name, "campaign", unit.scene_snapshot),
             ],
         )

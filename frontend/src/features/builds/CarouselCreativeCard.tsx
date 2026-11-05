@@ -78,10 +78,27 @@ export function ImageThumb({
       }}
     />
   ) : (
-    <span className="text-xs text-muted-foreground">
-      图片 {index + 1}
-      {query.isError || failed ? " · 预览不可用" : " · 加载中"}
-    </span>
+    <div className="flex flex-col items-start gap-1">
+      <span className="text-xs text-muted-foreground">
+        图片 {index + 1}
+        {query.isError || failed ? " · 预览不可用" : " · 加载中"}
+      </span>
+      {(query.isError || failed) && (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`重试图片 ${index + 1} 预览`}
+          onClick={() => {
+            // 原件清理或平台短暂失败后，由用户显式重读当前 BC 的平台副本。
+            setFailed(false)
+            if (!remoteOnly) setRemoteOnly(true)
+            else void query.refetch()
+          }}
+        >
+          重试预览
+        </Button>
+      )}
+    </div>
   )
 }
 
