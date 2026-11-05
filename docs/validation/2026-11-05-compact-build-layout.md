@@ -19,3 +19,10 @@
 ## 发布范围
 
 纯前端布局修正，无后端、数据库/任务/依赖/配置/开关/资源变化。沿用已授权生产改造的发布范围；准备精确版本镜像更新，保留原正常退出宽限、实际8/typed8/prefetch12和全部原配置，不重复后端全量测试，不新建备份或恢复演练。实际部署与公网核验完成后补充结果，以上本地验证不冒充生产验收。
+
+## 生产已完成
+
+- 2026-11-05 06:54:54 UTC，应用3ab1dd800fba8f63ebb3c858b602af633baee0b7已替换c209df37；源码已推送GitHub/公司main。AMD64镜像index为sha256:18aac8e3a4c78aa3e592bc9cdaeef2f115df880492d0ebc00d206b3b900f5339。
+- 纯前端修正采用正常退出宽限更新，未整批停服；reporting临时零surge后已恢复精确原strategy；后台两次active/reserved/scheduled/consumer全零、旧Pod退出后再起新版，typed8/prefetch12及实际8保持。11角色Ready、9Celery、唯一Beat、镜像摘要、有效环境/注册摘要、四开关/数据库池、schema0101及HTTPS核验通过，完整部署模板仅镜像变化，锁已释放。
+- 06:56:07 UTC公网实读新BuildInputPage-cTHmG6fq.js及_layout-B75Un60m.js均200；后者含实际194px导航宽度。保留剧目补充字段接口合同；9个节点自然工作恢复，不把Celery续步计数当成独立业务完成量。114项本地页面回归和已查看的桌面/手机真实渲染截图与本次构建源码一致。
+- 无数据库迁移/队列清理/配置与资源或额度修改，未新建备份或恢复演练；验收未主动创建广告或推广链接。私有证据在.runtime/compact-layout-20261105/production/。Jenkins按本批原状态恢复的结果以jenkins-restored.json核对；后续文档提交不改变上述实际运行版本。
