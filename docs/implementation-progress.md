@@ -1,3 +1,10 @@
+## 2026-11-05 广告搭建录入与素材标识（本地完成，未发布）
+
+- 按用户确认第二版原型改造：显式素材类型单选、紧凑取链参数及策略摘要、剧名与账户直接粘贴、五列“填写更多剧目信息”大弹窗；删除两段冗余说明。
+- 素材标识独立于推广链接保存，视频/图片统一按标识字面匹配，空值按剧名，零结果不回退；保留草稿恢复、重排、补链和图片快照依据。
+- 88 项后端、6 项纯函数及 135 个不同的相关页面用例通过，正式/演示构建、类型与格式检查通过；另 1 项预览守卫标题旧断言已在未改动的 HEAD 前端复现失败，未计为通过。独立审查无 Critical/Important。
+- 无新增数据库列，输入 JSON 合同有变化，发布需 API/Worker 同版本切换；本轮未推送/发布/线上写入。详见 [实现与验证](validation/2026-11-05-build-input-grid.md) 及 [设计](superpowers/specs/2026-11-05-build-input-grid-design.md)。本轮采用聚焦本地提交，提交主题 `builds: streamline drama inputs and match material identifiers`。
+
 ## 2026-11-04 同步发布恢复及后续领取批量调整
 
 - b9统一发布后原5个大素材批次均COMPLETE/完整coverage/正式发布版本，原5报表14桶也全发布；固定窗pub WAIT0、READY步骤51→602（非canonical行数或整体倍数），SDK仍未持续上限。精确交接、严格窗口纠正和实际回读见[发布预算结果](validation/2026-11-04-material-publish-statement-budget.md)。

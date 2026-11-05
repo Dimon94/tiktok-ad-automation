@@ -3414,6 +3414,10 @@ export type ImageDramaSummary = {
      */
     title: string;
     /**
+     * Material Identifier
+     */
+    material_identifier?: string;
+    /**
      * First Line
      */
     first_line: number;
@@ -4681,7 +4685,11 @@ export type ManualLinkInput = {
     /**
      * Url
      */
-    url: string;
+    url?: string;
+    /**
+     * Material Identifier
+     */
+    material_identifier?: string;
     /**
      * External Drama Id
      */

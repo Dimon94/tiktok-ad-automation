@@ -1,5 +1,5 @@
-import type { ColumnDef } from "@tanstack/react-table"
 import { useQuery } from "@tanstack/react-query"
+import type { ColumnDef } from "@tanstack/react-table"
 import { useEffect, useRef, useState } from "react"
 import {
   BuildsService,
@@ -7,18 +7,17 @@ import {
   type DraftInputPublic,
   type DraftSummary,
 } from "@/client"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { FilterSelect } from "@/features/accounts/presentation"
 import { Pager, ServerTable, useCursorPage } from "@/features/tenants/shared"
 import { buildKey } from "./api"
 import { canChooseDrama, DramaInputSheet } from "./DramaInputSheet"
+import { imageApi, imageKey, imagePath } from "./imageCompositionApi"
+import { useImageCursorPage } from "./imageWorkspaceState"
 import { ManualLinkSheet } from "./ManualLinkSheet"
 import { materialWaitingLabel } from "./preparationProgress"
 import { BuildReason, BuildStatus } from "./presentation"
-
-import { useImageCursorPage } from "./imageWorkspaceState"
-import { imageApi, imageKey, imagePath } from "./imageCompositionApi"
 
 function linkLabel(input: DraftInputPublic, status: DraftSummary["status"]) {
   const progress = input.preparation
@@ -210,7 +209,19 @@ export function BuildDramaTable({
                   />
                 ),
               },
-              { header: "剧目", accessorKey: "title" },
+              {
+                header: "剧目",
+                cell: ({ row }) => (
+                  <div className="flex flex-col gap-1">
+                    <span>{row.original.title}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {row.original.material_identifier
+                        ? `按素材标识：${row.original.material_identifier}`
+                        : "按剧名匹配"}
+                    </span>
+                  </div>
+                ),
+              },
               {
                 header: "规则来源",
                 cell: ({ row }) =>
@@ -346,9 +357,22 @@ export function BuildDramaTable({
                 cell: ({ row }) => {
                   const drama = row.original.preparation?.drama
                   // 未开始匹配与匹配后零素材是两种结果。
-                  return drama && drama.material_state !== "pending"
-                    ? drama.matched_count
-                    : "—"
+                  const identifier =
+                    row.original.manual_link?.material_identifier
+                  const count =
+                    drama && drama.material_state !== "pending"
+                      ? drama.matched_count
+                      : "—"
+                  return (
+                    <div className="flex flex-col gap-1">
+                      <span>{count}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {identifier
+                          ? `按素材标识：${identifier}`
+                          : "按剧名匹配"}
+                      </span>
+                    </div>
+                  )
                 },
               },
               {

@@ -61,10 +61,13 @@ export async function loadDraftInputs(
     } while (cursor)
     if (kind === "drama")
       output.manualLinks = rows
-        .filter((row) => row.manual_link?.url)
+        .filter((row) => Object.keys(row.manual_link || {}).length > 0)
         .map((row) => ({
           title: row.raw_text.trim(),
-          url: String(row.manual_link?.url),
+          url: String(row.manual_link?.url || ""),
+          material_identifier: String(
+            row.manual_link?.material_identifier || "",
+          ),
           external_drama_id: String(row.manual_link?.external_drama_id || ""),
           protected_base: String(row.manual_link?.protected_base || ""),
         }))

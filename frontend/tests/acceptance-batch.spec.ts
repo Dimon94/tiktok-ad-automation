@@ -21,7 +21,11 @@ type Scenario = {
     adgroups: number
     ads: number
     daily_budget: number
-    excluded: { campaign_count: number; adgroup_count: number; ad_count: number }
+    excluded: {
+      campaign_count: number
+      adgroup_count: number
+      ad_count: number
+    }
     excluded_budget: number
   }
 }
@@ -128,7 +132,9 @@ async function prepare(
   providerKind: "jiashu" | "wangyan" = "jiashu",
 ) {
   await inputs(page, scope, providerKind)
-  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await page
+    .getByRole("button", { name: "下一步：准备链接与素材", exact: true })
+    .click()
   await expect(
     page.getByRole("heading", { name: "准备与调整", exact: true }),
   ).toBeVisible()
@@ -188,7 +194,9 @@ test("真实 API 两剧多户：按规模冻结系列/广告组/广告与预算�
     scope.expected.adgroups,
     scope.expected.ads,
   ])
-  expect(summary.daily_budget_sum).toMatch(budgetPattern(scope.expected.daily_budget))
+  expect(summary.daily_budget_sum).toMatch(
+    budgetPattern(scope.expected.daily_budget),
+  )
   for (const width of [1440, 1280, 390]) {
     await page.setViewportSize({ width, height: 900 })
     await expect(
@@ -234,7 +242,9 @@ test("真实 API 两剧多户：按规模冻结系列/广告组/广告与预算�
     adgroup_count: scope.expected.adgroups,
     ad_count: scope.expected.ads,
   })
-  expect(task.daily_budget_sum).toMatch(budgetPattern(scope.expected.daily_budget))
+  expect(task.daily_budget_sum).toMatch(
+    budgetPattern(scope.expected.daily_budget),
+  )
   await page.reload()
   await expect(
     page.getByRole("heading", {
@@ -281,7 +291,9 @@ test("真实草稿编辑使旧预览失效；丢失回执按原请求恢复并�
   )
   expect((await obsolete.json()).status).toBe("OBSOLETE")
   await page.getByRole("button", { name: "返回调整", exact: true }).click()
-  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await page
+    .getByRole("button", { name: "下一步：准备链接与素材", exact: true })
+    .click()
   const draftId = /build-drafts\/([^?]+)/.exec(new URL(page.url()).pathname)![1]
   await pumpUntil(request, scope, "preparation", async () => {
     const response = await request.get(
@@ -447,7 +459,9 @@ test("真实 API 网眼入口：正式归因、完整账户编号与按规模冻
     scope.expected.ads,
   ])
   expect(summary.blocked_count).toBe(0)
-  expect(summary.daily_budget_sum).toMatch(budgetPattern(scope.expected.daily_budget))
+  expect(summary.daily_budget_sum).toMatch(
+    budgetPattern(scope.expected.daily_budget),
+  )
   const token = await page.evaluate(() => localStorage.getItem("access_token"))
   const response = await request.get(
     `/api/tenants/${scope.tenant_id}/build-previews/${previewId}/units?limit=50`,

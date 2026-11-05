@@ -64,6 +64,7 @@ from app.modules.strategies.models import Strategy
 from app.modules.strategies.service import get_version_record
 from app.modules.tenants.permissions import require_tenant
 
+from .drama_details import material_match_text
 from .image_composition_models import DraftCreativeUnitItem
 from .manual_links import materialize, resolve_provider, validate_manual_links
 from .video_units import add_video_unit, delete_video_units
@@ -403,7 +404,7 @@ def prepare_draft(
     for row in input_rows:
         if row.status in {"empty", "duplicate"}:
             lines.append("")
-        elif row.manual_link or provider.kind == "other":
+        elif row.manual_link.get("url") or provider.kind == "other":
             materialize(session, context, draft, row)
             lines.append("")
         else:
@@ -1033,7 +1034,7 @@ def _links_page(
                 DraftInput.line_no == result.line_no,
             )
         ).one()
-        if row.manual_link:
+        if row.manual_link.get("url"):
             continue  # 已补链输入不接受旧版权方结果覆盖。
         row.status, row.reason_code, row.provider_input_id = (
             result.status,
@@ -1121,7 +1122,7 @@ def _materials_page(
         session,
         context=context,
         bc_id=draft.bc_id,
-        title=drama.title,
+        title=material_match_text(session, draft, drama),
         cursor=drama.material_cursor,
     )
     for item in page.items:

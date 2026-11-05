@@ -226,6 +226,7 @@ class ImageDramaSummary(BaseModel):
     drama_id: UUID
     link_id: UUID
     title: str
+    material_identifier: str = ""
     first_line: int
     material_state: str
     matched_count: int

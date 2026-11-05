@@ -129,7 +129,7 @@ export function DemoShell({
   const pageTour = onLogin ? null : pageTourFor(pathname)
 
   // 自由体验时，进入“广告搭建”页自动填好示例的版权方、应用、策略、剧目和账户，
-  // 体验者直接点“解析并准备”即可；跟着引导时由引导一步步带着选，不自动填。
+  // 体验者直接点“下一步：准备链接与素材”即可；跟着引导时由引导一步步带着选，不自动填。
   const touring = useRef(false)
   touring.current = !!active
   useEffect(() => {
@@ -152,7 +152,7 @@ export function DemoShell({
           toast.success("已自动填好示例数据", {
             position: "top-center",
             description:
-              "2 部示例剧 × 2 个示例账户，版权方、应用和策略也已选好。直接点“解析并准备”继续。",
+              "2 部示例剧 × 2 个示例账户，版权方、应用和策略也已选好。直接点“下一步：准备链接与素材”继续。",
           })
       })
     }, 300)

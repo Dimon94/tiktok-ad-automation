@@ -35,6 +35,9 @@ WITH dramas AS (
  FROM draft_creative_unit_item WHERE tenant_id=:tenant AND draft_id=:draft AND generation=:generation GROUP BY drama_id
 ), summaries AS (
  SELECT d.drama_id,d.link_id,d.title,d.first_line,d.material_state,d.matched_count,
+ coalesce((SELECT i.manual_link->>'material_identifier' FROM draft_input i
+  WHERE i.tenant_id=d.tenant_id AND i.draft_id=d.draft_id AND i.kind='drama'
+  AND i.line_no=d.first_line),'') material_identifier,
  coalesce(c.candidate_count,0) candidate_count,coalesce(c.excluded_count,0) excluded_count,coalesce(c.unused_count,0) unused_count,
  coalesce(u.unit_count,0) unit_count,coalesce(u.ready_count,0) ready_count,coalesce(u.selection_count,0) selection_count,
  coalesce(u.pending_count,0) pending_count,coalesce(u.failed_count,0) failed_count,coalesce(u.protected_count,0) protected_count,

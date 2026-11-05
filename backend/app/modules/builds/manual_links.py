@@ -96,6 +96,11 @@ def validate_manual_links(
     for raw in values:
         try:
             value = ManualLinkInput.model_validate(raw)
+            if any(ord(c) < 32 for c in value.material_identifier):
+                raise ValueError
+            value.material_identifier = value.material_identifier.strip()
+            value.external_drama_id = value.external_drama_id.strip()
+            value.protected_base = value.protected_base.strip()
             parts = urlsplit(value.url)
             path = parts.path.rstrip("/").split("/")
             mini_values = parse_qs(parts.query, keep_blank_values=True).get("minis_id")
@@ -109,16 +114,24 @@ def validate_manual_links(
                 or not lines[value.line_no - 1].strip()
                 or value.line_no in result
                 or any(c.isspace() or ord(c) < 32 for c in value.url)
-                or parts.scheme != "https"
-                or parts.hostname not in {"www.tiktok.com", "tiktok.com"}
-                or parts.username
-                or parts.password
-                or parts.port not in {None, 443}
-                or len(path) != 3
-                or path[1] != "minis"
-                or not path[2]
+                or (
+                    value.url
+                    and (
+                        parts.scheme != "https"
+                        or parts.hostname not in {"www.tiktok.com", "tiktok.com"}
+                        or parts.username
+                        or parts.password
+                        or parts.port not in {None, 443}
+                        or len(path) != 3
+                        or path[1] != "minis"
+                        or not path[2]
+                    )
+                )
                 or any(
-                    ord(c) < 32 for c in value.external_drama_id + value.protected_base
+                    ord(c) < 32
+                    for c in value.external_drama_id
+                    + value.protected_base
+                    + value.material_identifier
                 )
             ):
                 raise ValueError
@@ -127,7 +140,7 @@ def validate_manual_links(
                 "manual_link_invalid",
                 "请检查剧目行号，并填写完整的 HTTPS TikTok Minis 推广链接",
             ) from None
-        if kind == "wangyan" and not value.protected_base.strip():
+        if kind == "wangyan" and value.url and not value.protected_base.strip():
             raise DomainError(
                 "manual_attribution_required",
                 "网眼手动链接需同时填写版权方提供的归因名称",
@@ -140,7 +153,7 @@ def materialize(
     session: Session, context: TenantContext, draft: BuildDraft, row: DraftInput
 ) -> None:
     value = row.manual_link
-    if not value:
+    if not value.get("url"):
         row.status, row.reason_code = "failed", "manual_link_required"
         row.provider_input_id = None
         row.candidates = []
@@ -305,6 +318,10 @@ def save_manual_link(
         lines = [""] * row.line_no
         lines[-1] = row.raw_text
         value = validate_manual_links([link], lines, provider.kind)[row.line_no]
+        if not value["url"]:
+            raise DomainError("manual_link_required", "请补充推广链接")
+        # 第二步补链只修改链接信息，保留首次录入的素材匹配标识。
+        value["material_identifier"] = row.manual_link.get("material_identifier", "")
         if row.manual_link == value:
             return draft.revision
         if row.drama_id:

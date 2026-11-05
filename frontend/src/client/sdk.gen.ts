@@ -2768,7 +2768,7 @@ export class BuildsService {
     /**
      * Refresh Minis Catalog
      *
-     * 强制过期该 draft 账户的小程序目录缓存，下次查询时会重新拉取。
+     * 显式过期账户场景目录缓存，下一轮准备重新拉取；普通查询只读本地。
      */
     public static refreshMinisCatalog<ThrowOnError extends boolean = true>(options: Options<buildsRefreshMinisCatalogData, ThrowOnError>) {
         return (options.client ?? client).post<buildsRefreshMinisCatalogResponses, buildsRefreshMinisCatalogErrors, ThrowOnError>({

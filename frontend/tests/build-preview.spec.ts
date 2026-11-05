@@ -486,7 +486,9 @@ for (const width of [1440, 900, 390])
         fullPage: true,
         animations: "disabled",
       })
-    await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+    await page
+      .getByRole("button", { name: "下一步：准备链接与素材", exact: true })
+      .click()
     await expect(
       page.getByRole("heading", { name: "准备与调整", exact: true }),
     ).toBeVisible()

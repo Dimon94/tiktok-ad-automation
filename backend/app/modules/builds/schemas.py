@@ -53,7 +53,9 @@ class DeliveryConfig(BaseModel):
 class ManualLinkInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     line_no: int = Field(ge=1, le=1000, strict=True)
-    url: str = Field(min_length=1, max_length=8192)
+    # 补充信息可独立于链接；URL 非空才表示用户提供了手动推广链接。
+    url: str = Field(default="", max_length=8192)
+    material_identifier: str = Field(default="", max_length=1000)
     # 用户提供的版权方编号，可按展示 ID 关联已有剧目；不要求用户填写技术 ID。
     external_drama_id: str = Field(default="", max_length=255)
     protected_base: str = Field(default="", max_length=1000)

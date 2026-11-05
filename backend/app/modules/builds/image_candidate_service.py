@@ -15,6 +15,8 @@ from app.modules.builds.models import BuildDraft, DraftPreparation
 from app.modules.materials.models import MaterialFile
 from app.modules.materials.repository import material_visible
 
+from .drama_details import material_match_text
+
 CANDIDATE_PAGE_SIZE = 100
 
 
@@ -42,7 +44,11 @@ def start_candidate_snapshot(session, scope, draft, *, preparation_id=None):
         source_snapshot_id=state.snapshot_id,
         route=scope.route.model_dump(mode="json"),
         dramas=[
-            {"drama_id": str(d.drama_id), "title": d.title}
+            # 快照 title 仅用于文件名检索，冻结实际依据；展示剧名仍读取 DraftDrama。
+            {
+                "drama_id": str(d.drama_id),
+                "title": material_match_text(session, draft, d),
+            }
             for d in _dramas(session, scope)
         ],
         repair_after=datetime.now(UTC) + timedelta(seconds=120),

@@ -222,7 +222,7 @@ def inputs_page(
 
         provider = session.get(ProviderConnection, draft.provider_connection_id)
         for item in items:
-            link = None if item.manual_link else links.get(item.line_no)
+            link = None if item.manual_link.get("url") else links.get(item.line_no)
             drama, provider_drama, promotion = dramas.get(
                 item.line_no, (None, None, None)
             )

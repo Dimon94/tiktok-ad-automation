@@ -8,6 +8,182 @@ import {
   T as tenant,
 } from "./utils/buildsBoundary"
 
+test("详细信息表格按五列粘贴，确认保存标识、文本 ID，取消不改主输入", async ({
+  page,
+}, testInfo) => {
+  const api = await buildsBoundary(page, { linkKind: "jiashu" })
+  await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
+  await pickInputs(page)
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await page.screenshot({
+    path: testInfo.outputPath("build-input-desktop.png"),
+    fullPage: true,
+    animations: "disabled",
+  })
+  await expect(page.getByRole("radiogroup", { name: "素材类型" })).toBeVisible()
+  await expect(
+    page.getByRole("radio", { name: "视频", exact: true }),
+  ).toBeChecked()
+  await expect(
+    page.getByText("使用当前 BC 设置的授权", { exact: false }),
+  ).toHaveCount(0)
+  await page
+    .getByRole("button", { name: "填写更多剧目信息", exact: true })
+    .click()
+  const dialog = page.getByRole("dialog", { name: "填写更多剧目信息" })
+  await expect(dialog.getByRole("columnheader")).toHaveText([
+    "#",
+    /剧目名称/,
+    /素材标识/,
+    /推广链接/,
+    /剧目 ID/,
+    /归因名称/,
+  ])
+  const paste = async (text: string) =>
+    dialog
+      .getByLabel("第 1 行 剧目名称", { exact: true })
+      .evaluate((el, value) => {
+        const clipboardData = new DataTransfer()
+        clipboardData.setData("text/plain", value)
+        el.dispatchEvent(
+          new ClipboardEvent("paste", {
+            clipboardData,
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      }, text)
+  await paste(
+    "完整剧名1\tM_001\t\t00123\t\n完整剧名2\tM002\thttps://www.tiktok.com/minis/second\t00124\t归因二",
+  )
+  await expect(
+    dialog.getByLabel("第 1 行 剧目 ID", { exact: true }),
+  ).toHaveValue("00123")
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 })
+    await expect
+      .poll(async () => {
+        const bounds = (await dialog.boundingBox())!
+        return bounds.x >= 0 && bounds.x + bounds.width <= width
+      })
+      .toBe(true)
+    await expect(
+      dialog.getByRole("button", { name: "确认并更新剧目" }),
+    ).toBeInViewport()
+    await page.screenshot({
+      path: testInfo.outputPath(`drama-grid-${width}.png`),
+      animations: "disabled",
+    })
+  }
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await dialog.getByRole("button", { name: "确认并更新剧目" }).click()
+  await expect(dialog).toHaveCount(0)
+  await page
+    .getByRole("button", { name: "填写更多剧目信息", exact: true })
+    .click()
+  await expect(
+    dialog.getByLabel("第 1 行 素材标识", { exact: true }),
+  ).toHaveValue("M_001")
+  await dialog.getByRole("button", { name: "清空", exact: true }).click()
+  await dialog.getByRole("button", { name: "取消", exact: true }).click()
+  await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(
+    "完整剧名1\n完整剧名2",
+  )
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect
+    .poll(
+      () =>
+        api.requests.find(
+          (r) => r.method === "POST" && r.path.endsWith("/build-drafts"),
+        )?.body.manual_links,
+    )
+    .toEqual([
+      {
+        line_no: 1,
+        material_identifier: "M_001",
+        url: "",
+        external_drama_id: "00123",
+        protected_base: "",
+      },
+      {
+        line_no: 2,
+        material_identifier: "M002",
+        url: "https://www.tiktok.com/minis/second",
+        external_drama_id: "00124",
+        protected_base: "归因二",
+      },
+    ])
+})
+
+test("恢复无链接的素材标识，弹窗修改后重排仍保存到对应剧目", async ({
+  page,
+}) => {
+  const api = await buildsBoundary(page)
+  api.summary.status = "DRAFT"
+  await page.route("**/build-drafts/*/inputs?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("kind") !== "drama")
+      return route.fallback()
+    await route.fulfill({
+      json: {
+        items: api.originals.drama.map((raw_text, index) => ({
+          id: `input-${index}`,
+          kind: "drama",
+          line_no: index + 1,
+          raw_text,
+          status: "pending",
+          reason_code: null,
+          duplicate_of: null,
+          advertiser_id: null,
+          drama_id: null,
+          provider_input_id: null,
+          candidates: [],
+          manual_link:
+            index === 0
+              ? {
+                  line_no: 1,
+                  material_identifier: "M001",
+                  url: "",
+                  external_drama_id: "00123",
+                  protected_base: "",
+                }
+              : {},
+        })),
+        next_cursor: null,
+      },
+    })
+  })
+  await page.goto(`/tenants/${tenant}/build-drafts/${D}?bc_id=${bc}&edit=true`)
+  await expect(
+    page.getByText("1 部已填写素材标识", { exact: false }),
+  ).toBeVisible()
+  await page
+    .getByRole("button", { name: "填写更多剧目信息", exact: true })
+    .click()
+  const dialog = page.getByRole("dialog", { name: "填写更多剧目信息" })
+  await expect(
+    dialog.getByLabel("第 1 行 素材标识", { exact: true }),
+  ).toHaveValue("M001")
+  await dialog.getByLabel("第 1 行 素材标识", { exact: true }).fill("M002")
+  await dialog.getByRole("button", { name: "确认并更新剧目" }).click()
+  await page
+    .getByLabel("剧目名称", { exact: true })
+    .fill("完整剧名2\n完整剧名1")
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect
+    .poll(
+      () => api.requests.find((r) => r.method === "PATCH")?.body.manual_links,
+    )
+    .toEqual([
+      {
+        line_no: 2,
+        material_identifier: "M002",
+        url: "",
+        external_drama_id: "00123",
+        protected_base: "",
+      },
+    ])
+})
+
 test("账户选择跨页全选、名称去重并追加 ID，取消保留输入", async ({ page }) => {
   await buildsBoundary(page)
   const account = (n: number, canBuild = true) => ({
@@ -494,7 +670,9 @@ test("输入页切换标签保留剧目和账户批量原文，关闭标签可�
   await page
     .getByLabel("广告账户", { exact: true })
     .fill("90071992547409939999\n账户乙")
-  await expect(page.getByText("全部剧目将覆盖同一批全部有效账户")).toBeVisible()
+  await expect(page.getByText("全部剧目将覆盖同一批全部有效账户")).toHaveCount(
+    0,
+  )
   await page.getByRole("link", { name: "素材库", exact: true }).click()
   await expect(page.getByRole("dialog")).toHaveCount(0)
   await page.getByRole("tab", { name: "广告搭建", exact: true }).click()
@@ -516,7 +694,9 @@ test("两剧三账户原文保存后准备，应用ID不等于MinisID", async ({
   const api = await buildsBoundary(page)
   await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
   await pickInputs(page)
-  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await page
+    .getByRole("button", { name: "下一步：准备链接与素材", exact: true })
+    .click()
   await expect(
     page.getByRole("heading", { name: "准备与调整", exact: true }),
   ).toBeVisible()
@@ -1582,14 +1762,24 @@ test("其他版权方可批量添加现成链接，第一步不增加剧目表",
     page.getByRole("button", { name: "其他版权方", exact: true }),
   ).toHaveCount(0)
   await page.getByLabel("版权方名称", { exact: true }).fill("新版权方")
+  await page.getByLabel("剧目名称", { exact: true }).fill("")
   await page
-    .getByRole("button", { name: "已有推广链接？批量添加", exact: true })
+    .getByRole("button", { name: "填写更多剧目信息", exact: true })
     .click()
-  await page
-    .getByLabel("剧名与推广链接", { exact: true })
-    .fill(
-      "新剧甲\thttps://www.tiktok.com/minis/a?channel=x%2By\n新剧乙\thttps://www.tiktok.com/minis/b",
+  await page.getByLabel("第 1 行 剧目名称", { exact: true }).evaluate((el) => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData(
+      "text/plain",
+      "新剧甲\t\thttps://www.tiktok.com/minis/a?channel=x%2By\n新剧乙\t\thttps://www.tiktok.com/minis/b",
     )
+    el.dispatchEvent(
+      new ClipboardEvent("paste", {
+        clipboardData,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+  })
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 })
     const dialog = page.getByRole("dialog")
@@ -1605,7 +1795,9 @@ test("其他版权方可批量添加现成链接，第一步不增加剧目表",
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.getByRole("button", { name: "添加到剧目", exact: true }).click()
+  await page
+    .getByRole("button", { name: "确认并更新剧目", exact: true })
+    .click()
   await expect(page.getByRole("table")).toHaveCount(0)
   if (process.env.BUILD_SCREENSHOT_DIR) {
     await page.evaluate(() => window.scrollTo(0, 0))
@@ -1627,13 +1819,13 @@ test("其他版权方可批量添加现成链接，第一步不增加剧目表",
   expect(body.provider_connection_id).toBeNull()
   expect(body.manual_links).toEqual([
     {
-      line_no: 3,
+      line_no: 1,
       url: "https://www.tiktok.com/minis/a?channel=x%2By",
       external_drama_id: "",
       protected_base: "",
     },
     {
-      line_no: 4,
+      line_no: 2,
       url: "https://www.tiktok.com/minis/b",
       external_drama_id: "",
       protected_base: "",
@@ -1703,16 +1895,19 @@ test("批量链接校验失败保留输入，取消不改变原剧名", async ({
   await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
   await page.getByLabel("剧目名称", { exact: true }).fill("原剧")
   await page
-    .getByRole("button", { name: "已有推广链接？批量添加", exact: true })
+    .getByRole("button", { name: "填写更多剧目信息", exact: true })
     .click()
+  await page.getByLabel("第 1 行 剧目名称", { exact: true }).fill("新剧")
   await page
-    .getByLabel("剧名与推广链接")
-    .fill("新剧\thttps://wrong.example/link")
-  await page.getByRole("button", { name: "添加到剧目", exact: true }).click()
+    .getByLabel("第 1 行 推广链接", { exact: true })
+    .fill("https://wrong.example/link")
+  await page
+    .getByRole("button", { name: "确认并更新剧目", exact: true })
+    .click()
   await expect(page.getByRole("alert")).toContainText("第 1 行")
-  await expect(page.getByLabel("剧名与推广链接")).toHaveValue(
-    "新剧\thttps://wrong.example/link",
-  )
+  await expect(
+    page.getByLabel("第 1 行 推广链接", { exact: true }),
+  ).toHaveValue("https://wrong.example/link")
   await page.getByRole("button", { name: "取消", exact: true }).click()
   await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue("原剧")
 })
@@ -2477,7 +2672,7 @@ test("第一步输入页不再填写投放排期", async ({ page }) => {
   await buildsBoundary(page)
   await page.goto(`/tenants/${tenant}/build-drafts/${D}?bc_id=${bc}&edit=true`)
   await expect(
-    page.getByRole("button", { name: "解析并准备", exact: true }),
+    page.getByRole("button", { name: "下一步：准备链接与素材", exact: true }),
   ).toBeVisible()
   await expect(page.getByText("投放排期", { exact: true })).toHaveCount(0)
 })

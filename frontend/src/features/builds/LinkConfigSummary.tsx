@@ -10,9 +10,11 @@ const optionLabel = (schema: LinkConfigSchema, name: string, value: unknown) =>
 export function LinkConfigSummary({
   schema,
   overrides,
+  compact = false,
 }: {
   schema: LinkConfigSchema
   overrides: Record<string, number>
+  compact?: boolean
 }) {
   if (!schema.fields.length)
     return (
@@ -21,7 +23,13 @@ export function LinkConfigSummary({
       </p>
     )
   return (
-    <ul className="flex flex-col gap-1 text-sm">
+    <ul
+      className={
+        compact
+          ? "flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"
+          : "flex flex-col gap-1 text-sm"
+      }
+    >
       {schema.fields.map((field) => {
         const override = overrides[field.name]
         const appDefault = schema.application_defaults?.[field.name]
