@@ -1,6 +1,6 @@
 # 2026-11-05 本地优化整批生产发布
 
-状态：发布前方案已选定，尚未切换。
+状态：生产切换及上线验收已完成，应用版本 `c209df370c3c4ad095e4fe3b8770b6b9c61ce27d`。以下先保留切换前方案，实际执行结果见末节。
 
 用户明确要求将本地其他优化一并推送并部署生产。目标沿用新加坡 ACK `test`、https://tkada.shortclipflix.com；发布前实读 11 角色均为 `1d352165e64b9b914ec4a0b3c5a5c35fa0f0baf4`、各一副本且 Ready，发布锁不存在。
 
@@ -22,3 +22,16 @@
 - 按用户现行约定，本轮未新建备份、未恢复演练。既有快照保持原依据；产生乱序场景断点/新输入后不得盲目回退旧镜像，失败时优先保留现场和锁、前向修复；配置/源版本或schema不符则在停服前停止。
 
 发布实际版本、时点、摘要、耗时及验收结果在完成后追加，计划不冒充验收。
+
+## 实际发布与验收
+
+- 本地全部源码及方案已快进推送 GitHub `origin/main` 和公司 `company/main`；从精确提交 c209df37 的干净副本构建 AMD64 镜像并上传新加坡 ACR。镜像 index 摘要 `sha256:32024c1b548ce7c4e802eba24ffea87812c759bd82175328b73694e6b67cef58`。
+- 正式发布器先停止 API/Beat、取消全部9个 Worker 消费，连续两次确认 active/reserved/scheduled/active_queues 均空，旧 Worker 正常退出、零应用 Pod 后统一替换镜像。既有队列与任务正文保留；没有新旧输入或场景消费者混用。
+- 启动时 Beat 的 RWO 磁盘限定新加坡 1b 区，两台可用节点分别 CPU 不足、Pod 槽位满，出现 Pending。仅操作本项目结果 Worker：取消其 `resource-results` 消费，连续两次四项均零，正常缩零并等待旧 Pod 退出，Beat 获得磁盘节点槽位后结果 Worker 恢复一副本并调度到其它节点。没有删除其他项目资源、扩大请求/上限或改节点亲和；结果 Deployment 的完整 spec 与操作前一致。
+- 处理落点期间仅暂停本机发布控制进程，生产 API/其它 Worker 继续运行；待 Beat/结果 Worker 均 Ready 后恢复控制进程继续验收，不跳过发布器门禁。
+- 2026-11-05 **05:02:38 UTC / 北京时间13:02:38**，正式发布器 complete、项目独占锁释放。11角色全部 Ready，9个 Celery 节点实际 ping 可达，唯一 Beat；所有 Pod 的镜像 index 摘要、有效环境/MCP注册摘要、四开关及数据库池逐角色一致。schema仍0101，SDK BASIC、管理窗口50、后台实际8、typed8/prefetch12保持。全部模板仅镜像变化，strategy、资源、命令和退出宽限均保持。
+- API 容器实读 build revision 为 c209df37；`drama_details.py`、`scene_reads.py`、`manual_links.py` 与取消工具源码摘要均与候选一致。实际模型接受无 URL 的素材标识；新剧目表格资源已随镜像交付。
+- 05:04:21 UTC 的公网复核：新 `BuildInputPage-D69m2MVY.js` 返回200且包含新入口/素材标识；`/api/openapi.json` 显示 URL 不再必填且包含 material_identifier；HTTPS健康200。9个节点继续报告自然运行的同步、报表、素材及调度任务；其 Celery 累计计数包含续步/重试，**不当作独立业务完成量或提速倍率**。
+- 正式发布阶段（preparing→complete）1006秒，另有此前源码推送和镜像构建时间；节点容量调整计入实际流程，不宣称五分钟完成。未新建备份、未恢复演练、无数据库结构迁移/线上配置/资源/平台额度变化。验收没有主动创建广告或版权方推广链接，未用基础健康冒充真实投放或同规模提速验收。
+
+本批私有证据位于 `.runtime/build-input-production-20261105/`：精确 selection、构建日志、发布 history/acceptance、逐角色配置摘要、源码/合同及 Celery 验收、结果 Worker 两次排空与迁移回执、公网复核。Jenkins切换期间暂停；按本批原buildable状态恢复及无排队/运行构建的核对回执由 `jenkins-control.py restore` 留存。后续只更新文档的提交不改变本轮实际应用镜像版本。
