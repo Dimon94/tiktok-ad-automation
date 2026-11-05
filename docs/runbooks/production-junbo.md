@@ -1,3 +1,7 @@
+## 2026-11-05 侧栏适中宽度已上线
+
+当前应用e615cccf337d38ee691a9ea5915d5d895332fc06/schema0101。桌面侧栏232px，主区紧凑布局保持；11角色/9Worker/唯一Beat、精确镜像/配置/四开关与DB池、实际8及typed8/prefetch12、公网232px资源均验收通过，锁释放。无DDL、新备份或恢复演练。见[本轮验收](../validation/2026-11-05-sidebar-width-production.md)。以下为历史记录。
+
 ## 2026-11-05 图片轮播提交开放已上线
 
 当前应用20e46d5c61f18329b1fe32a26d83ff02f9ecfa43/schema0101。轮播本地格式未核验拦截已移除，平台判断实际资格；其他素材/音乐/身份/权限检查保持，旧预览需重新准备。11角色/9Worker/唯一Beat、精确镜像与配置/四开关、实际8及typed8/prefetch12、公网紧凑布局和线上v7约束验收通过，发布锁释放。无DDL、新备份或恢复演练；详见[本轮验收](../validation/2026-11-05-carousel-submit-production.md)。以下为历史记录。
