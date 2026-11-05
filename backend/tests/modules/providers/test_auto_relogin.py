@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Event
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -304,6 +305,24 @@ def test_actual_task_continuations_resume_expired_login_and_create_once(workflow
     assert workflow[2].calls.count("saveGuideUrl") == 1
 
 
+def test_session_recovery_waits_for_another_claim_without_hot_loop(workflow):
+    workflow_password(workflow)
+    identity = add_item(workflow)
+    remote = WorkflowRemote(workflow[2])
+    task_once(workflow, identity, remote)
+    task_once(workflow, identity, remote)
+    with Session(engine) as db, db.begin():
+        refresh = db.get(ProviderSessionRefresh, workflow[1])
+        refresh.claim_token = uuid4()
+        refresh.claimed_until = datetime.now(UTC) + timedelta(seconds=30)
+    before = len(remote.calls)
+    _, result = task_once(workflow, identity, remote)
+    assert len(remote.calls) == before
+    assert datetime.fromisoformat(result["_work"]["next_dispatch_at"]) > datetime.now(
+        UTC
+    ) + timedelta(seconds=3)
+
+
 def test_unknown_saved_write_then_expired_read_recovers_without_second_write(workflow):
     workflow_password(workflow)
     identity = add_item(workflow)
@@ -593,7 +612,7 @@ def test_refresh_progress_uses_short_continuation_not_exponential_business_backo
         status, result = task_once(workflow, identity, remote)
         assert status == "retryable_error"
         due = datetime.fromisoformat(result["_work"]["next_dispatch_at"])
-        assert 0 < (due - datetime.now(UTC)).total_seconds() <= 6
+        assert due <= datetime.now(UTC)
 
 
 def test_initial_wrong_password_is_terminal_credentials_error_not_automatic_expiry(

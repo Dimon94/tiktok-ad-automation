@@ -4478,3 +4478,8 @@ bbda3c12已上线并核验全部角色/schema/配置，Jenkins恢复；正常收
 ## 2026-11-05 整批热报目录锁（候选）
 
 faf单户修复已完成生产验收，但首窗目录规划等待未改善，不称成功。进一步140次高峰锁采样确认61个BC排他等待采样行均为持ad_day发布锁的报表进程；249个热报中多户约89%，_split仅异常分支使用，已纠正“常规拆户”误判。所有报告改BC shared→整批账户全排序exclusive，health/default保留BCexclusive。真实不重叠双户在faf先失败；反向重叠批次及旧版/health围栏验证中。资源/额度/结构不变，后台仍8；详见[整批规划锁](validation/2026-11-05-report-batch-directory-lock.md)。
+
+
+## 2026-11-05 解析准备提速与身份手动刷新
+
+本轮本地提交主题 `builds: reduce preparation waits and refresh identity catalogs`。投放身份正常状态补齐手动刷新，先过期当前租户/BC/冻结连接下的共享场景缓存再准备；普通准备仍复用24小时缓存。版权方会话恢复及本地账户/链接交接有进展即续步，保留真实退避；场景同轮最多五页、八秒后不启动下一页，共用原总期限并逐页提交/准入/代数保护。无DDL、任务正文、Worker/额度/开关变更。真实隔离PG/Redis后端142通过，准备页83通过、正式与体验构建/Ruff/Biome通过；四源mypy通过，API/draft_tasks四项既有类型问题保留，经营业务14项既有demo覆盖缺口未扩展处理。没有推送、上线或真实广告/版权方写入，未宣称线上实测提速。详见[验证与限制](validation/2026-11-05-build-preparation-speed.md)。

@@ -248,6 +248,8 @@ import type {
   buildsReconcileSubmissionData,
   buildsReconcileSubmissionResponse,
   buildsRefreshData,
+  buildsRefreshIdentitiesCatalogData,
+  buildsRefreshIdentitiesCatalogResponse,
   buildsRefreshMinisCatalogData,
   buildsRefreshMinisCatalogResponse,
   buildsRefreshResponse,
@@ -295,6 +297,33 @@ import type {
   buildsUpdateResponse,
   buildsUpdateTargetingData,
   buildsUpdateTargetingResponse,
+  businessDashboardData,
+  businessDashboardResponse,
+  businessDownloadData,
+  businessDramasData,
+  businessDramasResponse,
+  businessEvidenceData,
+  businessEvidenceResponse,
+  businessExportData,
+  businessExportResponse,
+  businessExportStatusData,
+  businessExportStatusResponse,
+  businessMappingData,
+  businessMappingResponse,
+  businessMemberData,
+  businessMemberResponse,
+  businessOptionsData,
+  businessOptionsResponse,
+  businessRatesData,
+  businessRatesResponse,
+  businessReadEvidenceData,
+  businessReadEvidenceResponse,
+  businessRebuildData,
+  businessRebuildResponse,
+  businessRunsData,
+  businessRunsResponse,
+  businessSetRateData,
+  businessSetRateResponse,
   cancelIngestFileData,
   cancelIngestFileResponse,
   completeIngestFileData,
@@ -604,6 +633,7 @@ export const DEMO_OPERATIONS = {
   "builds-read_music": { method: "POST", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/music/read", query: {} },
   "builds-reconcile_submission": { method: "POST", path: "/api/tenants/{tenant_id}/submissions/{submission_id}/reconcile", query: {} },
   "builds-refresh": { method: "POST", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/image-composition/candidates/refresh", query: {} },
+  "builds-refresh_identities_catalog": { method: "POST", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/identities/refresh", query: {} },
   "builds-refresh_minis_catalog": { method: "POST", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/minis/refresh", query: {} },
   "builds-request_music": { method: "POST", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/music/units/{unit_id}", query: {} },
   "builds-retry_selected_music": { method: "POST", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/music/batch-retries", query: {} },
@@ -627,6 +657,20 @@ export const DEMO_OPERATIONS = {
   "builds-update_delivery": { method: "PATCH", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/delivery", query: {} },
   "builds-update_image_structure": { method: "PUT", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/structure", query: {} },
   "builds-update_targeting": { method: "PATCH", path: "/api/tenants/{tenant_id}/build-drafts/{draft_id}/targeting", query: {} },
+  "business-dashboard": { method: "POST", path: "/api/tenants/{tenant_id}/business/query", query: {} },
+  "business-download": { method: "GET", path: "/api/tenants/{tenant_id}/business/exports/{export_id}/download", query: {} },
+  "business-dramas": { method: "GET", path: "/api/tenants/{tenant_id}/business/dramas", query: {"limit":"number"} },
+  "business-evidence": { method: "PUT", path: "/api/tenants/{tenant_id}/business/evidence", query: {} },
+  "business-export": { method: "POST", path: "/api/tenants/{tenant_id}/business/exports", query: {} },
+  "business-export_status": { method: "GET", path: "/api/tenants/{tenant_id}/business/exports/{export_id}", query: {} },
+  "business-mapping": { method: "PUT", path: "/api/tenants/{tenant_id}/business/mapping", query: {} },
+  "business-member": { method: "PUT", path: "/api/tenants/{tenant_id}/business/member", query: {} },
+  "business-options": { method: "GET", path: "/api/tenants/{tenant_id}/business/options", query: {} },
+  "business-rates": { method: "GET", path: "/api/tenants/{tenant_id}/business/rates", query: {} },
+  "business-read_evidence": { method: "GET", path: "/api/tenants/{tenant_id}/business/evidence", query: {} },
+  "business-rebuild": { method: "POST", path: "/api/tenants/{tenant_id}/business/rebuild", query: {} },
+  "business-runs": { method: "GET", path: "/api/tenants/{tenant_id}/business/runs", query: {} },
+  "business-set_rate": { method: "POST", path: "/api/tenants/{tenant_id}/business/rates", query: {} },
   "cancel_ingest_file": { method: "POST", path: "/api/tenants/{tenant_id}/materials/ingest-sessions/{session_id}/files/{material_id}/cancel", query: {} },
   "complete_ingest_file": { method: "POST", path: "/api/tenants/{tenant_id}/materials/ingest-sessions/{session_id}/files/{material_id}/complete", query: {} },
   "create_ingest_chunk": { method: "POST", path: "/api/tenants/{tenant_id}/materials/ingest-sessions/{session_id}/chunks", query: {} },
@@ -847,6 +891,7 @@ export interface DemoOperationTypes {
   "builds-read_music": { data: buildsReadMusicData; response: buildsReadMusicResponse }
   "builds-reconcile_submission": { data: buildsReconcileSubmissionData; response: buildsReconcileSubmissionResponse }
   "builds-refresh": { data: buildsRefreshData; response: buildsRefreshResponse }
+  "builds-refresh_identities_catalog": { data: buildsRefreshIdentitiesCatalogData; response: buildsRefreshIdentitiesCatalogResponse }
   "builds-refresh_minis_catalog": { data: buildsRefreshMinisCatalogData; response: buildsRefreshMinisCatalogResponse }
   "builds-request_music": { data: buildsRequestMusicData; response: buildsRequestMusicResponse }
   "builds-retry_selected_music": { data: buildsRetrySelectedMusicData; response: buildsRetrySelectedMusicResponse }
@@ -870,6 +915,20 @@ export interface DemoOperationTypes {
   "builds-update_delivery": { data: buildsUpdateDeliveryData; response: buildsUpdateDeliveryResponse }
   "builds-update_image_structure": { data: buildsUpdateImageStructureData; response: buildsUpdateImageStructureResponse }
   "builds-update_targeting": { data: buildsUpdateTargetingData; response: buildsUpdateTargetingResponse }
+  "business-dashboard": { data: businessDashboardData; response: businessDashboardResponse }
+  "business-download": { data: businessDownloadData; response: unknown }
+  "business-dramas": { data: businessDramasData; response: businessDramasResponse }
+  "business-evidence": { data: businessEvidenceData; response: businessEvidenceResponse }
+  "business-export": { data: businessExportData; response: businessExportResponse }
+  "business-export_status": { data: businessExportStatusData; response: businessExportStatusResponse }
+  "business-mapping": { data: businessMappingData; response: businessMappingResponse }
+  "business-member": { data: businessMemberData; response: businessMemberResponse }
+  "business-options": { data: businessOptionsData; response: businessOptionsResponse }
+  "business-rates": { data: businessRatesData; response: businessRatesResponse }
+  "business-read_evidence": { data: businessReadEvidenceData; response: businessReadEvidenceResponse }
+  "business-rebuild": { data: businessRebuildData; response: businessRebuildResponse }
+  "business-runs": { data: businessRunsData; response: businessRunsResponse }
+  "business-set_rate": { data: businessSetRateData; response: businessSetRateResponse }
   "cancel_ingest_file": { data: cancelIngestFileData; response: cancelIngestFileResponse }
   "complete_ingest_file": { data: completeIngestFileData; response: completeIngestFileResponse }
   "create_ingest_chunk": { data: createIngestChunkData; response: createIngestChunkResponse }

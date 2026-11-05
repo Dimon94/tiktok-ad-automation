@@ -602,10 +602,10 @@ def reuse_minis_catalog(
         job.resource = "minis"
 
 
-def expire_draft_minis_catalog(
+def expire_draft_scene_catalog(
     session: Session, *, context: TenantContext, draft_id: UUID
 ) -> int:
-    """强制过期该 draft 所有账户的小程序目录缓存，返回过期的 job 数量。"""
+    """身份和小程序共用场景快照；显式刷新只过期本草稿账户当前授权下的缓存。"""
     from .drafts import get_draft
 
     draft = get_draft(session, context=context, draft_id=draft_id, lock=True)
@@ -633,7 +633,7 @@ def expire_draft_minis_catalog(
             UPDATE build_scene_job
             SET expires_at = :now
             WHERE tenant_id = :tenant_id
-              AND resource IN ('cta', 'vbo', 'regions', 'budget', 'done')
+              AND resource IN ('minis', 'cta', 'vbo', 'regions', 'budget', 'done')
               AND connection_id = :connection_id
               AND frozen_route = CAST(:route AS jsonb)
               AND bc_id = :bc_id
@@ -650,7 +650,7 @@ def expire_draft_minis_catalog(
             "now": now,
         },
     )
-    return cast(CursorResult, result).rowcount
+    return cast(CursorResult[Any], result).rowcount
 
 
 def _fresh_mini_independent_scene(

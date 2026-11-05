@@ -194,8 +194,17 @@ def process_item(
                 # login/discovery pages should not exponentially delay each other.
                 work["retry_round"] = 0
                 item.resolved = {**item.resolved, "_work": work}
-                delay = 5
+                # 登录/目录校验已有进展时立即续步；只有其他领取者或真实网络
+                # 退避才等待，不能把每个成功的恢复步骤都额外延后五秒。
+                delay = 0
                 refresh = session.get(ProviderSessionRefresh, prep.connection_id)
+                if (
+                    refresh
+                    and refresh.tenant_id == tenant_id
+                    and refresh.claimed_until
+                    and refresh.claimed_until > datetime.now(UTC)
+                ):
+                    delay = 5
                 if refresh and refresh.tenant_id == tenant_id and refresh.due_at:
                     delay = max(
                         delay, (refresh.due_at - datetime.now(UTC)).total_seconds()

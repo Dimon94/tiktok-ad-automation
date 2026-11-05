@@ -779,7 +779,7 @@ def test_mini_choice_queues_only_scene_refresh_and_preserves_prepared_inputs(
     assert len(wire[0]) == 6
 
 
-@pytest.mark.parametrize("resource", ["cta", "done"])
+@pytest.mark.parametrize("resource", ["minis", "cta", "done"])
 def test_manual_minis_refresh_expires_current_route_catalog(
     job_env, wire, redis_client, resource
 ):
@@ -787,7 +787,7 @@ def test_manual_minis_refresh_expires_current_route_catalog(
 
     from app.modules.builds.mini_selection import (
         draft_minis,
-        expire_draft_minis_catalog,
+        expire_draft_scene_catalog,
     )
 
     env = job_env
@@ -797,7 +797,7 @@ def test_manual_minis_refresh_expires_current_route_catalog(
         current.resource = resource
     with Session(engine) as db, db.begin():
         assert (
-            expire_draft_minis_catalog(db, context=env["context"], draft_id=draft_id)
+            expire_draft_scene_catalog(db, context=env["context"], draft_id=draft_id)
             >= 1
         )
     with Session(engine) as db:

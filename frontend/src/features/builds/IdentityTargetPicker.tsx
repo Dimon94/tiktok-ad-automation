@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query"
+import { RotateCw } from "lucide-react"
 import { useState } from "react"
 import { BuildsService, type DraftSummary, type IdentityOption } from "@/client"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -45,6 +46,7 @@ export function IdentityTargetPicker({
   const [input, setInput] = useState("")
   const [search, setSearch] = useState("")
   const [busy, setBusy] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<unknown>()
   const client = useQueryClient()
   const query = useDraftIdentities(tenantId, bcId, summary, search)
@@ -55,7 +57,7 @@ export function IdentityTargetPicker({
     write && summary.status === "READY" && !readPendingMutation(pendingKey)
 
   async function choose(item: IdentityOption) {
-    if (!selectable || busy || !data?.catalog_job_id) return
+    if (!selectable || busy || refreshing || !data?.catalog_job_id) return
     const requestId = crypto.randomUUID()
     setBusy(true)
     setError(undefined)
@@ -91,6 +93,28 @@ export function IdentityTargetPicker({
     }
   }
 
+  async function refresh() {
+    if (!selectable || busy || refreshing) return
+    setRefreshing(true)
+    setError(undefined)
+    try {
+      // 显式刷新先过期服务端目录；普通准备继续复用有效的账户资料。
+      await BuildsService.refreshIdentitiesCatalog({
+        path: { tenant_id: tenantId, draft_id: summary.draft_id },
+      })
+      await client.invalidateQueries({
+        queryKey: [...buildKey(tenantId, bcId), summary.draft_id],
+      })
+      await onPrepare()
+      onRefresh()
+    } catch (e) {
+      setError(e)
+      reportError(e)
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   return (
     <Card>
       <CardContent className="flex min-w-0 flex-col gap-3">
@@ -112,27 +136,41 @@ export function IdentityTargetPicker({
             </p>
           </div>
           {write && (
-            <Button
-              variant="outline"
-              disabled={busy || !data?.catalog_job_id}
-              onClick={() => {
-                setInput("")
-                setSearch("")
-                setOpen(true)
-              }}
-            >
-              {data?.selected ? "更换投放身份" : "选择投放身份"}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={!selectable || busy || refreshing}
+                onClick={() => void refresh()}
+                title="刷新可用投放身份列表"
+                aria-label="刷新可用投放身份列表"
+              >
+                <RotateCw className={refreshing ? "animate-spin" : ""} />
+              </Button>
+              <Button
+                variant="outline"
+                disabled={busy || refreshing || !data?.catalog_job_id}
+                onClick={() => {
+                  setInput("")
+                  setSearch("")
+                  setOpen(true)
+                }}
+              >
+                {data?.selected ? "更换投放身份" : "选择投放身份"}
+              </Button>
+            </div>
           )}
         </div>
         {query.error ? <BuildError error={query.error} /> : null}
+        {!open && error ? <BuildError error={error} /> : null}
         {(query.isError || data?.state === "pending") &&
           summary.status === "READY" &&
           write && (
             <Button
               className="self-start"
               variant="outline"
-              onClick={() => void onPrepare()}
+              disabled={!selectable || busy || refreshing}
+              onClick={() => void refresh()}
             >
               更新可用投放身份
             </Button>

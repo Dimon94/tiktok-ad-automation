@@ -528,15 +528,26 @@ def refresh_minis_catalog(
     session: SessionDep,
     user: CurrentUser,
 ) -> dict[str, int]:
-    """强制过期该 draft 账户的小程序目录缓存，下次查询时会重新拉取。"""
-    from .mini_selection import expire_draft_minis_catalog
+    """显式过期账户场景目录缓存，下一轮准备重新拉取；普通查询只读本地。"""
+    from .mini_selection import expire_draft_scene_catalog
 
     context = require_tenant(
         session, actor_id=user.id, tenant_id=tenant_id, action="build"
     )
-    count = expire_draft_minis_catalog(session, context=context, draft_id=draft_id)
+    count = expire_draft_scene_catalog(session, context=context, draft_id=draft_id)
     session.commit()
     return {"expired": count}
+
+
+@router.post("/build-drafts/{draft_id}/identities/refresh")
+def refresh_identities_catalog(
+    tenant_id: UUID,
+    draft_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+) -> dict[str, int]:
+    """显式过期投放身份所属场景快照，下一轮准备重新读取平台目录。"""
+    return refresh_minis_catalog(tenant_id, draft_id, session, user)
 
 
 @router.get("/build-drafts/{draft_id}/identities", response_model=DraftIdentities)

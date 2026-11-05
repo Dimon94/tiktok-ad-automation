@@ -17796,6 +17796,44 @@ export type buildsRefreshMinisCatalogResponses = {
 
 export type buildsRefreshMinisCatalogResponse = buildsRefreshMinisCatalogResponses[keyof buildsRefreshMinisCatalogResponses];
 
+export type buildsRefreshIdentitiesCatalogData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Draft Id
+         */
+        draft_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/build-drafts/{draft_id}/identities/refresh';
+};
+
+export type buildsRefreshIdentitiesCatalogErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type buildsRefreshIdentitiesCatalogError = buildsRefreshIdentitiesCatalogErrors[keyof buildsRefreshIdentitiesCatalogErrors];
+
+export type buildsRefreshIdentitiesCatalogResponses = {
+    /**
+     * Response Builds-Refresh Identities Catalog
+     *
+     * Successful Response
+     */
+    200: {
+        [key: string]: number;
+    };
+};
+
+export type buildsRefreshIdentitiesCatalogResponse = buildsRefreshIdentitiesCatalogResponses[keyof buildsRefreshIdentitiesCatalogResponses];
+
 export type buildsIdentityOptionsData = {
     body?: never;
     path: {

@@ -1,5 +1,6 @@
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import func
 from sqlmodel import select
 
@@ -9,6 +10,35 @@ from app.modules.tenants.models import TenantMembership
 from tests.modules.builds.test_drafts import account, finish, ready_links
 from tests.modules.materials.test_tenant_materials import material
 from tests.modules.strategies.test_api import headers
+
+
+@pytest.mark.parametrize("catalog", ["minis", "identities"])
+def test_catalog_refresh_requires_build_permission_and_own_draft(
+    client, session, context, other_context, intent, catalog
+):
+    account(session, context)
+    draft = create_draft(session, context=context, **intent)
+    path = f"/api/tenants/{context.tenant_id}/build-drafts/{draft}/{catalog}/refresh"
+    response = client.post(path, headers=headers(context))
+    assert response.status_code == 200
+    assert response.json() == {"expired": 0}
+    assert (
+        client.post(
+            f"/api/tenants/{other_context.tenant_id}/build-drafts/{draft}/{catalog}/refresh",
+            headers=headers(other_context),
+        ).status_code
+        == 404
+    )
+    member = session.exec(
+        select(TenantMembership).where(
+            TenantMembership.tenant_id == context.tenant_id,
+            TenantMembership.user_id == context.actor_id,
+        )
+    ).one()
+    member.role = "viewer"
+    session.add(member)
+    session.flush()
+    assert client.post(path, headers=headers(context)).status_code == 403
 
 
 def test_draft_http_keeps_rows_paged_and_revision_conflicts_safe(

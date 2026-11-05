@@ -1,10 +1,10 @@
-import { IMAGE_DEMO_STRUCTURE } from "../fixtures/image-structure"
 import { imageState } from "../fixtures/image-composition-state"
 import {
   findImageUnit,
   freezeImageDemo,
   imageDeliveries,
 } from "../fixtures/image-delivery"
+import { IMAGE_DEMO_STRUCTURE } from "../fixtures/image-structure"
 // 体验版假后端：批量搭建领域（builds）
 
 import {
@@ -544,15 +544,20 @@ handle("builds-minis_options", (req) => {
   }
 })
 
-// 演示目录由固定数据即时返回；刷新保留已选小程序，不伪造远端同步任务。
-handle("builds-refresh_minis_catalog", (req) => {
+// 演示目录即时返回；手动刷新保留已选目标，不伪造远端同步任务。
+function refreshDraftCatalog(tenantId: string, draftId: string) {
   const draft = demoDrafts.find(
-    (d) =>
-      d.draft_id === req.path.draft_id && d.tenant_id === req.path.tenant_id,
+    (d) => d.draft_id === draftId && d.tenant_id === tenantId,
   )
   if (!draft) return demoError(404, "draft_not_found", "草稿不存在")
   return { expired: 0 }
-})
+}
+handle("builds-refresh_minis_catalog", (req) =>
+  refreshDraftCatalog(req.path.tenant_id, req.path.draft_id),
+)
+handle("builds-refresh_identities_catalog", (req) =>
+  refreshDraftCatalog(req.path.tenant_id, req.path.draft_id),
+)
 
 // 选择 Mini
 handle("builds-select_mini", (req) => {

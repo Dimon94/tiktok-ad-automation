@@ -1,7 +1,8 @@
-"""每次持久任务只读一页官方场景事实，同应用链接共享冻结连接下的结果。"""
+"""官方场景事实逐页提交，同应用链接共享冻结连接下的结果。"""
 
 import logging
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -394,12 +395,15 @@ def process_scene_job(
     tenant_id: UUID,
     actor_id: UUID,
     payload: dict[str, Any],
-) -> None:
+    task_deadline: datetime | None = None,
+) -> int | None:
     _require_bounded_worker()
     identity, revision = _payload(payload)
     context = TenantContext(tenant_id=tenant_id, actor_id=actor_id, role="operator")
     token, now = uuid4(), datetime.now(UTC)
     deadline = now + timedelta(seconds=HARD_LIMIT - 5)
+    if task_deadline is not None:
+        deadline = min(deadline, task_deadline)
     with (
         bounded_session(database_engine, task_deadline=deadline) as session,
         session.begin(),
@@ -414,17 +418,17 @@ def process_scene_job(
             or job.claimed_until
             and job.claimed_until > now
         ):
-            return
+            return None
         try:
             _scope_for_job(session, context, job)
             if not _capability_ready(session, context, job):
                 if job.status == "PENDING":
                     job.revision += 1
                     _queue(session, job, delay=5)
-                return
+                return None
             if job.expires_at and job.expires_at <= now:
                 job.status, job.error_code = "STALE", "scene_evidence_expired"
-                return
+                return None
             if job.resource == "capabilities":
                 job.resource = "identity"
             resource = cast(SceneResource, job.resource)
@@ -453,7 +457,7 @@ def process_scene_job(
                 else "BLOCKED"
             )
             job.error_code = error.code
-            return
+            return None
         job.claim_token, job.claimed_until = (
             token,
             now + timedelta(seconds=CLAIM_SECONDS),
@@ -509,7 +513,7 @@ def process_scene_job(
                 or current.claim_token != token
                 or current.revision != revision
             ):
-                return
+                return None
             _scope_for_job(session, context, current)
             proof = get_capability_evidence(
                 session,
@@ -554,7 +558,7 @@ def process_scene_job(
                 or current.claimed_until is None
                 or current.claimed_until <= datetime.now(UTC)
             ):
-                return
+                return None
             _scope_for_job(session, context, current)
             proof = get_capability_evidence(
                 session,
@@ -640,6 +644,8 @@ def process_scene_job(
                 )
             if current.status == "PENDING":
                 _queue(session, current)
+                # 只返回已提交成功页面的下一代；外部等待、失败和重复消息不能连续读取。
+                return current.revision
     except Exception as error:
         if not isinstance(error, AccountAdmissionDeferred):
             logger.exception("scene refresh failed for resource=%s", resource)
@@ -681,7 +687,7 @@ def process_scene_job(
                 or current.revision != revision
                 or current.claim_token != token
             ):
-                return
+                return None
             current.claim_token, current.claimed_until = None, None
             current.error_code = safe
             current.revision += 1
@@ -692,7 +698,7 @@ def process_scene_job(
                     current,
                     delay=max(1, min(60, (error.retry_after_ms + 999) // 1000)),
                 )
-                return
+                return None
             current.failure_count += 1
             if safe in {
                 "scene_refresh_stale",
@@ -717,6 +723,37 @@ def process_scene_job(
                 current.status = "FAILED"
             else:
                 _queue(session, current, delay=min(60, 2**current.failure_count))
+    return None
+
+
+def process_scene_turn(
+    *,
+    database_engine: Any,
+    redis_client: Any,
+    tenant_id: UUID,
+    actor_id: UUID,
+    payload: dict[str, Any],
+) -> None:
+    """同次领取最多五页，八秒后不再开始下一页；单页共用原任务总期限。"""
+    started = monotonic()
+    deadline = datetime.now(UTC) + timedelta(seconds=HARD_LIMIT - 5)
+    current_payload = payload
+    for _ in range(5):
+        next_revision = process_scene_job(
+            database_engine=database_engine,
+            redis_client=redis_client,
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            payload=current_payload,
+            task_deadline=deadline,
+        )
+        if (
+            next_revision is None
+            or monotonic() - started >= 8.0
+            or (deadline - datetime.now(UTC)).total_seconds() < 5
+        ):
+            return
+        current_payload = {"job_id": payload["job_id"], "revision": next_revision}
 
 
 def repair_scene_jobs(*, database_engine: Any, limit: int = 100) -> int:

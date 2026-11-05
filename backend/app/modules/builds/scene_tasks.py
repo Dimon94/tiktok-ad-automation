@@ -10,7 +10,7 @@ from app.core.db import engine
 from app.jobs.celery_app import celery_app
 from app.modules.builds.scene_jobs import (
     TASK_NAME,
-    process_scene_job,
+    process_scene_turn,
     repair_scene_jobs,
 )
 
@@ -26,7 +26,7 @@ def refresh_scene_task(
     *, tenant_id: str, actor_id: str, payload: dict[str, Any]
 ) -> None:
     with Redis.from_url(settings.REDIS_URL, decode_responses=True) as redis_client:
-        process_scene_job(
+        process_scene_turn(
             database_engine=engine,
             redis_client=redis_client,
             tenant_id=UUID(tenant_id),

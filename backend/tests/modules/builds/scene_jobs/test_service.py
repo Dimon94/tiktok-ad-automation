@@ -117,6 +117,51 @@ def complete(env, wire, redis_client):
     return job
 
 
+@pytest.mark.parametrize("exhaust_budget", [False, True])
+def test_scene_turn_continues_ready_reads_with_a_shared_time_budget(
+    job_env, wire, redis_client, monkeypatch, exhaust_budget
+):
+    from app.modules.builds import scene_jobs
+
+    env = job_env
+    receipt = ensure(env)
+    job = run(env, redis_client, receipt.job_id)
+    wire[1].append(role_page(["actual-account"]))
+    cap_env = {**env, "request_id": uuid4()}
+    run_capability(cap_env, redis_client, job.capability_job_id)
+    run_capability(cap_env, redis_client, job.capability_job_id)
+    wire[1].extend(responses(env))
+    with Session(engine) as db, db.begin():
+        current = db.get(SceneJob, job.id)
+        current.due_at = datetime.now(UTC) - timedelta(seconds=1)
+        payload = {"job_id": str(job.id), "revision": current.revision}
+    moments = iter([0.0, 9.0] if exhaust_budget else [0.0] * 10)
+    monkeypatch.setattr(scene_jobs, "monotonic", lambda: next(moments), raising=False)
+    scene_jobs.process_scene_turn(
+        database_engine=engine,
+        redis_client=redis_client,
+        tenant_id=env["context"].tenant_id,
+        actor_id=env["context"].actor_id,
+        payload=payload,
+    )
+    with Session(engine) as db:
+        current = db.get(SceneJob, job.id)
+        assert current.status == ("PENDING" if exhaust_budget else "COMPLETE")
+        assert current.resource == ("minis" if exhaust_budget else "done")
+        assert current.dispatch_id is not None
+    assert len(wire[0]) == (2 if exhaust_budget else 6)
+    # 已消费的旧代消息不重读平台，也不能偷偷推进后续代数。
+    monkeypatch.setattr(scene_jobs, "monotonic", lambda: 0.0)
+    scene_jobs.process_scene_turn(
+        database_engine=engine,
+        redis_client=redis_client,
+        tenant_id=env["context"].tenant_id,
+        actor_id=env["context"].actor_id,
+        payload=payload,
+    )
+    assert len(wire[0]) == (2 if exhaust_budget else 6)
+
+
 def test_confirmed_same_mini_links_share_scene_and_bc_proof(
     job_env, wire, redis_client
 ):

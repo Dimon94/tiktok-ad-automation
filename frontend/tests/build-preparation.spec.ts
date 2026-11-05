@@ -1022,6 +1022,35 @@ test("没有版权方 Mini 配置时按名称选择并自动继续准备", async
   await page.screenshot({ path: "../.runtime/auto-minis/mini-selection.png" })
 })
 
+test("已有身份时仍可手动刷新目录并重新准备", async ({ page }, testInfo) => {
+  const api = await buildsBoundary(page)
+  let refreshes = 0
+  await page.route(`**/build-drafts/${D}/identities/refresh`, async (route) => {
+    expect(route.request().method()).toBe("POST")
+    refreshes++
+    await route.fulfill({ json: { expired: 1 } })
+  })
+  await page.goto(`/tenants/${tenant}/build-drafts/${D}?bc_id=${bc}`)
+  const refresh = page.getByRole("button", {
+    name: "刷新可用投放身份列表",
+    exact: true,
+  })
+  await expect(refresh).toBeVisible()
+  await refresh.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath("identity-refresh.png") })
+  expect(refreshes).toBe(0)
+  await refresh.click()
+  await expect.poll(() => refreshes).toBe(1)
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (r) => r.path.endsWith("/prepare") && r.method === "POST",
+        ).length,
+    )
+    .toBe(1)
+})
+
 test("小程序和投放身份搜索缓存目录并保留刷新前结果", async ({ page }) => {
   await buildsBoundary(page)
   let releaseMiniSearch: () => void = () => {}
@@ -2517,8 +2546,8 @@ for (const [endpoint, label, loading] of [
         json: { code: "tiktok_call_deadline_exceeded" },
       }),
     )
-    // 小程序更新先使目录过期，再走原准备入口；不提交搭建。
-    await page.route(`**/build-drafts/${D}/minis/refresh`, (route) =>
+    // 两类目录更新都先使缓存过期，再走原准备入口；不提交搭建。
+    await page.route(`**/build-drafts/${D}/${endpoint}/refresh`, (route) =>
       route.fulfill({ json: { expired: 0 } }),
     )
     await page.goto(`/tenants/${tenant}/build-drafts/${D}?bc_id=${bc}`)

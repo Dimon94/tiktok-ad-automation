@@ -113,6 +113,7 @@ def process_preparation(
         try:
             with session.begin_nested():
                 started = monotonic()
+                previous_phase, previous_account_after = prep.phase, prep.account_after
                 material_progress = False
                 pending_materials = (
                     prep.phase == "materials" and _has_pending_materials(session, prep)
@@ -145,17 +146,30 @@ def process_preparation(
             session.add_all([prep, draft])
             return
         if not done:
+            # 本地账户分页、账户完成以及已得到链接的阶段交接不需要五秒退避。
+            # 链接仍在远端准备且没有新素材时，保留原等待，避免 links/materials 空转。
+            local_progress = (
+                prep.account_after != previous_account_after
+                or previous_phase == "accounts"
+                and prep.phase != "accounts"
+                or previous_phase == "links"
+                and prep.phase == "materials"
+                and (not prep.pending_links or _has_pending_materials(session, prep))
+            )
             prep.generation += 1
             queue_preparation(
                 session,
                 prep,
                 delay=5
-                if prep.phase == "accounts"
-                or prep.phase == "materials"
-                and not (material_progress or pending_materials)
-                or prep.phase == "scenes"
-                or prep.phase == "links"
-                and prep.link_cursor is None
+                if not local_progress
+                and (
+                    prep.phase == "accounts"
+                    or prep.phase == "materials"
+                    and not (material_progress or pending_materials)
+                    or prep.phase == "scenes"
+                    or prep.phase == "links"
+                    and prep.link_cursor is None
+                )
                 else 0,
             )
 

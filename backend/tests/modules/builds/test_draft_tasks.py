@@ -165,7 +165,27 @@ def test_duplicate_delivery_only_advances_one_local_page(session, context, inten
     session.expire_all()
     prep = session.get(DraftPreparation, task)
     assert prep.generation == 1 and prep.account_after == 4 and prep.phase == "accounts"
-    assert prep.due_at > datetime.now(UTC) + timedelta(seconds=3)
+    assert prep.due_at <= datetime.now(UTC)
+
+
+def test_local_progress_and_phase_changes_continue_without_scheduled_sleeps(
+    session, context, intent
+):
+    account(session, context)
+    draft = create_draft(session, context=context, **intent)
+    task = prepare_draft(session, context=context, draft_id=draft, request_id=uuid4())
+    ready_links(session, context, task, intent)
+    for generation, phase in enumerate(("accounts", "links", "materials")):
+        process_preparation(
+            database_engine=session.connection(),
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            payload={"preparation_id": str(task), "generation": generation},
+        )
+        session.expire_all()
+        prep = session.get(DraftPreparation, task)
+        assert prep.phase == phase
+        assert prep.due_at <= datetime.now(UTC)
 
 
 def test_external_scene_wait_keeps_backoff(session, context, intent, monkeypatch):
