@@ -135,8 +135,16 @@ def test_scene_turn_continues_ready_reads_with_a_shared_time_budget(
         current = db.get(SceneJob, job.id)
         current.due_at = datetime.now(UTC) - timedelta(seconds=1)
         payload = {"job_id": str(job.id), "revision": current.revision}
-    moments = iter([0.0, 9.0] if exhaust_budget else [0.0] * 10)
-    monkeypatch.setattr(scene_jobs, "monotonic", lambda: next(moments), raising=False)
+    clock = [0.0]
+    if exhaust_budget:
+        first_response = wire[1][0]
+
+        def slow_first_response():
+            clock[0] = 9.0
+            return first_response
+
+        wire[1][0] = slow_first_response
+    monkeypatch.setattr(scene_jobs, "monotonic", lambda: clock[0])
     scene_jobs.process_scene_turn(
         database_engine=engine,
         redis_client=redis_client,
@@ -345,7 +353,7 @@ def test_new_mini_reuses_only_fresh_account_facts(job_env, wire, redis_client, e
 def test_complete_scene_reader_is_readonly_no_credentials_or_network(
     job_env, wire, redis_client, monkeypatch
 ):
-    from app.modules.builds import scene, scene_jobs
+    from app.modules.builds import scene, scene_jobs, scene_reads
 
     env = job_env
     complete(env, wire, redis_client)
@@ -354,7 +362,7 @@ def test_complete_scene_reader_is_readonly_no_credentials_or_network(
         raise AssertionError("Pure scene read performed a side effect")
 
     for module, name in [
-        (scene_jobs, "open_tiktok_gateway"),
+        (scene_reads, "open_tiktok_gateway"),
         (scene_jobs, "enqueue_after_commit"),
     ]:
         monkeypatch.setattr(module, name, forbidden)
@@ -436,33 +444,31 @@ def test_missing_provider_mapping_still_discovers_named_minis(
             ]
         )
     )
-    job = run(job_env, redis_client, prepared.job_id)
+    wire[1].extend([responses(job_env)[0], *responses(job_env)[2:]])
+    for _ in range(5):
+        job = run(job_env, redis_client, prepared.job_id)
     assert job.status == "COMPLETE", job.error_code
     with Session(engine) as session:
         stored = session.exec(
-            select(SceneJobPage).where(SceneJobPage.job_id == job.id)
+            select(SceneJobPage).where(
+                SceneJobPage.job_id == job.id, SceneJobPage.resource == "minis"
+            )
         ).one()
         assert stored.facts["options"][0]["name"] == "LemonShow"
     assert ensure(job_env).reason_code == "minis_selection_required"
-    assert len(wire[0]) == 2  # 角色与 Mini 目录；不提前读取全部创建资源。
+    assert len(wire[0]) == 6  # 角色与五类只读资料；尚未确认目标也无需等选择后再读取。
     # 明确路径必须与真实目录中的 ID 完全一致才可自动匹配；随后复用目录。
     with Session(engine) as db, db.begin():
         db.get(
             PromotionLink, job_env["link_id"]
         ).url = "https://www.tiktok.com/minis/real-mini"
     selected = ensure(job_env)
-    assert selected.state == "queued" and selected.job_id != prepared.job_id
+    assert selected.state == "ready" and selected.job_id != prepared.job_id
     with Session(engine) as db:
         selected_job = db.get(SceneJob, selected.job_id)
         assert selected_job.minis_id == "real-mini"
         assert selected_job.facts["minis_catalog_job_id"] == str(job.id)
         assert selected_job.expires_at == job.expires_at
-    wire[1].append(responses(job_env)[0])
-    selected_job = run(job_env, redis_client, selected.job_id)
-    assert selected_job.resource == "cta"  # 无第二次 Mini 目录读取。
-    wire[1].extend(responses(job_env)[2:])
-    for _ in range(4):
-        selected_job = run(job_env, redis_client, selected.job_id)
     assert selected_job.status == "COMPLETE", selected_job.error_code
     assert ensure(job_env).state == "ready"
     assert len(wire[0]) == 6

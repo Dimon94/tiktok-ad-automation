@@ -3,7 +3,7 @@
 import logging
 from datetime import UTC, datetime, timedelta
 from time import monotonic
-from typing import Any, cast
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -15,8 +15,7 @@ from app.core.context import TenantContext
 from app.core.errors import DomainError
 from app.integrations.tiktok.bounded_resources import bounded_session
 from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
-from app.integrations.tiktok.gateway import open_tiktok_gateway
-from app.integrations.tiktok.read_normalization import scene_arguments
+from app.integrations.tiktok.contracts.scenes import ScenePage
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
 from app.jobs.admission import admission_policy
 from app.jobs.models import PendingDispatch
@@ -42,17 +41,17 @@ from .scene import (
     read_scene_context,
 )
 from .scene_job_models import SceneJob, SceneJobPage
+from .scene_reads import (
+    SceneProgress,
+    SceneRead,
+    advance_scene_cursor,
+    open_scene_reads,
+    plan_scene_reads,
+)
 from .scene_schemas import CREATIVE_COMPILER_REVISION, ScenePreparation, SceneResource
 
 TASK_NAME = "builds.refresh_scene"
 REPAIR_SECONDS = 120
-RESOURCES: tuple[SceneResource, ...] = (
-    "identity",
-    "minis",
-    "cta",
-    "vbo",
-    "regions",
-)
 register_dispatch_task(TASK_NAME, "resources")
 logger = logging.getLogger(__name__)
 
@@ -388,6 +387,98 @@ def _payload(payload: dict[str, Any]) -> tuple[UUID, int]:
         raise DomainError("dispatch_payload_invalid", "场景准备任务标识无效") from None
 
 
+def _claimed_scene(
+    session: Session, context: TenantContext, identity: UUID, token: UUID, revision: int
+) -> SceneJob | None:
+    current = _lock_job(session, context.tenant_id, identity, shared_connection=True)
+    if (
+        current is None
+        or current.actor_id != context.actor_id
+        or current.status != "PENDING"
+        or current.revision != revision
+        or current.claim_token != token
+        or current.claimed_until is None
+        or current.claimed_until <= datetime.now(UTC)
+    ):
+        return None
+    _scope_for_job(session, context, current)
+    proof = get_capability_evidence(
+        session,
+        context=context,
+        bc_id=current.bc_id,
+        advertiser_id=current.advertiser_id,
+        connection_id=current.connection_id,
+    )
+    if proof is None or not proof.can_build:
+        raise DomainError("account_build_unverified", "账户能力证据需要重新核实")
+    if current.expires_at and current.expires_at <= datetime.now(UTC):
+        raise DomainError("scene_evidence_expired", "场景证据已过期")
+    return current
+
+
+def _save_scene_page(
+    session: Session,
+    current: SceneJob,
+    read: SceneRead,
+    response: ScenePage,
+    observed: datetime,
+) -> None:
+    facts = response.facts.model_dump(mode="json")
+    merged = _merge(
+        read.previous,
+        facts,
+        resource=read.resource,
+        first=read.page == 1,
+        last=response.last,
+    )
+    if read.page > 1 and facts.get("item_id_hashes"):
+        repeated = session.exec(
+            select(SceneJobPage.id)
+            .where(
+                SceneJobPage.tenant_id == current.tenant_id,
+                SceneJobPage.job_id == current.id,
+                SceneJobPage.resource == read.resource,
+                SceneJobPage.page < read.page,
+                col(SceneJobPage.facts)["item_id_hashes"].op("?|")(
+                    array(facts["item_id_hashes"])
+                ),
+            )
+            .limit(1)
+        ).first()
+        if repeated is not None:
+            raise DomainError("scene_pagination_changed", "远端列表包含重复记录")
+    session.add(
+        SceneJobPage(
+            tenant_id=current.tenant_id,
+            job_id=current.id,
+            resource=read.resource,
+            page=read.page,
+            endpoint=read.operation,
+            request_id=response.evidence.request_id,
+            mcp_request_id=response.evidence.mcp_request_id,
+            remote_task_id=response.evidence.remote_task_id,
+            source_revision=SCENE_CONTRACT_REVISION,
+            scope_basis=current.scope_basis,
+            facts=facts,
+            observed_at=observed,
+        )
+    )
+    current.facts = {**current.facts, read.resource: merged}
+    # 并行返回顺序不代表采集顺序，有效期取最早观察且不能延长复用证据期限。
+    current.first_observed_at = (
+        min(current.first_observed_at, observed)
+        if current.first_observed_at
+        else observed
+    )
+    expires = current.first_observed_at + timedelta(
+        seconds=settings.SCENE_MAX_AGE_SECONDS
+    )
+    current.expires_at = (
+        min(current.expires_at, expires) if current.expires_at else expires
+    )
+    advance_scene_cursor(session, current)
+
+
 def process_scene_job(
     *,
     database_engine: Any,
@@ -396,11 +487,14 @@ def process_scene_job(
     actor_id: UUID,
     payload: dict[str, Any],
     task_deadline: datetime | None = None,
-) -> int | None:
+    max_resources: int = 1,
+    turn_started: float | None = None,
+) -> SceneProgress | None:
     _require_bounded_worker()
     identity, revision = _payload(payload)
     context = TenantContext(tenant_id=tenant_id, actor_id=actor_id, role="operator")
     token, now = uuid4(), datetime.now(UTC)
+    started = monotonic() if turn_started is None else turn_started
     deadline = now + timedelta(seconds=HARD_LIMIT - 5)
     if task_deadline is not None:
         deadline = min(deadline, task_deadline)
@@ -429,21 +523,14 @@ def process_scene_job(
             if job.expires_at and job.expires_at <= now:
                 job.status, job.error_code = "STALE", "scene_evidence_expired"
                 return None
-            if job.resource == "capabilities":
-                job.resource = "identity"
-            resource = cast(SceneResource, job.resource)
-            operation, _ = scene_arguments(
-                resource=resource,
-                advertiser_id=job.advertiser_id,
-                bc_id=job.bc_id,
-                page=job.next_page,
-                minis_id=job.minis_id,
-            )
-            policy = admission_policy(operation)
-            if policy.lease_ms <= (HARD_LIMIT + 5) * 1000:
-                raise DomainError(
-                    "admission_policy_invalid", "场景调用租约短于工作进程硬限"
-                )
+            advance_scene_cursor(session, job)
+            reads = plan_scene_reads(session, job, limit=max_resources)
+            for read in reads:
+                if admission_policy(read.operation).lease_ms <= (HARD_LIMIT + 5) * 1000:
+                    raise DomainError(
+                        "admission_policy_invalid", "场景调用租约短于工作进程硬限"
+                    )
+            route = load_scene_route(job)
         except DomainError as error:
             job.status = (
                 "STALE"
@@ -462,157 +549,70 @@ def process_scene_job(
             token,
             now + timedelta(seconds=CLAIM_SECONDS),
         )
-        page, previous, basis, minis_id, advertiser_id, bc_id, connection_id = (
-            job.next_page,
-            dict(job.facts.get(resource, {})),
-            job.scope_basis,
-            job.minis_id,
-            job.advertiser_id,
-            job.bc_id,
-            job.connection_id,
-        )
+        advertiser_id, minis_id = job.advertiser_id, job.minis_id
 
     def before_request() -> None:
-        # MCP 握手和分页都可能经历权限/claim 变化，每次物理 HTTP 前重验。
-        # 事务仅覆盖本地核实，返回后才允许发出网络请求。
+        # 每个线程只在短事务中核验同一全局 claim，不持锁等待 HTTP。
         with (
             bounded_session(database_engine, task_deadline=deadline) as session,
             session.begin(),
         ):
-            current = _lock_job(session, tenant_id, identity, shared_connection=True)
-            if (
-                current is None
-                or current.actor_id != actor_id
-                or current.status != "PENDING"
-                or current.revision != revision
-                or current.claim_token != token
-                or current.claimed_until is None
-                or current.claimed_until <= datetime.now(UTC)
-            ):
+            if _claimed_scene(session, context, identity, token, revision) is None:
                 raise DomainError("scene_refresh_stale", "场景任务领取已失效")
-            _scope_for_job(session, context, current)
-            proof = get_capability_evidence(
-                session,
-                context=context,
-                bc_id=bc_id,
-                advertiser_id=advertiser_id,
-                connection_id=connection_id,
-            )
-            if proof is None or not proof.can_build:
-                raise DomainError(
-                    "account_build_unverified", "账户能力证据需要重新核实"
-                )
-            if current.expires_at and current.expires_at <= datetime.now(UTC):
-                raise DomainError("scene_evidence_expired", "场景证据已过期")
 
+    resource: SceneResource = reads[0].resource if reads else "identity"
+    read_count = 0
+    errors: list[tuple[SceneResource, Exception]] = []
     try:
-        with bounded_session(database_engine, task_deadline=deadline) as session:
-            current = session.get(SceneJob, identity)
-            if (
-                current is None
-                or current.claim_token != token
-                or current.revision != revision
-            ):
-                return None
-            _scope_for_job(session, context, current)
-            proof = get_capability_evidence(
-                session,
-                context=context,
-                bc_id=bc_id,
-                advertiser_id=advertiser_id,
-                connection_id=connection_id,
-            )
-            if proof is None or not proof.can_build:
-                raise DomainError(
-                    "account_build_unverified", "账户能力证据需要重新核实"
-                )
-            route = load_scene_route(current)
-        observed = datetime.now(UTC)
-        # 工厂拥有连接/凭据/当前权限和每次物理调用准入；数据库事务已关闭。
-        with open_tiktok_gateway(
+        with open_scene_reads(
             database_engine=database_engine,
             redis_client=redis_client,
             context=context,
             route=route,
-            task_deadline=deadline,
+            advertiser_id=advertiser_id,
+            minis_id=minis_id,
+            deadline=deadline,
             before_request=before_request,
-        ) as gateway:
-            response = gateway.scenes.read_page(
-                resource=resource,
-                advertiser_id=advertiser_id,
-                page=page,
-                minis_id=minis_id,
-            )
-        facts, last = response.facts.model_dump(mode="json"), response.last
-        merged = _merge(previous, facts, resource=resource, first=page == 1, last=last)
+            reads=reads,
+            can_start=lambda: (
+                monotonic() - started < 8.0
+                and (deadline - datetime.now(UTC)).total_seconds() >= 5
+            ),
+        ) as outcomes:
+            for outcome in outcomes:
+                read_count += 1
+                read, response = outcome.read, outcome.result
+                resource = read.resource
+                if isinstance(response, Exception):
+                    errors.append((resource, response))
+                    continue
+                with (
+                    bounded_session(database_engine, task_deadline=deadline) as session,
+                    session.begin(),
+                ):
+                    current = _claimed_scene(
+                        session, context, identity, token, revision
+                    )
+                    if current is None:
+                        return None
+                    try:
+                        _save_scene_page(
+                            session, current, read, response, outcome.observed_at
+                        )
+                    except DomainError as error:
+                        # 单页分页证据不完整不抹掉其它独立资源已经提交的成功页。
+                        errors.append((resource, error))
         with (
             bounded_session(database_engine, task_deadline=deadline) as session,
             session.begin(),
         ):
-            current = _lock_job(session, tenant_id, identity, shared_connection=True)
-            if (
-                current is None
-                or current.status != "PENDING"
-                or current.revision != revision
-                or current.claim_token != token
-                or current.claimed_until is None
-                or current.claimed_until <= datetime.now(UTC)
-            ):
+            current = _claimed_scene(session, context, identity, token, revision)
+            if current is None:
                 return None
-            _scope_for_job(session, context, current)
-            proof = get_capability_evidence(
-                session,
-                context=context,
-                bc_id=bc_id,
-                advertiser_id=advertiser_id,
-                connection_id=connection_id,
-            )
-            if proof is None or not proof.can_build:
-                raise DomainError(
-                    "account_build_unverified", "账户能力证据需要重新核实"
-                )
-            if current.expires_at and current.expires_at <= datetime.now(UTC):
-                raise DomainError("scene_evidence_expired", "场景证据已过期")
-            if page > 1 and facts.get("item_id_hashes"):
-                repeated = session.exec(
-                    select(SceneJobPage.id)
-                    .where(
-                        SceneJobPage.tenant_id == tenant_id,
-                        SceneJobPage.job_id == identity,
-                        SceneJobPage.resource == resource,
-                        SceneJobPage.page < page,
-                        col(SceneJobPage.facts)["item_id_hashes"].op("?|")(
-                            array(facts["item_id_hashes"])
-                        ),
-                    )
-                    .limit(1)
-                ).first()
-                if repeated is not None:
-                    raise DomainError(
-                        "scene_pagination_changed", "远端列表包含重复记录"
-                    )
-            session.add(
-                SceneJobPage(
-                    tenant_id=tenant_id,
-                    job_id=identity,
-                    resource=resource,
-                    page=page,
-                    endpoint=operation,
-                    request_id=response.evidence.request_id,
-                    mcp_request_id=response.evidence.mcp_request_id,
-                    remote_task_id=response.evidence.remote_task_id,
-                    source_revision=SCENE_CONTRACT_REVISION,
-                    scope_basis=basis,
-                    facts=facts,
-                    observed_at=observed,
-                )
-            )
-            current.facts = {**current.facts, resource: merged}
-            if current.first_observed_at is None:
-                current.first_observed_at = observed
-                current.expires_at = observed + timedelta(
-                    seconds=settings.SCENE_MAX_AGE_SECONDS
-                )
+            if errors:
+                resource, first_error = errors[0]
+                raise first_error
+            advance_scene_cursor(session, current)
             current.claim_token, current.claimed_until, current.error_code = (
                 None,
                 None,
@@ -620,32 +620,11 @@ def process_scene_job(
             )
             current.failure_count = 0
             current.revision += 1
-            if not last:
-                current.next_page += 1
-            elif (
-                resource != RESOURCES[-1]
-                and current.minis_id is not None
-                # 新 Mini 的全部页读取完成后，四类账户事实已复用，无需重新排队。
-                and not (
-                    resource == "minis" and current.facts.get("reused_scene_job_id")
-                )
-            ):
-                current.resource = RESOURCES[RESOURCES.index(resource) + 1]
-                if current.resource == "minis" and current.facts.get(
-                    "minis_catalog_job_id"
-                ):
-                    current.resource = "cta"
-                current.next_page = 1
+            if current.resource == "done":
+                current.status, current.completed_at = "COMPLETE", datetime.now(UTC)
             else:
-                current.status, current.resource, current.completed_at = (
-                    "COMPLETE",
-                    "done",
-                    datetime.now(UTC),
-                )
-            if current.status == "PENDING":
                 _queue(session, current)
-                # 只返回已提交成功页面的下一代；外部等待、失败和重复消息不能连续读取。
-                return current.revision
+                return SceneProgress(current.revision, read_count)
     except Exception as error:
         if not isinstance(error, AccountAdmissionDeferred):
             logger.exception("scene refresh failed for resource=%s", resource)
@@ -734,26 +713,31 @@ def process_scene_turn(
     actor_id: UUID,
     payload: dict[str, Any],
 ) -> None:
-    """同次领取最多五页，八秒后不再开始下一页；单页共用原任务总期限。"""
+    """独立资源并行，分页依赖串行；整轮仍受五页、八秒启动及四十秒期限约束。"""
     started = monotonic()
     deadline = datetime.now(UTC) + timedelta(seconds=HARD_LIMIT - 5)
     current_payload = payload
-    for _ in range(5):
-        next_revision = process_scene_job(
+    remaining = 5
+    while remaining > 0:
+        progress = process_scene_job(
             database_engine=database_engine,
             redis_client=redis_client,
             tenant_id=tenant_id,
             actor_id=actor_id,
             payload=current_payload,
             task_deadline=deadline,
+            max_resources=remaining,
+            turn_started=started,
         )
         if (
-            next_revision is None
+            progress is None
+            or progress.pages == 0
             or monotonic() - started >= 8.0
             or (deadline - datetime.now(UTC)).total_seconds() < 5
         ):
             return
-        current_payload = {"job_id": payload["job_id"], "revision": next_revision}
+        remaining -= progress.pages
+        current_payload = {"job_id": payload["job_id"], "revision": progress.revision}
 
 
 def repair_scene_jobs(*, database_engine: Any, limit: int = 100) -> int:

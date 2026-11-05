@@ -33,19 +33,20 @@ def test_minis_catalog_resolves_link_without_full_scene_budget_evidence(
             PromotionLink, case["link_id"]
         ).url = "https://www.tiktok.com/minis/synthetic-minis"
     catalog = ensure(database_engine, case)
-    enqueue(gateway_wire, "minis", scene_responses(case)["minis"])
-    job = run(database_engine, redis_client, case, catalog.job_id)
+    for resource in ("minis", "identity", "cta", "vbo", "regions"):
+        enqueue(gateway_wire, resource, scene_responses(case)[resource])
+        job = run(database_engine, redis_client, case, catalog.job_id)
     assert job.status == "COMPLETE" and job.minis_id is None
     assert "budget" not in job.facts
 
-    # 已完成目录用于解析链接，再进入有明确 Minis 的完整场景，不能反复重读目录。
+    # 目录与账户事实提前准备，确认目标后全部复用，不再串行补读四类资料。
     full = ensure(database_engine, case)
-    assert full.state == "queued" and full.job_id != catalog.job_id
+    assert full.state == "ready" and full.job_id != catalog.job_id
     assert ensure(database_engine, case).job_id == full.job_id
     with Session(database_engine) as db:
         assert db.get(SceneJob, catalog.job_id).status == "COMPLETE"
         assert db.get(SceneJob, full.job_id).minis_id == "synthetic-minis"
-    assert len(business_calls(gateway_wire, case["route"].channel)) == 1
+    assert len(business_calls(gateway_wire, case["route"].channel)) == 5
 
 
 @pytest.mark.parametrize("gateway_case", ["OFFICIAL_MCP"], indirect=True)
@@ -183,7 +184,13 @@ def test_one_frozen_job_completes_on_both_channels_without_api_app_for_mcp(
             select(SceneJobPage).where(SceneJobPage.job_id == receipt.job_id)
         ).all()
         assert len(pages) == 5
-        assert {page.resource for page in pages} == {"identity", "minis", "cta", "vbo", "regions"}
+        assert {page.resource for page in pages} == {
+            "identity",
+            "minis",
+            "cta",
+            "vbo",
+            "regions",
+        }
         assert all(page.source_revision and page.endpoint for page in pages)
         if case["route"].channel == "OFFICIAL_MCP":
             assert all(page.mcp_request_id for page in pages)

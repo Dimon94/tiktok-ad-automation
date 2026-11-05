@@ -419,6 +419,32 @@ def test_minis_catalog_available_before_scene_complete(job_env, wire, redis_clie
         assert [item.minis_id for item in result.items] == ["fixture-minis"]
 
 
+def test_completed_minis_catalog_does_not_wait_for_slow_identity(
+    job_env, wire, redis_client
+):
+    from app.modules.builds.mini_selection import draft_minis
+    from app.modules.builds.scene_job_models import SceneJobPage
+
+    env = job_env
+    draft_id, _, catalog = selection_draft(env, wire, redis_client)
+    with Session(engine) as db, db.begin():
+        job = db.get(SceneJob, catalog.id)
+        job.status, job.resource, job.completed_at = "PENDING", "identity", None
+        job.facts = {"minis": job.facts["minis"]}
+        for row in db.exec(
+            select(SceneJobPage).where(
+                SceneJobPage.job_id == catalog.id,
+                SceneJobPage.resource != "minis",
+            )
+        ).all():
+            db.delete(row)
+    with Session(engine) as db:
+        result = draft_minis(db, context=env["context"], draft_id=draft_id)
+        assert result.state == "choose"
+        assert result.catalog_job_id == catalog.id
+        assert result.items[0].minis_id == "fixture-minis"
+
+
 def test_partial_minis_catalog_remains_pending(job_env, wire, redis_client):
     from app.modules.builds.mini_selection import draft_minis
     from app.modules.builds.scene_job_models import SceneJobPage
@@ -543,6 +569,7 @@ def test_minis_selector_search_spans_cached_pages_and_uses_filtered_pagination(
                 **job.facts["minis"],
                 "total_number": 51,
                 "total_page": 2,
+                "seen": 51,
             },
         }
     calls = len(wire[0])
@@ -779,7 +806,7 @@ def test_mini_choice_queues_only_scene_refresh_and_preserves_prepared_inputs(
     assert len(wire[0]) == 6
 
 
-@pytest.mark.parametrize("resource", ["minis", "cta", "done"])
+@pytest.mark.parametrize("resource", ["identity", "minis", "cta", "done"])
 def test_manual_minis_refresh_expires_current_route_catalog(
     job_env, wire, redis_client, resource
 ):

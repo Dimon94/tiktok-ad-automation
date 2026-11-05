@@ -3,8 +3,14 @@
 import pytest
 from sqlmodel import Session, select
 
-from app.modules.builds.scene_job_models import SceneJob, SceneJobPage
-from tests.modules.builds.scene.support import enqueue, ensure, page, run
+from app.modules.builds.scene_job_models import SceneJobPage
+from tests.modules.builds.scene.support import (
+    enqueue,
+    ensure,
+    page,
+    run,
+    scene_responses,
+)
 
 
 @pytest.mark.parametrize(
@@ -15,8 +21,12 @@ def test_repeated_unselected_minis_id_never_completes(
     database_engine, redis_client, scene_case, gateway_wire, cross_page
 ):
     receipt = ensure(database_engine, scene_case)
-    with Session(database_engine) as db, db.begin():
-        db.get(SceneJob, receipt.job_id).resource = "minis"
+    # 先完成真实的身份读取；并行续读由已保存事实决定，不能只改游标冒充前序完成。
+    enqueue(gateway_wire, "identity", scene_responses(scene_case)["identity"])
+    assert (
+        run(database_engine, redis_client, scene_case, receipt.job_id).resource
+        == "minis"
+    )
     if cross_page:
         enqueue(
             gateway_wire,
@@ -35,6 +45,11 @@ def test_repeated_unselected_minis_id_never_completes(
         "scene_pagination_changed",
     }
     with Session(database_engine) as db:
-        pages = db.exec(select(SceneJobPage).where(SceneJobPage.job_id == job.id)).all()
+        pages = db.exec(
+            select(SceneJobPage).where(
+                SceneJobPage.job_id == job.id,
+                SceneJobPage.resource == "minis",
+            )
+        ).all()
         assert len(pages) == int(cross_page)
         assert all(len(row.facts["item_id_hashes"]) <= 50 for row in pages)

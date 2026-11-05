@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import CursorResult, text
+from sqlalchemy import CursorResult, func, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session as SASession
 from sqlmodel import Session, col, select
@@ -298,12 +298,7 @@ def account_catalog(
 ) -> SceneJob | None:
     from .scene import _account_scope
 
-    # 目录资源完成后即可供选择器读取；CTA/VBO/地区仍在后台继续，并在预览时校验。
-    ready_resources = (
-        ("minis", "cta", "vbo", "regions", "done")
-        if resource == "identity"
-        else ("cta", "vbo", "regions", "done")
-    )
+    # 并行返回不再有固定先后；只看本目录完整计数和末页证据，不等待其它资源游标。
     job = session.exec(
         select(SceneJob)
         .where(
@@ -312,11 +307,15 @@ def account_catalog(
             SceneJob.advertiser_id == account,
             SceneJob.media_kind == media_kind,
             SceneJob.connection_id == route.connection_id,
-            col(SceneJob.resource).in_(ready_resources),
+            col(SceneJob.facts)[resource]["seen"].as_integer()
+            == col(SceneJob.facts)[resource]["total_number"].as_integer(),
             select(SceneJobPage.id)
             .where(
                 SceneJobPage.job_id == SceneJob.id,
+                SceneJobPage.tenant_id == SceneJob.tenant_id,
                 SceneJobPage.resource == resource,
+                SceneJobPage.page
+                == func.greatest(1, col(SceneJob.facts)[resource]["total_page"].as_integer()),
             )
             .exists(),
             col(SceneJob.expires_at) > datetime.now(UTC),
@@ -633,7 +632,6 @@ def expire_draft_scene_catalog(
             UPDATE build_scene_job
             SET expires_at = :now
             WHERE tenant_id = :tenant_id
-              AND resource IN ('minis', 'cta', 'vbo', 'regions', 'budget', 'done')
               AND connection_id = :connection_id
               AND frozen_route = CAST(:route AS jsonb)
               AND bc_id = :bc_id
