@@ -82,6 +82,191 @@ def requirements(session):
     }
 
 
+def waiting_successor(session, newer, *, status="WAITING", calls=3):
+    newer.status, newer.claim_generation, newer.request_count = status, 3, calls
+    newer.progress = {
+        **newer.progress,
+        "locate_post": {"next_batch": 2},
+        "checked_ids": ["kept"],
+    }
+    for ref in session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == newer.id)
+    ).all():
+        ref.execution_generation = 3
+        ref.observed_at = datetime.now(UTC) if calls else None
+    session.flush()
+
+
+@pytest.mark.parametrize("status", ["WAITING", "QUEUED"])
+@pytest.mark.parametrize("calls", [0, 3])
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_waiting_successor_carries_all_work_without_resetting_progress(
+    session, sync_seed, status, calls, snapshot
+):
+    old, newer = pair(session, sync_seed)
+    waiting_successor(session, newer, status=status, calls=calls)
+    if snapshot:
+        newer.progress = newer.progress | {
+            "snapshot_observed_at": datetime.now(UTC).isoformat()
+        }
+        session.flush()
+    before = requirements(session)
+    parent = newer.model_dump()
+    refs = {
+        r.id: r.model_dump()
+        for r in session.exec(
+            select(SyncExecutionScope).where(
+                SyncExecutionScope.report_job_id == newer.id
+            )
+        ).all()
+    }
+    assert (
+        supersede_pending_report(
+            session, job_id=old.id, replacement_id=newer.id, now=datetime.now(UTC)
+        )
+        == newer.id
+    )
+    session.refresh(newer)
+    assert newer.model_dump() == parent
+    assert {
+        r.id: r.model_dump()
+        for r in session.exec(
+            select(SyncExecutionScope).where(
+                SyncExecutionScope.report_job_id == newer.id
+            )
+        ).all()
+    } == refs
+    assert old.status == "CANCELLED" and requirements(session) == before
+
+
+@pytest.mark.parametrize(
+    "snapshot", ["before_old", "before_new", "invalid", "naive", "future"]
+)
+def test_waiting_snapshot_must_be_fresh_for_the_actual_completion_path(
+    session, sync_seed, snapshot
+):
+    old, newer = pair(session, sync_seed)
+    waiting_successor(session, newer)
+    child = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == newer.id)
+    ).first()
+    stamp = child.frozen_requested_after - timedelta(days=1)
+    if snapshot == "before_new":
+        stamp = child.frozen_requested_after - timedelta(microseconds=1)
+    elif snapshot == "future":
+        stamp = datetime.now(UTC) + timedelta(days=1)
+    elif snapshot == "naive":
+        stamp = datetime.now(UTC).replace(tzinfo=None)
+    newer.progress = newer.progress | {
+        "snapshot_observed_at": "invalid"
+        if snapshot == "invalid"
+        else stamp.isoformat()
+    }
+    session.flush()
+    before = requirements(session)
+    parent = newer.model_dump()
+    assert (
+        supersede_pending_report(
+            session, job_id=old.id, replacement_id=newer.id, now=datetime.now(UTC)
+        )
+        is None
+    )
+    session.refresh(old)
+    assert old.status == "WAITING" and newer.model_dump() == parent
+    assert requirements(session) == before
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "running",
+        "head",
+        "lease",
+        "future_due",
+        "generation",
+        "published_pending",
+        "missing",
+        "freshness",
+    ],
+)
+def test_started_successor_never_weakens_active_or_coverage_guards(
+    session, sync_seed, unsafe
+):
+    old, newer = pair(session, sync_seed)
+    waiting_successor(session, newer)
+    now = datetime.now(UTC)
+    ref = session.exec(
+        select(SyncExecutionScope).where(SyncExecutionScope.report_job_id == newer.id)
+    ).first()
+    if unsafe == "running":
+        newer.status = "RUNNING"
+    elif unsafe == "head":
+        head = session.exec(select(SyncSchedule)).one()
+        head.lease_execution_id, head.lease_execution_generation = (
+            newer.id,
+            newer.claim_generation,
+        )
+        head.lease_token, head.leased_until = uuid4(), now + timedelta(minutes=1)
+    elif unsafe == "lease":
+        newer.claim_token, newer.claimed_until = uuid4(), now + timedelta(minutes=1)
+    elif unsafe == "future_due":
+        newer.due_at = now + timedelta(days=1)
+    elif unsafe == "generation":
+        ref.execution_generation -= 1
+    elif unsafe == "published_pending":
+        ref.published_version = 1
+    elif unsafe == "missing":
+        session.delete(ref)
+    else:
+        ref.frozen_requested_after -= timedelta(days=1)
+    session.flush()
+    before = requirements(session)
+    assert (
+        supersede_pending_report(
+            session, job_id=old.id, replacement_id=newer.id, now=now
+        )
+        is None
+    )
+    session.refresh(old)
+    assert old.status == "WAITING" and requirements(session) == before
+
+
+def test_waiting_successor_can_resume_through_normal_dispatch_and_publish(
+    committed_sync_seed,
+):
+    from app.modules.reporting.jobs import execute_job
+    from tests.modules.reporting.claiming import claim_jobs
+
+    seed, factory = committed_sync_seed
+    with factory() as db, db.begin():
+        old, newer = pair(db, seed)
+        waiting_successor(db, newer)
+        old_id, new_id = old.id, newer.id
+        before = requirements(db)
+        assert (
+            supersede_pending_report(
+                db, job_id=old_id, replacement_id=new_id, now=datetime.now(UTC)
+            )
+            == new_id
+        )
+        assert requirements(db) == before
+    with factory() as db, db.begin():
+        jobs = claim_jobs(db, now=datetime.now(UTC) + timedelta(seconds=1), limit=8)
+        job = next(j for j in jobs if j.id == new_id)
+        token = job.claim_token
+    assert (
+        execute_job(factory, job_id=new_id, claim_token=token, reader=object())
+        == "COMPLETE"
+    )
+    with factory() as db:
+        assert db.get(ReportSyncJob, old_id).status == "CANCELLED"
+        assert db.get(ReportSyncJob, new_id).status == "COMPLETE"
+        assert all(
+            r.satisfied_revision == r.desired_revision
+            for r in db.exec(select(SyncRequirement)).all()
+        )
+
+
 def test_newer_pending_job_can_replace_old_without_satisfying_missing_data(
     session, sync_seed
 ):

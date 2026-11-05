@@ -1,4 +1,4 @@
-"""未开始的新补链执行已承接全部需求时，安全取消相同范围的旧执行。"""
+"""较新的待执行补链已完整承接需求时，取消同范围的旧执行，保留续步。"""
 
 import json
 from datetime import datetime
@@ -51,7 +51,7 @@ def _compact(
     _require(old.contract_version == 2 and old.kind == "material_links")
     _require(old.status in {"QUEUED", "WAITING"})
     _require(old.claim_token is None and old.claimed_until is None)
-    # 先发现最新活跃执行；它已开始时整组跳过，不能偷偷选择次新的执行。
+    # 先找最新活跃执行；正在运行或承接不完整时整组跳过，不能退选次新执行。
     predicates = [
         getattr(ReportSyncJob, field) == getattr(old, field)
         for field in IDENTITY_FIELDS
@@ -103,21 +103,39 @@ def _compact(
         and old.claim_token is None
         and old.claimed_until is None
     )
-    _require(
-        newer.status == "QUEUED"
-        and newer.claim_generation == 0
-        and newer.request_count == 0
-    )
+    _require(newer.status in {"QUEUED", "WAITING"})
     _require(newer.claim_token is None and newer.claimed_until is None)
     _require(newer.due_at <= max(old.due_at, now))
-    _require(
-        session.exec(
-            select(ReportSyncJob.id).where(
-                col(ReportSyncJob.id) == newer.id, *_strictly_unstarted()
+    if newer.claim_generation == 0:
+        # 零代数仍必须是真正未开始，不能把不明观察/缓存伪装成新任务。
+        _require(newer.status == "QUEUED" and newer.request_count == 0)
+        _require(
+            session.exec(
+                select(ReportSyncJob.id).where(
+                    col(ReportSyncJob.id) == newer.id, *_strictly_unstarted()
+                )
+            ).first()
+            == newer.id
+        )
+    else:
+        # 已续步的等待任务可承接重复执行；其进度与冻结引用只读，不重置重试。
+        # RUNNING、父租约和有效调度头租约仍由独立保护拒绝，不触碰在途任务。
+        _require(newer.claim_generation > 0)
+    completion_observed_at = now
+    if "snapshot_observed_at" in newer.progress:
+        # 正常完成优先使用父任务冻结快照时间；不能只看子引用的版本/观察字段。
+        # 旧快照即使保留了新引用，也可能 COMPLETE 而无法满足冻结需求。
+        try:
+            completion_observed_at = datetime.fromisoformat(
+                newer.progress["snapshot_observed_at"]
             )
-        ).first()
-        == newer.id
-    )
+        except (TypeError, ValueError):
+            raise _Skip from None
+        _require(
+            completion_observed_at.tzinfo is not None
+            and completion_observed_at.utcoffset() is not None
+            and completion_observed_at <= now
+        )
     # 完整读取两边引用，超限整组跳过；不以截断的前512条证明整个旧执行可删。
     refs = session.exec(
         select(SyncExecutionScope)
@@ -225,13 +243,16 @@ def _compact(
         _require(child.owner_epoch == successor.owner_epoch == old.owner_epoch)
         _require(
             child.execution_generation == old.claim_generation
-            and successor.execution_generation == 0
+            and successor.execution_generation == newer.claim_generation
         )
-        _require(successor.observed_at is None and successor.published_version is None)
+        _require(successor.published_version is None)
+        if newer.claim_generation == 0:
+            _require(successor.observed_at is None)
         _require(
             successor.frozen_revision >= child.frozen_revision
             and successor.frozen_requested_after >= child.frozen_requested_after
         )
+        _require(completion_observed_at >= successor.frozen_requested_after)
         _require(requirement.desired_revision >= successor.frozen_revision)
     before = {
         r.id: (r.desired_revision, r.satisfied_revision, r.requested_after)
