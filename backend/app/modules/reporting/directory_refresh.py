@@ -94,6 +94,7 @@ def refresh_report_directory(
         frozen_route=job.frozen_route,
         advertiser_ids=job.advertiser_ids,
         now=now,
+        _single_account_report=True,
     ).created
 
 
@@ -107,20 +108,38 @@ def refresh_account_directory(
     advertiser_ids: Sequence[str],
     now: datetime | None = None,
     max_refs: int | None = None,
+    _single_account_report: bool = False,
 ) -> DirectoryRefreshResult:
-    """复用已发布事实补目录；可分ID片，已排请求由原在途覆盖充当续读断点。"""
+    """复用已发布事实补目录；已排请求充当续读断点。
+
+    单户热报入口在其事务内只调用一次；不能先走该共享围栏，再在同事务
+    调用默认的BC排他规划，以免并发锁升级死锁。健康轮转始终用默认路径。
+    """
     if not settings.ADS_SYNC_ENABLED or not advertiser_ids:
         return DirectoryRefreshResult(0, True)
     from app.modules.reporting.planner import REFRESH_MARGIN
 
     now = now or datetime.now(UTC)
-    # 先取得规划锁再读取目录年龄和在途运行，保证并发发布看到前一事务的完整计划。
-    # 热报发布与健康修复共用此锁；用户操作后的回读仍走既有独立路径。
+    # 单户热报只互斥同户；BC共享围栏让不同户并行，仍与跨户健康规划互斥。
+    # 健康修复同事务会轮转多户，必须保留BC排他锁，避免账户锁反序等待。
+    # 原BC排他键也保护滚动发布期间尚未退出的旧进程，不留下规划去重空窗。
+    account_report = _single_account_report and len(set(advertiser_ids)) == 1
     with diagnostics.stage("directory_lock"):
         session.connection().execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+            text(
+                "SELECT pg_advisory_xact_lock_shared(hashtextextended(:scope, 0))"
+                if account_report
+                else "SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"
+            ),
             {"scope": f"report-directory:{tenant_id}:{bc_id}"},
         )
+        if account_report:
+            session.connection().execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+                {
+                    "scope": f"report-directory-account:{tenant_id}:{bc_id}:{advertiser_ids[0]}"
+                },
+            )
     with diagnostics.stage("directory_rules"):
         strict_accounts = rule_accounts(
             session,

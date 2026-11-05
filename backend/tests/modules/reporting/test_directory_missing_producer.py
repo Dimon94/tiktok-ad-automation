@@ -64,7 +64,10 @@ def test_pending_missing_promotes_existing_identity_without_new_run(
         for r in runs
     }
     assert refresh_report_directory(session, job) == 0
-    assert all(r.query.get(KEY) == "status_missing" for r in runs)
+    # 显式身份依赖必须保留素材补读意图；晋升调度不能降格为只读状态。
+    # 生产既有合同已保留identity，旧断言误将其要求为status_missing。
+    expected = "identity" if service == "identity" else "status_missing"
+    assert all(r.query.get(KEY) == expected for r in runs)
     assert {
         (r.id, r.partition_key, r.created_at, r.request_sequence, r.claim_generation)
         for r in session.exec(select(AdDirectoryRun)).all()
