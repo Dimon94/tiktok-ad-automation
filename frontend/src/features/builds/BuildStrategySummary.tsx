@@ -12,6 +12,8 @@ import { normalizeDecimal } from "@/features/strategies/validation"
 
 export function BuildStrategySummary({ version }: { version: VersionPublic }) {
   const config = version.config
+  const creationStatus =
+    config.creation_status === "DISABLE" ? "创建后停用" : "创建后启用"
   const budget = `${config.budget_strategy === "ADGROUP" ? "组预算" : "系列预算"} ${config.currency} ${normalizeDecimal(config.budget)}`
   const bid =
     config.bid_strategy === "TARGET_ROAS"
@@ -23,7 +25,7 @@ export function BuildStrategySummary({ version }: { version: VersionPublic }) {
         策略摘要 · v{version.number}
       </span>
       <p className="min-w-0 flex-1 text-xs text-muted-foreground">
-        {budget} · {bid} ·{" "}
+        {creationStatus} · {budget} · {bid} ·{" "}
         {config.group_generation_mode === "BY_MATERIAL"
           ? "按素材分组"
           : `固定 ${config.group_count} 组`}
@@ -42,6 +44,8 @@ export function BuildStrategySummary({ version }: { version: VersionPublic }) {
             </DialogDescription>
           </DialogHeader>
           <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
+            <dt className="text-muted-foreground">创建状态</dt>
+            <dd>{creationStatus}</dd>
             <dt className="text-muted-foreground">预算</dt>
             <dd>{budget}</dd>
             <dt className="text-muted-foreground">出价</dt>

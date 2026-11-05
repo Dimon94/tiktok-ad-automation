@@ -491,7 +491,7 @@ def test_pagination_binds_scope_snapshot_generation_and_revision(session, image_
         list_creative_units(session, scope, cursor=page.next_cursor)
 
 
-def test_new_carousel_draft_reaches_candidates_without_video_scene(
+def test_new_carousel_draft_prepares_image_scene_after_matching_candidates(
     session, context, monkeypatch
 ):
     from app.modules.builds import drafts
@@ -513,13 +513,19 @@ def test_new_carousel_draft_reaches_candidates_without_video_scene(
     )
     ready_links(session, context, task, intent)
 
-    def video_scene(*_args, **_kwargs):
-        pytest.fail("图片准备不能调用视频场景")
+    from app.modules.builds.scene_schemas import ScenePreparation
 
-    monkeypatch.setattr(drafts, "_scenes_page", video_scene)
+    scenes = []
+
+    def image_scene(_session, **kwargs):
+        scenes.append(kwargs)
+        return ScenePreparation(None, "blocked", "fixture_scene_unavailable")
+
+    monkeypatch.setattr(drafts, "ensure_scene_preparation", image_scene)
     finish(session, context, task)
     scope = resolve_image_scope(session, context=context, draft_id=identity)
     assert list_candidates(session, scope).total == 1
+    assert len(scenes) == 1 and scenes[0]["media_kind"] == "CAROUSEL"
     assert not session.exec(
         select(DraftGroupMaterial).where(DraftGroupMaterial.draft_id == identity)
     ).all()
@@ -528,6 +534,36 @@ def test_new_carousel_draft_reaches_candidates_without_video_scene(
         session, scope, uuid4(), draft.revision, ImageRule(), {}, "PRESERVE_MANUAL"
     )
     assert plan["unit_count"] == 1 and not plan["conflicts"]
+
+
+def test_carousel_selection_rebuilds_scene_without_replacing_composition(
+    session, context, image_draft, monkeypatch
+):
+    from app.modules.builds import drafts
+    from app.modules.builds.models import DraftPreparation
+    from app.modules.builds.scene_schemas import ScenePreparation
+
+    draft, _, scope = image_draft
+    units = apply_rule(session, image_draft)
+    generation = draft.active_image_generation
+    scenes = []
+
+    def image_scene(_session, **kwargs):
+        scenes.append(kwargs)
+        return ScenePreparation(None, "blocked", "fixture_scene_unavailable")
+
+    monkeypatch.setattr(drafts, "ensure_scene_preparation", image_scene)
+    draft.status = "DRAFT"
+    task = drafts.prepare_selected_mini(
+        session, context=context, draft_id=draft.id, request_id=uuid4()
+    )
+    assert session.get(DraftPreparation, task).phase == "scenes"
+    drafts.continue_draft(session, context=context, task_id=task)
+    assert len(scenes) == 1 and scenes[0]["media_kind"] == "CAROUSEL"
+    assert draft.active_image_generation == generation
+    assert [u["id"] for u in list_creative_units(session, scope).items] == [
+        u["id"] for u in units
+    ]
 
 
 def test_cross_drama_allocation_and_explicit_reuse_are_resolvable(session, context):

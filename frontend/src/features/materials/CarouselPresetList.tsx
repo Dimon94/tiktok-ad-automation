@@ -1,26 +1,26 @@
-import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { MaterialsService, type CarouselPresetPublic } from "@/client"
+import { useState } from "react"
+import { type CarouselPresetPublic, MaterialsService } from "@/client"
+import { Button } from "@/components/ui/button"
 import {
   Card,
+  CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
-  CardDescription,
-  CardContent,
 } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog"
-import { RequestError } from "@/features/tenants/shared"
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import { change } from "@/features/builds/imageCompositionApi"
+import { RequestError } from "@/features/tenants/shared"
 export function CarouselPresetList({
   tenantId,
   write,
@@ -83,10 +83,15 @@ export function CarouselPresetList({
       <CardHeader>
         <CardTitle>轮播库</CardTitle>
         <CardDescription>
-          独立版本保存图片顺序与已选曲目，加载后仍需核验投放资格。
+          保存可复用的图片组合、顺序与已选音乐。上传图片后，在广告搭建的「准备与调整
+          → 查看与调整轮播」中组合并选择「存入轮播库」。
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        <p className="text-sm text-muted-foreground">
+          再次使用时，在对应剧目的「查看与调整轮播 →
+          从轮播库添加」中加载；加载后的修改独立保存。首次搭建可直接使用图片，无需先存入轮播库。
+        </p>
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="carousel-search">搜索轮播</FieldLabel>

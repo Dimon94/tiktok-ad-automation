@@ -4,7 +4,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 export const namingHint =
-  "请在素材文件名中包含完整剧目名称。广告搭建时，系统会根据剧名自动匹配素材。"
+  "请在图片或视频文件名中包含素材标识或完整剧名。搭建时优先按填写的素材标识匹配，留空才按剧名匹配。"
 export const stages: Record<string, string> = {
   registering: "正在登记导入文件",
   sealed: "文件登记完整",
@@ -105,11 +105,13 @@ const errors: Record<string, string> = {
   unsupported_image: "仅支持静态 JPG、PNG 图片，暂不支持动画或多帧图片。",
   image_pixel_limit: "图片像素超过服务运行上限，请选择尺寸较小的图片。",
   image_type_mismatch: "图片实际内容与声明类型不一致，请核对文件格式。",
-  image_source_unavailable: "当前 BC 尚无已核实的图片来源，请先在该 BC 上传或恢复来源授权。",
+  image_source_unavailable:
+    "当前 BC 尚无已核实的图片来源，请先在该 BC 上传或恢复来源授权。",
   image_preview_unavailable: "平台暂未返回可用的图片预览地址，请稍后重试。",
   image_not_carousel_usable: "平台回读确认此图片暂不可用于轮播，请更换图片。",
   image_share_failed: "目标账户图片共享未成功，请查看该账户核实结果。",
-  image_reconciliation_ambiguous: "目标账户存在多个候选图片，暂无法确定本次上传结果。",
+  image_reconciliation_ambiguous:
+    "目标账户存在多个候选图片，暂无法确定本次上传结果。",
   image_source_frozen: "已有图片任务的来源账户已冻结，不能直接更换。",
   image_material_required: "此操作只接受图片原始素材。",
   image_distribution_limit: "图片分发每次最多 100 个账户素材对。",

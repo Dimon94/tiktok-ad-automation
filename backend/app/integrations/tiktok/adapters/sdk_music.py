@@ -375,9 +375,16 @@ class SDKMusicOperations:
                     "music_request_failed", effect="UNKNOWN", evidence=CallEvidence()
                 ) from None
             budget.timeout(upload=False)
-            return self._parse(raw, page=page, headers=headers)
+            return self._parse(
+                raw,
+                page=page,
+                headers=headers,
+                recommendation=search_type == "SEARCH_BY_RECOMMEND",
+            )
 
-    def _parse(self, raw: bytes, *, page: int, headers: Any) -> MaterialPage[MusicItem]:
+    def _parse(
+        self, raw: bytes, *, page: int, headers: Any, recommendation: bool = False
+    ) -> MaterialPage[MusicItem]:
         evidence = CallEvidence()
         try:
             if len(raw) > _MAX_BODY:
@@ -418,8 +425,12 @@ class SDKMusicOperations:
             if (
                 info["page"] != page
                 or type(info["page"]) is not int
-                or info["page_size"] != _PAGE_SIZE
                 or type(info["page_size"]) is not int
+                # 推荐接口可将请求的 100 收窄为实际候选数（真实回执为 98）；
+                # 搜索/按ID读取仍校验请求页大小，推荐保留实际分页事实。
+                or not 1 <= info["page_size"] <= _PAGE_SIZE
+                or not recommendation
+                and info["page_size"] != _PAGE_SIZE
                 or type(info["total_number"]) is not int
             ):
                 raise ValueError("unexpected page")
@@ -429,7 +440,7 @@ class SDKMusicOperations:
             return MaterialPage(
                 rows,
                 page,
-                _PAGE_SIZE,
+                info["page_size"],
                 info["total_page"],
                 info["total_number"],
                 evidence,

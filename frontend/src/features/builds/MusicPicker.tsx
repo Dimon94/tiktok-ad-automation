@@ -80,6 +80,10 @@ export function MusicPicker({
         {!!(error || query.error) && (
           <RequestError error={error || query.error} />
         )}
+        {query.isFetching && <p role="status">正在搜索音乐…</p>}
+        {query.isSuccess && !query.isFetching && !query.data.items.length && (
+          <p role="status">没有找到匹配的音乐，请更换关键词。</p>
+        )}
         <div className="flex max-h-72 flex-col gap-3 overflow-y-auto">
           {query.data?.items.map((song) => (
             <div key={song.music_id} className="flex flex-col gap-2">
@@ -94,6 +98,7 @@ export function MusicPicker({
               {song.preview_url && (
                 <audio
                   controls
+                  preload="none"
                   src={song.preview_url}
                   aria-label={`试听 ${song.display_name}`}
                 />

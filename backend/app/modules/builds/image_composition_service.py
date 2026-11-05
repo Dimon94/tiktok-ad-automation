@@ -1510,8 +1510,9 @@ def prepare_image_candidates(session, context, draft, prep):
             )
         state.snapshot_id = snapshot.id
     _sync_candidate_counts(session, scope, state.snapshot_id)
-    prep.status, prep.phase = "READY", "done"
-    draft.status = "READY"
+    # 候选就绪后继续准备图片场景，读取小程序、身份和地区；不能在此提前结束。
+    # 场景链路按 draft.media_kind 隔离缓存，不借用视频场景。
+    prep.phase = "scenes"
 
 
 def exclude_candidates(

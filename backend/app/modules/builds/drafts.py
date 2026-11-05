@@ -568,9 +568,8 @@ def prepare_selected_mini(
         draft_revision=draft.revision,
         actor_id=context.actor_id,
         request_id=request_id,
-        # 剧目、账户、链接和素材沿用上一版本；视频校验场景，图片只复核候选。
-        # CAROUSEL 的格式场景与最终预览门禁由 P3 接入，不能借视频资格放行。
-        phase="materials" if draft.media_kind == "CAROUSEL" else "scenes",
+        # 选择小程序或身份后只重建同媒体类型的场景依赖，保留已有图片组合。
+        phase="scenes",
         provider_task_id=previous.provider_task_id if previous else None,
     )
     return _enqueue_draft_preparation(session, context, draft, prep, route, request_id)
@@ -1200,12 +1199,7 @@ def continue_draft(session: Session, *, context: TenantContext, task_id: UUID) -
         else:
             _materials_page(session, context, draft, prep)
     elif prep.phase == "scenes":
-        if draft.media_kind == "CAROUSEL":
-            from .image_composition_service import prepare_image_candidates
-
-            prepare_image_candidates(session, context, draft, prep)
-        else:
-            _scenes_page(session, context, draft, prep)
+        _scenes_page(session, context, draft, prep)
     draft.updated_at = datetime.now(UTC)
     session.add_all([prep, draft])
     session.flush()

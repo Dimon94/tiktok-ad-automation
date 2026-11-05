@@ -376,6 +376,20 @@ def test_recommend_first_page_marks_truncated_without_fabricated_cursor(music_sd
     assert len(result.items) == 100
 
 
+def test_recommend_accepts_actual_page_size_returned_by_platform(music_sdk):
+    opened, replies, _, budget, _, _ = music_sdk
+    response = envelope([music_row(f"m-{i}", duration=47) for i in range(98)])
+    response["data"]["page_info"]["page_size"] = 98
+    replies.append(response)
+    result = opened().recommend(
+        advertiser_id="123",
+        image_urls=("https://images.test/1", "https://images.test/2"),
+        budget=budget,
+    )
+    assert len(result.items) == 98
+    assert result.next_cursor is None and result.truncated is False
+
+
 def test_read_missing_ids_stay_missing_and_page_mismatch_rejected(music_sdk):
     opened, replies, _, budget, _, _ = music_sdk
     replies.append(envelope())
