@@ -1,3 +1,9 @@
+## 2026-11-05 整批热报账户并行已上线
+
+当前精确应用`1d352165e64b9b914ec4a0b3c5a5c35fa0f0baf4`/schema0101。11角色Ready、9Celery、唯一Beat、精确镜像/配置/四开关/DB池/HTTPS、实际8与typed8/prefetch12均验收，原资源/策略/退出宽限保持；发布锁释放，CI恢复。所有report批次BC shared→整批账户排序exclusive，health/default仍BCexclusive。新高峰253热报真实COMPLETE；相同5户批次规划等待p95 5.272秒→0.017秒，但不是整体提速比例或连续接口满额。没有迁移、配置/额度/Worker扩容、新备份/恢复演练。详见[生产与高峰对照](../validation/2026-11-05-report-batch-directory-lock.md)。
+
+以下为历史阶段，旧“当前/最新”以本段精确版本为准。
+
 ## 2026-11-05 热报目录账户并行已上线
 
 当前精确应用`fafccb43d2c2ebd6e3ef602fa172d0083cd28b12`/schema0101。11角色Ready、9Celery、唯一Beat、精确镜像/配置/四开关/DB池/HTTPS、实际8与typed8/prefetch12均验收，原资源/策略/退出宽限保持；发布锁释放，CI恢复。单户热报BC shared→账户exclusive，health/default/多户保留BCexclusive，新旧版本互斥无去重空窗。没有迁移、配置/额度/Worker扩容或新备份/恢复演练；固定窗口业务结果见[验证与观察](../validation/2026-11-05-report-directory-lock-scope.md)。
