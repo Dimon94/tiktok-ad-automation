@@ -20,7 +20,7 @@ test("搭建页还原紧凑布局，侧栏收窄且宽屏不留大块空白", as
     const operations = page.getByRole("region", { name: "搭建操作" })
     await expect
       .poll(async () => Math.round((await sidebar.boundingBox())!.width))
-      .toBe(194)
+      .toBe(232)
     const bounds = (await config.boundingBox())!
     expect(bounds.height).toBeLessThanOrEqual(230)
     expect(width - bounds.x - bounds.width).toBeLessThanOrEqual(24)

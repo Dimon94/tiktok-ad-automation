@@ -42,9 +42,9 @@ export function WorkspaceShell({
   bcSelector,
   platform = false,
 }: WorkspaceShellProps) {
-  // 按确认原型保留紧凑的 194px 桌面导航；移动抽屉和图标折叠沿用原交互。
+  // 桌面导航适度留宽，平衡菜单可读性与主区紧凑布局；移动抽屉和图标折叠沿用原交互。
   return (
-    <SidebarProvider style={{ "--sidebar-width": "194px" } as CSSProperties}>
+    <SidebarProvider style={{ "--sidebar-width": "232px" } as CSSProperties}>
       <a href="#workspace-main" className="skip-link">
         跳转到主要内容
       </a>
