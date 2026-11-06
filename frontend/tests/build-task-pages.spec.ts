@@ -543,6 +543,59 @@ test("异常定位与操作记录只读按需查询，并保留平台ENABLE的�
   expect(api.requests.every((r) => r.method === "GET")).toBe(true)
 })
 
+test("广告前置失败时直接显示广告组的平台错误文案、错误码和请求编号", async ({
+  page,
+}) => {
+  const api = await boundary(page)
+  api.step.status = "FAILED"
+  api.step.error_code = "dependency_failed"
+  await page.route("**/api/tenants/*/submissions/*/events*", async (route) => {
+    expect(new URL(route.request().url()).searchParams.get("step_id")).toBe(E)
+    expect(route.request().method()).toBe("GET")
+    await route.fulfill({
+      json: {
+        items: [
+          {
+            evidence_id: E,
+            step_id: G,
+            unit_id: U,
+            kind: "ADGROUP",
+            attempt: 1,
+            conclusion: "REMOTE_REJECTED",
+            title: "真实剧目",
+            advertiser_id: api.step.advertiser_id,
+            account_name: "真实账户",
+            observed_at: "2026-09-09T01:05:00Z",
+            remote_code: 40002,
+            remote_message:
+              "Invalid value for field targeting_optimization_mode: MANUAL",
+            request_id: "platform-request-40002",
+          },
+        ],
+        next_cursor: null,
+      },
+    })
+  })
+  await page.goto(
+    `/tenants/${T}/build-tasks/${ID}?bc_id=${BC}&tab=issues&result=FAILED`,
+  )
+  await page.getByRole("button", { name: "查看原因", exact: true }).click()
+  const dialog = page.getByRole("dialog", { name: "结果与处理建议" })
+  await expect(
+    dialog.getByText(
+      "Invalid value for field targeting_optimization_mode: MANUAL",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    dialog.getByText("TikTok 错误码：40002", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    dialog.getByText("platform-request-40002", { exact: true }),
+  ).toBeVisible()
+  expect(api.requests.every((request) => request.method === "GET")).toBe(true)
+})
+
 test("组内素材分页展示实际目标VID，点击原件才请求短期预览", async ({
   page,
 }) => {

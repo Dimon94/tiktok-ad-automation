@@ -15,11 +15,11 @@ from typing import Any
 import business_api_client as sdk  # type: ignore[import-untyped]
 
 from app.core.errors import DomainError
-from app.integrations.tiktok.adapters.build_results import safe_identifier
 from app.integrations.tiktok.contracts.common import (
     CallEvidence,
     RemoteCallError,
     exact_json_number,
+    safe_identifier,
 )
 from app.integrations.tiktok.contracts.management import (
     MANAGEMENT_OPERATIONS,

@@ -1,3 +1,5 @@
+import re
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal
 from math import isfinite
@@ -6,13 +8,57 @@ from typing import Any, Literal
 from app.core.errors import DomainError
 
 
+def safe_identifier(value: object) -> str | None:
+    return (
+        value
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value)
+        else None
+    )
+
+
+def safe_remote_message(value: object) -> str | None:
+    """保留平台参数说明；凭据、签名链接和控制字符不能进入回执或页面。"""
+    if not isinstance(value, str) or len(value) > 8192:
+        return None
+    message = "".join(
+        " "
+        if char.isspace()
+        else ""
+        if unicodedata.category(char).startswith("C")
+        else char
+        for char in value
+    )
+    message = re.sub(r"(?i)\b(?:https?|s3)://[^\s<>\"']+", "[REDACTED]", message)
+    message = re.sub(r"(?i)\b(?:Bearer|Basic)\s+[^\s\"',;]+", "[REDACTED]", message)
+    message = re.sub(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+\b", "[REDACTED]", message)
+    message = re.sub(r"(?i)\b(?:set-cookie|cookie)\s*:\s*.*", "[REDACTED]", message)
+    message = re.sub(
+        r"""(?ix)\b(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|
+        app[_-]?secret|password|passwd|signature|x-amz-[\w-]+|authorization|
+        api[_-]?key|cookie|token|secret)\b["']?\s*[:=]\s*
+        (?:"[^"]*"|'[^']*'|[^\s,;}\]]+)""",
+        "[REDACTED]",
+        message,
+    )
+    message = " ".join(message.split())
+    if not message.replace("[REDACTED]", "").strip(" \"',;:{}[]"):
+        return None
+    return message[:1000]
+
+
 @dataclass(frozen=True)
 class CallEvidence:
     request_id: str | None = None
     mcp_request_id: str | None = None
     remote_task_id: str | None = None
-    # 仅保存通过业务 envelope 校验的数字错误码，不携带可能含凭据的原始文案。
+    # 错误文案在最早的回执边界脱敏，不能把原始响应或凭据带入异常。
     remote_code: int | None = None
+    remote_message: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "remote_message", safe_remote_message(self.remote_message)
+        )
 
 
 def exact_json_number(value: Decimal) -> int | float | None:

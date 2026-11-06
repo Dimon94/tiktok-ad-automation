@@ -584,11 +584,25 @@ def get_submission_events(
                 raise ValueError
         except ValueError, TypeError:
             raise DomainError("invalid_cursor", "分页游标无效") from None
+    # 广告的 dependency_failed 没有平台响应；最多追溯广告组、系列两级失败祖先。
+    # 每级都限定同一租户和任务，保留原记录的步骤身份及时间，不把父错误伪装成子错误。
+    event_scope = """WITH RECURSIVE event_steps AS (
+ SELECT e.id,e.parent_step_id,e.error_code,0 depth FROM execution_step e
+ WHERE e.tenant_id=:tenant AND e.submission_id=:submission AND e.id=CAST(:step AS uuid)
+ UNION ALL
+ SELECT p.id,p.parent_step_id,p.error_code,c.depth+1
+ FROM event_steps c JOIN execution_step p ON p.id=c.parent_step_id
+ WHERE p.tenant_id=:tenant AND p.submission_id=:submission
+ AND c.error_code='dependency_failed' AND p.status='FAILED' AND c.depth<2
+)
+"""
+    step_filter = (
+        "(CAST(:step AS uuid) IS NULL OR v.step_id IN (SELECT id FROM event_steps))"
+    )
     total = _scalar_count(
         session,
-        "SELECT count(*) FROM step_evidence WHERE tenant_id=:tenant "
-        "AND submission_id=:submission "
-        "AND (CAST(:step AS uuid) IS NULL OR step_id=:step)",
+        event_scope + "SELECT count(*) FROM step_evidence v WHERE v.tenant_id=:tenant "
+        "AND v.submission_id=:submission AND " + step_filter,
         {
             "tenant": context.tenant_id,
             "submission": submission_id,
@@ -598,15 +612,21 @@ def get_submission_events(
     rows = (
         cast(SASession, session)
         .execute(
-            # 仅补充业务定位字段；原始请求、响应与授权证据仍不进入公开日志。
-            text("""SELECT v.id evidence_id,v.step_id,v.attempt,v.conclusion,v.observed_at,e.unit_id,e.kind,
+            # 仅投影错误说明与关联编号；整个 summary、请求正文及授权证据不公开。
+            text(
+                event_scope
+                + """SELECT v.id evidence_id,v.step_id,v.attempt,v.conclusion,v.observed_at,e.unit_id,e.kind,
+ v.request_id,v.summary->'remote_code' remote_code,v.summary->'remote_message' remote_message,
  d.title,u.advertiser_id,ac.name account_name
  FROM step_evidence v JOIN execution_step e ON e.tenant_id=v.tenant_id AND e.submission_id=v.submission_id AND e.id=v.step_id
  JOIN build_unit u ON u.tenant_id=e.tenant_id AND u.preview_id=e.preview_id AND u.id=e.unit_id
  JOIN preview_drama d ON d.tenant_id=u.tenant_id AND d.preview_id=u.preview_id AND d.drama_id=u.drama_id
  LEFT JOIN advertiser_account ac ON ac.tenant_id=u.tenant_id AND ac.advertiser_id=u.advertiser_id
- WHERE v.tenant_id=:tenant AND v.submission_id=:submission AND (CAST(:step AS uuid) IS NULL OR v.step_id=:step)
- AND (CAST(:after_at AS timestamptz) IS NULL OR (v.observed_at,v.id)<(:after_at,CAST(:after_id AS uuid))) ORDER BY v.observed_at DESC,v.id DESC LIMIT :size"""),
+ WHERE v.tenant_id=:tenant AND v.submission_id=:submission AND """
+                + step_filter
+                + """
+ AND (CAST(:after_at AS timestamptz) IS NULL OR (v.observed_at,v.id)<(:after_at,CAST(:after_id AS uuid))) ORDER BY v.observed_at DESC,v.id DESC LIMIT :size"""
+            ),
             {
                 "tenant": context.tenant_id,
                 "submission": submission_id,

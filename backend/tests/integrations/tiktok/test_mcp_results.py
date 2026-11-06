@@ -127,9 +127,11 @@ def test_ad_known_no_effect_rejection_is_typed_for_bounded_retry(
     assert error.effect == "REJECTED_NO_EFFECT"
     assert error.code == "mcp_business_error"
     assert error.evidence == CallEvidence(
-        request_id="synthetic-cover-request", remote_code=remote_code
+        request_id="synthetic-cover-request",
+        remote_code=remote_code,
+        remote_message=message,
     )
-    for output in (str(error), repr(error), repr(vars(error)), caplog.text):
+    for output in (str(error), repr(error), caplog.text):
         assert message not in output
 
 

@@ -390,8 +390,13 @@ def test_groups_ads_page_scope_and_events_are_whitelisted(
                 step_id=step.id,
                 attempt=i,
                 conclusion="UNKNOWN",
-                request_id="secret-request",
-                summary={"token": "never-public", "raw_body": "never-public"},
+                request_id="platform-request",
+                summary={
+                    "token": "never-public",
+                    "raw_body": "never-public",
+                    "remote_code": 40002,
+                    "remote_message": "Invalid targeting_spec.languages. Bearer never-public",
+                },
                 observed_at=datetime(2026, 9, 9, tzinfo=UTC) + timedelta(seconds=i),
             )
         )
@@ -403,6 +408,11 @@ def test_groups_ads_page_scope_and_events_are_whitelisted(
     event_unit = session.get(BuildUnit, step.unit_id)
     assert events.items[0].advertiser_id == event_unit.advertiser_id
     assert events.items[0].title and events.items[0].account_name
+    assert events.items[0].remote_code == 40002
+    assert events.items[0].remote_message.startswith(
+        "Invalid targeting_spec.languages."
+    )
+    assert events.items[0].request_id == "platform-request"
     tail = submission_catalog.get_submission_events(
         session,
         context=context,
@@ -426,6 +436,9 @@ def test_groups_ads_page_scope_and_events_are_whitelisted(
         "title",
         "advertiser_id",
         "account_name",
+        "remote_code",
+        "remote_message",
+        "request_id",
     }
     detail = submissions.get_submission_steps(
         session, context=context, submission_id=identity, kind="AD", limit=1
@@ -433,6 +446,72 @@ def test_groups_ads_page_scope_and_events_are_whitelisted(
     assert (
         detail.title and detail.advertiser_id and detail.group_no and detail.creative_no
     )
+
+
+def test_dependency_failure_events_include_only_the_failed_parent_reason(
+    session, context, other_context, frozen
+):
+    import pytest
+    from sqlmodel import select
+
+    from app.core.errors import DomainError
+    from app.modules.builds.execution_models import ExecutionStep, StepEvidence
+
+    identity = expanded(session, context, frozen)
+    child = session.exec(
+        select(ExecutionStep)
+        .where(ExecutionStep.submission_id == identity, ExecutionStep.kind == "AD")
+        .limit(1)
+    ).one()
+    parent = session.get(ExecutionStep, child.parent_step_id)
+    child.status, child.phase, child.error_code = "FAILED", "DONE", "dependency_failed"
+    parent.status, parent.phase, parent.error_code = (
+        "FAILED",
+        "DONE",
+        "tiktok_business_error",
+    )
+    parent.attempt = 1
+    save_attempt_context(session, step=parent)
+    # 同任务中已有系列记录，查看广告依赖错误时不能混入无关层级。
+    campaign = session.get(ExecutionStep, parent.parent_step_id)
+    campaign.attempt = 1
+    save_attempt_context(session, step=campaign)
+    session.add(
+        StepEvidence(
+            tenant_id=context.tenant_id,
+            submission_id=identity,
+            step_id=campaign.id,
+            attempt=1,
+            conclusion="CREATED",
+            summary={},
+        )
+    )
+    session.add(
+        StepEvidence(
+            tenant_id=context.tenant_id,
+            submission_id=identity,
+            step_id=parent.id,
+            attempt=1,
+            conclusion="REMOTE_REJECTED",
+            request_id="platform-parent-request",
+            summary={
+                "remote_code": 40002,
+                "remote_message": "Invalid targeting_optimization_mode",
+            },
+        )
+    )
+    session.flush()
+    page = submission_catalog.get_submission_events(
+        session, context=context, submission_id=identity, step_id=child.id, limit=1
+    )
+    assert page.total == 1
+    assert page.items[0].step_id == parent.id and page.items[0].kind == "ADGROUP"
+    assert page.items[0].remote_message == "Invalid targeting_optimization_mode"
+    assert page.items[0].request_id == "platform-parent-request"
+    with pytest.raises(DomainError):
+        submission_catalog.get_submission_events(
+            session, context=other_context, submission_id=identity, step_id=child.id
+        )
 
 
 def test_catalog_http_contract_and_invalid_filters(session, context, frozen):

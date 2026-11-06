@@ -201,3 +201,42 @@ def test_sdk_adgroup_40002_is_a_bounded_no_effect_rejection(sdk_write):
         request_id="provider-request", remote_code=40002
     )
     assert not calls and not replies
+
+
+@pytest.mark.parametrize("sdk_write", ["ad"], indirect=True)
+@pytest.mark.parametrize("code", [40002, 50002])
+def test_sdk_build_preserves_actionable_platform_message(sdk_write, code):
+    _, invoke, replies, calls = sdk_write
+    message = "Invalid value for field targeting_optimization_mode: MANUAL"
+    replies.append({"code": code, "request_id": "platform-request", "message": message})
+    with pytest.raises(RemoteCallError) as caught:
+        invoke()
+    assert getattr(caught.value.evidence, "remote_message", None) == message
+    assert caught.value.evidence.remote_code == code
+    assert caught.value.effect == ("REJECTED_NO_EFFECT" if code == 40002 else "UNKNOWN")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("sdk_write", ["ad"], indirect=True)
+def test_sdk_build_message_keeps_field_reason_but_redacts_credentials(
+    sdk_write, caplog
+):
+    _, invoke, replies, calls = sdk_write
+    replies.append(
+        {
+            "code": 40002,
+            "request_id": "platform-request",
+            "message": "Invalid targeting_spec.languages. "
+            "Bearer private-token https://cdn.example/file?signature=private "
+            'access_token="another-private-token"',
+        }
+    )
+    with pytest.raises(RemoteCallError) as caught:
+        invoke()
+    message = getattr(caught.value.evidence, "remote_message", None)
+    assert message and "Invalid targeting_spec.languages." in message
+    for rendered in (message, repr(vars(caught.value)), caplog.text):
+        assert "private-token" not in rendered
+        assert "signature=private" not in rendered
+        assert "https://cdn.example" not in rendered
+    assert len(calls) == 1

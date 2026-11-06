@@ -915,6 +915,22 @@ export function SubmissionEventsTable({
                 <span>
                   {eventKind(r.kind)} · {eventConclusion(r.conclusion)}
                 </span>
+                {r.remote_message && (
+                  <p className="max-w-xl whitespace-pre-wrap break-words text-sm">
+                    {r.remote_message}
+                  </p>
+                )}
+                {r.remote_code != null && (
+                  <span className="text-xs text-muted-foreground">
+                    TikTok 错误码：{r.remote_code}
+                  </span>
+                )}
+                {r.request_id && (
+                  <div className="text-xs">
+                    <span>TikTok 请求编号</span>
+                    <Identifier value={r.request_id} />
+                  </div>
+                )}
                 <details>
                   <summary className="cursor-pointer text-xs text-muted-foreground">
                     技术记录

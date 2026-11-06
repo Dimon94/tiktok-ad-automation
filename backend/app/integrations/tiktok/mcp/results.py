@@ -132,8 +132,10 @@ def _require_success(raw: Any, evidence: CallEvidence, contract: ToolContract) -
     ):
         raise _unknown("mcp_response_invalid", evidence)
     if raw["code"] != 0:
-        # 仅保留已通过精确整数校验的错误码；原文可能含凭据，不能进入异常或日志。
-        rejected = replace(evidence, remote_code=raw["code"])
+        # 与官方 SDK 共用回执边界脱敏，保留可排查的字段说明而非原始响应。
+        rejected = replace(
+            evidence, remote_code=raw["code"], remote_message=raw.get("message")
+        )
         if raw["code"] in _NO_EFFECT_REJECTIONS.get(
             (contract.operation, contract.tool_name), ()
         ):

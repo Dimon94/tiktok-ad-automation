@@ -394,6 +394,59 @@ def test_known_ad_rejection_has_a_code_specific_bounded_retry_budget(
     )
 
 
+@pytest.mark.parametrize("attempt", ["ADGROUP"], indirect=True)
+@pytest.mark.parametrize("remote_code", [40002, 50002])
+def test_platform_reason_survives_adapter_receipt_and_public_events(
+    session, context, attempt, remote_code
+):
+    from app.integrations.tiktok.adapters.build_results import sdk_creation_envelope
+    from app.integrations.tiktok.contracts.common import RemoteCallError
+    from app.modules.builds.execution_state import (
+        arm_request,
+        record_rejected,
+        record_unknown,
+    )
+    from app.modules.builds.submission_catalog import get_submission_events
+
+    step, claim = attempt
+    arm_request(session, context=context, claim=claim, body=body(claim))
+    message = "Invalid value for field targeting_optimization_mode: MANUAL"
+    with pytest.raises(RemoteCallError) as caught:
+        sdk_creation_envelope(
+            {"code": remote_code, "request_id": "platform-request", "message": message},
+            kind="ADGROUP",
+        )
+    error = caught.value
+    if remote_code == 40002:
+        assert record_rejected(session, claim=claim, error=error) == "PENDING"
+    else:
+        assert (
+            record_unknown(
+                session,
+                claim=claim,
+                code=error.code,
+                request_id=error.evidence.request_id,
+                call_evidence=error.evidence,
+            )
+            == "UNKNOWN"
+        )
+    session.flush()
+    session.expire_all()
+    event = next(
+        item
+        for item in get_submission_events(
+            session,
+            context=context,
+            submission_id=claim.submission_id,
+            step_id=claim.step_id,
+        ).items
+        if item.conclusion != "REQUEST_ARMED"
+    )
+    assert getattr(event, "remote_message", None) == message
+    assert event.remote_code == remote_code
+    assert event.request_id == "platform-request"
+
+
 def test_local_deadline_not_sent_uses_the_bounded_transport_retry_budget():
     from app.integrations.tiktok.contracts.common import CallEvidence, RemoteCallError
     from app.modules.builds.execution_state import transient_retry

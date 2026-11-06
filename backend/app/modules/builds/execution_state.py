@@ -13,9 +13,12 @@ from sqlmodel import Session, col, select
 from app.core.context import TenantContext
 from app.core.diagnostics import emit
 from app.core.errors import DomainError
-from app.integrations.tiktok.adapters.build_results import safe_identifier
 from app.integrations.tiktok.contracts.builds import CreatedObject
-from app.integrations.tiktok.contracts.common import CallEvidence, RemoteCallError
+from app.integrations.tiktok.contracts.common import (
+    CallEvidence,
+    RemoteCallError,
+    safe_identifier,
+)
 from app.integrations.tiktok.transport_diagnostics import safe_transport_summary
 from app.modules.accounts.access import resolve_account_access
 from app.modules.builds.execution_models import ExecutionStep, StepEvidence, Submission
@@ -87,6 +90,10 @@ def evidence(
             value = safe_identifier(getattr(call_evidence, name))
             if value is not None:
                 safe_summary[name] = value
+        if call_evidence.remote_code is not None:
+            safe_summary.setdefault("remote_code", call_evidence.remote_code)
+        if call_evidence.remote_message is not None:
+            safe_summary["remote_message"] = call_evidence.remote_message
     session.add(
         StepEvidence(
             tenant_id=step.tenant_id,

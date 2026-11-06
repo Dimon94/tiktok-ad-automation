@@ -9110,6 +9110,18 @@ export type SubmissionEventPublic = {
      */
     observed_at: string;
     /**
+     * Remote Code
+     */
+    remote_code?: number | null;
+    /**
+     * Remote Message
+     */
+    remote_message?: string | null;
+    /**
+     * Request Id
+     */
+    request_id?: string | null;
+    /**
      * Unit Id
      */
     unit_id: string;
