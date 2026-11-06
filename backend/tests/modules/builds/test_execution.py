@@ -457,7 +457,7 @@ def test_official_json_number_conversion_cannot_round_frozen_decimal():
     from decimal import Decimal
 
     from app.core.errors import DomainError
-    from app.modules.builds.execution import exact_number
+    from app.modules.builds.frozen_requests import exact_number
 
     assert Decimal(str(exact_number(Decimal("100.25")))) == Decimal("100.25")
     with pytest.raises(DomainError):

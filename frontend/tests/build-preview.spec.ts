@@ -968,3 +968,90 @@ test("V2 大分组展示准确总数并分页读取完整广告创意", async ({
   await page.getByRole("button", { name: "上一页广告", exact: true }).click()
   await expect(page.getByText("广告1-图片3.jpg", { exact: true })).toBeVisible()
 })
+
+test("续建预览列出复用和新增范围，并直接进入原任务", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  const source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  Object.assign(api.preview, {
+    can_refresh_continuation: true,
+    continuation_source_ids: [source],
+    continuation_unit_count: 1,
+    reused_campaign_count: 1,
+    reused_adgroup_count: 0,
+    reused_ad_count: 0,
+    new_campaign_count: 0,
+    new_adgroup_count: 1,
+    new_ad_count: 1,
+  })
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(
+    page.getByText("复用 1 个系列 · 0 个广告组 · 0 条广告", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByText("新建 0 个系列 · 1 个广告组 · 1 条广告", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "查看原搭建任务", exact: true }),
+  ).toHaveAttribute("href", `/tenants/${T}/build-tasks/${source}?bc_id=${BC}`)
+  await expect(
+    page.getByRole("button", { name: /^继续搭建并立即启用/ }),
+  ).toBeEnabled()
+  await expect(
+    page.getByText("仅新增对象将创建并立即启用，复用对象保持原状态。", {
+      exact: true,
+    }),
+  ).toBeVisible()
+  expect(api.requests.filter((r) => r.method !== "GET")).toHaveLength(0)
+})
+
+test("冻结旧预览可以显式刷新续建计划，无需新建草稿", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  Object.assign(api.preview, {
+    can_refresh_continuation: true,
+    continuation_source_ids: [],
+  })
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await page.getByRole("button", { name: "刷新续建预览", exact: true }).click()
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (r) => r.method === "POST" && r.path.endsWith("/previews"),
+        ).length,
+    )
+    .toBe(1)
+  const request = api.requests.find(
+    (r) => r.method === "POST" && r.path.endsWith("/previews"),
+  )!
+  expect(request.body).toEqual({
+    expected_revision: 1,
+    refresh_continuation: true,
+  })
+  expect(api.requests.some((r) => r.path.endsWith("/submit"))).toBe(false)
+})
+
+test("原任务结果待核实的组合不能继续提交", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  Object.assign(api.preview, {
+    can_refresh_continuation: true,
+    continuation_blocked_count: 1,
+    continuation_unit_count: 0,
+    campaign_count: 0,
+    adgroup_count: 0,
+    ad_count: 0,
+    blocked_count: 1,
+  })
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(
+    page.getByText(
+      "有 1 个组合暂不能续建，请查看排除原因并处理原任务后刷新预览。",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: /^创建并立即启用/ }),
+  ).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "刷新续建预览", exact: true }),
+  ).toBeEnabled()
+})

@@ -86,6 +86,7 @@ class PreviewAccepted(BaseModel):
 class PreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(gt=0, strict=True)
+    refresh_continuation: bool = Field(default=False, strict=True)
 
 
 class PreviewGenerationProgress(BaseModel):
@@ -104,6 +105,16 @@ class ExcludedDramaPublic(BaseModel):
 
 
 class PreviewSummary(BaseModel):
+    can_refresh_continuation: bool = False
+    continuation_source_ids: list[UUID] = Field(default_factory=list)
+    continuation_unit_count: int = 0
+    continuation_blocked_count: int = 0
+    reused_campaign_count: int = 0
+    reused_adgroup_count: int = 0
+    reused_ad_count: int = 0
+    new_campaign_count: int = 0
+    new_adgroup_count: int = 0
+    new_ad_count: int = 0
     contract_version: Literal[1, 2]
     media_kind: Literal["VIDEO", "CAROUSEL"]
     excluded_image_count: int = 0

@@ -291,6 +291,7 @@ def generate_preview(
         context=context,
         draft_id=draft_id,
         expected_revision=body.expected_revision,
+        refresh_continuation=body.refresh_continuation,
     )
     session.commit()
     return PreviewAccepted(preview_id=identity)

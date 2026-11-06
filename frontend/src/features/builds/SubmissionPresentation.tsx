@@ -243,7 +243,7 @@ export function SubmissionProgress({
             </div>
             <p className="text-xs text-muted-foreground">
               已创建事实与结果差异分别记录；素材、CTA
-              与核查步骤不计入上述广告对象数。
+              与核查步骤不计入上述广告对象数。续建任务的成功数量包含复用对象。
               {(data.corrected_ad_count ?? 0) > 0 &&
                 ` 已创建包含${data.corrected_ad_count}条已核实补建，原尝试保留在明细审计中。`}
             </p>

@@ -233,6 +233,48 @@ function Detail({
           {back}
         </div>
       </div>
+      {!!data.continued_by_submission_ids?.length && (
+        <Card>
+          <CardContent className="flex flex-col gap-2 pt-6">
+            <p>
+              这份任务的部分范围已由新预览接续，已接续范围不会在此重复创建。历史结果保留。
+            </p>
+            {data.continued_by_submission_ids.map((id, index) => (
+              <Link
+                key={id}
+                className="text-sm underline underline-offset-4"
+                to="/tenants/$tenantId/build-tasks/$submissionId"
+                params={{ tenantId, submissionId: id }}
+                search={{ bc_id: bcId }}
+              >
+                查看续建任务{index > 0 ? ` ${index + 1}` : ""}
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+      {!!data.continuation_source_ids?.length && (
+        <Card>
+          <CardContent className="flex flex-col gap-2 pt-6">
+            <p>
+              已复用 {data.reused?.campaign_count ?? 0} 个系列 ·{" "}
+              {data.reused?.adgroup_count ?? 0} 个广告组 ·{" "}
+              {data.reused?.ad_count ?? 0} 条广告；成功数量包含这些已有对象。
+            </p>
+            {data.continuation_source_ids.map((id, index) => (
+              <Link
+                key={id}
+                className="text-sm underline underline-offset-4"
+                to="/tenants/$tenantId/build-tasks/$submissionId"
+                params={{ tenantId, submissionId: id }}
+                search={{ bc_id: bcId }}
+              >
+                查看原搭建任务{index > 0 ? ` ${index + 1}` : ""}
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
       <SubmissionProgress
         data={data}
         onTechnicalDetails={() => setTechnicalOpen(true)}

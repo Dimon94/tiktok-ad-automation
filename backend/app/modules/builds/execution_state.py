@@ -13,7 +13,10 @@ from sqlmodel import Session, col, select
 from app.core.context import TenantContext
 from app.core.diagnostics import emit
 from app.core.errors import DomainError
-from app.integrations.tiktok.adapters.build_results import safe_identifier
+from app.integrations.tiktok.adapters.build_results import (
+    NO_EFFECT_REJECTIONS,
+    safe_identifier,
+)
 from app.integrations.tiktok.contracts.builds import CreatedObject
 from app.integrations.tiktok.contracts.common import CallEvidence, RemoteCallError
 from app.integrations.tiktok.transport_diagnostics import safe_transport_summary
@@ -110,6 +113,10 @@ def arm_request(
         session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="build"
     )
     step = _step(session, claim)
+    from .continuation import require_execution_owner, validate_execution_source
+
+    require_execution_owner(session, step)
+    validate_execution_source(session, step=step)
     if not active_attempt(step, claim, phase="CLAIMED") or step.remote_id:
         raise DomainError("execution_lease_lost", "执行租约已变化")
     unit = session.get(BuildUnit, step.unit_id, populate_existing=True)
@@ -489,54 +496,74 @@ def transient_retry(
     return retryable, delay, resolved
 
 
-# 候选统计、恢复持锁复查与 worker claim 共用这一证明，避免 SQL/Python 放行条件漂移。
-# 每个 nonce 必须严格只有 ARM -> NOT_SENT；恢复审计只允许引用本提交的真实 RETRY。
-UNSENT_ATTEMPT = """(
+UNARMED_RETRY = """s.request_body IS NULL
+AND NOT EXISTS (SELECT 1 FROM step_evidence e WHERE e.tenant_id=s.tenant_id AND e.submission_id=s.submission_id AND e.step_id=s.id
+ AND (e.conclusion IN ('REQUEST_ARMED','CREATED','LATE_CREATED','RESULT_UNKNOWN','LEASE_EXPIRED_ARMED') OR e.summary ? 'remote_id'))"""
+
+
+# 候选统计、恢复持锁复查与 worker claim 共用 nonce 证明，避免放行条件漂移。
+def _unsent_attempt_sql(*, rejected: bool = False, history: bool = False) -> str:
+    terminals = "'REQUEST_ARMED','NOT_SENT'" + (
+        ",'REMOTE_REJECTED'" if rejected else ""
+    )
+    phases = "phases=ARRAY['REQUEST_ARMED','NOT_SENT']::varchar[]"
+    if rejected:
+        phases = (
+            "("
+            + phases
+            + " OR phases=ARRAY['REQUEST_ARMED','REMOTE_REJECTED']::varchar[])"
+        )
+    prior_danger = (
+        ""
+        if history
+        else f" OR (danger.attempt<>s.attempt AND danger.conclusion IN ({terminals}))"
+    )
+    scope = "" if history else " AND e.attempt=s.attempt"
+    nonce_group = "attempt,lease_token" if history else "lease_token"
+    attempt_id = "CAST(s.attempt_id AS text)"
+    code_proof = ""
+    if history:
+        # 新意图只能接续所有历史尝试均未生效的范围；平台错误码仍由适配层定义。
+        attempt_id = "(SELECT context.attempt_id::text FROM build_attempt_context context WHERE context.tenant_id=s.tenant_id AND context.step_id=s.id AND context.attempt=proof.attempt)"
+        codes = " OR ".join(
+            f"(s.kind='{kind}' AND summary->'remote_code' IN ({','.join(repr(str(code)) + '::jsonb' for code in sorted(values))}))"
+            for kind, values in NO_EFFECT_REJECTIONS.items()
+        )
+        code_proof = f"(conclusion<>'REMOTE_REJECTED' OR ({codes})) AND "
+    return f"""(
 s.kind IN ('CTA','CAMPAIGN','ADGROUP','AD')
 AND s.remote_id IS NULL AND NOT s.mismatch AND s.lease_token IS NULL
-AND s.request_body IS NOT NULL AND s.request_body <> '{}'::jsonb
+AND s.request_body IS NOT NULL AND s.request_body <> '{{}}'::jsonb
 AND s.request_body_digest IS NOT NULL AND s.request_body_digest <> ''
 AND s.attempt_id IS NOT NULL AND s.attempt > 0
 AND NOT EXISTS (SELECT 1 FROM step_evidence danger
  WHERE danger.tenant_id=s.tenant_id AND danger.submission_id=s.submission_id AND danger.step_id=s.id
- AND (danger.summary ? 'remote_id' OR danger.conclusion IN ('CREATED','LATE_CREATED','RESULT_UNKNOWN','LEASE_EXPIRED_ARMED')
- OR (danger.attempt<>s.attempt AND danger.conclusion IN ('REQUEST_ARMED','NOT_SENT'))))
+ AND (danger.summary ? 'remote_id' OR danger.conclusion IN ('CREATED','LATE_CREATED','RESULT_UNKNOWN','LEASE_EXPIRED_ARMED'){prior_danger}))
 AND (WITH proof AS (
  SELECT e.* FROM step_evidence e
- WHERE e.tenant_id=s.tenant_id AND e.submission_id=s.submission_id AND e.step_id=s.id AND e.attempt=s.attempt
+ WHERE e.tenant_id=s.tenant_id AND e.submission_id=s.submission_id AND e.step_id=s.id{scope}
  LIMIT 1001
 ), nonces AS (
  SELECT count(*) n, array_agg(conclusion ORDER BY observed_at,id) phases
- FROM proof WHERE conclusion<>'RETRY_REQUESTED' GROUP BY lease_token
+ FROM proof WHERE conclusion<>'RETRY_REQUESTED' GROUP BY {nonce_group}
 )
 SELECT (SELECT count(*) BETWEEN 1 AND 1000 FROM proof)
- AND (SELECT coalesce(bool_and(n=2 AND phases=ARRAY['REQUEST_ARMED','NOT_SENT']::varchar[]),false) FROM nonces)
- AND (SELECT coalesce(bool_and(coalesce(
-   summary->>'attempt_id'=CAST(s.attempt_id AS text)
+ AND (SELECT coalesce(bool_and(n=2 AND {phases}),false) FROM nonces)
+ AND (SELECT coalesce(bool_and({code_proof}coalesce(
+   summary->>'attempt_id'={attempt_id}
    AND summary->>'body_digest'=s.request_body_digest
-   AND ((conclusion IN ('REQUEST_ARMED','NOT_SENT') AND lease_token IS NOT NULL)
+   AND ((conclusion IN ({terminals}) AND lease_token IS NOT NULL)
      OR (conclusion='RETRY_REQUESTED' AND lease_token IS NULL AND EXISTS (
        SELECT 1 FROM submission_recovery r WHERE r.tenant_id=s.tenant_id
        AND r.submission_id=s.submission_id AND r.kind='RETRY'
        AND CAST(r.id AS text)=proof.summary->>'recovery_id'))),false)),false) FROM proof)
 ))"""
 
-# 自动重试可以混合“明确未发送”和“明确拒绝且无副作用”的 nonce；仍要求每个
-# nonce 都有严格的 ARM -> terminal 两条证据，任何未知结果或创建回执都会封死重放。
-AUTOMATIC_RETRY_ATTEMPT = (
-    UNSENT_ATTEMPT.replace(
-        "danger.conclusion IN ('REQUEST_ARMED','NOT_SENT')",
-        "danger.conclusion IN ('REQUEST_ARMED','NOT_SENT','REMOTE_REJECTED')",
-    )
-    .replace(
-        "phases=ARRAY['REQUEST_ARMED','NOT_SENT']::varchar[]",
-        "phases IN (ARRAY['REQUEST_ARMED','NOT_SENT']::varchar[], ARRAY['REQUEST_ARMED','REMOTE_REJECTED']::varchar[])",
-    )
-    .replace(
-        "conclusion IN ('REQUEST_ARMED','NOT_SENT')",
-        "conclusion IN ('REQUEST_ARMED','NOT_SENT','REMOTE_REJECTED')",
-    )
-)
+
+UNSENT_ATTEMPT = _unsent_attempt_sql()
+AUTOMATIC_RETRY_ATTEMPT = _unsent_attempt_sql(rejected=True)
+# 十分钟缺失核查只允许原 request_id 重放，不能当作改变意图的无副作用证明。
+DEFINITE_NO_EFFECT_HISTORY = _unsent_attempt_sql(rejected=True, history=True)
 
 
 # 已核实未创建：系列/广告组创建结果未知，但请求发出至少 10 分钟后，TikTok 按名称

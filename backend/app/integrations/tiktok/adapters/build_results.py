@@ -45,7 +45,7 @@ def created_result(*, kind: BuildKind, response: McpBusinessResponse) -> Created
     )
 
 
-_SDK_NO_EFFECT_REJECTIONS = {
+NO_EFFECT_REJECTIONS = {
     # TikTok 对 Smart+ 广告组返回 40002 时表示请求参数不被接受，
     # 该请求不会生成广告组；必须把它交给有界业务拒绝重试，而不是伪装成
     # “创建结果未知”再排队做永远无法确认的远端回读。
@@ -56,7 +56,9 @@ _SDK_NO_EFFECT_REJECTIONS = {
 
 def known_no_effect_rejection(kind: str, remote_code: object) -> bool:
     """Return whether a saved business code proves that no object was created."""
-    return type(remote_code) is int and remote_code in _SDK_NO_EFFECT_REJECTIONS.get(kind, ())
+    return type(remote_code) is int and remote_code in NO_EFFECT_REJECTIONS.get(
+        kind, ()
+    )
 
 
 def sdk_creation_envelope(
@@ -75,7 +77,7 @@ def sdk_creation_envelope(
     if (
         isinstance(raw, dict)
         and type(raw.get("code")) is int
-        and raw["code"] in _SDK_NO_EFFECT_REJECTIONS.get(kind or "", ())
+        and raw["code"] in NO_EFFECT_REJECTIONS.get(kind or "", ())
     ):
         raise RemoteCallError(
             "tiktok_business_error", effect="REJECTED_NO_EFFECT", evidence=evidence

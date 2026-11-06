@@ -100,14 +100,19 @@ export function BuildPreviewPanel({
         !write ||
         !failed ||
         failed.bc_id !== bcId ||
-        failed.status !== "FAILED" ||
+        (failed.status !== "FAILED" && !failed.can_refresh_continuation) ||
         failed.submission_id
       )
         throw new Error("当前预览不可重试")
       return (
         await BuildsService.generatePreview({
           path: { tenant_id: tenantId, draft_id: failed.draft_id },
-          body: { expected_revision: failed.draft_revision },
+          body: {
+            expected_revision: failed.draft_revision,
+            ...(failed.status !== "FAILED" && failed.can_refresh_continuation
+              ? { refresh_continuation: true }
+              : {}),
+          },
         })
       ).data
     },
@@ -181,6 +186,22 @@ export function BuildPreviewPanel({
           <Button variant="outline" onClick={() => void summary.refetch()}>
             {readOnly ? "刷新配置状态" : "刷新预览状态"}
           </Button>
+          {!readOnly &&
+            write &&
+            current.can_refresh_continuation &&
+            current.status !== "BUILDING" && (
+              <Button
+                variant="outline"
+                disabled={
+                  retryPreview.isPending ||
+                  submission.busy ||
+                  submission.unknown
+                }
+                onClick={() => retryPreview.mutate()}
+              >
+                {retryPreview.isPending ? "正在核实续建计划…" : "刷新续建预览"}
+              </Button>
+            )}
           {submittedId ? (
             <Button variant="outline" asChild>
               <Link
@@ -210,6 +231,61 @@ export function BuildPreviewPanel({
         </details>
       ) : (
         <ExecutionRoute route={current.execution_route} />
+      )}
+      {!readOnly && current.can_refresh_continuation && (
+        <Card>
+          <CardContent className="flex flex-col gap-2 pt-6">
+            <p className="font-medium">
+              {current.continuation_unit_count
+                ? "本次续建计划"
+                : "这份草稿已有搭建任务"}
+            </p>
+            {current.continuation_unit_count ? (
+              <>
+                <p>
+                  复用 {current.reused_campaign_count} 个系列 ·{" "}
+                  {current.reused_adgroup_count} 个广告组 ·{" "}
+                  {current.reused_ad_count} 条广告
+                </p>
+                <p>
+                  新建 {current.new_campaign_count} 个系列 ·{" "}
+                  {current.new_adgroup_count} 个广告组 · {current.new_ad_count}{" "}
+                  条广告
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  以前成功的对象保留，本次只按新预览继续搭建。原任务记录不变。
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                修改配置后可刷新续建预览，核对本次保留和新增的对象，无需另建草稿。
+              </p>
+            )}
+            {!!current.continuation_blocked_count && (
+              <p>
+                有 {current.continuation_blocked_count}{" "}
+                个组合暂不能续建，请查看排除原因并处理原任务后刷新预览。
+              </p>
+            )}
+            <div className="flex flex-wrap gap-3 text-sm">
+              {current.continuation_source_ids?.map((id, index) => (
+                <Link
+                  key={id}
+                  className="underline underline-offset-4"
+                  to="/tenants/$tenantId/build-tasks/$submissionId"
+                  params={{ tenantId, submissionId: id }}
+                  search={{ bc_id: bcId }}
+                >
+                  查看原搭建任务
+                  {(current.continuation_source_ids?.length || 0) > 1
+                    ? ` ${index + 1}`
+                    : ""}
+                </Link>
+              ))}
+            </div>
+            {retryPreview.error && <RequestError error={retryPreview.error} />}
+          </CardContent>
+        </Card>
       )}
       {summary.error && current.status !== "BUILDING" && (
         <RequestError
@@ -422,7 +498,13 @@ export function PreviewSummaryBar({
   const [pending, setPending] = useState(false),
     [error, setError] = useState<unknown>()
   const createsDisabled = preview.creation_status === "DISABLE"
-  const submitAction = createsDisabled ? "创建并停用" : "创建并立即启用"
+  const submitAction = preview.continuation_unit_count
+    ? createsDisabled
+      ? "继续搭建并停用"
+      : "继续搭建并立即启用"
+    : createsDisabled
+      ? "创建并停用"
+      : "创建并立即启用"
   const submitStatus = createsDisabled ? "停用" : "立即启用"
   const scheduleSummary =
     preview.schedule_type === "SCHEDULE_FROM_NOW" &&
@@ -504,7 +586,9 @@ export function PreviewSummaryBar({
                 {pending ? "正在确认提交结果" : submitAction}
               </Button>
               <p className="text-xs text-muted-foreground">
-                将直接创建并{submitStatus}，审核与实际投放状态由 TikTok 决定。
+                {preview.continuation_unit_count
+                  ? `仅新增对象将创建并${submitStatus}，复用对象保持原状态。`
+                  : `将直接创建并${submitStatus}，审核与实际投放状态由 TikTok 决定。`}
               </p>
               {!onSubmit && (
                 <p className="text-xs text-muted-foreground">

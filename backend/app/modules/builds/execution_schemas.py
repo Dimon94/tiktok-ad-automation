@@ -36,6 +36,9 @@ class Recovery(BaseModel):
 
 
 class SubmissionView(BaseModel):
+    reused: ObjectCounts = Field(default_factory=ObjectCounts)
+    continuation_source_ids: list[UUID] = Field(default_factory=list)
+    continued_by_submission_ids: list[UUID] = Field(default_factory=list)
     corrected_ad_count: int = 0
     execution_route: ExecutionRoutePublic | None = None
     recovery_mode: Literal["ORIGINAL_READ", "REAUTHORIZE_READ", "BLOCKED"] = "BLOCKED"

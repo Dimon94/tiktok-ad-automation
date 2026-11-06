@@ -207,7 +207,12 @@ def _bump_preview_retry_revision(
 
 
 def generate_preview(
-    session: Session, *, context: TenantContext, draft_id: UUID, expected_revision: int
+    session: Session,
+    *,
+    context: TenantContext,
+    draft_id: UUID,
+    expected_revision: int,
+    refresh_continuation: bool = False,
 ) -> UUID:
     from .preview_capture_limits import freeze_capture_limits
 
@@ -217,11 +222,17 @@ def generate_preview(
             context=context,
             draft_id=draft_id,
             expected_revision=expected_revision,
+            refresh_continuation=refresh_continuation,
         )
 
 
 def _generate_preview(
-    session: Session, *, context: TenantContext, draft_id: UUID, expected_revision: int
+    session: Session,
+    *,
+    context: TenantContext,
+    draft_id: UUID,
+    expected_revision: int,
+    refresh_continuation: bool = False,
 ) -> UUID:
     draft = get_draft(session, context=context, draft_id=draft_id, lock=True)
     existing = session.exec(
@@ -238,11 +249,24 @@ def _generate_preview(
         ).version
         == 1
     )
+    refresh = bool(
+        refresh_continuation
+        and existing
+        and session.exec(
+            select(Submission.id)
+            .where(
+                Submission.tenant_id == context.tenant_id,
+                Submission.draft_id == draft.id,
+                Submission.preview_id != existing.id,
+            )
+            .limit(1)
+        ).first()
+    )
     if draft.revision != expected_revision:
         # 响应丢失/重复点击仅返回失败重试或 V1 升级直接产生的下一版本。
         if (
             existing
-            and (existing.status == "FAILED" or legacy)
+            and (existing.status == "FAILED" or legacy or refresh)
             and draft.revision == expected_revision + 1
         ):
             retried = session.exec(
@@ -257,7 +281,7 @@ def _generate_preview(
         raise DomainError("draft_revision_conflict", "草稿已变更")
     if existing:
         existing = _preview(session, context, existing.id, lock=True)
-        if existing.status != "FAILED" and not legacy:
+        if existing.status != "FAILED" and not legacy and not refresh:
             return existing.id
         if draft.status != "READY":
             raise DomainError("draft_not_ready", "草稿尚未准备完成")
@@ -1114,7 +1138,9 @@ def _expand_unit(
     p["group_after"] = group.group_no
 
 
-def _digest_units(session: Session, preview: BuildPreview) -> bool:
+def _digest_units(
+    session: Session, preview: BuildPreview, context: TenantContext
+) -> bool:
     p = preview.progress
     query = select(BuildUnit).where(
         BuildUnit.tenant_id == preview.tenant_id, BuildUnit.preview_id == preview.id
@@ -1122,7 +1148,10 @@ def _digest_units(session: Session, preview: BuildPreview) -> bool:
     if p["after_id"]:
         query = query.where(BuildUnit.id > UUID(p["after_id"]))
     rows = session.exec(query.order_by(col(BuildUnit.id)).limit(PAGE_SIZE)).all()
+    from .continuation import freeze_continuation
+
     for row in rows:
+        freeze_continuation(session, context=context, preview=preview, unit=row)
         _record(preview, row.model_dump(mode="json"))
     if rows:
         p["after_id"] = str(rows[-1].id)
@@ -1205,7 +1234,7 @@ def continue_preview(
                 _snapshot_drama(session, context, preview, config)
             elif phase == "units":
                 _expand_unit(session, context, preview, config, route)
-            elif _digest_units(session, preview):
+            elif _digest_units(session, preview, context):
                 break
             session.flush()
             if monotonic() >= deadline:
@@ -1371,7 +1400,28 @@ def get_preview_summary(
     descriptor = preview_contract(
         session, tenant_id=context.tenant_id, preview_id=preview.id
     )
+    from .continuation import preview_counts
+
+    continuation = preview_counts(
+        session, tenant_id=context.tenant_id, preview_id=preview_id
+    )
+    prior_ids = session.exec(
+        select(Submission.id)
+        .where(
+            Submission.tenant_id == context.tenant_id,
+            Submission.draft_id == preview.draft_id,
+            Submission.preview_id != preview.id,
+        )
+        .order_by(col(Submission.ordinal).desc())
+        .limit(20)
+    ).all()
     return PreviewSummary(
+        **continuation,
+        can_refresh_continuation=bool(prior_ids),
+        continuation_source_ids=list(prior_ids),
+        new_campaign_count=n - continuation["reused_campaign_count"],
+        new_adgroup_count=g - continuation["reused_adgroup_count"],
+        new_ad_count=a - continuation["reused_ad_count"],
         contract_version=descriptor.version,
         media_kind=descriptor.media_kind,
         excluded_image_count=session.exec(
@@ -1732,12 +1782,32 @@ def load_frozen_unit(
     descriptor = preview_contract(
         session, tenant_id=context.tenant_id, preview_id=preview.id
     )
+    return _unit_snapshot(preview, unit, drama, descriptor)
+
+
+def planned_unit_snapshot(
+    session: Session, *, context: TenantContext, preview: BuildPreview, unit: BuildUnit
+) -> FrozenUnit:
+    """仅供冻结收尾编译计划；公开读取仍必须通过 _unit 的冻结状态检查。"""
+    if (unit.tenant_id, unit.preview_id) != (
+        context.tenant_id,
+        preview.id,
+    ) or not unit.complete:
+        raise DomainError("preview_scope_mismatch", "冻结组合尚未完成")
+    drama = session.get(PreviewDrama, (context.tenant_id, preview.id, unit.drama_id))
+    descriptor = preview_contract(
+        session, tenant_id=context.tenant_id, preview_id=preview.id
+    )
+    return _unit_snapshot(preview, unit, drama, descriptor)
+
+
+def _unit_snapshot(preview, unit, drama, descriptor) -> FrozenUnit:
     return FrozenUnit(
         contract_version=descriptor.version,
         media_kind=descriptor.media_kind,
         unit_id=unit.id,
         preview_id=preview.id,
-        tenant_id=context.tenant_id,
+        tenant_id=unit.tenant_id,
         drama_id=drama.drama_id,
         link_id=drama.link_id,
         strategy_version_id=preview.strategy_version_id,

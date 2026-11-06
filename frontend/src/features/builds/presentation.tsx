@@ -163,6 +163,12 @@ export function BuildSteps({ step }: { step: 1 | 2 | 3 }) {
 }
 
 export const reasonLabels: Record<string, string> = {
+  continuation_pending:
+    "原任务仍在执行或结果待核实，请先核实原任务后刷新续建预览",
+  continuation_changed: "来源任务已变化，请刷新续建预览后重新核对",
+  continuation_unchanged: "当前配置对应的对象已完成，请查看原任务",
+  continuation_route_changed: "执行连接或授权已变化，请先核实原任务",
+  execution_superseded: "该范围已由新版本继续搭建",
   image_refresh_required:
     "图片：目标账户图片未全部就绪，请等待原分发任务核验。",
   image_source_unavailable:

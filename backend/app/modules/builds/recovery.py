@@ -25,6 +25,7 @@ from app.modules.builds.execution_models import (
 from app.modules.builds.execution_schemas import Recovery
 from app.modules.builds.execution_state import (
     CONFIRMED_ABSENT,
+    UNARMED_RETRY,
     UNSENT_ATTEMPT,
     confirmed_absent_attempt,
     evidence,
@@ -42,6 +43,7 @@ from app.modules.builds.routes import load_preview_route, verify_unit_route
 from app.modules.tenants.permissions import require_tenant
 
 from .ad_readiness import included_ad_sql
+from .continuation import superseded_sql
 
 TASK_NAME = "builds.recover_submission"
 register_dispatch_task(TASK_NAME, "control")
@@ -129,9 +131,7 @@ AND (s.kind<>'CAMPAIGN' OR EXISTS (SELECT 1 FROM execution_step cta WHERE cta.te
 AND (s.kind NOT IN ('CAMPAIGN','ADGROUP') OR {GROUP_READY})
 AND (s.kind<>'AD' OR NOT {IS_CAROUSEL} OR {CAROUSEL_READY})
 """
-UNARMED_RETRY = """s.request_body IS NULL
-AND NOT EXISTS (SELECT 1 FROM step_evidence e WHERE e.tenant_id=s.tenant_id AND e.submission_id=s.submission_id AND e.step_id=s.id
- AND (e.conclusion IN ('REQUEST_ARMED','CREATED','LATE_CREATED','RESULT_UNKNOWN','LEASE_EXPIRED_ARMED') OR e.summary ? 'remote_id'))"""
+
 # 只有原目标已确定未生效且依赖已结束，显式重试才可创建新的准备代数。
 # failed_infos 是按目标/MID 的负证据；批次 ACK 本身既不是成功也不是失败。
 MATERIAL_RETRY = """(s.cover_job_id IS NULL AND NOT s.resolved ? 'mapping' AND EXISTS (
@@ -230,6 +230,7 @@ RECONCILE_CANDIDATES = """(
  AND child.status<>'UNKNOWN' AND NOT child.mismatch
 ) candidates JOIN execution_step s ON s.id=candidates.id"""
 RETRY += " AND NOT " + resolved_sql("s")
+RETRY += " AND NOT " + superseded_sql()
 RECONCILE = f"""
 AND NOT {resolved_sql("s")}
 AND NOT {obsolete_readback_sql("s")}

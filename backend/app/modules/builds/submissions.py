@@ -69,13 +69,14 @@ def submission_row(
 
 
 # All earlier eligible frozen scopes count, even before their workers expand.
-# An excluded pair never reserves scope; a later task cannot steal an older one.
-COVERED = """EXISTS (
+# 排除组合不占位；只有已冻结并在受理时复核的续建计划能接续旧范围。
+COVERED = """(EXISTS (
  SELECT 1 FROM build_submission old JOIN build_unit old_u
  ON old_u.tenant_id=old.tenant_id AND old_u.preview_id=old.preview_id
  WHERE old.tenant_id=:tenant AND old.draft_id=:draft AND old.ordinal<:ordinal
  AND old_u.drama_id=u.drama_id AND old_u.advertiser_id=u.advertiser_id
- AND old_u.complete AND old_u.readiness IN ('READY','PREPARING'))"""
+ AND old_u.complete AND old_u.readiness IN ('READY','PREPARING'))
+ AND coalesce(u.scene_snapshot->'continuation'->>'state','')<>'CONTINUE')"""
 
 
 def params(row: Submission) -> dict[str, Any]:
@@ -172,7 +173,17 @@ def submit_preview(
             .limit(1)
         ).first()
         if eligible is None:
-            raise DomainError("preview_not_submittable", "没有可提交组合")
+            reason = SQLAlchemySession.execute(
+                session,
+                text(
+                    "SELECT scene_snapshot->'continuation'->>'reason' FROM build_unit WHERE tenant_id=:tenant AND preview_id=:preview AND scene_snapshot->'continuation'->>'state'='BLOCKED' ORDER BY id LIMIT 1"
+                ),
+                {"tenant": context.tenant_id, "preview": preview.id},
+            ).scalar_one_or_none()
+            raise DomainError(reason or "preview_not_submittable", "没有可提交组合")
+        from .continuation import validate_continuations
+
+        validate_continuations(session, context=context, preview=preview)
         ordinal = (
             session.exec(
                 select(func.coalesce(func.max(Submission.ordinal), 0)).where(
@@ -348,7 +359,11 @@ def expand_submission(
                 expanded=not included,
             )
             session.add(unit)
-            if included:
+            if (
+                included
+                and frozen.scene_snapshot.get("continuation", {}).get("state")
+                != "CONTINUE"
+            ):
                 session.add(
                     DraftUnitReservation(
                         tenant_id=row.tenant_id,
@@ -396,6 +411,8 @@ def expand_submission(
             session.flush()
             used += 1
             continue
+        from .continuation import record_reused_steps, reused_step_values
+
         step_rows = []
         for candidate in candidates:
             key = f"{frozen.id}:{candidate['k']}"
@@ -418,6 +435,7 @@ def expand_submission(
                     planned_ad_id=candidate["ad_id"],
                     material_id=candidate["material_id"],
                     parent_step_id=parent,
+                    **reused_step_values(session, unit=frozen, key=candidate["k"]),
                 ).model_dump()
             )
         # One bounded VALUES statement checks self-reference FKs at statement
@@ -433,6 +451,12 @@ def expand_submission(
             .execution_options(render_nulls=True),
             step_rows,
         ).all()
+        record_reused_steps(
+            session,
+            identities=[
+                r["id"] for r in step_rows if r["resolved"].get("reused_from_step_id")
+            ],
+        )
         used += len(step_rows)
     row.updated_at = datetime.now(UTC)
     session.add(row)
@@ -602,7 +626,9 @@ def aggregate_status(states: Any) -> str:
 
 
 SCOPE_CTE = (
-    "WITH scope_basis AS (SELECT u.*, "
+    # 覆盖判断包含续建计划；只计算一次，避免 NOT EXISTS/JSON 条件被展开到
+    # 各类对象统计的每个分支，造成大批账户的规划器膨胀。
+    "WITH scope_basis AS MATERIALIZED (SELECT u.*, "
     + COVERED
     + """ covered
     FROM build_unit u WHERE u.tenant_id=:tenant AND u.preview_id=:preview),
@@ -782,7 +808,10 @@ def get_submission(
         preview_config=preview.config,
         target_roas=preview.target_roas,
     )
+    from .continuation import submission_facts
+
     return SubmissionView(
+        **submission_facts(session, row),
         corrected_ad_count=stage_counts.get("AD:VERIFIED_REPLACEMENT", 0),
         execution_route=execution_route_view(
             session, context=context, preview_id=row.preview_id

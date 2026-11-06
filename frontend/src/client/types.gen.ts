@@ -6682,12 +6682,56 @@ export type PreviewRequest = {
      * Expected Revision
      */
     expected_revision: number;
+    /**
+     * Refresh Continuation
+     */
+    refresh_continuation?: boolean;
 };
 
 /**
  * PreviewSummary
  */
 export type PreviewSummary = {
+    /**
+     * Can Refresh Continuation
+     */
+    can_refresh_continuation?: boolean;
+    /**
+     * Continuation Source Ids
+     */
+    continuation_source_ids?: Array<string>;
+    /**
+     * Continuation Unit Count
+     */
+    continuation_unit_count?: number;
+    /**
+     * Continuation Blocked Count
+     */
+    continuation_blocked_count?: number;
+    /**
+     * Reused Campaign Count
+     */
+    reused_campaign_count?: number;
+    /**
+     * Reused Adgroup Count
+     */
+    reused_adgroup_count?: number;
+    /**
+     * Reused Ad Count
+     */
+    reused_ad_count?: number;
+    /**
+     * New Campaign Count
+     */
+    new_campaign_count?: number;
+    /**
+     * New Adgroup Count
+     */
+    new_adgroup_count?: number;
+    /**
+     * New Ad Count
+     */
+    new_ad_count?: number;
     /**
      * Contract Version
      */
@@ -9368,6 +9412,15 @@ export type SubmissionUnitPublic = {
  * SubmissionView
  */
 export type SubmissionView = {
+    reused?: ObjectCounts;
+    /**
+     * Continuation Source Ids
+     */
+    continuation_source_ids?: Array<string>;
+    /**
+     * Continued By Submission Ids
+     */
+    continued_by_submission_ids?: Array<string>;
     /**
      * Corrected Ad Count
      */

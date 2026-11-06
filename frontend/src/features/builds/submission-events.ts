@@ -2,6 +2,7 @@
 const conclusions: Record<string, string> = {
   REQUEST_ARMED: "已进入请求发送阶段",
   CREATED: "已记录创建成功",
+  REUSED: "已复用原任务的成功对象",
   LATE_CREATED: "已收到延迟创建结果",
   RESULT_UNKNOWN: "创建结果待核实",
   UNKNOWN: "结果待核实",

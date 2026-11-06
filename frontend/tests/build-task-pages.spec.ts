@@ -1304,3 +1304,38 @@ test("操作记录先呈现中文与业务对象，原始事件和编号可展�
   ).toBeVisible()
   expect(api.requests.every((r) => r.method === "GET")).toBe(true)
 })
+
+test("续建任务展示复用计数并保留来源入口", async ({ page }) => {
+  const api = await boundary(page)
+  const source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  Object.assign(api.summary, {
+    continuation_source_ids: [source],
+    reused: counts(1, 0, 0),
+  })
+  await page.goto(`/tenants/${T}/build-tasks/${ID}?bc_id=${BC}`)
+  await expect(
+    page.getByText(
+      "已复用 1 个系列 · 0 个广告组 · 0 条广告；成功数量包含这些已有对象。",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "查看原搭建任务", exact: true }),
+  ).toHaveAttribute("href", `/tenants/${T}/build-tasks/${source}?bc_id=${BC}`)
+})
+
+test("旧任务说明已由新版接续并提供新任务入口", async ({ page }) => {
+  const api = await boundary(page)
+  const newer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  Object.assign(api.summary, { continued_by_submission_ids: [newer] })
+  await page.goto(`/tenants/${T}/build-tasks/${ID}?bc_id=${BC}`)
+  await expect(
+    page.getByText(
+      "这份任务的部分范围已由新预览接续，已接续范围不会在此重复创建。历史结果保留。",
+      { exact: true },
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("link", { name: "查看续建任务", exact: true }),
+  ).toHaveAttribute("href", `/tenants/${T}/build-tasks/${newer}?bc_id=${BC}`)
+})

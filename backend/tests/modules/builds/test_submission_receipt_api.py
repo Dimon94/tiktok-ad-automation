@@ -35,7 +35,7 @@ def test_submit_response_recovered_by_same_request_without_another_write(
     )
 
 
-def test_revised_preview_explains_scope_reserved_by_partial_submission(
+def test_revised_preview_waits_for_unexpanded_original_submission(
     client, session, context, frozen
 ):
     from uuid import UUID
@@ -57,7 +57,6 @@ def test_revised_preview_explains_scope_reserved_by_partial_submission(
     )
     assert first.status_code == 202
     original = session.get(Submission, UUID(first.json()["submission_id"]))
-    original.status = "PARTIAL"
     draft = session.get(BuildDraft, session.get(BuildPreview, frozen).draft_id)
     draft.revision += 1
     session.flush()
@@ -72,11 +71,10 @@ def test_revised_preview_explains_scope_reserved_by_partial_submission(
         headers=headers(context),
     )
     assert rejected.status_code == 409
-    assert rejected.json()["code"] == "preview_scope_already_submitted"
-    assert "同一草稿" in rejected.json()["message"]
-    assert "原搭建任务" in rejected.json()["message"]
-    assert "新建草稿" in rejected.json()["message"]
+    assert rejected.json()["code"] == "continuation_pending"
+    assert "原任务" in rejected.json()["message"]
+    assert "刷新续建预览" in rejected.json()["message"]
     # 解释原因不能放开重复创建，也不能改动旧任务。
     assert session.exec(select(func.count()).select_from(Submission)).one() == 1
-    assert session.get(Submission, original.id).status == "PARTIAL"
+    assert session.get(Submission, original.id).status == "QUEUED"
     assert session.exec(select(func.count()).select_from(ExecutionStep)).one() == 0
