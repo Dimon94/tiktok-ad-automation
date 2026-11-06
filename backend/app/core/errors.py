@@ -232,6 +232,7 @@ ERROR_HTTP_STATUS: dict[str, int] = {
     "recovery_no_candidates": 409,
     "invalid_submission_filter": 422,
     "preview_not_submittable": 409,
+    "preview_scope_already_submitted": 409,
     "capability_not_found": 404,
     "capability_unavailable": 409,
     "capability_worker_unbounded": 503,
@@ -348,6 +349,10 @@ ERROR_HTTP_STATUS: dict[str, int] = {
 # Public messages are application-owned. DomainError.message may contain raw
 # integration details, so it must never become an HTTP response or log field.
 ERROR_PUBLIC_MESSAGES: dict[str, str] = {
+    "preview_scope_already_submitted": (
+        "同一草稿中的这些剧目和账户已提交。请到原搭建任务查看结果或处理失败；"
+        "如需修改配置后重新投放，请新建草稿。"
+    ),
     "link_config_invalid": "取链参数无效，请检查起播集、卡点集、免费集数、跳转集或支付模板",
     "link_config_template_required": "付费或混合变现应用需要支付模板，请在版权方连接的推广应用中设置",
     "link_episode_out_of_range": "跳转集或免费集数超出该剧可选范围，请单独调整参数",

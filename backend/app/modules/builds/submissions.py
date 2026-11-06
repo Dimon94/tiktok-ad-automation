@@ -197,7 +197,11 @@ def submit_preview(
             },
         ).first()
         if remaining is None:
-            raise DomainError("preview_not_submittable", "没有尚未提交的可执行组合")
+            # 旧任务即使部分失败也已占用范围；说明去重原因，不能误报成版本或请求键冲突。
+            raise DomainError(
+                "preview_scope_already_submitted",
+                "当前草稿的可执行范围已被先前提交覆盖",
+            )
         existing = Submission(
             tenant_id=context.tenant_id,
             bc_id=preview.bc_id,
