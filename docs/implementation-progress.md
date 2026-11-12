@@ -5148,3 +5148,11 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - M2 自有有限模型78,732来源转移通过，五个负向模型失败；只覆盖声明的有界假设，不冒用M1或宣称全系统证明。Ruff、格式、语法、diff检查通过。
 - 产品提交 b6cc09e2；Standards/Spec R1 均PASS、各轴零P0–P3。root独立复验新增14项真实PG用例通过（1.81s），模型78,732转移通过及五负向拒绝；后续仅补评审证据，不改已审源码。
 - 无迁移、外部调用、推送或部署；本地集成与资源收尾以JB-4/JB-6记录为准。命令、源码blob、T/R映射和边界见[JB-6验证记录](validation/2026-11-12-jb6-historical-log-evidence.md)。
+
+
+## 2026-11-12：JB-5 端原生M1实施启动
+
+- 用户调用implement-spec，授权单一集成分支及逐票隔离工作树；集成分支feat/jb5-native-series-m1从da190b59开始。保留此前business/operation-logs提交和主工作树无关产物。
+- 已读回JB-5与JB-7至JB-12完整正文及原生依赖；当前frontier仅JB-7。Spec副本见docs/superpowers/specs/2026-11-12-native-series-direct-video-design.md。
+- 验收沿既有创建工作区及官方SDK传输Seam，TDD按票推进；组合算法沿既有素材分配及creative_count语义。
+- 只建立实施输入与隔离本地PostgreSQL/Redis测试环境；尚未实现任何票，未进行广告/授权写入或生产发布。
