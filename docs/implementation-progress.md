@@ -5134,7 +5134,8 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - Calculation derive_metrics 统一查询/CSV，保留赔付小计，冻结 issues 屏蔽不完整情景。
 - 新快照内部约定版本；旧冻结任务在任何文件改动前失败；旧未冻结任务正常冻结。
 - 真实 red/green/近似错误探针、PG/Redis、CSV HTTP 下载回读及有限模型已运行。
-  针对性套件 93 passed，新增两条降权续跑检查及代表用例 4 passed；模型 5000 输入/27 状态。
-- 浏览器实际登录成功，但隔离 fixture 的 BC 选择未保留，网页查询下载 **Unknown**。
-  ty 基线 tuple 错误仍存在；未推送/部署/生产验证/Linear 写入，交 root 独立集成与两轴审查。
+  root 独立明确入口复跑 95 passed；补充冻结后 issues 变化的 base/comic 回归 2 passed，空返回与丢弃冻结 issues 的错误探针均被拒绝；模型 5000 输入/27 状态通过。
+- root 已使用数字合成 BC 补齐真实网页查询、点击导出、实际浏览器下载 CSV 回读：小计50保留，两个情景字段为空。未修改前端或真实账户数据。
+- Standards 与 Spec R1 均 PASS，零 P0–P3；产品代码仍为已审 ce025a76，后续仅补测试与证据。
+  ty 基线 tuple 错误仍存在；未推送、部署或生产验证，M2 不在本次实现范围。
 - 详细命令、范围、失败、模型假设及下一步：[JB-3 验证记录](validation/2026-11-12-jb3-business-export.md)。

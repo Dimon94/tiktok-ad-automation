@@ -162,14 +162,33 @@ def test_incompatible_snapshot_fails_before_append(
     assert not process_pending_export(session)
 
 
-def test_frozen_values_survive_changes_and_replay(session, business_case):
+@pytest.mark.parametrize("scenario", ["base", "comic"])
+def test_frozen_values_survive_changes_and_replay(session, business_case, scenario):
     c = business_case
     prepared(session, c)
+    facts = session.exec(
+        select(BusinessDay)
+        .where(
+            BusinessDay.tenant_id == c.context.tenant_id,
+            BusinessDay.stat_date == date(2026, 11, 2),
+        )
+        .order_by(BusinessDay.campaign_id)
+    ).all()
+    for index, fact in enumerate(facts):
+        fact.spend = D(100)
+        fact.revenue = fact.net_revenue = fact.business_revenue = D(80)
+        fact.provider_share = fact.rebate = D(0)
+        fact.subsidy_comic = fact.subsidy_other = fact.subsidy_existing = D(0)
+        fact.compensation = None if index == 0 else D(50)
+        fact.issues = ["COMPENSATION_PARTIAL"] if index == 0 else []
+        session.add(fact)
+    session.flush()
     filters = DashboardFilter(
         bc_id=c.bc_id,
         start_date=date(2026, 11, 2),
         end_date=date(2026, 11, 2),
         dimension="campaign",
+        scenario=scenario,
     )
     page = query_dashboard(session, context=c.context, filters=filters)
     row = create_export(
@@ -193,9 +212,11 @@ def test_frozen_values_survive_changes_and_replay(session, business_case):
     records = list(csv.DictReader(io.StringIO(original.decode("utf-8-sig"))))
     assert len(records) == 2
     assert [r["系列ID"] for r in records] == [r.campaign_id for r in page.rows]
-    assert [D(r["情景经营收入"]) for r in records] == [
-        r.values["scenario_revenue"] for r in page.rows
-    ]
+    assert [r["情景经营收入"] for r in records] == (
+        ["80.0000", "80.0000"] if scenario == "base" else ["", ""]
+    )
+    assert all("COMPENSATION_PARTIAL" in r["数据说明"] for r in records)
+    assert [r["预计赔付"] for r in records] == ["", "50.00"]
     assert not process_pending_export(session)
     assert export_content(session, context=c.context, export_id=row.id) == original
 

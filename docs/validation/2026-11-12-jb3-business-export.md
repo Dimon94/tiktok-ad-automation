@@ -158,4 +158,30 @@ failure or a passing run.
 
 Standards R1 on fixed source commit `ce025a76` passed with zero P0/P1/P2/P3.
 The reviewer independently checked 48 pure-function cases and did not rerun
-the database suite. Spec review is still pending at this recording point.
+the database suite. Spec R1 also passed with zero P0/P1/P2/P3.
+
+## Final review and focused follow-up
+
+Both axes reviewed source commit `ce025a76` against `9ebdeae0`. Subsequent
+changes are tests and evidence only; the four product modules remain
+byte-identical to the reviewed source. The Spec reviewer noted a dedicated
+non-base frozen-issues check was missing. The existing frozen-values/replay
+test now runs in base and comic modes with a known compensation subtotal and
+a missing member, then clears the source issues after the first output batch.
+It asserts both downloaded rows retain the frozen issue, the known subtotal,
+and blank comic scenario income even after source values/flags change.
+
+Targeted result: **2 passed, 70 deselected in 4.79s**. This supplements rather
+than repeats the 95-case independent suite above. An empty-result mutation and
+a Writer mutation dropping frozen issues each failed this comic case; both
+product files were restored byte-for-byte, followed by the final green run.
+Logs: `/tmp/jb3-root-mutation-empty.log`, `/tmp/jb3-root-mutation-issues.log`,
+`/tmp/jb3-root-frozen-final.log`.
+
+The finite model does not explicitly model issues; its bounded scope remains
+unchanged, and the real-code non-base regression supplies that dynamic evidence.
+The existing scenario-income CSV field retains its four decimal places, while
+ordinary amount columns retain two; this fixes completeness without changing
+the pre-existing display convention noted as ambiguous in Spec review.
+
+Production data reconciliation, deployment and M2 remain outside this delivery.
