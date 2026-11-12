@@ -96,7 +96,9 @@ def _require_bounded_worker() -> None:
         raise DomainError("build_worker_unbounded", "广告执行需要有界后台任务")
 
 
-def _frozen(session: Session, context: TenantContext, claim: StepClaim) -> FrozenUnit:
+def _frozen(
+    session: Session, context: TenantContext, claim: StepClaim, *, refreshing=False
+) -> FrozenUnit:
     unit = load_execution_unit(
         session,
         context=context,
@@ -142,6 +144,7 @@ def _frozen(session: Session, context: TenantContext, claim: StepClaim) -> Froze
             context=context,
             preview=session.get(BuildPreview, claim.preview_id),
             route=route,
+            refreshing=refreshing,
         )
     return unit.frozen
 
@@ -754,13 +757,36 @@ def _prepare_scene_dependency(
         if not active_attempt(step, claim, phase="CLAIMED"):
             return step.status
         try:
-            frozen = _frozen(session, context, claim)
+            frozen = _frozen(session, context, claim, refreshing=True)
+            if frozen.native_request:
+                from app.core.config import settings
+
+                # 依赖等待沿既有 Scene 有效期设上界；不能无限新建刷新代次。
+                started = step.resolved.get("scene_refresh_started_at")
+                now = datetime.now(UTC)
+                if started and now - datetime.fromisoformat(started) >= timedelta(
+                    seconds=settings.SCENE_MAX_AGE_SECONDS
+                ):
+                    return finish_local(
+                        session,
+                        claim=claim,
+                        status="FAILED",
+                        code="scene_refresh_exhausted",
+                    )
+                step.resolved = {
+                    **step.resolved,
+                    "scene_refresh_started_at": started or now.isoformat(),
+                }
+                session.add(step)
             preparation = ensure_scene_preparation(
                 session,
                 context=context,
                 bc_id=frozen.bc_id,
                 advertiser_id=frozen.advertiser_id,
                 link_id=frozen.link_id,
+                native_selection=frozen.native_request["selection"]
+                if frozen.native_request
+                else None,
                 **(
                     {"minis_id": frozen.scene_snapshot["campaign_copy"]["minis_id"]}
                     if frozen.scene_snapshot.get("campaign_copy", {}).get("version")
@@ -928,6 +954,19 @@ def process_step(
             frozen = _frozen(session, context, claim)
             if claim.kind == "MATERIAL":
                 assert claim.material_id
+                if frozen.native_request:
+                    # 原生已在 prepare 核实逐位置封面；复用当前正证据，不能为显式封面准备默认图。
+                    mapping = next(
+                        m
+                        for m in frozen.native_request["materials"]
+                        if m["material_id"] == str(claim.material_id)
+                    )
+                    return finish_local(
+                        session,
+                        claim=claim,
+                        status="SUCCEEDED",
+                        resolved={"mapping": mapping},
+                    )
                 ready = ensure_target_asset(
                     session,
                     context=context,

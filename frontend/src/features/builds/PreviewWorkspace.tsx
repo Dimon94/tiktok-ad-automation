@@ -170,10 +170,6 @@ export function BuildPreviewPanel({
       params: { tenantId, draftId: current.draft_id },
       search: { bc_id: bcId },
     })
-  if (current.native_request)
-    return (
-      <NativeFrozenPreview tenantId={tenantId} preview={current} back={back} />
-    )
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
@@ -394,92 +390,102 @@ export function BuildPreviewPanel({
         </Card>
       ) : (
         <>
-          {(current.excluded_dramas?.length ?? 0) > 0 && (
-            <Alert variant="destructive">
-              <AlertTitle>
-                {current.excluded_dramas?.length} 部剧本次不会搭建
-              </AlertTitle>
-              <AlertDescription>
-                <p>以下剧在所有账户上都被排除，提交后不会创建任何系列：</p>
-                <ul className="mt-1 list-disc pl-5">
-                  {current.excluded_dramas?.map((drama) => (
-                    <li key={drama.drama_id} className="break-all">
-                      {drama.title}
-                      {(drama.reason_codes?.length ?? 0) > 0 &&
-                        `（${drama.reason_codes
-                          ?.map((code) => reasonLabels[code] || code)
-                          .join("、")}）`}
-                    </li>
-                  ))}
-                </ul>
-                {!readOnly && (
-                  <p className="mt-1">
-                    如需一并搭建，请先补充素材后重新生成预览；直接提交只会搭建其余剧。
-                  </p>
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
-          {(current.blocked_count > 0 || current.input_issue_count > 0) && (
-            <Alert>
-              <AlertDescription>
-                本次排除 {current.blocked_count} 个阻断组合；另有{" "}
-                {current.input_issue_count} 条输入问题，未形成组合。
-                {readOnly
-                  ? "排除项未包含在本次提交中。"
-                  : "仅提交可用与提交后可分发范围，排除项不会自动补入。"}
-              </AlertDescription>
-            </Alert>
-          )}
-          <Card className="min-w-0">
-            <CardHeader className="min-w-0">
-              <Tabs
-                value={tab}
-                onValueChange={(value) => {
-                  setTab(value)
-                  setDramaId(undefined)
-                }}
-              >
-                <TabsList>
-                  <TabsTrigger value="dramas">剧目汇总</TabsTrigger>
-                  <TabsTrigger value="units">账户组合</TabsTrigger>
-                  <TabsTrigger value="excluded">排除组合</TabsTrigger>
-                  <TabsTrigger value="issues">输入问题</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </CardHeader>
-            <CardContent className="min-w-0">
-              {tab === "dramas" ? (
-                <PreviewDramaTable
-                  tenantId={tenantId}
-                  bcId={bcId}
-                  preview={current}
-                  onDrama={(id) => {
-                    setDramaId(id)
-                    setTab("units")
-                  }}
-                />
-              ) : tab === "issues" ? (
-                <PreviewExclusions
-                  tenantId={tenantId}
-                  bcId={bcId}
-                  previewId={previewId}
-                  onEdit={readOnly ? undefined : back}
-                />
-              ) : (
-                <PreviewUnitTable
-                  key={tab}
-                  tenantId={tenantId}
-                  bcId={bcId}
-                  previewId={previewId}
-                  budgetStrategy={current.budget_strategy}
-                  dramaId={dramaId}
-                  excluded={tab === "excluded"}
-                  onUnit={setUnit}
-                />
+          {current.native_request ? (
+            <NativeFrozenPreview
+              tenantId={tenantId}
+              preview={current}
+              back={back}
+            />
+          ) : (
+            <>
+              {(current.excluded_dramas?.length ?? 0) > 0 && (
+                <Alert variant="destructive">
+                  <AlertTitle>
+                    {current.excluded_dramas?.length} 部剧本次不会搭建
+                  </AlertTitle>
+                  <AlertDescription>
+                    <p>以下剧在所有账户上都被排除，提交后不会创建任何系列：</p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {current.excluded_dramas?.map((drama) => (
+                        <li key={drama.drama_id} className="break-all">
+                          {drama.title}
+                          {(drama.reason_codes?.length ?? 0) > 0 &&
+                            `（${drama.reason_codes
+                              ?.map((code) => reasonLabels[code] || code)
+                              .join("、")}）`}
+                        </li>
+                      ))}
+                    </ul>
+                    {!readOnly && (
+                      <p className="mt-1">
+                        如需一并搭建，请先补充素材后重新生成预览；直接提交只会搭建其余剧。
+                      </p>
+                    )}
+                  </AlertDescription>
+                </Alert>
               )}
-            </CardContent>
-          </Card>
+              {(current.blocked_count > 0 || current.input_issue_count > 0) && (
+                <Alert>
+                  <AlertDescription>
+                    本次排除 {current.blocked_count} 个阻断组合；另有{" "}
+                    {current.input_issue_count} 条输入问题，未形成组合。
+                    {readOnly
+                      ? "排除项未包含在本次提交中。"
+                      : "仅提交可用与提交后可分发范围，排除项不会自动补入。"}
+                  </AlertDescription>
+                </Alert>
+              )}
+              <Card className="min-w-0">
+                <CardHeader className="min-w-0">
+                  <Tabs
+                    value={tab}
+                    onValueChange={(value) => {
+                      setTab(value)
+                      setDramaId(undefined)
+                    }}
+                  >
+                    <TabsList>
+                      <TabsTrigger value="dramas">剧目汇总</TabsTrigger>
+                      <TabsTrigger value="units">账户组合</TabsTrigger>
+                      <TabsTrigger value="excluded">排除组合</TabsTrigger>
+                      <TabsTrigger value="issues">输入问题</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </CardHeader>
+                <CardContent className="min-w-0">
+                  {tab === "dramas" ? (
+                    <PreviewDramaTable
+                      tenantId={tenantId}
+                      bcId={bcId}
+                      preview={current}
+                      onDrama={(id) => {
+                        setDramaId(id)
+                        setTab("units")
+                      }}
+                    />
+                  ) : tab === "issues" ? (
+                    <PreviewExclusions
+                      tenantId={tenantId}
+                      bcId={bcId}
+                      previewId={previewId}
+                      onEdit={readOnly ? undefined : back}
+                    />
+                  ) : (
+                    <PreviewUnitTable
+                      key={tab}
+                      tenantId={tenantId}
+                      bcId={bcId}
+                      previewId={previewId}
+                      budgetStrategy={current.budget_strategy}
+                      dramaId={dramaId}
+                      excluded={tab === "excluded"}
+                      onUnit={setUnit}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
           <PreviewSummaryBar
             preview={current}
             readOnly={readOnly}

@@ -51,6 +51,8 @@ def source_env(
         "unknown_ambiguous",
         "unknown_cancel",
         "unknown_group",
+        "unknown_group_distribution",
+        "unknown_ad_addon",
         "unknown_ad",
         "unknown_late",
         "unknown_revoke",
@@ -64,6 +66,10 @@ def test_native_six_creates(
     retain_build_history,
     failure,
     readback=None,
+    source_mode=None,
+    browser=False,
+    refresh=None,
+    tamper=None,
 ):
     draft_id, _, _ = prepared_native_workspace(
         job_env,
@@ -71,6 +77,7 @@ def test_native_six_creates(
         redis_client,
         True,
         count=6,
+        source_mode=source_mode,
         config_changes={
             "group_generation_mode": "FIXED",
             "group_count": 1,
@@ -90,6 +97,19 @@ def test_native_six_creates(
         frozen_payload = previews.get_preview_summary(
             s, context=context, preview_id=pid
         ).native_request
+    if browser:
+        from tests.modules.builds.native_browser_http import submit_in_browser
+
+        submit_in_browser(native.engine, context, job_env["bc_id"], pid)
+        from app.modules.builds.execution_models import Submission
+
+        with Session(native.engine) as s:
+            assert (
+                len(
+                    s.exec(select(Submission).where(Submission.preview_id == pid)).all()
+                )
+                == 1
+            )
     # 初次提交真实并发竞争，而非先创建后仅验证重放。
     from concurrent.futures import ThreadPoolExecutor
 
@@ -128,14 +148,20 @@ def test_native_six_creates(
             kind: [x.id for x in steps if x.kind == kind]
             for kind in ["MATERIAL", "CTA", "CAMPAIGN", "ADGROUP", "AD"]
         }
+    import urllib3
+
+    scene_transport = urllib3.PoolManager.request
     calls = []
 
     def request(pool, method, url, **kw):
         body = json.loads(kw["body"])
         calls.append((url, body))
-        unknown_kind = {"unknown_group": "/adgroup/", "unknown_ad": "/ad/create/"}.get(
-            failure, "/campaign/"
-        )
+        unknown_kind = {
+            "unknown_group": "/adgroup/",
+            "unknown_group_distribution": "/adgroup/",
+            "unknown_ad": "/ad/create/",
+            "unknown_ad_addon": "/ad/create/",
+        }.get(failure, "/campaign/")
         if (
             failure
             and failure != "unknown_late"
@@ -220,7 +246,233 @@ def test_native_six_creates(
         from tests.modules.builds.native_cancel_http import cancel_twice
 
         cancel_twice(native.engine, context, receipt.submission_id)
+    if tamper == "after_admission":
+        from contextlib import contextmanager
+
+        from app.modules.materials.models import AccountMaterial
+
+        admitted = execution.admitted_build_call
+
+        @contextmanager
+        def revoke_after_admission(*args, **kwargs):
+            with admitted(*args, **kwargs):
+                if len(calls) == 3:
+                    with Session(native.engine) as s, s.begin():
+                        mapping = s.exec(
+                            select(AccountMaterial).where(
+                                AccountMaterial.tenant_id == context.tenant_id,
+                                AccountMaterial.image_id == "selected-C",
+                            )
+                        ).one()
+                        mapping.status = "unavailable"
+                        s.add(mapping)
+                yield
+
+        monkeypatch.setattr(execution, "admitted_build_call", revoke_after_admission)
+    if tamper in {"wire_cover", "wire_drop"}:
+        compile_arguments = execution.create_arguments
+
+        def corrupt_arguments(**kwargs):
+            endpoint, body = compile_arguments(**kwargs)
+            if "creative_list" in body:
+                if tamper == "wire_drop":
+                    body["creative_list"].pop()
+                else:
+                    body["creative_list"][0]["creative_info"]["image_info"][0][
+                        "web_uri"
+                    ] = "wrong-cover"
+            return endpoint, body
+
+        monkeypatch.setattr(execution, "create_arguments", corrupt_arguments)
     for kind in ids:
+        if tamper and kind == "AD":
+            from app.modules.materials.models import AccountMaterial
+
+            if tamper in {"revoked", "wrong_route", "changed_mapping"}:
+                with Session(native.engine) as s, s.begin():
+                    mapping = s.exec(
+                        select(AccountMaterial).where(
+                            AccountMaterial.tenant_id == context.tenant_id,
+                            AccountMaterial.image_id == "selected-C",
+                        )
+                    ).one()
+                    if tamper == "revoked":
+                        mapping.status = "unavailable"
+                    elif tamper == "wrong_route":
+                        mapping.frozen_route = {
+                            **mapping.frozen_route,
+                            "authorization_revision": 999,
+                        }
+                    else:
+                        mapping.image_id = "changed-C"
+                    s.add(mapping)
+        if refresh and kind == "ADGROUP":
+            from datetime import UTC, datetime, timedelta
+
+            from app.modules.accounts.capability_models import CapabilityJob
+            from app.modules.builds.preview_models import BuildPreview
+            from app.modules.builds.scene_job_models import SceneJob
+
+            with Session(native.engine) as s, s.begin():
+                old = s.exec(
+                    select(SceneJob).where(
+                        SceneJob.tenant_id == context.tenant_id,
+                        SceneJob.status == "COMPLETE",
+                    )
+                ).one()
+                if refresh.startswith("capability"):
+                    proof = s.exec(
+                        select(CapabilityJob).where(
+                            CapabilityJob.tenant_id == context.tenant_id,
+                            CapabilityJob.status == "COMPLETE",
+                        )
+                    ).first()
+                    proof.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                    s.add(proof)
+                else:
+                    old.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                    s.add(old)
+                original_revision = s.get(BuildDraft, draft_id).revision
+                original_digest = s.get(BuildPreview, pid).content_digest
+                parent_facts = {
+                    sid: (
+                        row.remote_id,
+                        row.request_body,
+                        row.request_body_digest,
+                        row.attempt,
+                        row.attempt_id,
+                    )
+                    for sid in ids["CAMPAIGN"] + ids["CTA"]
+                    if (row := s.get(ExecutionStep, sid))
+                }
+            assert (
+                execution.process_step(
+                    database_engine=native.engine,
+                    redis_client=redis_client,
+                    context=context,
+                    step_id=ids[kind][0],
+                    revision=0,
+                )
+                == "PENDING"
+            )
+            if refresh == "scene_exhausted":
+                from app.core.config import settings
+
+                with Session(native.engine) as s, s.begin():
+                    waiting = s.get(ExecutionStep, ids[kind][0])
+                    waiting.resolved = {
+                        **waiting.resolved,
+                        "scene_refresh_started_at": (
+                            datetime.now(UTC)
+                            - timedelta(seconds=settings.SCENE_MAX_AGE_SECONDS + 1)
+                        ).isoformat(),
+                    }
+                    waiting.due_at = datetime.now(UTC) - timedelta(seconds=1)
+                    pending_revision = waiting.dispatch_revision
+                    s.add(waiting)
+                assert (
+                    execution.process_step(
+                        database_engine=native.engine,
+                        redis_client=redis_client,
+                        context=context,
+                        step_id=ids[kind][0],
+                        revision=pending_revision,
+                    )
+                    == "FAILED"
+                )
+                assert len(calls) == 2
+                return
+            monkeypatch.setattr("urllib3.PoolManager.request", scene_transport)
+            if refresh.startswith("capability"):
+                with Session(native.engine) as s:
+                    job = s.exec(
+                        select(CapabilityJob).where(
+                            CapabilityJob.tenant_id == context.tenant_id,
+                            CapabilityJob.status == "PENDING",
+                        )
+                    ).one()
+                wire[1].append(native.role_page(["actual-account"]))
+                native.run_capability(
+                    {**job_env, "request_id": uuid4()}, redis_client, job.id
+                )
+                native.run_capability(
+                    {**job_env, "request_id": uuid4()}, redis_client, job.id
+                )
+            else:
+                with Session(native.engine) as s:
+                    job = s.exec(
+                        select(SceneJob).where(
+                            SceneJob.tenant_id == context.tenant_id,
+                            SceneJob.status == "PENDING",
+                        )
+                    ).one()
+                owner = {
+                    "identity_type": "TT_USER",
+                    "identity_id": "owner",
+                    "available_status": "AVAILABLE",
+                    "can_use_series": refresh != "scene_revoked",
+                    "can_push_video": True,
+                    "is_gpppa": False,
+                }
+                wire[1].extend(
+                    [
+                        native.identities([owner]),
+                        native.identities([]),
+                        {
+                            "list": [{"native_series_id": "exact-series"}],
+                            "cursor": 0,
+                            "has_more": False,
+                        },
+                        native.region_response()["data"],
+                        {
+                            "recommend_assets": [
+                                {
+                                    "asset_ids": [
+                                        "changed"
+                                        if refresh == "scene_changed"
+                                        else "cta-watch"
+                                    ],
+                                    "asset_content": "Watch now",
+                                }
+                            ]
+                        },
+                    ]
+                )
+                for _ in range(8):
+                    job = native.run(job_env, redis_client, job.id)
+                    if job.status != "PENDING":
+                        break
+                assert job.status == "COMPLETE", job.error_code
+            monkeypatch.setattr("urllib3.PoolManager.request", request)
+            with Session(native.engine) as s, s.begin():
+                step = s.get(ExecutionStep, ids[kind][0])
+                refresh_revision = step.dispatch_revision
+                step.due_at = datetime.now(UTC) - timedelta(seconds=1)
+                s.add(step)
+                assert s.get(BuildDraft, draft_id).revision == original_revision
+                assert s.get(BuildPreview, pid).content_digest == original_digest
+                for sid, original in parent_facts.items():
+                    row = s.get(ExecutionStep, sid)
+                    assert (
+                        row.remote_id,
+                        row.request_body,
+                        row.request_body_digest,
+                        row.attempt,
+                        row.attempt_id,
+                    ) == original
+            if refresh in {"scene_changed", "scene_revoked"}:
+                assert (
+                    execution.process_step(
+                        database_engine=native.engine,
+                        redis_client=redis_client,
+                        context=context,
+                        step_id=ids[kind][0],
+                        revision=refresh_revision,
+                    )
+                    == "FAILED"
+                )
+                assert len(calls) == 2
+                return
         if failure == "cancel_after_campaign" and kind == "ADGROUP":
             with Session(native.engine) as s, s.begin():
                 submissions.cancel_submission(
@@ -232,11 +484,11 @@ def test_native_six_creates(
                 redis_client=redis_client,
                 context=context,
                 step_id=sid,
-                revision=0,
+                revision=refresh_revision if refresh and kind == "ADGROUP" else 0,
             )
             with Session(native.engine) as check:
                 saved = check.get(ExecutionStep, sid)
-                if failure is None:
+                if failure is None and not (tamper and kind == "AD"):
                     assert outcome == "SUCCEEDED", (
                         kind,
                         saved.error_code,
@@ -254,6 +506,15 @@ def test_native_six_creates(
                         )
                         == "UNKNOWN"
                     )
+    if tamper:
+        assert len(calls) == 3
+        with Session(native.engine) as s:
+            assert all(s.get(ExecutionStep, sid).remote_id is None for sid in ids["AD"])
+            assert all(
+                s.get(ExecutionStep, sid).status in {"FAILED", "PENDING"}
+                for sid in ids["AD"]
+            )
+        return
     if failure and failure.startswith("unknown_"):
         from tests.modules.builds.test_native_recovery_timeline import recover_unknown
 
@@ -526,7 +787,17 @@ def test_native_submission_rejects_changed_freeze(
 
 
 @pytest.mark.parametrize(
-    "scenario", ["match", "difference", "rejected", "absent", "partial"]
+    "scenario",
+    [
+        "match",
+        "difference",
+        "rejected",
+        "absent",
+        "partial",
+        "distribution",
+        "static_cta",
+        "addon",
+    ],
 )
 def test_native_readback_timeline(
     job_env, wire, redis_client, monkeypatch, retain_build_history, scenario
@@ -539,4 +810,81 @@ def test_native_readback_timeline(
         retain_build_history,
         "group_reject" if scenario == "partial" else None,
         readback=scenario,
+    )
+
+
+@pytest.mark.parametrize("source_mode", ["explicit", "no_default", "repeated"])
+def test_native_selected_cover_execution(
+    job_env, wire, redis_client, monkeypatch, retain_build_history, source_mode
+):
+    test_native_six_creates(
+        job_env,
+        wire,
+        redis_client,
+        monkeypatch,
+        retain_build_history,
+        None,
+        source_mode=source_mode,
+    )
+
+
+@pytest.mark.parametrize(
+    "source_env", [{"bc_id": "90071992547409931234"}], indirect=True
+)
+def test_native_browser_submission_timeline(
+    job_env, wire, redis_client, monkeypatch, retain_build_history
+):
+    test_native_six_creates(
+        job_env,
+        wire,
+        redis_client,
+        monkeypatch,
+        retain_build_history,
+        None,
+        readback="match",
+        browser=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "refresh",
+    ["scene", "capability", "scene_changed", "scene_revoked", "scene_exhausted"],
+)
+def test_native_expired_evidence_continues_frozen_plan(
+    job_env, wire, redis_client, monkeypatch, retain_build_history, refresh
+):
+    test_native_six_creates(
+        job_env,
+        wire,
+        redis_client,
+        monkeypatch,
+        retain_build_history,
+        None,
+        refresh=refresh,
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "revoked",
+        "wrong_route",
+        "changed_mapping",
+        "wire_cover",
+        "wire_drop",
+        "after_admission",
+    ],
+)
+def test_native_final_material_fence(
+    job_env, wire, redis_client, monkeypatch, retain_build_history, tamper
+):
+    test_native_six_creates(
+        job_env,
+        wire,
+        redis_client,
+        monkeypatch,
+        retain_build_history,
+        None,
+        source_mode="explicit",
+        tamper=tamper,
     )

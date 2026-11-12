@@ -882,7 +882,14 @@ def native_checkpoint(
             or not proof.scope_verified
             or not proof.can_build
         ):
-            reasons.append("account_build_unverified")
+            reasons.append(
+                "account_build_evidence_expired"
+                if proof is not None
+                and proof.expires_at <= datetime.now(UTC)
+                and proof.scope_verified
+                and proof.can_build
+                else "account_build_unverified"
+            )
         identities = job.facts.get("native_tt_identity", {}).get(
             "items", []
         ) + job.facts.get("native_bc_identity", {}).get("items", [])

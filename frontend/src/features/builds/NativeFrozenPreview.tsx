@@ -146,9 +146,6 @@ export function NativeFrozenPreview({
           {JSON.stringify(preview.native_request, null, 2)}
         </pre>
       </details>
-      <p className="text-sm text-muted-foreground">
-        当前可审阅冻结计划。原生广告执行尚未开放。
-      </p>
     </div>
   )
 }

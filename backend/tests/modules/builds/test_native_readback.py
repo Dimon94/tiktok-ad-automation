@@ -316,3 +316,27 @@ def test_explicit_review_rejection_or_invalid_status_cannot_match(status):
     row = observed_ad()
     row["secondary_status"] = status
     assert compare("AD", ad_body(), row) != "MATCH"
+
+
+@pytest.mark.parametrize(
+    "kind,key,value",
+    [
+        (
+            "ADGROUP",
+            "drama_selling_setting",
+            {
+                "type": "DISTRIBUTION",
+                "distribution_link": "https://example.test/distribution",
+            },
+        ),
+        ("AD", "call_to_action_list", [{"call_to_action": "SHOP_NOW"}]),
+        ("AD", "interactive_add_on_list", [{"interactive_add_on_id": "unexpected"}]),
+    ],
+)
+def test_direct_mode_observed_forbidden_fields(kind, key, value):
+    row = observed_group() if kind == "ADGROUP" else observed_ad()
+    row[key] = value
+    assert (
+        compare(kind, group_body() if kind == "ADGROUP" else ad_body(), row)
+        == "MISMATCH"
+    )

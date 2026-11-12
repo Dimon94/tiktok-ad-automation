@@ -17,10 +17,22 @@ from tests.modules.builds.test_native_readback_timeline import observed_rows
 def recover_unknown(
     engine, context, redis, monkeypatch, submission_id, creates, scenario
 ):
-    kind = {"unknown_group": "ADGROUP", "unknown_ad": "AD"}.get(scenario, "CAMPAIGN")
+    kind = {
+        "unknown_group": "ADGROUP",
+        "unknown_group_distribution": "ADGROUP",
+        "unknown_ad": "AD",
+        "unknown_ad_addon": "AD",
+    }.get(scenario, "CAMPAIGN")
     index = {"CAMPAIGN": 2, "ADGROUP": 3, "AD": 4}[kind]
     rid = f"remote-{index}"
     rows = [observed_rows(creates)[rid]]
+    if scenario == "unknown_group_distribution":
+        rows[0]["drama_selling_setting"] = {
+            "type": "DISTRIBUTION",
+            "distribution_link": "https://example.test/distribution",
+        }
+    if scenario == "unknown_ad_addon":
+        rows[0]["interactive_add_on_list"] = [{"interactive_add_on_id": "unexpected"}]
     if scenario == "unknown_ambiguous":
         other = deepcopy(rows[0])
         other["campaign_id"] = "second"
@@ -118,7 +130,13 @@ def recover_unknown(
     assert len(reads) == 1
     assert outcome.state == (
         "UNKNOWN"
-        if scenario in {"unknown_ambiguous", "unknown_revoke"}
+        if scenario
+        in {
+            "unknown_ambiguous",
+            "unknown_revoke",
+            "unknown_group_distribution",
+            "unknown_ad_addon",
+        }
         else "SUCCEEDED"
     )
     with Session(engine) as db:
@@ -128,7 +146,15 @@ def recover_unknown(
             and source.request_body_digest == digest
         )
         assert source.remote_id == (
-            None if scenario in {"unknown_ambiguous", "unknown_revoke"} else rid
+            None
+            if scenario
+            in {
+                "unknown_ambiguous",
+                "unknown_revoke",
+                "unknown_group_distribution",
+                "unknown_ad_addon",
+            }
+            else rid
         )
         evidence = db.exec(
             select(StepEvidence).where(StepEvidence.step_id == sid)

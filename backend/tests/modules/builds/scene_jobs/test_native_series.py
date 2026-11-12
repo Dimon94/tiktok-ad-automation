@@ -255,7 +255,13 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
 
 
 def prepared_native_workspace(
-    job_env, wire, redis_client, materials, count=2, config_changes=None
+    job_env,
+    wire,
+    redis_client,
+    materials,
+    count=2,
+    config_changes=None,
+    source_mode=None,
 ):
     from app.modules.builds import drafts
     from app.modules.builds.catalog import draft_summary
@@ -299,6 +305,48 @@ def prepared_native_workspace(
                 )
                 chosen["video_sources"].append({"material_id": str(material.id)})
                 expected.append((str(material.id), f"target-{index}", f"cover-{index}"))
+        if source_mode:
+            original = session.get(MaterialFile, expected[0][0])
+            image = MaterialFile(
+                **{
+                    **original.model_dump(),
+                    "id": uuid4(),
+                    "object_key": f"cover/{uuid4()}",
+                    "media_type": "IMAGE",
+                    "mime_type": "image/jpeg",
+                    "duration": None,
+                }
+            )
+            session.add(image)
+            session.flush()
+            session.add(
+                AccountMaterial(
+                    tenant_id=env["context"].tenant_id,
+                    bc_id=env["bc_id"],
+                    material_id=image.id,
+                    advertiser_id="actual-account",
+                    connection_id=env["connection_id"],
+                    frozen_route=env["route"].model_dump(mode="json"),
+                    media_type="IMAGE",
+                    image_id="selected-C",
+                    is_carousel_usable=True,
+                    status="available",
+                    verified_at=datetime.now(UTC),
+                )
+            )
+            chosen["video_sources"][0]["cover_material_id"] = str(image.id)
+            expected[0] = (expected[0][0], "target-0", "selected-C")
+            if source_mode == "no_default":
+                video = session.exec(
+                    select(AccountMaterial).where(
+                        AccountMaterial.material_id == original.id
+                    )
+                ).one()
+                video.image_id = None
+                session.add(video)
+            if source_mode == "repeated":
+                chosen["video_sources"][1] = {"material_id": str(original.id)}
+                expected[1] = (expected[0][0], "target-0", "cover-0")
         strategy_id = create_strategy(
             session,
             context=env["context"],

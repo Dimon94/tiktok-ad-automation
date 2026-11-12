@@ -317,6 +317,24 @@ def parse_page(*, query: BuildReadQuery, response: McpBusinessResponse) -> Build
                 for key in TARGETING_FIELDS:
                     if key in row["targeting_spec"]:
                         projected["targeting_spec"][key] = row["targeting_spec"][key]
+        direct_fields = {}
+        if native:
+            # 保留实际直接模式禁用字段的路径；明确不一致优先于缺少事实。
+            forbidden = (
+                "landing_page_url_list",
+                "distribution_link",
+                "minis_id",
+                "call_to_action_list",
+                "interactive_add_on_list",
+            )
+            for key in forbidden:
+                if row.get(key):
+                    direct_fields[key] = row[key]
+            selling = row.get("drama_selling_setting")
+            if isinstance(selling, dict) and selling.get("distribution_link"):
+                direct_fields["drama_selling_setting.distribution_link"] = selling[
+                    "distribution_link"
+                ]
         observed_native = None
         observed_adgroup = None
         # Smart+组接口缺status时仅保留其余实际观察到的完整typed字段，不补请求默认值。
@@ -361,6 +379,7 @@ def parse_page(*, query: BuildReadQuery, response: McpBusinessResponse) -> Build
                 intent=intent,
                 operation_status=status,
                 missing_fields=tuple(sorted(set(missing))),
+                observed_direct_fields=direct_fields,
                 observed_adgroup=observed_adgroup,
                 observed_native=observed_native,
                 review_status=_safe_status(row.get("secondary_status")),
@@ -415,6 +434,8 @@ def compare_record(
         and record.operation_status is not None
         and record.operation_status != "ENABLE"
     ):
+        return "MISMATCH"
+    if record.observed_direct_fields:
         return "MISMATCH"
     if record.observed_native is not None:
         if record.missing_fields:
@@ -511,7 +532,7 @@ def with_adgroup_status(*, record: BuildRecord, status: AdGroupStatus) -> BuildR
 
 def record_differences(query: BuildReadQuery, record: BuildRecord) -> list[str]:
     """只返回差异路径；原始观察保存在同一 candidate 的强类型 record 内。"""
-    paths = list(record.missing_fields)
+    paths = list(record.missing_fields) + list(record.observed_direct_fields)
     observed = record.observed_native or record.intent
     if observed is not None:
         left, right = query.intent.model_dump(), observed.model_dump()

@@ -5216,3 +5216,13 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 现有任务详情/API 增加“取消未发送步骤”。同租户原操作者可本地取消而不需平台写权限，提交行锁与发送前重查阻止后续创建；旧消息失效，在途/迟到 ID 与 UNKNOWN 仍保留。取消后只读恢复可用，无远端 delete/disable/再 ENABLE。
 - 真实PG/Redis与官方SDK传输替身验证：唯一/多义/取消后恢复、三级 UNKNOWN、取消 HTTP 并发、在途/迟到回执与恢复中撤权。大回归173通过；新增 Ad 检查误选多行已修正补跑，4旧身份夹具阻断保持披露。前端 TypeScript 与正式/demo 构建通过，两个近似错误探针失败并字节恢复。
 - 精确命令、分项结果、状态语义、风险范围与剩余 Mini 夹具缺口见[JB-12验收](validation/2026-11-12-jb12-native-recovery-cancel.md)。没有形式证明/真实平台接受声明；M1最终独立审查、集成与工单闭环仍由协调者完成。
+
+## 2026-11-12 Native Series M1 R1 修复候选
+
+起点 `2dce3bc7d19f132209a6d3c6a8ba1bbd87619af2`；指定 `feat/jb5-native-series-m1` 集成树单写者修复，未派代理、未改 Linear、未合 main/推送/PR/部署/真实平台操作。交付 tip 为本节所在提交。
+
+R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1。已实现四类修复：原生正文接回共用提交/未知受理恢复/已提交任务导航；原生逐位置显式封面及重复视频接最终实际wire围栏和素材/重试依赖；实际 nested distribution/static CTA/addon 观察事实共享到精确回读与UNKNOWN比较；原 SceneJob/CapabilityJob 同scope刷新TTL并保留冻结意图，否定资格/变CTA/超时不续跑。
+
+真实浏览器经生产 Submission 路由、真实隔离数据库受理，响应丢失按原ledger恢复，数据库唯一Submission；同一链继续SDK创建及全量回读到COMPLETED。新三类回读负例保持NEEDS_REVIEW（含内部聚合），UNKNOWN禁止认领。封面三类合法输入创建通过，准入前后竞态/错wire均阻断。探针实际失败并逐字节恢复。相关最终回归185 passed，build与静态检查通过；未重复无关176/173全量。
+
+完整方法、finding逐条证据、日志、UI壳fixture边界、三项已在起点页面复现的旧UI断言失败，见 `docs/validation/2026-11-12-native-m1-review-r1-fixes.md`。不自行给最终review PASS；待协调者R2两轴仅审修复diff及影响行为。真实平台接受/active完整映射/经营资格仍Unknown，未作形式证明。

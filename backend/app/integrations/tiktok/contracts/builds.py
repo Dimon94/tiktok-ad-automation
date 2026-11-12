@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    JsonValue,
     field_validator,
     model_validator,
 )
@@ -413,6 +414,7 @@ class BuildRecord(FrozenModel):
     intent: CreateIntent | None
     operation_status: Id | None
     missing_fields: tuple[Id, ...]
+    observed_direct_fields: dict[str, JsonValue] = Field(default_factory=dict)
     observed_native: NativeAdGroupObservedFacts | NativeAdObservedFacts | None = None
     observed_adgroup: AdGroupObservedFacts | None = None
     review_status: Id | None = None

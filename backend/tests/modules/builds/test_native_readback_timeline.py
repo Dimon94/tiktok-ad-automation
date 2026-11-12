@@ -24,6 +24,17 @@ def reconcile_created(
         rows["remote-4"]["secondary_status"] = "AUDIT_REJECTED"
     if scenario == "absent":
         del rows["remote-4"]
+    if scenario == "distribution":
+        rows["remote-3"]["drama_selling_setting"] = {
+            "type": "DISTRIBUTION",
+            "distribution_link": "https://example.test/distribution",
+        }
+    if scenario == "static_cta":
+        rows["remote-4"]["call_to_action_list"] = [{"call_to_action": "SHOP_NOW"}]
+    if scenario == "addon":
+        rows["remote-4"]["interactive_add_on_list"] = [
+            {"interactive_add_on_id": "unexpected"}
+        ]
     reads = []
 
     def request(_pool, method, url, **kw):
@@ -111,7 +122,13 @@ def reconcile_created(
         ).all()
         assert len(evidence) == expected_reads
         assert len(reads) == expected_reads
-        if scenario in {"difference", "rejected"}:
+        if scenario in {
+            "difference",
+            "rejected",
+            "distribution",
+            "static_cta",
+            "addon",
+        }:
             assert any(
                 e.summary["candidate"]["comparison"] == "MISMATCH" for e in evidence
             )
@@ -139,7 +156,13 @@ def reconcile_created(
     )
     with Session(engine) as db:
         assert db.get(Submission, submission_id).status == summary.status
-        if scenario in {"difference", "rejected"}:
+        if scenario in {
+            "difference",
+            "rejected",
+            "distribution",
+            "static_cta",
+            "addon",
+        }:
             page = submissions.get_submission_steps(
                 db, context=context, submission_id=submission_id
             )

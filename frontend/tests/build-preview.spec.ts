@@ -1112,5 +1112,42 @@ test("原生冻结预览展示全部分配及占用范围", async ({ page }) => 
   ).toBeVisible()
   await expect(
     page.getByRole("button", { name: "创建并立即启用" }),
-  ).toHaveCount(0)
+  ).toBeEnabled()
+})
+
+test("原生真实后端提交与响应丢失恢复 @native-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_TEST_HOST, "仅隔离数据库 runner 启动")
+  await buildsBoundary(page)
+  let lost = false
+  await page.route(
+    /\/api\/tenants\/[^/]+\/(build-previews|submissions|submission-requests)\//,
+    async (route) => {
+      const response = await route.fetch({
+        url:
+          process.env.NATIVE_TEST_HOST +
+          new URL(route.request().url()).pathname,
+      })
+      if (route.request().method() === "POST" && !lost) {
+        expect(response.status()).toBe(202)
+        lost = true
+        await route.abort("connectionreset")
+      } else await route.fulfill({ response })
+    },
+  )
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(
+    page.getByRole("heading", { name: /Series 直接视频投放预览/ }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: /^创建并立即启用/ }).click()
+  await expect(
+    page.getByRole("button", { name: "查询原提交结果" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "查询原提交结果" }).click()
+  await expect(page).toHaveURL(/build-tasks\//)
+  await expect(page.getByRole("heading", { name: /^任务 / })).toBeVisible()
+  const submissionId = /build-tasks\/([^?]+)/.exec(page.url())![1]
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(page.getByRole("link", { name: "返回任务详情" })).toBeVisible()
+  await page.getByRole("link", { name: "返回任务详情" }).click()
+  await expect(page).toHaveURL(new RegExp(submissionId))
 })

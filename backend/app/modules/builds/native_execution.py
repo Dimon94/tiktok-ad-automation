@@ -16,7 +16,7 @@ from app.modules.builds.request_compiler import cta_portfolio
 from app.modules.builds.scene_jobs import native_checkpoint
 
 
-def validate(session, *, context, preview, route):
+def validate(session, *, context, preview, route, refreshing=False):
     payload = FrozenRequestRevision.model_validate(
         preview.config["native_request"]
     ).model_dump(mode="json")
@@ -64,6 +64,16 @@ def validate(session, *, context, preview, route):
     if (access.currency, access.timezone) != (units[0].currency, units[0].timezone):
         raise DomainError("account_metadata_changed", "账户币种或时区已改变")
     checkpoint = native_checkpoint(session, context=context, draft=draft, route=route)
+    expired_only = bool(checkpoint.reason_codes) and set(checkpoint.reason_codes) <= {
+        "scene_evidence_expired",
+        "account_build_evidence_expired",
+    }
+    if expired_only or checkpoint.state == "PENDING":
+        if refreshing:
+            return payload
+        raise DomainError(
+            "scene_refresh_required", "原生证据已过期，等待同范围刷新", retryable=True
+        )
     if checkpoint.state != "READY" or not checkpoint.materials_ready:
         raise DomainError("native_preview_not_ready", "当前原生证据尚未就绪")
     # 新证据 ID 可以变化；目标 VID/封面和素材顺序必须与冻结意图一致。
@@ -206,3 +216,49 @@ def prepare(session, *, step, frozen, parent_id=None):
             for m in a["materials"]
         ],
     }
+
+
+def validate_ad_assets(session, *, step, unit, body):
+    """共用最终发送围栏的原生分支：先消费当前正证据，再逐位置核对实际 wire。"""
+    from app.core.context import TenantContext
+
+    from .execution_models import Submission
+    from .preview_models import BuildPreview
+    from .routes import verify_unit_route
+
+    submission = session.get(Submission, step.submission_id)
+    context = TenantContext(
+        tenant_id=step.tenant_id, actor_id=submission.actor_id, role="operator"
+    )
+    route = verify_unit_route(session, context=context, unit=unit, capability="build")
+    payload = validate(
+        session,
+        context=context,
+        preview=session.get(BuildPreview, step.preview_id),
+        route=route,
+    )
+    ad = session.get(PlannedAd, (step.tenant_id, step.preview_id, step.planned_ad_id))
+    selected = next(
+        a
+        for a in payload["ads"]
+        if (a["base_ad_no"], a["creative_no"]) == (ad.base_ad_no, ad.creative_no)
+    )
+    expected = [
+        {
+            "creative_info": {
+                **{
+                    k: v
+                    for k, v in selected["creative_identity"].items()
+                    if v is not None
+                },
+                "ad_format": "SINGLE_VIDEO",
+                "video_info": {"video_id": m["video_id"]},
+                "image_info": [{"web_uri": m["image_id"]}],
+            }
+        }
+        for m in selected["materials"]
+    ]
+    if body.get("creative_list") != expected:
+        raise DomainError(
+            "execution_intent_changed", "实际视频位置或封面与冻结内容不一致"
+        )
