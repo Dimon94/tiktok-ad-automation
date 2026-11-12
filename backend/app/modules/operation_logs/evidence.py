@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case
+from sqlalchemy import and_, case, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import Session, col, select
 
@@ -77,14 +77,40 @@ def frozen_sources(
             col(OperationObservation.observed_at).desc(),
         )
     ).all()
+    timezone_map = dict(
+        session.exec(
+            select(
+                col(AdvertiserAccount.advertiser_id), col(AdvertiserAccount.timezone)
+            ).where(
+                AdvertiserAccount.tenant_id == tenant_id,
+                col(AdvertiserAccount.advertiser_id).in_(accounts),
+            )
+        ).all()
+    )
+    # 取证边界来自每个账户已选锚点的本地日期；原start/end仍是核算范围。
+    # 不沿用其它账户的早期/晚期历史，也不将UTC日期当作账户自然日。
+    bounds = dict.fromkeys(accounts, (start, end))
+    for observation in observations:
+        advertiser = observation.advertiser_id
+        zone = timezone_map.get(advertiser)
+        if zone:
+            anchor_day = observation.observed_at.astimezone(ZoneInfo(zone)).date()
+            left, right = bounds[advertiser]
+            bounds[advertiser] = min(left, anchor_day), max(right, anchor_day)
     days = session.exec(
         select(OperationCoverage)
         .where(
             OperationCoverage.tenant_id == tenant_id,
-            col(OperationCoverage.advertiser_id).in_(accounts),
-            OperationCoverage.stat_date >= start,
-            OperationCoverage.stat_date
-            <= max([end, *(o.observed_at.date() for o in observations)]),
+            or_(
+                *(
+                    and_(
+                        OperationCoverage.advertiser_id == advertiser,
+                        OperationCoverage.stat_date >= left,
+                        OperationCoverage.stat_date <= right,
+                    )
+                    for advertiser, (left, right) in bounds.items()
+                )
+            ),
         )
         .order_by(
             col(OperationCoverage.advertiser_id), col(OperationCoverage.stat_date)
@@ -95,21 +121,12 @@ def frozen_sources(
         session.exec(
             select(OperationExport).where(
                 OperationExport.tenant_id == tenant_id,
+                col(OperationExport.advertiser_id).in_(accounts),
                 col(OperationExport.id).in_([UUID(i) for i in export_ids]),
             )
         ).all()
         if export_ids
         else []
-    )
-    timezone_map = dict(
-        session.exec(
-            select(
-                col(AdvertiserAccount.advertiser_id), col(AdvertiserAccount.timezone)
-            ).where(
-                AdvertiserAccount.tenant_id == tenant_id,
-                col(AdvertiserAccount.advertiser_id).in_(accounts),
-            )
-        ).all()
     )
     footprints = {}
     for advertiser in {e.advertiser_id for e in export_digests}:
