@@ -8,10 +8,15 @@ from app.modules.ads.models import AdObject
 from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.reporting.directory_refresh import refresh_report_directory
 from app.modules.reporting.jobs import enqueue_job
-from app.modules.reporting.publish import AccountMeta, publish_ad_day
+from app.modules.reporting.publish import (
+    AccountMeta,
+    publish_ad_day,
+    publish_creative_day,
+)
 from app.modules.reporting.store_models import ReportSyncJob
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.sync_conftest import sync_seed as sync_seed
+from tests.modules.reporting.test_creative_reporting import creative_row
 from tests.modules.reporting.test_jobs import _route
 
 
@@ -49,6 +54,48 @@ def prepared(session, seed, *, day=None, spend="30", tier="hot", count=1, types=
         rows=rows,
     )
     return session.get(ReportSyncJob, job_id)
+
+
+def test_creative_report_refresh_requests_unmapped_ids_with_deleted_scope(
+    session, sync_seed, monkeypatch
+):
+    monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
+    day = datetime.now(UTC).date()
+    job_id = enqueue_job(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        bc_id="bc-a",
+        kind="creative_day",
+        tier="material",
+        advertiser_ids=["acc-2"],
+        start=day,
+        end=day,
+        frozen_route=_route(sync_seed),
+        actor_id=sync_seed.actor_id,
+    )
+    row = creative_row("creative-1", spend="12", revenue="4")
+    row["dimensions"]["stat_time_day"] = f"{day} 00:00:00"
+    row["metrics"]["advertiser_id"] = "acc-2"
+    publish_creative_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=job_id,
+        accounts={"acc-2": AccountMeta("USD", "UTC")},
+        start=day,
+        end=day,
+        rows=[row],
+    )
+
+    run = session.exec(
+        select(AdDirectoryRun).where(
+            AdDirectoryRun.tenant_id == sync_seed.tenant_id,
+            AdDirectoryRun.kind == "creative",
+        )
+    ).one()
+    assert run.query["ids"] == ["creative-1"]
+    assert run.query["include_deleted"] is True
+    assert run.query["directory_service_v1"] == "identity"
+    assert run.workload == "background"
 
 
 @pytest.mark.parametrize("case", ["zero", "history", "daily", "disabled"])

@@ -5226,3 +5226,9 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 真实浏览器经生产 Submission 路由、真实隔离数据库受理，响应丢失按原ledger恢复，数据库唯一Submission；同一链继续SDK创建及全量回读到COMPLETED。新三类回读负例保持NEEDS_REVIEW（含内部聚合），UNKNOWN禁止认领。封面三类合法输入创建通过，准入前后竞态/错wire均阻断。探针实际失败并逐字节恢复。相关最终回归185 passed，build与静态检查通过；未重复无关176/173全量。
 
 完整方法、finding逐条证据、日志、UI壳fixture边界、三项已在起点页面复现的旧UI断言失败，见 `docs/validation/2026-11-12-native-m1-review-r1-fixes.md`。不自行给最终review PASS；待协调者R2两轴仅审修复diff及影响行为。真实平台接受/active完整映射/经营资格仍Unknown，未作形式证明。
+
+## 2026-11-12：创意身份目录补读逻辑已修正，待发布
+
+定位到创意报表已完成但素材身份仍未收敛的原因：`creative_day` 发布后没有触发创意 ID 目录补读，健康修复只覆盖广告/广告组/系列；同时报表驱动的定向目录请求没有带删除对象范围。新增独立 identity 目录队列：按账户和平台广告类型分组，每批最多100个未解析且有金额的创意，带 `include_deleted` 与 identity service，使用 background workload，不阻塞报表 SLO；手动/旧 Smart+ 创意按广告 ID回读，Upgraded Smart+按 creative ID 回读。普通报表驱动目录补读也统一包含删除对象范围。
+
+真实 PostgreSQL18/Redis8 隔离回归：目录刷新与创意日报相关 70 项通过；新增用例验证创意 ID、删除范围、identity service、background workload 及租户隔离。Ruff、格式检查、compileall、`git diff --check` 通过；ty 仅保留 jobs.py 原有两项存量诊断。尚未发布生产，待提交并按发布流程上线后观察未映射创意和目录缺口。

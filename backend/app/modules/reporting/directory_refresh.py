@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -13,6 +14,7 @@ from app.core.config import settings
 from app.integrations.tiktok.contracts.ads import EntityKind, EntityRef
 from app.modules.ads.directory_requests import request_directory
 from app.modules.ads.directory_services import (
+    IDENTITY_SERVICE,
     pending_directory_condition,
     promote_status_requests,
 )
@@ -24,12 +26,20 @@ from app.modules.reporting.store_models import ReportSyncJob
 
 # 素材关联补读保持原有单轮上限；广告日报刷新不截断账户对象集合。
 MAX_REFRESH_ADS = 100
+MAX_REFRESH_CREATIVES = 100
 STATUS_INTERVAL = timedelta(minutes=30)
 PARENT_INTERVAL = timedelta(minutes=60)
 _AD_TYPES = {
     "UPGRADED_SMART_PLUS": "SMART_PLUS",
     "SMART_PLUS": "LEGACY_SMART_PLUS",
     "MANUAL": "REGULAR",
+}
+_CREATIVE_REPORT_TYPES = {
+    "UPGRADED_SMART_PLUS": ("creative", "SMART_PLUS"),
+    "UPGRADED_SMART_PLUS_CREATIVE": ("creative", "SMART_PLUS"),
+    "SMART_PLUS": ("ad", "LEGACY_SMART_PLUS"),
+    "LEGACY_SMART_PLUS": ("ad", "LEGACY_SMART_PLUS"),
+    "MANUAL": ("ad", "REGULAR"),
 }
 
 
@@ -87,6 +97,90 @@ def refresh_report_directory(
         now=now,
         _report_refresh=True,
     ).created
+
+
+@diagnostics.timed("creative_identity_refresh")
+def refresh_report_creative_directory(
+    session: Session, job: ReportSyncJob, *, now: datetime | None = None
+) -> int:
+    """为热/素材创意事实补发有界身份目录读取，不阻塞报表发布。"""
+    if (
+        not settings.ADS_SYNC_ENABLED
+        or job.kind != "creative_day"
+        or job.priority > 2
+        or not job.advertiser_ids
+    ):
+        return 0
+    # 只处理本次创意事实窗口内有金额或未知收入的创意；历史大回补由独立
+    # 全量目录任务承接，避免每个历史报表任务再生成逐创意目录请求。
+    rows = (
+        session.connection()
+        .execute(
+            text("""
+        SELECT DISTINCT r.advertiser_id,r.creative_id,r.campaign_automation_type
+        FROM creative_report_day r
+        LEFT JOIN ad_creative c
+          ON c.tenant_id=r.tenant_id AND c.advertiser_id=r.advertiser_id
+         AND c.creative_id=r.creative_id
+        WHERE r.tenant_id=:tenant AND r.advertiser_id=ANY(:accounts)
+          AND r.stat_date BETWEEN :start_date AND :end_date
+          AND (r.spend IS NULL OR r.spend<>0 OR r.revenue_total IS NULL OR r.revenue_total<>0)
+          AND COALESCE(c.identity_status,'UNRESOLVED') NOT IN ('RESOLVED','COMPOSITE')
+        ORDER BY r.advertiser_id,r.creative_id
+        """),
+            {
+                "tenant": job.tenant_id,
+                "accounts": list(job.advertiser_ids),
+                "start_date": job.start_date,
+                "end_date": job.end_date,
+            },
+        )
+        .mappings()
+    )
+    grouped: dict[tuple[str, str, str], list[EntityRef]] = defaultdict(list)
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in rows:
+        target = _CREATIVE_REPORT_TYPES.get(row["campaign_automation_type"])
+        if target is None:
+            continue
+        kind, ad_type = target
+        entity_kind = cast(EntityKind, kind)
+        key = (row["advertiser_id"], entity_kind, ad_type)
+        identity = (*key, row["creative_id"])
+        if identity in seen or len(grouped[key]) >= MAX_REFRESH_CREATIVES:
+            continue
+        seen.add(identity)
+        grouped[key].append(
+            EntityRef(
+                job.tenant_id,
+                row["advertiser_id"],
+                entity_kind,
+                row["creative_id"],
+            )
+        )
+    created = 0
+    for (advertiser_id, kind, ad_type), refs in sorted(grouped.items()):
+        created += request_directory(
+            session,
+            tenant_id=job.tenant_id,
+            bc_id=job.bc_id,
+            frozen_route=job.frozen_route,
+            actor_id=job.actor_id,
+            advertiser_ids=[advertiser_id],
+            scope="targeted",
+            refs=tuple(refs),
+            ad_types={advertiser_id: {ad_type: {kind}}},
+            include_deleted=True,
+            workload="background",
+            service=IDENTITY_SERVICE,
+            dispatch_immediately=False,
+            now=now,
+        )
+    diagnostics.counts(
+        creative_identity_refs=sum(len(refs) for refs in grouped.values()),
+        creative_identity_created=created,
+    )
+    return created
 
 
 def refresh_account_directory(
@@ -279,6 +373,7 @@ def refresh_account_directory(
                 refs=tuple(refs),
                 missing_refs=tuple(missing_refs_by_type[ad_type]),
                 ad_types={adv: {ad_type: types[adv][ad_type]} for adv in advertisers},
+                include_deleted=True,
             )
     diagnostics.counts(
         directory_refs=sum(len(refs) for refs in refs_by_type.values()),

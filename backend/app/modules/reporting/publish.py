@@ -474,6 +474,17 @@ def publish_creative_day(
             job_id=job_id,
         )
     session.flush()
+    if job_id is not None:
+        # 创意事实提交后立即登记身份目录补读；身份请求走独立后台服务，
+        # 不把目录完整性等待塞进报表发布事务的外部请求路径。
+        from app.modules.reporting.directory_refresh import (
+            refresh_report_creative_directory,
+        )
+        from app.modules.reporting.store_models import ReportSyncJob
+
+        job = session.get(ReportSyncJob, job_id)
+        if job is not None:
+            refresh_report_creative_directory(session, job, now=now)
     return count
 
 
