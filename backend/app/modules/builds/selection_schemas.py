@@ -63,7 +63,7 @@ SceneSelection = Annotated[
 
 
 class NativeCheckpoint(BaseModel):
-    state: Literal["PENDING", "BLOCKED", "UNVERIFIED"]
+    state: Literal["PENDING", "BLOCKED", "UNVERIFIED", "READY"]
     reason_codes: list[str]
     draft_revision: int
     scope_basis: str

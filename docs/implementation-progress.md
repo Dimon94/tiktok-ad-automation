@@ -5164,3 +5164,12 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 当前组合保持UNVERIFIED，明确不代表素材READY；JB-8继续做目标视频/封面逐条准备。后续预览、创建和回读未吞入。
 - 最新原生/迁移11 passed；前端类型+生产/demo构建通过，真实Chromium表单1 passed；错误保存/游标探针均被拒绝。先前scene回归129 passed；身份退休后owner回归91 passed / 1失败（既有批量上限测试未抛拆批，尚未动态确认旧HEAD基线）。不把该缺口标绿，不关闭Linear票。
 - 迁移、源码SHA、命令、TDD顺序边界和剩余验收见[JB-7验证记录](validation/2026-11-12-jb7-native-series-selection.md)。root待审查；没有推送、部署、真实业务读取或广告/授权写入。
+
+
+## 2026-11-12：JB-7 验收修复
+
+- 从46e15d57在用户批准的原集成树串行修复，不派下级代理。原生检查点增加基于当前账户授权、完整身份能力、精确Series和地区证据的READY路径；仅同一完整身份三元组在联合证据充分时支持，不同组合缺证据仍UNVERIFIED。SceneContext场景支持与素材未准备分离，过期账户能力由现有owner重新排队。
+- 修复Series目录按JSON属性顺序比较身份而隐藏的问题；真实Chromium跑通首次目录发现→双身份选择→按身份准备并选择精确Series→保存→刷新回显，2 passed。业务链另用真实PG/Redis与官方SDK传输替身，不是TikTok实联。
+- 回归141 passed / 9 deselected；最后账户能力TTL修复后原生/选择/迁移专项14 passed；两个真实变异失败且恢复cmp一致。前端TypeScript及生产/demo构建、Ruff、diff检查通过。
+- 77baaf04独立git archive源码与独立新建测试库动态复现预览batch-cap单测同样DID NOT RAISE；当前同输入同失败。根因为既有82277b08已取消广告总数上限而旧断言未迁移。本票不改断言或组合算法、不降级当前DB。
+- 本地JB-7三个缺口已关闭，交协调者独立验收；JB-8素材及后续票仍待实现。未改Linear、推送、部署、生产凭证或真实业务接口；保留untracked node_modules软链。来源、命令和边界见[JB-7验证记录](validation/2026-11-12-jb7-native-series-selection.md)。

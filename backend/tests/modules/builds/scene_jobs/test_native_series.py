@@ -66,12 +66,17 @@ def identities(rows, page=1, total=None):
     }
 
 
-@pytest.mark.parametrize("bad_cursor", [False, True])
+@pytest.mark.parametrize(
+    "case", ["ready", "cursor", "permission", "missing_permission", "cross_identity"]
+)
 def test_native_job_exact_asset_complete_streams_and_unverified_combination(
-    job_env, wire, redis_client, bad_cursor
+    job_env, wire, redis_client, case
 ):
+    bad_cursor = case == "cursor"
     env = job_env
     chosen = selection()
+    if case == "cross_identity":
+        chosen["creative_identity"]["identity_id"] = "other-0"
     with Session(engine, expire_on_commit=False) as session, session.begin():
         receipt = ensure_scene_preparation(
             session,
@@ -95,6 +100,10 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
         "can_push_video": True,
         "is_gpppa": False,
     }
+    if case == "permission":
+        owner["can_use_series"] = False
+    if case == "missing_permission":
+        owner.pop("can_push_video")
     rows = [owner] + [owner | {"identity_id": f"other-{i}"} for i in range(49)]
     wire[1].extend(
         [
@@ -144,8 +153,21 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
         result = native_checkpoint(
             session, context=env["context"], draft=draft, route=env["route"]
         )
-        assert result.state == "UNVERIFIED"
-        assert result.reason_codes == ["native_series_identity_combination_unverified"]
+        expected = {
+            "ready": "READY",
+            "permission": "BLOCKED",
+            "missing_permission": "UNVERIFIED",
+            "cross_identity": "UNVERIFIED",
+        }[case]
+        assert result.state == expected
+        if case == "ready":
+            assert result.reason_codes == []
+        elif case == "permission":
+            assert "native_series_identity_unavailable" in result.reason_codes
+        else:
+            assert (
+                "native_series_identity_combination_unverified" in result.reason_codes
+            )
         assert result.materials_ready is False and result.draft_revision == 7
         from app.modules.builds.scene import read_scene_context
 
@@ -159,7 +181,7 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
             native_selection=chosen,
             draft_revision=7,
         )
-        assert scene.supported is False
+        assert scene.supported is (case == "ready")
         assert scene.adgroup_fields["native_series_id"] == "exact-series"
         assert scene.field_constraints["native_checkpoint"]["draft_revision"] == 7
         assert scene.field_constraints["native_checkpoint"]["route"] == env[
@@ -172,6 +194,38 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
             result.facts["native_series"]["items"][1]["native_series_id"]
             == "exact-series"
         )
+        from datetime import UTC, datetime, timedelta
+
+        if case == "ready":
+            from app.modules.accounts.capability_models import CapabilityJob
+
+            capability = session.get(CapabilityJob, job.capability_job_id)
+            original_expiry = capability.expires_at
+            capability.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            session.flush()
+            assert native_checkpoint(
+                session, context=env["context"], draft=draft, route=env["route"]
+            ).reason_codes == ["account_build_unverified"]
+            assert (
+                ensure_scene_preparation(
+                    session,
+                    context=env["context"],
+                    bc_id=env["bc_id"],
+                    advertiser_id="actual-account",
+                    link_id=None,
+                    route=env["route"],
+                    native_selection=chosen,
+                ).state
+                == "queued"
+            )
+            capability.expires_at = original_expiry
+            session.flush()
+        persisted = session.get(SceneJob, job.id)
+        persisted.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.flush()
+        assert native_checkpoint(
+            session, context=env["context"], draft=draft, route=env["route"]
+        ).reason_codes == ["scene_evidence_expired"]
         changed = selection() | {"native_series_id": "wrong-series"}
         draft.scene_selection = changed
         assert (
@@ -281,7 +335,7 @@ def test_workspace_prepare_drives_native_job_without_provider(
         assert drafts.continue_draft(session, context=env["context"], task_id=prep_id)
         result = draft_summary(session, context=env["context"], draft_id=draft_id)
         assert result.status == "BLOCKED"
-        assert result.error_code == "native_series_identity_combination_unverified"
+        assert result.error_code == "native_materials_not_prepared"
         assert result.provider_task_id is None
         assert (
             result.scene_selection.series_identity

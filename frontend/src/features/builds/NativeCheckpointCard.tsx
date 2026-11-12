@@ -56,7 +56,10 @@ export function NativeCheckpointCard({
             <p>地区：{result.selection.regions.join("、")}</p>
             <Alert>
               <AlertDescription>
-                {result.reason_codes.join("、") || "正在读取当前账户目录"}
+                {result.reason_codes.join("、") ||
+                  (result.state === "READY"
+                    ? "目的地与身份证据已准备"
+                    : "正在读取当前账户目录")}
               </AlertDescription>
             </Alert>
             <p className="text-xs text-muted-foreground">

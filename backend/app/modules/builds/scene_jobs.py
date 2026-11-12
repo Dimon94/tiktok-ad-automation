@@ -147,6 +147,22 @@ def ensure_scene_preparation(
         and job.expires_at > now
     ):
         if native_selection is not None:
+            proof = get_capability_evidence(
+                session,
+                context=context,
+                bc_id=bc_id,
+                advertiser_id=advertiser_id,
+                connection_id=job.connection_id,
+            )
+            if proof is None or proof.expires_at <= now:
+                start_capability_refresh(
+                    session,
+                    context=context,
+                    bc_id=bc_id,
+                    connection_id=job.connection_id,
+                    request_id=uuid4(),
+                )
+                return ScenePreparation(job.id, "queued", "account_build_unverified")
             return ScenePreparation(job.id, "ready")
         if not scope["minis_id"]:
             from .mini_selection import match_catalog_link
@@ -809,7 +825,7 @@ def repair_scene_jobs(*, database_engine: Any, limit: int = 100) -> int:
 def native_checkpoint(
     session: Session, *, context: TenantContext, draft: Any, route: FrozenTikTokRoute
 ):
-    """只消费当前范围的真实分页证据，不从相同身份推定组合支持。"""
+    """联合当前授权、身份能力、精确资产和地区证据；不以 ID 相等替代权限。"""
     from .selection_schemas import NativeCheckpoint, NativeSeriesSelection
 
     selection = NativeSeriesSelection.model_validate(draft.scene_selection)
@@ -843,7 +859,23 @@ def native_checkpoint(
         reasons.append(job.error_code or "scene_response_unverified")
         state = "BLOCKED"
     elif job and job.status == "COMPLETE":
-        state = "UNVERIFIED"
+        state = "READY"
+        unverified = False
+        # COMPLETE 只说明目录完整，消费时仍须核对账户的当前能力。
+        proof = get_capability_evidence(
+            session,
+            context=context,
+            bc_id=draft.bc_id,
+            advertiser_id=selection.advertiser_id,
+            connection_id=route.connection_id,
+        )
+        if (
+            proof is None
+            or proof.expires_at <= datetime.now(UTC)
+            or not proof.scope_verified
+            or not proof.can_build
+        ):
+            reasons.append("account_build_unverified")
         identities = job.facts.get("native_tt_identity", {}).get(
             "items", []
         ) + job.facts.get("native_bc_identity", {}).get("items", [])
@@ -869,6 +901,16 @@ def native_checkpoint(
                 or (role == "creative_identity" and item.get("can_push_video") is False)
             ):
                 reasons.append("native_" + role + "_unavailable")
+            # 缺省字段不是许可；保留未验证而非制造明确拒绝。
+            if (
+                item.get("available_status") is None
+                or item.get("is_gpppa") is None
+                or item.get(
+                    "can_use_series" if role == "series_identity" else "can_push_video"
+                )
+                is None
+            ):
+                unverified = True
         assets = job.facts.get("native_series", {}).get("items", [])
         if (
             len(
@@ -887,9 +929,16 @@ def native_checkpoint(
         }
         if not set(selection.regions) <= allowed:
             reasons.append("native_regions_unavailable")
-        if reasons:
+        # 官方直接模式允许有效承载身份和有效 Spark 身份。首条有证据路径
+        # 仅覆盖同一完整授权三元组；不同身份组合仍等待特定合同证据。
+        if selection.series_identity != selection.creative_identity or unverified:
+            reasons.append("native_series_identity_combination_unverified")
+            state = "UNVERIFIED"
+        if any(
+            reason != "native_series_identity_combination_unverified"
+            for reason in reasons
+        ):
             state = "BLOCKED"
-        reasons.append("native_series_identity_combination_unverified")
     return NativeCheckpoint(
         state=state,
         reason_codes=reasons,

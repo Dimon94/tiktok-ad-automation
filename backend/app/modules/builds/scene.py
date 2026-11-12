@@ -630,10 +630,13 @@ def read_scene_context(
             route=route,
         )
         selection = checkpoint.selection
-        # 目录检查点不证明组合或素材就绪；后续规划器仍须取得完整准入证据。
+        # 场景支持与逐条素材就绪分离；后续规划器仍须检查素材证据。
         return SceneContext(
-            supported=False,
-            reason_codes=tuple(checkpoint.reason_codes or ["scene_evidence_missing"]),
+            supported=checkpoint.state == "READY",
+            reason_codes=tuple(
+                checkpoint.reason_codes
+                or ([] if checkpoint.state == "READY" else ["scene_evidence_missing"])
+            ),
             capability_revision=checkpoint.scope_basis,
             evidence_ids=tuple(checkpoint.evidence_ids),
             adgroup_fields={

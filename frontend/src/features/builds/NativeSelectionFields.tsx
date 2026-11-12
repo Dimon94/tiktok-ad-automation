@@ -52,8 +52,14 @@ export function NativeSelectionFields({
     )
   }
   const assets =
-    JSON.stringify(catalog.data?.selection.series_identity) ===
-    JSON.stringify(value.series_identity)
+    catalog.data?.selection.advertiser_id === value.advertiser_id &&
+    (
+      ["identity_type", "identity_id", "identity_authorized_bc_id"] as const
+    ).every(
+      (key) =>
+        (catalog.data?.selection.series_identity?.[key] ?? null) ===
+        (value.series_identity?.[key] ?? null),
+    )
       ? rows("native_series")
       : []
   const identities = [
@@ -72,7 +78,7 @@ export function NativeSelectionFields({
               onChange({ ...value, native_series_id })
             }
           >
-            <SelectTrigger>
+            <SelectTrigger aria-label="当前身份可见的 Series">
               <SelectValue placeholder="选择真实 Series" />
             </SelectTrigger>
             <SelectContent>
@@ -164,7 +170,7 @@ export function NativeSelectionFields({
                 })
               }}
             >
-              <SelectTrigger>
+              <SelectTrigger aria-label={`${role} 目录`}>
                 <SelectValue placeholder="从实际身份目录选择" />
               </SelectTrigger>
               <SelectContent>

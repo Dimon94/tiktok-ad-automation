@@ -2825,15 +2825,181 @@ test("原生草稿原子保存双角色身份与地区，不要求 Mini 链接",
   const api = await buildsBoundary(page)
   await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
   await pickInputs(page)
-  await page.getByRole("radio", { name: "原生 Series 直接视频", exact: true }).check()
+  await page
+    .getByRole("radio", { name: "原生 Series 直接视频", exact: true })
+    .check()
   await page.getByLabel("精确 Series ID", { exact: true }).fill("native-exact")
   await page.getByLabel("投放地区", { exact: true }).fill("US,CA")
-  await page.getByLabel("series_identity ID", { exact: true }).fill("series-owner")
-  await page.getByLabel("creative_identity ID", { exact: true }).fill("creative-owner")
-  await page.getByLabel("广告账户", { exact: true }).fill("90071992547409936666")
-  await expect(page.getByRole("combobox", { name: "版权方连接", exact: true })).toHaveCount(0)
+  await page
+    .getByLabel("series_identity ID", { exact: true })
+    .fill("series-owner")
+  await page
+    .getByLabel("creative_identity ID", { exact: true })
+    .fill("creative-owner")
+  await page
+    .getByLabel("广告账户", { exact: true })
+    .fill("90071992547409936666")
+  await expect(
+    page.getByRole("combobox", { name: "版权方连接", exact: true }),
+  ).toHaveCount(0)
   await page.getByRole("button", { name: "保存草稿", exact: true }).click()
-  await expect.poll(() => api.requests.filter(request => request.method === "POST" && request.path.endsWith("/build-drafts")).length).toBe(1)
-  const saved = api.requests.find(request => request.method === "POST" && request.path.endsWith("/build-drafts"))!.body
-  expect(saved).toMatchObject({provider_connection_id: null, application_id: null, drama_lines: [], scene_selection: {kind: "NATIVE_SERIES_DIRECT_VIDEO", native_series_id: "native-exact", regions: ["US", "CA"], series_identity: {identity_id: "series-owner"}, creative_identity: {identity_id: "creative-owner"}}})
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (request) =>
+            request.method === "POST" && request.path.endsWith("/build-drafts"),
+        ).length,
+    )
+    .toBe(1)
+  const saved = api.requests.find(
+    (request) =>
+      request.method === "POST" && request.path.endsWith("/build-drafts"),
+  )!.body
+  expect(saved).toMatchObject({
+    provider_connection_id: null,
+    application_id: null,
+    drama_lines: [],
+    scene_selection: {
+      kind: "NATIVE_SERIES_DIRECT_VIDEO",
+      native_series_id: "native-exact",
+      regions: ["US", "CA"],
+      series_identity: { identity_id: "series-owner" },
+      creative_identity: { identity_id: "creative-owner" },
+    },
+  })
+})
+
+test("原生目录首次发现到双身份选择、精确 Series 保存与刷新回显", async ({
+  page,
+}) => {
+  const api = await buildsBoundary(page)
+  let selection: any = null
+  let preparedIdentity: any = null
+  const owner = {
+    identity_type: "TT_USER",
+    identity_id: "owner",
+    identity_authorized_bc_id: null,
+  }
+  const creative = {
+    identity_type: "BC_AUTH_TT",
+    identity_id: "creative",
+    identity_authorized_bc_id: bc,
+  }
+  await page.route("**/build-drafts**", async (route) => {
+    const req = route.request(),
+      path = new URL(req.url()).pathname
+    if (req.method() === "POST" && path.endsWith("/build-drafts")) {
+      selection = req.postDataJSON().scene_selection
+      Object.assign(api.summary, {
+        scene_selection: selection,
+        status: "DRAFT",
+      })
+    }
+    if (req.method() === "PATCH" && path.endsWith(`/build-drafts/${D}`)) {
+      selection = req.postDataJSON().scene_selection
+      api.summary.scene_selection = selection
+    }
+    if (path.endsWith("/prepare")) preparedIdentity = selection.series_identity
+    if (path.endsWith("/native-checkpoint")) {
+      return route.fulfill({
+        json: {
+          state: "BLOCKED",
+          reason_codes: ["native_series_identity_combination_unverified"],
+          selection: {
+            ...selection,
+            series_identity: selection.series_identity
+              ? {
+                  identity_type: selection.series_identity.identity_type,
+                  identity_id: selection.series_identity.identity_id,
+                  identity_authorized_bc_id:
+                    selection.series_identity.identity_authorized_bc_id,
+                }
+              : null,
+          },
+          draft_revision: api.summary.revision,
+          scope_basis: "display-only",
+          route: {},
+          materials_ready: false,
+          evidence_ids: [],
+          facts: {
+            native_tt_identity: {
+              items: [{ ...owner, display_name: "承载账号" }],
+            },
+            native_bc_identity: {
+              items: [{ ...creative, display_name: "创意账号" }],
+            },
+            native_series: {
+              items:
+                preparedIdentity?.identity_id === "owner"
+                  ? [
+                      {
+                        native_series_id: "wrong-series",
+                        native_series_name: "同名剧",
+                      },
+                      {
+                        native_series_id: "exact-series",
+                        native_series_name: "同名剧",
+                      },
+                    ]
+                  : [],
+            },
+          },
+        },
+      })
+    }
+    return route.fallback()
+  })
+  const edit = async () => {
+    await page.getByRole("button", { name: "返回输入", exact: true }).click()
+    await expect(
+      page.getByLabel("精确 Series ID", { exact: true }),
+    ).toBeVisible()
+  }
+  await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
+  await pickInputs(page)
+  await page
+    .getByRole("radio", { name: "原生 Series 直接视频", exact: true })
+    .check()
+  await page
+    .getByLabel("广告账户", { exact: true })
+    .fill("90071992547409936666")
+  await page.getByLabel("投放地区", { exact: true }).fill("US")
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect.poll(() => selection?.series_identity).toBeNull()
+  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await edit()
+  await page
+    .getByRole("combobox", { name: "series_identity 目录", exact: true })
+    .click()
+  await page.getByRole("option", { name: /承载账号/ }).click()
+  await page
+    .getByRole("combobox", { name: "creative_identity 目录", exact: true })
+    .click()
+  await page.getByRole("option", { name: /创意账号/ }).click()
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await edit()
+  await page
+    .getByRole("combobox", { name: "当前身份可见的 Series", exact: true })
+    .click()
+  await page
+    .getByRole("option", { name: "同名剧 · exact-series", exact: true })
+    .click()
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect.poll(() => selection?.native_series_id).toBe("exact-series")
+  await edit()
+  await page.reload()
+  await expect(page.getByLabel("精确 Series ID", { exact: true })).toHaveValue(
+    "exact-series",
+  )
+  await expect(
+    page.getByLabel("series_identity ID", { exact: true }),
+  ).toHaveValue("owner")
+  await expect(
+    page.getByLabel("creative_identity ID", { exact: true }),
+  ).toHaveValue("creative")
+  await expect(
+    page.getByLabel("creative_identity 授权 BC", { exact: true }),
+  ).toHaveValue(bc)
 })

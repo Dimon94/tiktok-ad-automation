@@ -5814,7 +5814,7 @@ export type NativeCheckpoint = {
     /**
      * State
      */
-    state: 'PENDING' | 'BLOCKED' | 'UNVERIFIED';
+    state: 'PENDING' | 'BLOCKED' | 'UNVERIFIED' | 'READY';
     /**
      * Reason Codes
      */
