@@ -121,10 +121,16 @@ def test_independent_preparation_retry_and_revision(job_env, wire, redis_client)
         assert [p.state for p in result.plans] == ["READY", "BLOCKED"]
         proof = result.plans[0].checkpoint.model_dump(mode="json")
         assert result.plans[1].reason_codes
-        with pytest.raises(DomainError, match="批量冻结"):
-            previews.generate_preview(
-                s, context=ctx, draft_id=draft_id, expected_revision=rev
-            )
+        preview_id = previews.generate_preview(
+            s, context=ctx, draft_id=draft_id, expected_revision=rev
+        )
+        frozen = previews.get_preview_summary(s, context=ctx, preview_id=preview_id)
+        assert [p["status"] for p in frozen.native_request["plans"]] == [
+            "INCLUDED",
+            "EXCLUDED",
+        ]
+        assert "request" not in frozen.native_request["plans"][1]
+        assert frozen.daily_budget_sum == 100.25
         retry = drafts.prepare_draft(
             s, context=ctx, draft_id=draft_id, request_id=uuid4()
         )
@@ -147,6 +153,10 @@ def test_independent_preparation_retry_and_revision(job_env, wire, redis_client)
         )
         assert drafts.continue_draft(s, context=ctx, task_id=old_prep)
         assert draft.revision == rev + 1
+        assert (
+            previews.get_preview_summary(s, context=ctx, preview_id=preview_id).status
+            == "OBSOLETE"
+        )
         assert (
             not evaluate_native_plan_set(
                 s, context=ctx, draft=draft, route=job_env["route"]
@@ -363,7 +373,7 @@ def drive_plan_jobs(env, wire, redis_client, prep):
     pytest.fail("continuation did not finish")
 
 
-def two_account_workspace(env, wire, redis_client):
+def two_account_workspace(env, wire, redis_client, config_changes=None):
     from copy import deepcopy
     from uuid import UUID
 
@@ -372,7 +382,9 @@ def two_account_workspace(env, wire, redis_client):
     from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
     from app.modules.materials.models import AccountMaterial
 
-    draft_id, _, expected = prepared_native_workspace(env, wire, redis_client, True)
+    draft_id, _, expected = prepared_native_workspace(
+        env, wire, redis_client, True, config_changes=config_changes or {}
+    )
     ctx = env["context"]
     with Session(native.engine, expire_on_commit=False) as s, s.begin():
         # 合成授权目录及已有上传映射为输入；资格和准备由实际 owner 生成。

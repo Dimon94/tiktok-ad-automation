@@ -1304,6 +1304,10 @@ def get_preview_summary(
     session: Session, *, context: TenantContext, preview_id: UUID
 ) -> PreviewSummary:
     preview = _preview(session, context, preview_id)
+    if "native_batch" in preview.config:
+        from .native_preview import batch_summary
+
+        return batch_summary(session, context=context, preview=preview)
     if "native_request" in preview.config:
         from .native_preview import summary
 
@@ -1738,6 +1742,8 @@ def get_preview_units(
                 currency=u.currency,
                 budget=Decimal(preview.config["copy_daily_budget_sum"])
                 if preview.config.get("campaign_copy_version") in {1, 2}
+                else Decimal(u.scene_snapshot["native_request"]["campaign"]["budget"])
+                if "native_batch" in preview.config
                 else preview.budget,
                 campaign_name=u.campaign_name,
                 readiness=cast(Readiness, u.readiness),
@@ -1826,7 +1832,7 @@ def planned_unit_snapshot(
 
 def _unit_snapshot(preview, unit, drama, descriptor) -> FrozenUnit:
     return FrozenUnit(
-        native_request=preview.config.get("native_request"),
+        native_request=unit.scene_snapshot.get("native_request"),
         contract_version=descriptor.version,
         media_kind=descriptor.media_kind,
         unit_id=unit.id,
@@ -1843,7 +1849,9 @@ def _unit_snapshot(preview, unit, drama, descriptor) -> FrozenUnit:
         campaign_name=unit.campaign_name,
         protected_base=drama.protected_base,
         url=drama.url,
-        budget=preview.budget,
+        budget=Decimal(unit.scene_snapshot["native_request"]["campaign"]["budget"])
+        if "native_batch" in preview.config
+        else preview.budget,
         target_roas=preview.target_roas,
         budget_strategy=unit.scene_snapshot.get(
             "budget_strategy", preview.config.get("budget_strategy", "SERIES")

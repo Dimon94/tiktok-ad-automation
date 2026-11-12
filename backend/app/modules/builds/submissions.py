@@ -157,6 +157,10 @@ def submit_preview(
         verify_route(
             session, context=context, route=route, advertiser_id=None, capability="read"
         )
+        if "native_batch" in preview.config:
+            raise DomainError(
+                "native_batch_execution_pending", "批量预览已冻结，批量提交尚未开放"
+            )
         if "native_request" in preview.config:
             from .native_execution import validate
 

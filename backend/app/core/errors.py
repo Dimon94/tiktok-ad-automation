@@ -4,6 +4,9 @@ from fastapi.responses import JSONResponse
 # Register exact business codes here; never infer status from provider text.
 ERROR_HTTP_STATUS: dict[str, int] = {
     "native_preview_not_ready": 409,
+    "native_batch_execution_pending": 409,
+    "native_batch_digest_mismatch": 409,
+    "native_freeze_evidence_changed": 409,
     "native_structure_unsupported": 422,
     "native_series_active_conflict": 409,
     "native_execution_not_available": 409,
@@ -538,6 +541,17 @@ class DomainError(Exception):
         self.retryable = retryable
 
 
+class NativeBatchUnavailable(DomainError):
+    """仅暴露应用生成的逐计划排除码，不透传平台异常正文。"""
+
+    def __init__(self, plans):
+        super().__init__("native_preview_not_ready", "无可执行计划")
+        self.plans = [
+            {"plan_key": p["plan_key"], "reason_codes": p["reason_codes"]}
+            for p in plans
+        ]
+
+
 class ConfigurationError(DomainError):
     """Expose only predefined setting names, never the values that failed checks."""
 
@@ -575,6 +589,10 @@ async def domain_error_handler(_request: Request, exc: Exception) -> JSONRespons
     message = ERROR_PUBLIC_MESSAGES.get(code, _STATUS_MESSAGES[status])
     if isinstance(exc, ConfigurationError) and exc.fields:
         message += "，缺少或无效：" + ", ".join(exc.fields)
+    if isinstance(exc, NativeBatchUnavailable):
+        message = "无可执行计划：" + "；".join(
+            p["plan_key"] + "：" + ", ".join(p["reason_codes"]) for p in exc.plans
+        )
     retry_after_ms = getattr(exc, "retry_after_ms", None)
     headers = (
         {"Retry-After": str(max(1, (retry_after_ms + 999) // 1000))}

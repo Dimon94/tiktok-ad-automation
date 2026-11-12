@@ -39,6 +39,77 @@ export function NativeFrozenPreview({
   preview: PreviewSummary
   back: () => void
 }) {
+  const batch = preview.native_request as unknown as {
+    revision?: string
+    daily_budget_sum: string
+    plans: {
+      plan_key: string
+      status: string
+      selection: Plan["selection"]
+      reason_codes: string[]
+      request?: Plan
+      occupancy?: object
+    }[]
+  }
+  if (batch.revision === "native-series-batch-v1") {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-xl font-semibold">
+          Series 批量冻结预览 · {preview.status}
+        </h1>
+        <p>
+          批准 {preview.campaign_count} 项 · 排除 {preview.blocked_count} 项 ·
+          CBO 日预算合计 {batch.daily_budget_sum} {preview.currency}
+        </p>
+        <p>
+          批量提交尚未开放。以下是完整冻结的批准范围；修改输入后须重新准备与预览。
+        </p>
+        <Button variant="outline" onClick={back}>
+          返回草稿
+        </Button>
+        {batch.plans.map((item) => (
+          <section key={item.plan_key} className="space-y-3">
+            <h2 className="font-semibold">
+              计划 {item.plan_key} · {item.status}
+            </h2>
+            {item.request ? (
+              <NativeFrozenPreview
+                tenantId={tenantId}
+                back={back}
+                preview={{
+                  ...preview,
+                  native_request: item.request as unknown as Record<
+                    string,
+                    unknown
+                  >,
+                }}
+              />
+            ) : (
+              <Card>
+                <CardContent className="space-y-2 pt-6">
+                  <p>
+                    账户 {item.selection.advertiser_id} · Series{" "}
+                    {item.selection.native_series_id} · 地区{" "}
+                    {item.selection.regions.join("、")}
+                  </p>
+                  <p>排除原因：{item.reason_codes.join("、")}</p>
+                  <pre className="whitespace-pre-wrap break-all text-xs">
+                    {JSON.stringify(item, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+            )}
+          </section>
+        ))}
+        <details>
+          <summary>整批冻结摘要与证据</summary>
+          <pre className="whitespace-pre-wrap break-all text-xs">
+            {JSON.stringify(preview.native_request, null, 2)}
+          </pre>
+        </details>
+      </div>
+    )
+  }
   const plan = preview.native_request as unknown as Plan
   return (
     <div className="flex flex-col gap-6">

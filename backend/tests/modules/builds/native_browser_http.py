@@ -49,10 +49,14 @@ def submit_in_browser(
                 "test",
                 "--project=workspace",
                 "tests/build-preview.spec.ts"
-                if mode == "submit"
+                if mode in {"submit", "batch"}
                 else "tests/build-preparation.spec.ts",
                 "-g",
-                "@native-live" if mode == "submit" else "@native-plan-live",
+                "@native-batch-live"
+                if mode == "batch"
+                else "@native-live"
+                if mode == "submit"
+                else "@native-plan-live",
                 "--reporter=line",
             ],
             cwd=Path(__file__).resolve().parents[4] / "frontend",
@@ -64,7 +68,7 @@ def submit_in_browser(
                 "NATIVE_TEST_PREVIEW": str(preview_id),
                 "NATIVE_TEST_DRAFT": str(draft_id),
                 "NATIVE_PLAN_MODE": mode,
-                "PLAYWRIGHT_PORT": "5197" if mode == "submit" else "5198",
+                "PLAYWRIGHT_PORT": "5197" if mode in {"submit", "batch"} else "5198",
             },
             capture_output=True,
             text=True,

@@ -5260,3 +5260,11 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 没有复现新产品缺陷，仅增加测试和证据；夹具失败和最终结果分别记录于 [JB-14 验收报告](validation/2026-11-12-jb14-native-plan-set-readiness.md)。吞掉兄弟计划及绕过素材 scope 的真跑探针均失败，产品源码逐字节恢复。复用既有 UI/构建、M1 ENABLE/MATCH/恢复取消证据，不重复全套。JB-15 消费 canonical plans 和逐键 checkpoint；多计划冻结仍 pending，是否放行归 root。未推送、部署、创建 PR 或更新 Linear，原未跟踪软链保留。
 
 补充检查最终：恢复源码后2 passed / 4 deselected / 15.63s；既有旧 revision 检查在前轮通过。Ruff/格式/固定Python compileall及diff检查通过，产品源码无变更。
+
+## 2026-11-12 — JB-15 原生逐计划预览与完整冻结
+
+从 `9066dc2274d7cb29e1ed66b27ba864679eaa828c` 在唯一 M2 集成树接通真实准备→INCLUDED/EXCLUDED manifest→原策略完整展开→同事务冻结→HTTP/页面回读。批内精确账户/Series/地区交集排除双方；确定 ACTIVE 只排除受影响计划，覆盖 UNKNOWN/PARTIAL/STALE 保留风险且不全局禁投。完整请求保存在各 Unit，manifest 绑定 request_digest、范围、原因和精确预算；批次提交明确 pending，M1 单项继续支持。新增向前迁移 `native_batch_preview` 扩展既有 provider-reference guard，未部署。
+
+真实 PG/Redis/SDK transport double 验证包含混合准备、全部排除、双账户冻结、独立 Unit 预算、稳定分配、双 session 同 revision 冻结、摘要变异、PG 故障回滚与 M1 创建链；真实页面显示两项 INCLUDED 和一项 EXCLUDED。漏排、重计预算、漏绑定 manifest、float 四种实际错误探针被拒绝并恢复源码。USD 原资格只允许 0.01；真实合法金额与任意精度纯函数分别测试，不放宽平台约束。详细命令、失败、修复后通过结果、JB-16 消费合同及边界见 [JB-15 验收报告](validation/2026-11-12-jb15-native-batch-preview.md)。
+
+本地候选待 root 独立审查/集成，最终 Done 归 root。未推送、部署、开 PR 或修改 Linear，未调用真实广告/授权 provider 写；原未跟踪 `.venv` / `node_modules` 软链保留。

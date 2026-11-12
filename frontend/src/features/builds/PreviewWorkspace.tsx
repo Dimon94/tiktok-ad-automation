@@ -589,6 +589,8 @@ export function PreviewSummaryBar({
             <div className="flex flex-col gap-2">
               <Button
                 disabled={
+                  preview.native_request?.revision ===
+                    "native-series-batch-v1" ||
                   !onSubmit ||
                   unavailable ||
                   pending ||

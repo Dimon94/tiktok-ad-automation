@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from sqlmodel import select
 
 from app.core.config import settings
-from app.core.errors import DomainError
+from app.core.errors import DomainError, NativeBatchUnavailable
 from app.modules.accounts.routing import freeze_route, verify_route
 from app.modules.ads.directory import list_objects
 from app.modules.ads.directory_calibration import ACTIVE_INTERVAL
@@ -17,12 +17,17 @@ from app.modules.strategies.service import get_copies, get_version
 from app.modules.strategies.structure import plan_structure
 
 from .batch_numbers import insert_preview_with_number
-from .frozen_requests import FrozenRequestRevision, native_request_digest
+from .frozen_requests import (
+    FrozenRequestRevision,
+    NativeBatchManifest,
+    native_batch_budget,
+    native_request_digest,
+)
 from .preview_models import BuildPreview, PreviewContract
 from .preview_schemas import PreviewGenerationProgress, PreviewSummary
 from .routes import save_preview_route
 from .scene_jobs import native_checkpoint
-from .selection_schemas import single_native_selection
+from .selection_schemas import LEGACY_PLAN_KEY, NativeSeriesPlanSet
 from .structure import effective_structure_config
 
 
@@ -117,7 +122,63 @@ def generate(session, *, context, draft):
         bc_id=draft.bc_id,
         connection_id=draft.execution_connection_id,
     )
-    selection = single_native_selection(draft.scene_selection)
+    plans = NativeSeriesPlanSet.model_validate(draft.scene_selection).plans
+    if len(plans) > 1:
+        return generate_batch(
+            session, context=context, draft=draft, route=route, plans=plans
+        )
+    payload, units, groups, access, config = expand_plan(
+        session,
+        context=context,
+        draft=draft,
+        route=route,
+        plan=plans[0],
+        batch=plans[0].plan_key != LEGACY_PLAN_KEY,
+    )
+    digest = native_request_digest(payload)
+    row = BuildPreview(
+        tenant_id=context.tenant_id,
+        bc_id=draft.bc_id,
+        draft_id=draft.id,
+        draft_revision=draft.revision,
+        strategy_version_id=draft.strategy_version_id,
+        actor_id=context.actor_id,
+        batch_short_id="",
+        local_date=datetime.now(UTC).strftime("%Y%m%d"),
+        config={**config.model_dump(mode="json"), "native_request": payload},
+        budget=config.budget,
+        target_roas=config.target_roas,
+        progress={"phase": "complete", "total_units": 1},
+    )
+    insert_preview_with_number(session, row)
+    session.add(
+        PreviewContract(
+            tenant_id=context.tenant_id,
+            bc_id=draft.bc_id,
+            preview_id=row.id,
+            version=2,
+            media_kind="VIDEO",
+        )
+    )
+    session.flush()
+    save_preview_route(session, context=context, preview_id=row.id, route=route)
+    snapshot_rows(
+        session,
+        context=context,
+        preview=row,
+        payload=payload,
+        units=units,
+        groups=groups,
+        access=access,
+    )
+    row.status, row.content_digest = "FROZEN", digest
+    session.add(row)
+    session.flush()
+    return row.id
+
+
+def expand_plan(session, *, context, draft, route, plan, batch):
+    selection = plan.selection.model_dump(mode="json")
     verify_route(
         session,
         context=context,
@@ -125,7 +186,9 @@ def generate(session, *, context, draft):
         advertiser_id=selection["advertiser_id"],
         capability="read",
     )
-    checkpoint = native_checkpoint(session, context=context, draft=draft, route=route)
+    checkpoint = native_checkpoint(
+        session, context=context, draft=draft, route=route, plan_key=plan.plan_key
+    )
     checkpoint.evidence_ids.sort(key=str)
     if checkpoint.state != "READY" or not checkpoint.materials_ready:
         raise DomainError(
@@ -169,10 +232,21 @@ def generate(session, *, context, draft):
         material = session.get(MaterialFile, UUID(mapping["material_id"]))
         mapping["sha256"] = material.sha256
         mapping["video_md5"] = material.video_md5
-    seed = int(sha256(f"{draft.id}:{draft.revision}".encode()).hexdigest()[:16], 16)
+    seed_suffix = f":{plan.plan_key}" if batch else ""
+    seed = int(
+        sha256(f"{draft.id}:{draft.revision}{seed_suffix}".encode()).hexdigest()[:16],
+        16,
+    )
     # 位置身份避免同一视频被明确选中多次时，被 Structure 的单元去重吞掉。
     units = [
-        SimpleNamespace(unit_id=uuid5(NAMESPACE_URL, f"{draft.id}:{i}"))
+        SimpleNamespace(
+            unit_id=uuid5(
+                NAMESPACE_URL,
+                f"{draft.id}:{draft.revision}{seed_suffix}:{i}"
+                if batch
+                else f"{draft.id}:{i}",
+            )
+        )
         for i in range(len(materials))
     ]
     by_id = {u.unit_id: m for u, m in zip(units, materials, strict=True)}
@@ -271,9 +345,7 @@ def generate(session, *, context, draft):
     minimum_age = targeting.automatic_minimum_age()
     delivery = draft.delivery_config or {}
     # 草稿请求标记仅用于定位；UNKNOWN 认领仍要求全部冻结字段 MATCH。
-    campaign_name = (
-        f"Series-{selection['native_series_id']}-v{draft.revision}-R{draft.id.hex}"
-    )
+    campaign_name = f"Series-{selection['native_series_id']}-v{draft.revision}-R{draft.id.hex}{seed_suffix}"
     payload = FrozenRequestRevision(
         constraint_revision=constraints["revision"],
         draft_revision=draft.revision,
@@ -334,46 +406,7 @@ def generate(session, *, context, draft):
         occupancy=occupancy,
         config=config.model_dump(mode="json"),
     ).model_dump(mode="json")
-    digest = native_request_digest(payload)
-    row = BuildPreview(
-        tenant_id=context.tenant_id,
-        bc_id=draft.bc_id,
-        draft_id=draft.id,
-        draft_revision=draft.revision,
-        strategy_version_id=draft.strategy_version_id,
-        actor_id=context.actor_id,
-        batch_short_id="",
-        local_date=datetime.now(UTC).strftime("%Y%m%d"),
-        config={**config.model_dump(mode="json"), "native_request": payload},
-        budget=config.budget,
-        target_roas=config.target_roas,
-        progress={"phase": "complete", "total_units": 1},
-    )
-    insert_preview_with_number(session, row)
-    session.add(
-        PreviewContract(
-            tenant_id=context.tenant_id,
-            bc_id=draft.bc_id,
-            preview_id=row.id,
-            version=2,
-            media_kind="VIDEO",
-        )
-    )
-    session.flush()
-    save_preview_route(session, context=context, preview_id=row.id, route=route)
-    snapshot_rows(
-        session,
-        context=context,
-        preview=row,
-        payload=payload,
-        units=units,
-        groups=groups,
-        access=access,
-    )
-    row.status, row.content_digest = "FROZEN", digest
-    session.add(row)
-    session.flush()
-    return row.id
+    return payload, units, groups, access, config
 
 
 def summary(session, *, context, preview):
@@ -428,7 +461,9 @@ def summary(session, *, context, preview):
     )
 
 
-def snapshot_rows(session, *, context, preview, payload, units, groups, access):
+def snapshot_rows(
+    session, *, context, preview, payload, units, groups, access, plan_key=None
+):
     """同一 BuildUnit/PlannedAd owner；Series分组ID不冒充版权方剧目或推广链接。"""
     from app.modules.materials.models import MaterialFile
 
@@ -452,7 +487,8 @@ def snapshot_rows(session, *, context, preview, payload, units, groups, access):
     }
     drama_id = uuid5(
         NAMESPACE_URL,
-        f"native-series:{preview.bc_id}:{payload['selection']['native_series_id']}",
+        f"native-series:{preview.bc_id}:{payload['selection']['native_series_id']}"
+        + (f":{plan_key}" if plan_key else ""),
     )
     name = payload["campaign"]["name"]
     session.add(
@@ -476,6 +512,7 @@ def snapshot_rows(session, *, context, preview, payload, units, groups, access):
         campaign_name=name,
         campaign_digest=sha256(name.encode()).hexdigest(),
         scene_snapshot={
+            **({"plan_key": str(plan_key)} if plan_key else {}),
             "native_request": payload,
             "campaign_fields": payload["campaign"],
             "adgroup_fields": payload["adgroup"],
@@ -571,3 +608,245 @@ def snapshot_rows(session, *, context, preview, payload, units, groups, access):
             )
         )
     session.flush()
+
+    return unit.id
+
+
+def conflicting_plan_keys(plans):
+    """仅明确账户、精确资产及地区交集形成批内冲突；双方均排除。"""
+    conflicts = set()
+    for i, left in enumerate(plans):
+        for right in plans[i + 1 :]:
+            a, b = left.selection, right.selection
+            if (
+                a.advertiser_id == b.advertiser_id
+                and a.native_series_id == b.native_series_id
+                and a.native_series_id
+                and set(a.regions) & set(b.regions)
+            ):
+                conflicts.update((left.plan_key, right.plan_key))
+    return conflicts
+
+
+def generate_batch(session, *, context, draft, route, plans):
+    from .scene_jobs import evaluate_native_plan_set
+
+    readiness = evaluate_native_plan_set(
+        session, context=context, draft=draft, route=route
+    )
+    conflicts = conflicting_plan_keys(plans)
+    manifest, expanded = [], {}
+    config = effective_structure_config(
+        get_version(session, context=context, version_id=draft.strategy_version_id),
+        draft.structure_override,
+    )
+    for plan, proof in zip(plans, readiness.plans, strict=True):
+        item = {
+            "plan_key": str(plan.plan_key),
+            "selection": plan.selection.model_dump(mode="json"),
+            "readiness": proof.model_dump(mode="json"),
+            "status": "EXCLUDED",
+            "reason_codes": [],
+        }
+        if plan.plan_key in conflicts:
+            item["reason_codes"].append("native_batch_region_conflict")
+        if proof.state != "READY":
+            item["reason_codes"].extend(proof.reason_codes)
+        if proof.state == "READY":
+            checkpoint = proof.checkpoint
+            locations = [
+                x["location_id"]
+                for x in checkpoint.facts["regions"]["locations"]
+                if x["region_code"] in plan.selection.regions
+            ]
+            item["occupancy"] = observe_occupancy(
+                session,
+                context=context,
+                bc_id=draft.bc_id,
+                selection=plan.selection,
+                location_ids=locations,
+                route=route,
+            )
+            if any(
+                x["state"] == "ACTIVE" for x in item["occupancy"]["visible_conflicts"]
+            ):
+                item["reason_codes"].append("native_series_active_conflict")
+        if not item["reason_codes"]:
+            try:
+                expanded[str(plan.plan_key)] = expand_plan(
+                    session,
+                    context=context,
+                    draft=draft,
+                    route=route,
+                    plan=plan,
+                    batch=True,
+                )
+                item["status"] = "INCLUDED"
+            except DomainError as error:
+                item["reason_codes"].append(error.code)
+        manifest.append(item)
+    if not expanded:
+        raise NativeBatchUnavailable(manifest)
+    total = native_batch_budget([x[0] for x in expanded.values()])
+    # 外层 Workspace 事务拥有完整冻结；savepoint 使调用方捕获失败时也无半套预览。
+    with session.begin_nested():
+        row = BuildPreview(
+            tenant_id=context.tenant_id,
+            bc_id=draft.bc_id,
+            draft_id=draft.id,
+            draft_revision=draft.revision,
+            strategy_version_id=draft.strategy_version_id,
+            actor_id=context.actor_id,
+            batch_short_id="",
+            local_date=datetime.now(UTC).strftime("%Y%m%d"),
+            config={
+                **config.model_dump(mode="json"),
+                "native_batch": {"revision": "native-series-batch-v1"},
+            },
+            budget=total,
+            target_roas=config.target_roas,
+            progress={"phase": "complete", "total_units": len(expanded)},
+        )
+        insert_preview_with_number(session, row)
+        session.add(
+            PreviewContract(
+                tenant_id=context.tenant_id,
+                bc_id=draft.bc_id,
+                preview_id=row.id,
+                version=2,
+                media_kind="VIDEO",
+            )
+        )
+        session.flush()
+        save_preview_route(session, context=context, preview_id=row.id, route=route)
+        for item in manifest:
+            if item["status"] != "INCLUDED":
+                continue
+            payload, units, groups, access, _ = expanded[item["plan_key"]]
+            # 再读当前证据，拒绝展开期间被替换的资格/素材回执。
+            proof = native_checkpoint(
+                session,
+                context=context,
+                draft=draft,
+                route=route,
+                plan_key=UUID(item["plan_key"]),
+            )
+            proof.evidence_ids.sort(key=str)
+            if proof.model_dump(mode="json") != payload["checkpoint"]:
+                raise DomainError("native_freeze_evidence_changed", "冻结期间证据变化")
+            item["unit_id"] = str(
+                snapshot_rows(
+                    session,
+                    context=context,
+                    preview=row,
+                    payload=payload,
+                    units=units,
+                    groups=groups,
+                    access=access,
+                    plan_key=item["plan_key"],
+                )
+            )
+            item["request_digest"] = native_request_digest(payload)
+        batch = {
+            "revision": "native-series-batch-v1",
+            "draft_revision": draft.revision,
+            "route": route.model_dump(mode="json"),
+            "strategy": config.model_dump(mode="json"),
+            "plans": manifest,
+            "daily_budget_sum": str(total),
+        }
+        batch = NativeBatchManifest.model_validate(batch).model_dump(
+            mode="json", exclude_none=True
+        )
+        row.config = {**config.model_dump(mode="json"), "native_batch": batch}
+        row.status, row.content_digest = "FROZEN", native_request_digest(batch)
+        session.add(row)
+        session.flush()
+        read_batch(session, preview=row)
+        return row.id
+
+
+def read_batch(session, *, preview):
+    """manifest 是批准范围；完整请求唯一持久化在 Unit，不从可变草稿重建。"""
+    from copy import deepcopy
+
+    from .preview_models import BuildUnit
+
+    batch = deepcopy(preview.config["native_batch"])
+    if native_request_digest(batch) != preview.content_digest:
+        raise DomainError("native_batch_digest_mismatch", "批次摘要不一致")
+    units = {
+        str(u.id): u
+        for u in session.exec(
+            select(BuildUnit).where(
+                BuildUnit.preview_id == preview.id,
+                BuildUnit.tenant_id == preview.tenant_id,
+            )
+        ).all()
+    }
+    expected = {p["unit_id"] for p in batch["plans"] if p["status"] == "INCLUDED"}
+    if set(units) != expected:
+        raise DomainError("native_batch_digest_mismatch", "批准范围与快照不一致")
+    for item in batch["plans"]:
+        if item["status"] == "INCLUDED":
+            unit = units[item["unit_id"]]
+            payload = unit.scene_snapshot["native_request"]
+            if (
+                unit.scene_snapshot["plan_key"] != item["plan_key"]
+                or payload["selection"] != item["selection"]
+                or native_request_digest(payload) != item["request_digest"]
+            ):
+                raise DomainError("native_batch_digest_mismatch", "计划请求摘要不一致")
+            item["request"] = payload
+    return batch
+
+
+def batch_summary(session, *, context, preview):
+    from .route_views import execution_route_view
+
+    batch = read_batch(session, preview=preview)
+    included = [p["request"] for p in batch["plans"] if p["status"] == "INCLUDED"]
+    return PreviewSummary(
+        native_request=batch,
+        contract_version=2,
+        media_kind="VIDEO",
+        submission_id=None,
+        preview_id=preview.id,
+        draft_id=preview.draft_id,
+        draft_revision=preview.draft_revision,
+        bc_id=preview.bc_id,
+        status=preview.status,
+        currency=included[0]["campaign"]["currency"],
+        campaign_count=len(included),
+        adgroup_count=len(included),
+        ad_count=sum(len(p["ads"]) for p in included),
+        blocked_count=len(batch["plans"]) - len(included),
+        preparing_count=0,
+        input_issue_count=0,
+        total_unit_count=len(included),
+        daily_budget_sum=preview.budget,
+        budget_strategy="SERIES",
+        bid_strategy="TARGET_ROAS",
+        creative_count=included[0]["config"]["creative_count"],
+        unique_material_count=len(
+            {m["material_id"] for p in included for m in p["materials"]}
+        ),
+        material_allocation_count=sum(
+            len(a["materials"]) for p in included for a in p["ads"]
+        ),
+        content_digest=preview.content_digest,
+        error_code=preview.error_code,
+        created_at=preview.created_at,
+        targeting_region_codes=sorted(
+            {r for p in included for r in p["selection"]["regions"]}
+        ),
+        execution_route=execution_route_view(
+            session, context=context, preview_id=preview.id
+        ),
+        generation_progress=PreviewGenerationProgress(
+            phase="complete",
+            completed_units=len(included),
+            total_units=len(included),
+            updated_at=preview.created_at,
+        ),
+    )
