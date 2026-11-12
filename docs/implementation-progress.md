@@ -5272,3 +5272,11 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 ### 2026-11-12 · JB-16 native batch create candidate（未完成）
 
 从 `820a26e9` 在唯一 M2 集成树迁移原生执行复核到当前 Unit，沿现有 Submission/step/SDK/readback 链支持独立计划，并增加逐计划 MATCH 派生回执、确认框和生成类型。末次定向 8 passed / 80.09s，前端正式/demo 构建通过；真实源码完成判定/计划作用域两个破坏探针红后恢复。TLA+ 草模实际运行 16564 distinct states，但完整源码映射、预算抽象和逐性质破坏探针未达到 Spec 门槛。完整双围栏竞态和页面至执行/readback 合一纵切仍待完成，不能推进 JB-16 Done 或 JB-17 实施。无推送、部署、Linear 或真实平台写。详见 [JB-16 候选证据](validation/2026-11-12-jb16-native-batch-create.md)。
+
+### 2026-11-12 · JB-16 fresh-context 运行修复（待 root，形式未完成）
+
+起点 `9805d8d02df35994368769d81759bc41d43d6f8f`，唯一 M2 树串行修复：SDK 最终权限校验至物理发送的真实窗口及慢请求锁期限、重复提交返回过时 QUEUED、准备页残留单计划冻结门槛。新增同一 Submission 从页面 prepare/freeze/确认到真实任务入队/SDK 创建/三级逐创意回读/结果页的纵切，双时点撤权/代数围栏、各终态与 UNKNOWN 并发重放及不可变数据拒绝证据。实际近似错误探针串行失败并逐字节恢复；命令、失败修复和最终结果见 [JB-16 运行证据](validation/2026-11-12-jb16-native-batch-create.md)。
+
+现有权限模型没有独立 actor authorization generation，撤权后重新授权对旧代次的隔离仍未证明，不能以当前权限锁或形式模型代替该合同。形式 skill 完全未改；后续需 root 源码验收，再串行形式补全。JB-16 不宣称完成，JB-17 不推进。无真实平台/授权 provider 调用、推送、PR、部署或 Linear 修改，原未跟踪软链保留。
+
+本轮最终源码检查：10 passed / 141.81s，另复用本轮双边界 10 passed / 106.39s；前端正式/demo 构建、6 文件 Ruff/格式及 diff 检查通过。新发送事务持锁可增加同批次物理写/撤权的等待；吞吐与真实 Celery 宿主硬超时未验，不把本地测试宿主当生产验收。

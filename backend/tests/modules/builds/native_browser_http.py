@@ -18,7 +18,15 @@ from app.modules.builds.submission_api import router as submission_router
 
 
 def submit_in_browser(
-    engine, context, bc_id, preview_id, *, draft_id=None, mode="submit"
+    engine,
+    context,
+    bc_id,
+    preview_id,
+    *,
+    draft_id=None,
+    mode="submit",
+    submission_id=None,
+    drive=None,
 ):
     app = FastAPI()
     app.include_router(previews_router, prefix="/api")
@@ -33,6 +41,13 @@ def submit_in_browser(
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         id=context.actor_id
     )
+    if drive is not None:
+
+        @app.post("/test-drive/{task_id}")
+        def advance(task_id: str):
+            drive(task_id)
+            return {"advanced": True}
+
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -49,11 +64,11 @@ def submit_in_browser(
                 "test",
                 "--project=workspace",
                 "tests/build-preview.spec.ts"
-                if mode in {"submit", "batch"}
+                if mode in {"submit", "batch", "batch-result", "batch-workspace"}
                 else "tests/build-preparation.spec.ts",
                 "-g",
                 "@native-batch-live"
-                if mode == "batch"
+                if mode in {"batch", "batch-result", "batch-workspace"}
                 else "@native-live"
                 if mode == "submit"
                 else "@native-plan-live",
@@ -68,7 +83,10 @@ def submit_in_browser(
                 "NATIVE_TEST_PREVIEW": str(preview_id),
                 "NATIVE_TEST_DRAFT": str(draft_id),
                 "NATIVE_PLAN_MODE": mode,
-                "PLAYWRIGHT_PORT": "5197" if mode in {"submit", "batch"} else "5198",
+                "NATIVE_TEST_SUBMISSION": str(submission_id),
+                "PLAYWRIGHT_PORT": "5197"
+                if mode in {"submit", "batch", "batch-result", "batch-workspace"}
+                else "5198",
             },
             capture_output=True,
             text=True,

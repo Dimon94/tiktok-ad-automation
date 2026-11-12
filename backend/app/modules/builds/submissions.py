@@ -109,7 +109,12 @@ def submit_preview(
         if alias.preview_id != preview_id:
             raise DomainError("idempotency_conflict", "幂等键已绑定其他预览")
         saved = submission_row(session, context, alias.submission_id)
-        return SubmissionReceipt(submission_id=saved.id, status=saved.status)
+        return SubmissionReceipt(
+            submission_id=saved.id,
+            status=get_submission(
+                session, context=context, submission_id=saved.id
+            ).status,
+        )
     preview = session.exec(
         select(BuildPreview).where(
             BuildPreview.tenant_id == context.tenant_id, BuildPreview.id == preview_id
@@ -251,7 +256,13 @@ def submit_preview(
         )
     )
     session.flush()
-    return SubmissionReceipt(submission_id=existing.id, status=existing.status)
+    # 重放必须返回派生的当前回执，持久化调度状态不代表实际 MATCH 结果。
+    return SubmissionReceipt(
+        submission_id=existing.id,
+        status=get_submission(
+            session, context=context, submission_id=existing.id
+        ).status,
+    )
 
 
 # Preserve correlation even before freshly generated plan tables are analyzed.

@@ -19,6 +19,54 @@ from app.modules.builds.scene_jobs import native_checkpoint
 from .selection_schemas import NativeSeriesPlanSet, single_native_selection
 
 
+def lock_send_authority(session, *, context, claim):
+    """当前发送与数据库撤权串行；共享锁允许兄弟账户并行读取同一授权。"""
+    from app.models import User
+    from app.modules.accounts.connection_models import (
+        BCConnectionBinding,
+        ConnectionAuthorization,
+    )
+    from app.modules.accounts.models import (
+        AdvertiserAccount,
+        BCAccountAccess,
+        TenantBC,
+        TikTokConnection,
+    )
+    from app.modules.tenants.models import Tenant, TenantMembership
+
+    from .preview_models import BuildPreview
+
+    route = claim.route
+    preview = session.get(BuildPreview, claim.preview_id)
+    rows = (
+        (User, context.actor_id),
+        (Tenant, context.tenant_id),
+        (TenantMembership, (context.tenant_id, context.actor_id)),
+        (TenantBC, (context.tenant_id, route.bc_id)),
+        (TikTokConnection, route.connection_id),
+        (BCConnectionBinding, (context.tenant_id, route.bc_id, route.connection_id)),
+        (AdvertiserAccount, (context.tenant_id, claim.advertiser_id)),
+        (
+            BCAccountAccess,
+            (context.tenant_id, route.bc_id, claim.advertiser_id, route.connection_id),
+        ),
+        (BuildDraft, preview.draft_id),
+        (BuildPreview, claim.preview_id),
+    )
+    for model, key in rows:
+        session.get(model, key, populate_existing=True, with_for_update={"read": True})
+    session.exec(
+        select(ConnectionAuthorization)
+        .where(
+            ConnectionAuthorization.tenant_id == context.tenant_id,
+            ConnectionAuthorization.connection_id == route.connection_id,
+            ConnectionAuthorization.authorization_revision
+            == route.authorization_revision,
+        )
+        .with_for_update(read=True)
+    ).all()
+
+
 def validate(session, *, context, preview, route, refreshing=False, unit_id=None):
     # 整批摘要绑定批准范围；资格与素材只复核当前 Unit，兄弟计划独立推进。
     if preview.tenant_id != context.tenant_id or preview.bc_id != route.bc_id:

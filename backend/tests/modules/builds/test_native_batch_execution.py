@@ -91,7 +91,13 @@ def test_validate_current_plan(job_env, wire, redis_client):
                 )
 
 
-@pytest.mark.parametrize("scenario", ["match", "partial", "zero", "unknown", "reject"])
+@pytest.mark.parametrize(
+    "source_env", [{"bc_id": "90071992547409931234"}], indirect=True
+)
+@pytest.mark.parametrize(
+    "scenario",
+    ["match", "partial", "zero", "unknown", "reject", "send-lock", "browser"],
+)
 def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scenario):
     import json
     from concurrent.futures import ThreadPoolExecutor
@@ -102,13 +108,51 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     from app.modules.builds import execution, submissions
     from app.modules.builds.execution_models import ExecutionStep, Submission
 
-    client, url, _, _, revision, _, _ = two_account_workspace(
+    browser = scenario == "browser"
+    client, url, draft_id, _, revision, value, _ = two_account_workspace(
         job_env, wire, redis_client
     )
-    response = client.post(url + "/previews", json={"expected_revision": revision})
-    assert response.status_code == 202, response.text
-    pid = UUID(response.json()["preview_id"])
+    if browser:
+        from copy import deepcopy
+
+        from tests.modules.builds.test_native_plan_set import drive_plan_jobs
+
+        blocked = deepcopy(value["plans"][0])
+        blocked["plan_key"] = str(uuid4())
+        blocked["selection"]["advertiser_id"] = "not-authorized"
+        value["plans"].append(blocked)
+        patched = client.patch(
+            url, json={"expected_revision": revision, "scene_selection": value}
+        )
+        assert patched.status_code == 200, patched.text
+        revision = patched.json()["revision"]
     context = job_env["context"]
+    if browser:
+        from tests.modules.builds.native_browser_http import submit_in_browser
+
+        submit_in_browser(
+            native.engine,
+            context,
+            job_env["bc_id"],
+            None,
+            draft_id=draft_id,
+            mode="batch-workspace",
+            drive=lambda task_id: drive_plan_jobs(
+                job_env, wire, redis_client, UUID(task_id)
+            ),
+        )
+        with Session(native.engine) as s:
+            pid = s.exec(
+                select(BuildPreview.id).where(
+                    BuildPreview.draft_id == draft_id,
+                    BuildPreview.draft_revision == revision,
+                )
+            ).one()
+        scenario = "match"
+    else:
+        response = client.post(url + "/previews", json={"expected_revision": revision})
+        assert response.status_code == 202, response.text
+        pid = UUID(response.json()["preview_id"])
 
     def submit(_):
         with Session(native.engine, expire_on_commit=False) as s, s.begin():
@@ -120,9 +164,15 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
         receipts = list(pool.map(submit, range(2)))
     sid = receipts[0].submission_id
     assert receipts[1].submission_id == sid
+    from app.modules.builds.submission_tasks import process_submission
+
+    process_submission(
+        database_engine=native.engine,
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        payload={"submission_id": str(sid), "revision": 0},
+    )
     with Session(native.engine, expire_on_commit=False) as s, s.begin():
-        while not submissions.expand_submission(s, context=context, submission_id=sid):
-            pass
         steps = s.exec(
             select(ExecutionStep).where(ExecutionStep.submission_id == sid)
         ).all()
@@ -130,7 +180,11 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             len(s.exec(select(Submission).where(Submission.preview_id == pid)).all())
             == 1
         )
+    lock_probe = scenario == "send-lock"
+    if lock_probe:
+        scenario = "match"
     calls = []
+    locked = []
     objects = {}
 
     def transport(pool, method, url, **kw):
@@ -163,6 +217,32 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             )
         assert method == "POST"
         body = json.loads(kw["body"])
+        if lock_probe and not calls:
+            import time
+
+            time.sleep(5.2)  # 真实传输延迟超过旧短事务的 idle timeout。
+            from sqlalchemy import text
+            from sqlalchemy.exc import OperationalError
+
+            # SDK 物理传输内，独立会话撤权必须等待发送事务释放。
+            with Session(native.engine) as revoke:
+                revoke.execute(text("SET LOCAL lock_timeout = '100ms'"))
+                try:
+                    revoke.execute(
+                        text(
+                            "UPDATE bc_account_access SET can_build=false "
+                            "WHERE tenant_id=:tenant AND advertiser_id=:advertiser"
+                        ),
+                        {
+                            "tenant": context.tenant_id,
+                            "advertiser": body["advertiser_id"],
+                        },
+                    )
+                except OperationalError as error:
+                    locked.append("lock timeout" in str(error))
+                else:
+                    locked.append(False)
+                revoke.rollback()
         calls.append((url, body))
         if (
             scenario == "unknown"
@@ -211,14 +291,46 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
 
     monkeypatch.setattr("urllib3.PoolManager.request", transport)
     monkeypatch.setattr(execution, "_require_bounded_worker", lambda: None)
+    if lock_probe:
+        from app.core.context import TenantContext
+        from app.core.errors import DomainError
+
+        with pytest.raises(DomainError):
+            execution.process_step(
+                database_engine=native.engine,
+                redis_client=redis_client,
+                context=TenantContext(
+                    tenant_id=uuid4(), actor_id=context.actor_id, role="operator"
+                ),
+                step_id=steps[0].id,
+                revision=0,
+            )
+        assert calls == []
     for kind in ["MATERIAL", "CTA", "CAMPAIGN", "ADGROUP", "AD"]:
         for step in [x for x in steps if x.kind == kind]:
+            from app.modules.builds.dispatch import queue_step
+
+            with Session(native.engine) as s, s.begin():
+                queued = s.get(ExecutionStep, step.id)
+                if queued.status == "PENDING":
+                    queue_step(s, step=queued, submission=s.get(Submission, sid))
+                delivery = queued.dispatch_revision
+            before = len(calls)
+            if delivery:
+                execution.process_step(
+                    database_engine=native.engine,
+                    redis_client=redis_client,
+                    context=context,
+                    step_id=step.id,
+                    revision=delivery - 1,
+                )
+                assert len(calls) == before
             result = execution.process_step(
                 database_engine=native.engine,
                 redis_client=redis_client,
                 context=context,
                 step_id=step.id,
-                revision=0,
+                revision=delivery,
             )
             with Session(native.engine) as s:
                 saved = s.get(ExecutionStep, step.id)
@@ -234,13 +346,15 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 redis_client=redis_client,
                 context=context,
                 step_id=step.id,
-                revision=0,
+                revision=delivery,
             )
             assert len(calls) == before
     assert (
         len(calls)
         == {"match": 10, "partial": 8, "zero": 6, "unknown": 7, "reject": 4}[scenario]
     )
+    if lock_probe:
+        assert locked == [True]
     assert {b["advertiser_id"] for _, b in calls} == {
         "actual-account",
         "second-account",
@@ -252,9 +366,13 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     with Session(native.engine) as s:
         view = submissions.get_submission(s, context=context, submission_id=sid)
         assert view.status != "COMPLETED"  # 创建回执不能冒充实际 MATCH。
-        assert len(view.native_plans) == 2
+        assert len(view.native_plans) == (3 if browser else 2)
         if scenario == "match":
-            assert all(len(p.remote_ids) == 4 for p in view.native_plans)
+            assert all(
+                len(p.remote_ids) == 4
+                for p in view.native_plans
+                if p.status != "EXCLUDED"
+            )
     assert submit(0).submission_id == sid
     assert (
         len(calls)
@@ -311,7 +429,222 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             }[scenario]
         ), view.model_dump()
         if scenario == "match":
-            assert all(p.status == "COMPLETED" for p in view.native_plans)
+            assert all(
+                p.status == "COMPLETED"
+                for p in view.native_plans
+                if p.status != "EXCLUDED"
+            )
         if scenario == "zero":
-            assert all(p.remote_ids for p in view.native_plans)
+            assert all(
+                p.remote_ids for p in view.native_plans if p.status != "EXCLUDED"
+            )
     assert submit(0).submission_id == sid
+
+    # 终态/待核查：相同键及新键在独立会话并发重放，读取当前回执。
+    request_key = uuid4()
+
+    def replay(key):
+        with Session(native.engine, expire_on_commit=False) as s, s.begin():
+            receipt = submissions.submit_preview(
+                s, context=context, preview_id=pid, request_id=key
+            )
+            current = submissions.get_submission(
+                s, context=context, submission_id=receipt.submission_id
+            )
+            assert receipt.status == current.status
+            return receipt.submission_id, current.model_dump(mode="json")
+
+    before_calls = list(calls)
+    with Session(native.engine) as s:
+        before_steps = [
+            (x.id, x.request_body, x.request_body_digest, x.remote_id)
+            for x in s.exec(
+                select(ExecutionStep)
+                .where(ExecutionStep.submission_id == sid)
+                .order_by(ExecutionStep.id)
+            ).all()
+        ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replayed = list(pool.map(replay, [request_key, request_key, uuid4(), uuid4()]))
+    assert all(identity == sid for identity, _ in replayed)
+    assert all(receipt["status"] == view.status for _, receipt in replayed)
+    with Session(native.engine) as s:
+        assert before_steps == [
+            (x.id, x.request_body, x.request_body_digest, x.remote_id)
+            for x in s.exec(
+                select(ExecutionStep)
+                .where(ExecutionStep.submission_id == sid)
+                .order_by(ExecutionStep.id)
+            ).all()
+        ]
+        assert (
+            len(s.exec(select(Submission).where(Submission.preview_id == pid)).all())
+            == 1
+        )
+    assert calls == before_calls
+    if lock_probe:
+        from sqlalchemy import text
+        from sqlalchemy.exc import DBAPIError
+
+        # 已冻结/armed 数据不能通过普通 UPDATE 变造；不禁用数据库 trigger。
+        mutations = [
+            (
+                "UPDATE build_preview SET config=config || jsonb_build_object('tampered',true) WHERE id=:id",
+                pid,
+            ),
+            ("UPDATE build_preview SET content_digest='wrong' WHERE id=:id", pid),
+            (
+                "UPDATE build_unit SET scene_snapshot=scene_snapshot || jsonb_build_object('tampered',true) WHERE preview_id=:id",
+                pid,
+            ),
+            (
+                "UPDATE execution_step SET request_body='{}'::jsonb WHERE id=:id",
+                next(x.id for x in steps if x.kind == "CAMPAIGN"),
+            ),
+            (
+                "UPDATE execution_step SET request_body_digest='wrong' WHERE id=:id",
+                next(x.id for x in steps if x.kind == "CAMPAIGN"),
+            ),
+            ("UPDATE execution_step SET bc_id='wrong-bc' WHERE id=:id", steps[0].id),
+            ("UPDATE execution_step SET tenant_id=:tenant WHERE id=:id", steps[0].id),
+        ]
+        for statement, identity in mutations:
+            with Session(native.engine) as s, s.begin():
+                with pytest.raises(DBAPIError), s.begin_nested():
+                    s.execute(text(statement), {"id": identity, "tenant": uuid4()})
+        assert calls == before_calls
+    if browser:
+        submit_in_browser(
+            native.engine,
+            context,
+            job_env["bc_id"],
+            pid,
+            mode="batch-result",
+            submission_id=sid,
+        )
+
+
+@pytest.mark.parametrize("boundary", ["queue", "send"])
+@pytest.mark.parametrize(
+    "change", ["account", "actor", "authorization", "binding", "revision"]
+)
+def test_batch_fences(job_env, wire, redis_client, monkeypatch, boundary, change):
+    import json
+    from uuid import uuid4
+
+    from sqlalchemy import text
+    from urllib3.response import HTTPResponse
+
+    from app.modules.builds import dispatch, execution, submissions
+    from app.modules.builds.execution_models import ExecutionStep, Submission
+
+    context = job_env["context"]
+    client, url, draft_id, _, revision, value, _ = two_account_workspace(
+        job_env, wire, redis_client
+    )
+    response = client.post(url + "/previews", json={"expected_revision": revision})
+    assert response.status_code == 202, response.text
+    pid = UUID(response.json()["preview_id"])
+    with Session(native.engine, expire_on_commit=False) as s, s.begin():
+        sid = submissions.submit_preview(
+            s, context=context, preview_id=pid, request_id=uuid4()
+        ).submission_id
+        while not submissions.expand_submission(s, context=context, submission_id=sid):
+            pass
+        steps = s.exec(
+            select(ExecutionStep).where(ExecutionStep.submission_id == sid)
+        ).all()
+    monkeypatch.setattr(execution, "_require_bounded_worker", lambda: None)
+    calls = []
+
+    def transport(pool, method, url, **kw):
+        calls.append(json.loads(kw["body"]))
+        return HTTPResponse(
+            body=json.dumps(
+                {"code": 0, "data": {"creative_portfolio_id": "fence-cta"}}
+            ).encode(),
+            status=200,
+        )
+
+    monkeypatch.setattr("urllib3.PoolManager.request", transport)
+    for step in steps:
+        if step.kind == "MATERIAL":
+            assert (
+                execution.process_step(
+                    database_engine=native.engine,
+                    redis_client=redis_client,
+                    context=context,
+                    step_id=step.id,
+                    revision=0,
+                )
+                == "SUCCEEDED"
+            )
+    with Session(native.engine) as s:
+        units = {
+            u.id: u.advertiser_id
+            for u in s.exec(select(BuildUnit).where(BuildUnit.preview_id == pid)).all()
+        }
+    target = next(
+        x for x in steps if x.kind == "CTA" and units[x.unit_id] == "second-account"
+    )
+    sibling = next(
+        x for x in steps if x.kind == "CTA" and units[x.unit_id] == "actual-account"
+    )
+    assert (
+        execution.process_step(
+            database_engine=native.engine,
+            redis_client=redis_client,
+            context=context,
+            step_id=sibling.id,
+            revision=0,
+        )
+        == "SUCCEEDED"
+    )
+
+    def queue():
+        with Session(native.engine) as s, s.begin():
+            row = s.get(ExecutionStep, target.id)
+            dispatch.queue_step(s, step=row, submission=s.get(Submission, sid))
+            return row.dispatch_revision
+
+    delivery = queue() if boundary == "send" else 0
+    if change == "revision":
+        value["plans"][1]["selection"]["native_series_id"] = "changed-series"
+        patched = client.patch(
+            url, json={"expected_revision": revision, "scene_selection": value}
+        )
+        assert patched.status_code == 200, patched.text
+    else:
+        sql = {
+            "account": "UPDATE bc_account_access SET can_build=false WHERE tenant_id=:tenant AND advertiser_id='second-account'",
+            "actor": 'UPDATE "user" SET is_active=false WHERE id=:actor',
+            "authorization": "UPDATE tiktok_connection SET authorization_revision=authorization_revision+1 WHERE tenant_id=:tenant",
+            "binding": "UPDATE bc_connection_binding SET revision=revision+1 WHERE tenant_id=:tenant",
+        }[change]
+        with Session(native.engine) as s, s.begin():
+            s.execute(
+                text(sql), {"tenant": context.tenant_id, "actor": context.actor_id}
+            )
+    if boundary == "queue":
+        delivery = queue()
+    before = list(calls)
+    try:
+        execution.process_step(
+            database_engine=native.engine,
+            redis_client=redis_client,
+            context=context,
+            step_id=target.id,
+            revision=delivery,
+        )
+    except Exception as error:
+        from app.core.errors import DomainError
+
+        assert isinstance(error, DomainError), error
+    assert calls == before
+    with Session(native.engine) as s:
+        row = s.get(ExecutionStep, target.id)
+        assert row.remote_id is None
+        if boundary == "queue":
+            assert row.status == "FAILED" and row.error_code
+        successful = s.get(ExecutionStep, sibling.id)
+        assert successful.status == "SUCCEEDED" and successful.remote_id == "fence-cta"

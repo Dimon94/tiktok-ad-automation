@@ -1155,14 +1155,42 @@ test("原生真实后端提交与响应丢失恢复 @native-live", async ({ page
 test("真实多计划冻结预览 @native-batch-live", async ({ page }) => {
   test.skip(!process.env.NATIVE_TEST_HOST, "仅隔离数据库 runner 启动")
   await buildsBoundary(page)
-  await page.route(/\/api\/tenants\/[^/]+\/(build-previews|submissions|submission-requests)\//, async (route) => {
+  await page.route(/\/api\/tenants\/[^/]+\/(build-drafts|build-previews|submissions|submission-requests)\//, async (route) => {
     const response = await route.fetch({
       url:
-        process.env.NATIVE_TEST_HOST + new URL(route.request().url()).pathname,
+        process.env.NATIVE_TEST_HOST + new URL(route.request().url()).pathname + new URL(route.request().url()).search,
     })
     await route.fulfill({ response })
   })
-  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  if (process.env.NATIVE_PLAN_MODE === "batch-result") {
+    await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
+    await expect(page.getByText(/计划 .* · COMPLETED/)).toHaveCount(2)
+    await expect(page.getByText(/计划 .* · EXCLUDED/)).toHaveCount(1)
+    for (const account of ["actual-account", "second-account", "not-authorized"]) {
+      await expect(page.getByText(new RegExp(`账户 ${account} · Series`))).toBeVisible()
+    }
+    await expect(page.getByText(/CAMPAIGN: remote-/)).toHaveCount(2)
+    await expect(page.getByText(/ADGROUP: remote-/)).toHaveCount(2)
+    await expect(page.getByText("已完成", {exact: true}).first()).toBeVisible()
+    await expect(page.getByText(/已创建对象可能产生消耗/)).toBeVisible()
+    await page.screenshot({path: "/tmp/tkada-native-series-20261112/m2-implementation/jb16-result.png", fullPage: true})
+    return
+  }
+  if (process.env.NATIVE_PLAN_MODE === "batch-workspace") {
+    await page.goto(`/tenants/${T}/build-drafts/${process.env.NATIVE_TEST_DRAFT}?bc_id=${BC}`)
+    const preparing = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/prepare"))
+    await page.getByRole("button", {name: "解析并准备", exact: true}).click()
+    const preparation = await preparing
+    expect(preparation.status()).toBe(202)
+    const task = (await preparation.json()).task_id
+    const advanced = await page.request.post(`${process.env.NATIVE_TEST_HOST}/test-drive/${task}`)
+    expect(advanced.ok()).toBeTruthy()
+    await page.reload()
+    await page.getByRole("button", {name: "生成搭建预览", exact: true}).click()
+    await expect(page).toHaveURL(/build-previews\//)
+  } else {
+    await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  }
   await expect(
     page.getByRole("heading", { name: /Series 批量冻结预览/ }),
   ).toBeVisible()

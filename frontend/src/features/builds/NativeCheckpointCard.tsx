@@ -60,7 +60,7 @@ export function NativeCheckpointCard({
           )
         })}
         {(query.data?.plans.length ?? 0) > 1 && (
-          <p>多计划配置与独立准备已开放；批量冻结与提交尚未开放。</p>
+          <p>冻结预览将列出可执行计划、排除原因及纳入计划的总预算。</p>
         )}
       </CardContent>
     </Card>

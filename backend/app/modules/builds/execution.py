@@ -1,5 +1,6 @@
 """One bounded create or local material dependency per committed attempt."""
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any
@@ -1098,12 +1099,22 @@ def process_step(
                     delay=15,
                 )
 
-        def before_request() -> None:
-            # 握手、tools/list、业务发送各自重查；事务不跨任何网络等待。
+        @contextmanager
+        def send_scope(*, physical=True):
+            # SDK 创建在最终校验后持锁到物理调用结束，撤权不能插入其间。
             with (
-                bounded_session(database_engine, task_deadline=task_deadline) as check,
+                bounded_session(
+                    database_engine,
+                    task_deadline=task_deadline,
+                    # 物理请求可以超过默认 5 秒；锁期限必须覆盖有界任务剩余时间。
+                    max_resource_seconds=HARD_LIMIT if physical else 5.0,
+                ) as check,
                 check.begin(),
             ):
+                if frozen.native_request is not None:
+                    from .native_execution import lock_send_authority
+
+                    lock_send_authority(check, context=context, claim=claim)
                 step = check.exec(
                     select(ExecutionStep)
                     .where(
@@ -1136,6 +1147,11 @@ def process_step(
                     unit = check.get(BuildUnit, claim.unit_id)
                     assert unit is not None
                     validate_ad_assets(check, step=step, unit=unit, body=body)
+                yield
+
+        def before_request() -> None:
+            with send_scope(physical=False):
+                pass
 
         with admitted_build_call(
             redis_client,
@@ -1150,6 +1166,7 @@ def process_step(
                 route=claim.route,
                 task_deadline=task_deadline,
                 before_request=before_request,
+                send_scope=send_scope if frozen.native_request is not None else None,
             ) as gateway:
                 carousel_proof = None
                 if claim.kind == "AD" and frozen.media_kind == "CAROUSEL":

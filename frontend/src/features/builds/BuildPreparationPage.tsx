@@ -182,9 +182,6 @@ function Preparation({
     current?.scene_selection?.kind === "NATIVE_SERIES_DIRECT_VIDEO"
   const previewReady =
     imageReady &&
-    (!isNative ||
-      current?.scene_selection?.kind !== "NATIVE_SERIES_DIRECT_VIDEO" ||
-      current.scene_selection.plans.length === 1) &&
     current?.status === "READY" &&
     !summary.isFetching &&
     !summary.isError &&

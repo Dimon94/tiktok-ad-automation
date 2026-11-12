@@ -3065,7 +3065,7 @@ test("真实工作区计划复制、选中批量编辑与回执 @native-plan-liv
     await expect(page.getByText(/逐计划准备回执/)).toBeVisible()
     await expect(page.getByText(/· READY/)).toBeVisible()
     await expect(page.getByText(/· BLOCKED/)).toBeVisible()
-    await expect(page.getByText(/批量冻结与提交尚未开放/)).toBeVisible()
+    await expect(page.getByText(/冻结预览将列出可执行计划/)).toBeVisible()
     await page.unrouteAll({ behavior: "wait" })
     return
   }
