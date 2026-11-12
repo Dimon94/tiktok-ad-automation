@@ -5156,3 +5156,11 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 已读回JB-5与JB-7至JB-12完整正文及原生依赖；当前frontier仅JB-7。Spec副本见docs/superpowers/specs/2026-11-12-native-series-direct-video-design.md。
 - 验收沿既有创建工作区及官方SDK传输Seam，TDD按票推进；组合算法沿既有素材分配及creative_count语义。
 - 只建立实施输入与隔离本地PostgreSQL/Redis测试环境；尚未实现任何票，未进行广告/授权写入或生产发布。
+
+## 2026-11-12 — JB-7 原生 Series 选择与 scoped 准备（本地候选）
+
+- 产品源码 `5f66a6f65ceba042a2ddfc441f98a8ebd717be60`：既有工作区原子保存原生目的地、单账户、双角色身份、地区及视频/封面来源；复用策略与结构输入、mutation/CAS/幂等、SceneJob和官方SDK读取。支持显式待选择状态，无假版权方剧目或Mini链接。
+- 两条迁移统一Mini/native身份事实源，旧Mini调用方改接scene_selection；不改冻结预览/执行事实。Series按cursor/count≤20/has_more，TT_USER/BC_AUTH_TT分别分页；无已证实MCP工具时明确不支持。
+- 当前组合保持UNVERIFIED，明确不代表素材READY；JB-8继续做目标视频/封面逐条准备。后续预览、创建和回读未吞入。
+- 最新原生/迁移11 passed；前端类型+生产/demo构建通过，真实Chromium表单1 passed；错误保存/游标探针均被拒绝。先前scene回归129 passed；身份退休后owner回归91 passed / 1失败（既有批量上限测试未抛拆批，尚未动态确认旧HEAD基线）。不把该缺口标绿，不关闭Linear票。
+- 迁移、源码SHA、命令、TDD顺序边界和剩余验收见[JB-7验证记录](validation/2026-11-12-jb7-native-series-selection.md)。root待审查；没有推送、部署、真实业务读取或广告/授权写入。
