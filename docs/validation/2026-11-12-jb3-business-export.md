@@ -34,7 +34,14 @@ No dependency/lock changes. Owned Docker `jb3-pg` (postgres:18-alpine), `jb3-red
 APP_ENV_FILE=/dev/null, cloud credentials disabled. No real provider/production calls.
 Environment setup `/tmp/jb3-env.sh` is local-only, not a shipped credential artifact.
 
-Commands (after loading isolated environment):
+Commands from the project root (after loading isolated environment):
+
+The project-root `scripts/test.sh` forwards arguments to pytest. The distinct
+template `backend/scripts/test.sh` always selects `tests/`; root initially ran
+that wrong entrypoint from the backend directory and stopped that broad run.
+This setup mistake is not a test result and does not invalidate the implementer
+commands below. Root independently ran direct targeted pytest as recorded in
+the addendum.
 
 ```sh
 bash scripts/test.sh tests/modules/business/test_export_integrity.py tests/modules/business/test_queries.py tests/modules/business/test_exports.py tests/modules/business/test_api.py tests/modules/business/test_calculation.py tests/modules/business/test_concurrency.py -q --tb=short
@@ -112,3 +119,43 @@ other container changed. API/Vite and owned test containers stopped after eviden
 Not performed: production, TikTok, push, PR, deployment, Linear writes, independent
 root integration/Standards/Spec review. Browser gap prevents claiming full JB-3
 acceptance. Root owns final review and Linear disposition.
+
+## Root browser acceptance addendum
+
+The earlier BC-selection gap was a test-data mismatch: the frontend tenant route
+accepts numeric BC IDs, while the reused reporting fixture used `bc-report-case`.
+No frontend or product fix was needed. Root reused the isolated browser database
+and seeded a numeric synthetic BC, retaining the same authenticated test user.
+
+Using T3 preview tools only, root opened the actual local Vite/API page, selected
+2026-11-02 and the comic scenario, and observed spend 200.00, platform revenue
+160.00, compensation subtotal 50.00, and blank scenario income/ROAS. Root clicked
+the real Export CSV button, executed the normal pending-export worker against
+that isolated database, and let the browser finish its normal polling/download.
+The actual downloaded `business.csv` (465 bytes) was parsed with `csv.DictReader`:
+one row, compensation `50.00`, both scenario cells empty, and
+`COMPENSATION_PARTIAL` retained. This closes the representative real-browser
+query/download gap; it is synthetic acceptance data, not live account data.
+
+The owned browser tab was closed and the root-owned local API/Vite processes
+were stopped. The bounded verification command was independently rerun: 5,000
+real Decimal inputs, 27 model states, and the incompatible-append negative
+control passed. Independent Standards/Spec review remains pending at this point.
+
+## Root independent regression
+
+From `backend/`, after sourcing the isolated environment, setting
+`APP_ENV_FILE=/dev/null` and prepending `/tmp/jb3-venv/bin` to PATH:
+
+```sh
+/tmp/jb3-venv/bin/python -m pytest tests/modules/business/test_export_integrity.py tests/modules/business/test_queries.py tests/modules/business/test_exports.py tests/modules/business/test_api.py tests/modules/business/test_calculation.py tests/modules/business/test_concurrency.py -q --tb=short
+```
+
+Result: **95 passed in 122.02s**. This includes the two final downgrade tests.
+Log: `/tmp/jb3-root-suite.log`. An initial attempt with the system-Python PATH
+failed importing Alembic; it was an environment setup failure, not a product
+failure or a passing run.
+
+Standards R1 on fixed source commit `ce025a76` passed with zero P0/P1/P2/P3.
+The reviewer independently checked 48 pure-function cases and did not rerun
+the database suite. Spec review is still pending at this recording point.
