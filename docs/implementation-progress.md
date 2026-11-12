@@ -5173,3 +5173,13 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 回归141 passed / 9 deselected；最后账户能力TTL修复后原生/选择/迁移专项14 passed；两个真实变异失败且恢复cmp一致。前端TypeScript及生产/demo构建、Ruff、diff检查通过。
 - 77baaf04独立git archive源码与独立新建测试库动态复现预览batch-cap单测同样DID NOT RAISE；当前同输入同失败。根因为既有82277b08已取消广告总数上限而旧断言未迁移。本票不改断言或组合算法、不降级当前DB。
 - 本地JB-7三个缺口已关闭，交协调者独立验收；JB-8素材及后续票仍待实现。未改Linear、推送、部署、生产凭证或真实业务接口；保留untracked node_modules软链。来源、命令和边界见[JB-7验证记录](validation/2026-11-12-jb7-native-series-selection.md)。
+
+## 2026-11-12 JB-8 原生选中素材在目标账户逐条就绪
+
+- 起点 `5a3cb1b6e8ca56e96765ad66c679aad4918a3988`；复用用户指定 `feat/jb5-native-series-m1` 集成树，单写者串行完成。本节所在提交为源码 tip；不推送/PR/部署、不更新 Linear、不派下级代理，保留 untracked node_modules 软链。
+- prepare/continue 在 JB-7 当前场景资格通过后接既有 distribution、IMAGE distribution、covers owner；每轮最多20项，严格同N同序保存VID、封面引用、映射证据与任务ID。已核实素材可复用；缺一项、错账户、损坏顺序、旧revision或UNKNOWN不能作为完整组消费。不改变结构组合模型。
+- 增加 `DraftScenePreparation.native_materials` 的 additive 迁移 `native_material_readiness`；当前隔离PG实际升级，无当前库降级。存在证据的 downgrade 拒绝丢数据；生产迁移方案仍由M1最终审查处理。
+- 既有 native-checkpoint 增加 materials_state / materials_ready / materials / material_issues；JB-9只消费当前scope/revision/route下整组正证据，不以目的地READY代替素材READY。生成客户端合同已更新；未实施预览冻结、创建或广告回读。
+- TDD首红：完整两条素材仍BLOCKED，1 failed/1 passed；接线后2 passed。scope近似错误探针实际失败，恢复源码并核对字节一致；收尾多连接current封面多义检查同时覆盖只读与准备阻断；补充续接检查抓到JSON嵌套修改不落库问题并修复。未声称每分支逐条先红或形式证明。
+- 最终原生与选择专项 **30 passed / 59.70s**；素材/封面/上传/route/并发/Mini工作区回归 **176 passed / 210.23s**。真实PG/Redis，替身仅官方SDK/MCP传输处；前端 TypeScript + Vite production/demo 构建通过，Ruff及diff检查通过。
+- 完整命令、日志和可复现真库演示：[JB-8验收](validation/2026-11-12-jb8-native-material-readiness.md)。真实平台接受性/经营资格为Unknown；无真实业务接口、授权或广告读写。已知旧预览总数上限基线断言未重跑/修改。JB-9～12、独立审查及整个M1验收尚待完成。

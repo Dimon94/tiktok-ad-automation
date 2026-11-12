@@ -939,7 +939,7 @@ def native_checkpoint(
             for reason in reasons
         ):
             state = "BLOCKED"
-    return NativeCheckpoint(
+    checkpoint = NativeCheckpoint(
         state=state,
         reason_codes=reasons,
         draft_revision=draft.revision,
@@ -960,3 +960,27 @@ def native_checkpoint(
         expires_at=job.expires_at if job else None,
         facts=job.facts if job else {},
     )
+    if hasattr(draft, "id"):
+        from .native_materials import read_native_materials
+
+        materials, issues = read_native_materials(
+            session, context=context, draft=draft, checkpoint=checkpoint
+        )
+        from .selection_schemas import NativeMaterialMapping
+
+        checkpoint.materials = [
+            NativeMaterialMapping.model_validate(item) for item in materials
+        ]
+        checkpoint.material_issues = issues
+        checkpoint.materials_ready = state == "READY" and bool(materials) and not issues
+        checkpoint.materials_state = (
+            "READY"
+            if checkpoint.materials_ready
+            else "UNVERIFIED"
+            if state == "UNVERIFIED"
+            else "BLOCKED"
+            if state == "BLOCKED"
+            or any(issue.get("state") != "PENDING" for issue in issues)
+            else "PENDING"
+        )
+    return checkpoint

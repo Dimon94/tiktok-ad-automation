@@ -62,6 +62,19 @@ SceneSelection = Annotated[
 ]
 
 
+class NativeMaterialMapping(BaseModel):
+    position: int
+    material_id: UUID
+    cover_material_id: UUID | None = None
+    video_id: str
+    image_id: str
+    video_evidence_id: UUID
+    cover_evidence_id: UUID
+    video_task_id: UUID | None = None
+    cover_task_id: UUID | None = None
+    preparation_id: UUID
+
+
 class NativeCheckpoint(BaseModel):
     state: Literal["PENDING", "BLOCKED", "UNVERIFIED", "READY"]
     reason_codes: list[str]
@@ -73,4 +86,7 @@ class NativeCheckpoint(BaseModel):
     observed_at: datetime | None = None
     expires_at: datetime | None = None
     facts: dict[str, Any] = Field(default_factory=dict)
-    materials_ready: Literal[False] = False
+    materials_state: Literal["PENDING", "BLOCKED", "UNVERIFIED", "READY"] = "PENDING"
+    materials_ready: bool = False
+    materials: list[NativeMaterialMapping] = Field(default_factory=list)
+    material_issues: list[dict[str, Any]] = Field(default_factory=list)

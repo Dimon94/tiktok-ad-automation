@@ -249,9 +249,7 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
     ]
 
 
-def test_workspace_prepare_drives_native_job_without_provider(
-    job_env, wire, redis_client
-):
+def prepared_native_workspace(job_env, wire, redis_client, materials, count=2):
     from app.modules.builds import drafts
     from app.modules.builds.catalog import draft_summary
     from app.modules.strategies.models import StrategyVersion
@@ -259,7 +257,41 @@ def test_workspace_prepare_drives_native_job_without_provider(
     from tests.modules.strategies.test_versions import config
 
     env = job_env
+    chosen = selection()
+    expected = []
     with Session(engine, expire_on_commit=False) as session, session.begin():
+        if materials:
+            from datetime import UTC, datetime
+
+            from app.modules.materials.models import AccountMaterial, MaterialFile
+
+            original = session.get(MaterialFile, env["material_id"])
+            for index in range(count):
+                values = original.model_dump()
+                values.update(
+                    id=uuid4(),
+                    object_key=f"native/{uuid4()}",
+                    video_md5=str(index + 1) * 32 if index < 2 else f"{index + 1:032x}",
+                )
+                material = MaterialFile(**values)
+                session.add(material)
+                session.flush()
+                session.add(
+                    AccountMaterial(
+                        tenant_id=env["context"].tenant_id,
+                        bc_id=env["bc_id"],
+                        material_id=material.id,
+                        advertiser_id="actual-account",
+                        connection_id=env["connection_id"],
+                        frozen_route=env["route"].model_dump(mode="json"),
+                        video_id=f"target-{index}",
+                        image_id=f"cover-{index}",
+                        status="available",
+                        verified_at=datetime.now(UTC),
+                    )
+                )
+                chosen["video_sources"].append({"material_id": str(material.id)})
+                expected.append((str(material.id), f"target-{index}", f"cover-{index}"))
         strategy_id = create_strategy(
             session, context=env["context"], name="Native workspace", config=config()
         )
@@ -276,7 +308,7 @@ def test_workspace_prepare_drives_native_job_without_provider(
             drama_lines=[],
             account_lines=["actual-account"],
             link_config={},
-            scene_selection=selection(),
+            scene_selection=chosen,
         )
         prep_id = drafts.prepare_draft(
             session, context=env["context"], draft_id=draft_id, request_id=uuid4()
@@ -332,16 +364,47 @@ def test_workspace_prepare_drives_native_job_without_provider(
             break
     assert native_job.status == "COMPLETE", native_job.error_code
     with Session(engine, expire_on_commit=False) as session, session.begin():
-        assert drafts.continue_draft(session, context=env["context"], task_id=prep_id)
+        for _ in range(51):
+            if drafts.continue_draft(session, context=env["context"], task_id=prep_id):
+                break
         result = draft_summary(session, context=env["context"], draft_id=draft_id)
-        assert result.status == "BLOCKED"
-        assert result.error_code == "native_materials_not_prepared"
+        assert result.status == ("READY" if materials else "BLOCKED")
+        assert result.error_code == (
+            None if materials else "native_materials_not_prepared"
+        )
+        if materials:
+            from app.modules.builds.models import BuildDraft
+            from app.modules.builds.scene_jobs import native_checkpoint
+
+            checkpoint = native_checkpoint(
+                session,
+                context=env["context"],
+                draft=session.get(BuildDraft, draft_id),
+                route=env["route"],
+            )
+            assert checkpoint.materials_ready
+            assert [
+                (str(item.material_id), item.video_id, item.image_id)
+                for item in checkpoint.materials
+            ] == expected
+            assert all(
+                item.video_evidence_id and item.cover_evidence_id
+                for item in checkpoint.materials
+            )
         assert result.provider_task_id is None
         assert (
             result.scene_selection.series_identity
             == result.scene_selection.creative_identity
         )
     assert not any("minis/get" in call[1] for call in wire[0])
+    return draft_id, prep_id, expected
+
+
+@pytest.mark.parametrize("materials", [False, True])
+def test_workspace_prepare_drives_native_job_without_provider(
+    job_env, wire, redis_client, materials
+):
+    prepared_native_workspace(job_env, wire, redis_client, materials)
 
 
 @pytest.mark.parametrize(
@@ -466,3 +529,464 @@ def test_native_pending_selection_discovers_identities_without_fake_series(
             == "actual-owner"
         )
     assert not any("native_series/get" in call[1] for call in wire[0])
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_video",
+        "missing_cover",
+        "unknown",
+        "wrong_account",
+        "order",
+        "duplicate",
+        "evidence",
+        "scope",
+        "old_revision",
+        "digest",
+        "count",
+    ],
+)
+def test_native_material_group_rejects_partial_stale_or_corrupt_evidence(
+    job_env, wire, redis_client, fault
+):
+    from app.modules.builds.models import BuildDraft, DraftPreparation
+    from app.modules.builds.scene_job_models import DraftScenePreparation
+    from app.modules.materials.models import AccountMaterial
+
+    draft_id, prep_id, expected = prepared_native_workspace(
+        job_env, wire, redis_client, True
+    )
+    with Session(engine, expire_on_commit=False) as session, session.begin():
+        draft = session.get(BuildDraft, draft_id)
+        state = session.get(
+            DraftScenePreparation, (job_env["context"].tenant_id, prep_id)
+        )
+        import copy
+
+        proof = copy.deepcopy(state.native_materials)
+        mapping = session.get(AccountMaterial, proof["items"][1]["video_evidence_id"])
+        if fault == "count":
+            proof["items"].pop()
+        elif fault == "missing_video":
+            mapping.status = "unavailable"
+        elif fault == "missing_cover":
+            mapping.image_id = None
+        elif fault == "unknown":
+            mapping.status = "result_unknown"
+        elif fault == "wrong_account":
+            from tests.modules.materials.test_readiness import target
+
+            account = target(session, job_env)
+            wrong = AccountMaterial(
+                **{**mapping.model_dump(), "id": uuid4(), "advertiser_id": account}
+            )
+            session.add(wrong)
+            session.flush()
+            proof["items"][1]["video_evidence_id"] = str(wrong.id)
+        elif fault == "order":
+            proof["items"].reverse()
+        elif fault == "duplicate":
+            proof["items"][1] = proof["items"][0]
+        elif fault == "evidence":
+            proof["items"][1].pop("cover_evidence_id")
+        elif fault == "scope":
+            proof["scope_basis"] = "old-route"
+        elif fault == "old_revision":
+            draft.revision += 1
+            draft.status = "DRAFT"
+        elif fault == "digest":
+            from app.modules.materials.models import MaterialFile
+
+            session.get(MaterialFile, mapping.material_id).video_md5 = "f" * 32
+        state.native_materials = proof
+        session.flush()
+        checkpoint = native_checkpoint(
+            session, context=job_env["context"], draft=draft, route=job_env["route"]
+        )
+        assert checkpoint.materials_ready is False
+        assert checkpoint.materials == []
+        if fault != "old_revision":
+            assert checkpoint.material_issues
+        else:
+            # 重复旧消息只能使原任务过期，不能重写新草稿或覆盖新选择。
+            from app.modules.builds.drafts import continue_draft
+
+            session.get(DraftPreparation, prep_id).status = "PENDING"
+            assert continue_draft(session, context=job_env["context"], task_id=prep_id)
+            assert session.get(DraftPreparation, prep_id).status == "OBSOLETE"
+            assert draft.status == "DRAFT"
+
+
+def test_native_cover_worker_continuation_and_duplicate_prepare(
+    job_env, wire, redis_client
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app.modules.builds import drafts
+    from app.modules.builds.models import BuildDraft, DraftPreparation
+    from app.modules.materials.cover_models import MaterialCoverJob
+    from app.modules.materials.covers import run_cover
+    from app.modules.materials.models import AccountMaterial
+
+    draft_id, prep_id, expected = prepared_native_workspace(
+        job_env, wire, redis_client, True
+    )
+    with Session(engine) as session, session.begin():
+        mapping = session.exec(
+            select(AccountMaterial).where(AccountMaterial.material_id == expected[1][0])
+        ).one()
+        mapping.image_id = None
+        from app.modules.materials.covers import ensure_source_cover
+
+        # 已上传来源的成功事件沿既有 owner 排队；后续 BUILD 不创建第二个任务。
+        ensure_source_cover(
+            session,
+            context=job_env["context"],
+            bc_id=job_env["bc_id"],
+            material_id=mapping.material_id,
+            advertiser_id="actual-account",
+            task_key="source-upload-event",
+            route=job_env["route"],
+        )
+        prep = session.get(DraftPreparation, prep_id)
+        prep.status, prep.phase = "PENDING", "scenes"
+        session.get(BuildDraft, draft_id).status = "PREPARING"
+    barrier = Barrier(2)
+
+    def resume():
+        barrier.wait(10)
+        with Session(engine) as session, session.begin():
+            return drafts.continue_draft(
+                session, context=job_env["context"], task_id=prep_id
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = pool.submit(resume), pool.submit(resume)
+        assert a.result(15) is False and b.result(15) is False
+    with Session(engine) as session:
+        jobs = session.exec(
+            select(MaterialCoverJob).where(
+                MaterialCoverJob.tenant_id == job_env["context"].tenant_id
+            )
+        ).all()
+        assert len(jobs) == 1
+        job = jobs[0]
+        cp = native_checkpoint(
+            session,
+            context=job_env["context"],
+            draft=session.get(BuildDraft, draft_id),
+            route=job_env["route"],
+        )
+        assert not cp.materials_ready and cp.materials == []
+        assert cp.material_issues[0]["material_id"] == expected[1][0]
+    wire[1].extend(
+        [
+            {
+                "list": [
+                    {
+                        "video_id": "target-1",
+                        "displayable": True,
+                        "signature": "2" * 32,
+                        "width": 720,
+                        "height": 1280,
+                        "video_cover_url": "https://cover.example.invalid/a.jpg",
+                    }
+                ]
+            },
+            {
+                "advertiser_id": "actual-account",
+                "image_id": "worker-cover",
+                "material_id": "1234567890123456789",
+                "signature": "c" * 32,
+                "width": 360,
+                "height": 640,
+                "displayable": False,
+            },
+        ]
+    )
+    run_cover(
+        database_engine=engine,
+        redis_client=redis_client,
+        context=job_env["context"],
+        job_id=job.id,
+        dispatch_id=job.dispatch_id,
+        revision=job.revision,
+        read=False,
+    )
+    with Session(engine) as session, session.begin():
+        current = session.get(MaterialCoverJob, job.id)
+        assert current.status == "READY", current.error_code
+        assert drafts.continue_draft(
+            session, context=job_env["context"], task_id=prep_id
+        )
+        cp = native_checkpoint(
+            session,
+            context=job_env["context"],
+            draft=session.get(BuildDraft, draft_id),
+            route=job_env["route"],
+        )
+        assert cp.materials_ready
+        assert [item.video_id for item in cp.materials] == ["target-0", "target-1"]
+        assert cp.materials[1].image_id == "worker-cover"
+        assert cp.materials[1].cover_task_id == job.id
+        # UNKNOWN 回执永远不能凭旧映射图片继续通过。
+        current.status = "UNKNOWN"
+        session.flush()
+        assert not native_checkpoint(
+            session,
+            context=job_env["context"],
+            draft=session.get(BuildDraft, draft_id),
+            route=job_env["route"],
+        ).materials_ready
+
+
+def test_native_selected_image_cover_and_shared_source_are_exact(
+    job_env, wire, redis_client
+):
+    from datetime import UTC, datetime
+
+    from app.modules.builds.drafts import continue_draft
+    from app.modules.builds.models import BuildDraft, DraftPreparation
+    from app.modules.materials.models import AccountMaterial, MaterialFile
+
+    draft_id, prep_id, expected = prepared_native_workspace(
+        job_env, wire, redis_client, True
+    )
+    with Session(engine) as session, session.begin():
+        draft = session.get(BuildDraft, draft_id)
+        original = session.get(MaterialFile, expected[0][0])
+        image = MaterialFile(
+            **{
+                **original.model_dump(),
+                "id": uuid4(),
+                "object_key": f"cover/{uuid4()}",
+                "media_type": "IMAGE",
+                "mime_type": "image/jpeg",
+                "duration": None,
+            }
+        )
+        session.add(image)
+        session.flush()
+        mapping = AccountMaterial(
+            tenant_id=job_env["context"].tenant_id,
+            bc_id=job_env["bc_id"],
+            material_id=image.id,
+            advertiser_id="actual-account",
+            connection_id=job_env["connection_id"],
+            frozen_route=job_env["route"].model_dump(mode="json"),
+            media_type="IMAGE",
+            video_id=None,
+            image_id="explicit-selected-cover",
+            is_carousel_usable=True,
+            status="available",
+            verified_at=datetime.now(UTC),
+        )
+        session.add(mapping)
+        import copy
+
+        chosen = copy.deepcopy(draft.scene_selection)
+        chosen["video_sources"][0]["cover_material_id"] = str(image.id)
+        # 同一素材重复用于两个创意位置仍保持N项，同一目标映射，没有新增上传。
+        chosen["video_sources"].append(copy.deepcopy(chosen["video_sources"][0]))
+        from app.modules.builds.drafts import prepare_draft, update_draft
+
+        update_draft(
+            session,
+            context=job_env["context"],
+            draft_id=draft_id,
+            expected_revision=draft.revision,
+            scene_selection=chosen,
+        )
+        prep_id = prepare_draft(
+            session, context=job_env["context"], draft_id=draft_id, request_id=uuid4()
+        )
+        prep = session.get(DraftPreparation, prep_id)
+        # 账户能力已由第一轮官方SDK准备，这里接续当前目的地场景。
+        prep.phase = "scenes"
+        session.flush()
+    from app.modules.builds.scene_jobs import ensure_scene_preparation
+
+    with Session(engine) as session, session.begin():
+        draft = session.get(BuildDraft, draft_id)
+        receipt = ensure_scene_preparation(
+            session,
+            context=job_env["context"],
+            bc_id=job_env["bc_id"],
+            advertiser_id="actual-account",
+            link_id=None,
+            route=job_env["route"],
+            native_selection=draft.scene_selection,
+        )
+    owner = {
+        "identity_type": "TT_USER",
+        "identity_id": "owner",
+        "available_status": "AVAILABLE",
+        "can_use_series": True,
+        "can_push_video": True,
+        "is_gpppa": False,
+    }
+    wire[1].extend(
+        [
+            identities([owner]),
+            identities([]),
+            {
+                "list": [{"native_series_id": "exact-series"}],
+                "cursor": 0,
+                "has_more": False,
+            },
+            region_response()["data"],
+        ]
+    )
+    for _ in range(8):
+        job = run(job_env, redis_client, receipt.job_id)
+        if job.status != "PENDING":
+            break
+    with Session(engine) as session, session.begin():
+        assert continue_draft(session, context=job_env["context"], task_id=prep_id)
+        draft = session.get(BuildDraft, draft_id)
+        cp = native_checkpoint(
+            session, context=job_env["context"], draft=draft, route=job_env["route"]
+        )
+        assert cp.materials_ready, cp.material_issues
+        assert [item.video_id for item in cp.materials] == [
+            "target-0",
+            "target-1",
+            "target-0",
+        ]
+        assert (
+            cp.materials[0].image_id
+            == cp.materials[2].image_id
+            == "explicit-selected-cover"
+        )
+        assert cp.materials[0].video_evidence_id == cp.materials[2].video_evidence_id
+
+
+def test_native_video_verification_resumes_same_distribution(
+    job_env, wire, redis_client
+):
+    from app.modules.builds import drafts
+    from app.modules.builds.models import BuildDraft, DraftPreparation
+    from app.modules.materials.distribution import run_distribution
+    from app.modules.materials.models import AccountMaterial, MaterialDistribution
+
+    draft_id, prep_id, _ = prepared_native_workspace(job_env, wire, redis_client, True)
+    with Session(engine, expire_on_commit=False) as session, session.begin():
+        draft = session.get(BuildDraft, draft_id)
+        source_id = draft.scene_selection["video_sources"][1]["material_id"]
+        mapping = session.exec(
+            select(AccountMaterial).where(AccountMaterial.material_id == source_id)
+        ).one()
+        mapping.status = "result_unknown"
+        prep = session.get(DraftPreparation, prep_id)
+        prep.status, prep.phase = "PENDING", "scenes"
+        assert not drafts.continue_draft(
+            session, context=job_env["context"], task_id=prep_id
+        )
+        first = session.exec(
+            select(MaterialDistribution).where(
+                MaterialDistribution.material_id == source_id
+            )
+        ).one()
+        assert not drafts.continue_draft(
+            session, context=job_env["context"], task_id=prep_id
+        )
+        assert (
+            len(
+                session.exec(
+                    select(MaterialDistribution).where(
+                        MaterialDistribution.material_id == source_id
+                    )
+                ).all()
+            )
+            == 1
+        )
+    wire[1].append(
+        {"list": [{"video_id": "target-1", "signature": "2" * 32, "displayable": True}]}
+    )
+    run_distribution(
+        database_engine=engine,
+        redis_client=redis_client,
+        context=job_env["context"],
+        distribution_id=first.id,
+        kind="verify",
+    )
+    with Session(engine, expire_on_commit=False) as session, session.begin():
+        assert session.get(MaterialDistribution, first.id).status == "ready"
+        assert drafts.continue_draft(
+            session, context=job_env["context"], task_id=prep_id
+        )
+        cp = native_checkpoint(
+            session,
+            context=job_env["context"],
+            draft=session.get(BuildDraft, draft_id),
+            route=job_env["route"],
+        )
+        assert cp.materials_ready, cp.material_issues
+        assert cp.materials[1].video_task_id == first.id
+
+
+def test_native_materials_span_multiple_bounded_turns_without_truncation(
+    job_env, wire, redis_client
+):
+    prepared_native_workspace(job_env, wire, redis_client, True, count=21)
+
+
+def test_native_multiconnection_cover_ambiguity_cannot_reuse_ready_mapping(
+    job_env, wire, redis_client
+):
+    from datetime import UTC, datetime
+
+    from app.modules.accounts.routing import freeze_route
+    from app.modules.builds.drafts import continue_draft
+    from app.modules.builds.models import BuildDraft, DraftPreparation
+    from app.modules.materials.cover_models import MaterialCoverJob
+    from app.modules.materials.models import AccountMaterial
+    from tests.modules.materials.route_support import second_connection
+
+    draft_id, prep_id, expected = prepared_native_workspace(
+        job_env, wire, redis_client, True
+    )
+    with Session(engine) as session, session.begin():
+        replacement = second_connection(session, job_env)
+        mapping = session.exec(
+            select(AccountMaterial).where(AccountMaterial.material_id == expected[1][0])
+        ).one()
+        for connection in [job_env["connection_id"], replacement]:
+            route = freeze_route(
+                session,
+                context=job_env["context"],
+                bc_id=job_env["bc_id"],
+                connection_id=connection,
+            )
+            session.add(
+                MaterialCoverJob(
+                    tenant_id=job_env["context"].tenant_id,
+                    bc_id=job_env["bc_id"],
+                    material_id=mapping.material_id,
+                    asset_id=mapping.id,
+                    advertiser_id="actual-account",
+                    connection_id=connection,
+                    actor_id=job_env["context"].actor_id,
+                    frozen_route=route.model_dump(mode="json"),
+                    video_id="target-1",
+                    video_md5="2" * 32,
+                    remote_name="fixture-cover.jpg",
+                    status="READY",
+                    request_armed_at=datetime.now(UTC),
+                    known_image_id="cover-1",
+                )
+            )
+        session.flush()
+        draft = session.get(BuildDraft, draft_id)
+        cp = native_checkpoint(
+            session, context=job_env["context"], draft=draft, route=job_env["route"]
+        )
+        assert not cp.materials_ready and cp.materials == []
+        assert cp.material_issues[0]["reason_code"] == "native_cover_mapping_ambiguous"
+        prep = session.get(DraftPreparation, prep_id)
+        prep.status, prep.phase = "PENDING", "scenes"
+        assert continue_draft(session, context=job_env["context"], task_id=prep_id)
+        assert prep.status == draft.status == "BLOCKED"
+        assert prep.error_code == "native_cover_mapping_ambiguous"

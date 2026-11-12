@@ -815,13 +815,44 @@ def _scenes_page(
         checkpoint = native_checkpoint(
             session, context=context, draft=draft, route=route
         )
-        # 本票只完成目的地检查点；不能以无 Mini 链接冒充素材整组 READY。
-        prep.status, prep.phase, draft.status = "BLOCKED", "done", "BLOCKED"
-        prep.error_code = (
-            checkpoint.reason_codes[0]
-            if checkpoint.reason_codes
-            else "native_materials_not_prepared"
-        )
+        if checkpoint.state == "READY" and selection.get("video_sources"):
+            from .native_materials import prepare_native_materials
+
+            items = prepare_native_materials(
+                session,
+                context=context,
+                draft=draft,
+                prep=prep,
+                route=route,
+                checkpoint=checkpoint,
+            )
+            if any(item["state"] == "blocked" for item in items):
+                prep.status, prep.phase, draft.status = "BLOCKED", "done", "BLOCKED"
+                prep.error_code = next(
+                    item.get("reason_code") or "native_material_unverified"
+                    for item in items
+                    if item["state"] == "blocked"
+                )
+            elif any(item["state"] == "queued" for item in items):
+                return
+            else:
+                checked = native_checkpoint(
+                    session, context=context, draft=draft, route=route
+                )
+                prep.status = draft.status = (
+                    "READY" if checked.materials_ready else "BLOCKED"
+                )
+                prep.phase = "done"
+                prep.error_code = (
+                    None if checked.materials_ready else "native_material_unverified"
+                )
+        else:
+            prep.status, prep.phase, draft.status = "BLOCKED", "done", "BLOCKED"
+            prep.error_code = (
+                checkpoint.reason_codes[0]
+                if checkpoint.reason_codes
+                else "native_materials_not_prepared"
+            )
         return
     state = _scene_prep(session, draft, prep)
     route = _preparation_route(session, context, draft, prep)

@@ -5853,9 +5853,69 @@ export type NativeCheckpoint = {
         [key: string]: unknown;
     };
     /**
+     * Materials State
+     */
+    materials_state?: 'PENDING' | 'BLOCKED' | 'UNVERIFIED' | 'READY';
+    /**
      * Materials Ready
      */
-    materials_ready?: false;
+    materials_ready?: boolean;
+    /**
+     * Materials
+     */
+    materials?: Array<NativeMaterialMapping>;
+    /**
+     * Material Issues
+     */
+    material_issues?: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+/**
+ * NativeMaterialMapping
+ */
+export type NativeMaterialMapping = {
+    /**
+     * Position
+     */
+    position: number;
+    /**
+     * Material Id
+     */
+    material_id: string;
+    /**
+     * Cover Material Id
+     */
+    cover_material_id?: string | null;
+    /**
+     * Video Id
+     */
+    video_id: string;
+    /**
+     * Image Id
+     */
+    image_id: string;
+    /**
+     * Video Evidence Id
+     */
+    video_evidence_id: string;
+    /**
+     * Cover Evidence Id
+     */
+    cover_evidence_id: string;
+    /**
+     * Video Task Id
+     */
+    video_task_id?: string | null;
+    /**
+     * Cover Task Id
+     */
+    cover_task_id?: string | null;
+    /**
+     * Preparation Id
+     */
+    preparation_id: string;
 };
 
 /**

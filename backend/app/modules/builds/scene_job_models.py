@@ -255,6 +255,9 @@ class DraftScenePreparation(SQLModel, table=True):
     frozen_route: dict[str, Any] | None = Field(
         default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
     )
+    native_materials: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
+    )
     connection_after: UUID | None = None
     capabilities_queued: bool = False
     capabilities_complete: bool = False
