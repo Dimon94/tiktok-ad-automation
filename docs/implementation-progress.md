@@ -5239,3 +5239,10 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 - root独立真实浏览器→真实本地API/PG/Redis→SDK替身→创建/回读完成1 passed；丢响应原请求恢复与唯一Submission已核实。不是API显示mock替代后端。
 - 远端最新74ea9bc0已获取并保留原origin；合并1134520c保留既有本地提交与所有进度记录。合后reporting/readback158 passed，快进本地main后readback94 passed。M1产品源码与R2已审d39f6bbe一致；未重复无变化全量。
 - JB-7～12逐票读回Done后JB-5读回Done；未推送/部署/真实平台操作。原主树无关未跟踪文件保留。最终范围、证据、旧基线与外部Unknown见[本地交付验收](validation/2026-11-12-native-m1-final-acceptance.md)。
+
+## 2026-11-12 — JB-13 原生 Series M2 实施启动
+
+- 用户调用implement-spec，目标为整个JB-13及JB-14～18五票，按已批准依赖串行推进。M2集成树feat/jb13-native-series-m2基于main b1857367；沿用先前确认的单集成树/每票新上下文/唯一写者路线，绕开T3外层项目无法为独立子仓创建逐票工作树的限制。
+- 实施按本仓AGENTS使用Astra/high；Kimi K3.1 Pro已完成Spec和拆票。单批共享策略与同投放连接，逐计划明确账户、Series、双身份及地区；跨连接分批，M1原策略及证据边界保持。
+- 已读取完整实时Spec、五票及评论；全部Todo，JB-14无前置，其余原生依赖为14→15→16→17→18。创建独立本机PG测试库与Redis，复用锁定依赖，仅SDK传输替身，无真实业务读写。
+- 当前仅接续M1前置基线；尚未实现M2产品行为。完成各票后核对能力并推进，最后独立两轴审查、必要修复、本地main集成与Linear读回；不推送、不开PR、不部署。
