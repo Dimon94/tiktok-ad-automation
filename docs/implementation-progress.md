@@ -5232,3 +5232,10 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 定位到创意报表已完成但素材身份仍未收敛的原因：`creative_day` 发布后没有触发创意 ID 目录补读，健康修复只覆盖广告/广告组/系列；同时报表驱动的定向目录请求没有带删除对象范围。新增独立 identity 目录队列：按账户和平台广告类型分组，每批最多100个未解析且有金额的创意，带 `include_deleted` 与 identity service，使用 background workload，不阻塞报表 SLO；手动/旧 Smart+ 创意按广告 ID回读，Upgraded Smart+按 creative ID 回读。普通报表驱动目录补读也统一包含删除对象范围。
 
 真实 PostgreSQL18/Redis8 隔离回归：目录刷新与创意日报相关 70 项通过；新增用例验证创意 ID、删除范围、identity service、background workload 及租户隔离。Ruff、格式检查、compileall、`git diff --check` 通过；ty 仅保留 jobs.py 原有两项存量诊断。尚未发布生产，待提交并按发布流程上线后观察未映射创意和目录缺口。
+
+## 2026-11-12 — JB-5 原生 Series M1 本地交付完成
+
+- 六票实现及R1四类修复完成；Standards/Spec R2均PASS、各轴未解P0–P3为0。完整报告归档到docs/validation/2026-11-12-native-m1-review/。
+- root独立真实浏览器→真实本地API/PG/Redis→SDK替身→创建/回读完成1 passed；丢响应原请求恢复与唯一Submission已核实。不是API显示mock替代后端。
+- 远端最新74ea9bc0已获取并保留原origin；合并1134520c保留既有本地提交与所有进度记录。合后reporting/readback158 passed，快进本地main后readback94 passed。M1产品源码与R2已审d39f6bbe一致；未重复无变化全量。
+- JB-7～12逐票读回Done后JB-5读回Done；未推送/部署/真实平台操作。原主树无关未跟踪文件保留。最终范围、证据、旧基线与外部Unknown见[本地交付验收](validation/2026-11-12-native-m1-final-acceptance.md)。
