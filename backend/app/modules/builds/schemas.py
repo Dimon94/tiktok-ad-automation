@@ -11,6 +11,8 @@ from app.modules.builds.structure import StructureOverride
 from app.modules.builds.targeting_schemas import AudienceTargeting
 from app.modules.providers.schemas import DramaCandidate
 
+from .selection_schemas import SceneSelection
+
 InputText = Annotated[str, Field(max_length=1000)]
 
 
@@ -69,6 +71,8 @@ class ManualLinkPatch(BaseModel):
 
 
 class CreateDraftRequest(BaseModel):
+    structure_override: StructureOverride | None = None
+    scene_selection: SceneSelection | None = None
     model_config = ConfigDict(extra="forbid")
     media_kind: MediaKind = "VIDEO"
     request_id: UUID
@@ -83,8 +87,30 @@ class CreateDraftRequest(BaseModel):
     account_lines: list[InputText] = Field(max_length=100_000)
     link_config: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def native_exclusive(self):
+        if (
+            self.scene_selection
+            and self.scene_selection.kind == "NATIVE_SERIES_DIRECT_VIDEO"
+        ):
+            if (
+                self.media_kind != "VIDEO"
+                or self.provider_connection_id
+                or self.application_id
+                or self.custom_provider_name
+                or self.manual_links
+                or self.drama_lines
+                or self.link_config
+            ):
+                raise ValueError("原生直接视频不携带版权方或 Mini 链接")
+            if self.account_lines != [self.scene_selection.advertiser_id]:
+                raise ValueError("原生直接视频仅选择一个精确目标账户")
+        return self
+
 
 class PatchDraftRequest(BaseModel):
+    structure_override: StructureOverride | None = None
+    scene_selection: SceneSelection | None = None
     model_config = ConfigDict(extra="forbid")
     request_id: UUID | None = None
     expected_revision: int = Field(gt=0, strict=True)
@@ -131,6 +157,7 @@ class DraftGroupEditRequest(BaseModel):
 
 
 class DraftSummary(BaseModel):
+    scene_selection: SceneSelection | None = None
     structure_override: StructureOverride = Field(default_factory=StructureOverride)
     media_kind: MediaKind = "VIDEO"
     targeting: AudienceTargeting = Field(default_factory=AudienceTargeting)
@@ -140,9 +167,9 @@ class DraftSummary(BaseModel):
     bc_id: str
     status: Literal["DRAFT", "PREPARING", "READY", "BLOCKED"]
     strategy_version_id: UUID
-    provider_connection_id: UUID
+    provider_connection_id: UUID | None
     execution_connection_id: UUID | None = None
-    application_id: str
+    application_id: str | None
     link_config: dict[str, str | int | bool | None]
     delivery_config: DeliveryConfig = Field(default_factory=DeliveryConfig)
     custom_provider_name: str | None = None

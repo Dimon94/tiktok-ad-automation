@@ -1,3 +1,4 @@
+import { NativeCheckpointCard } from "./NativeCheckpointCard"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -736,39 +737,45 @@ function Preparation({
           )}
         </CardContent>
       </Card>
-      <MiniTargetPicker
-        tenantId={tenantId}
-        bcId={bcId}
-        summary={current}
-        write={allowed && !busy && !pending && !pendingMutation}
-        onPrepare={() => prepare()}
-        onRefresh={() => {
-          refreshMutationState((value) => value + 1)
-          void summary.refetch()
-        }}
-      />
-      <DraftTargeting
-        tenantId={tenantId}
-        bcId={bcId}
-        summary={current}
-        write={allowed && !busy && !pending && !pendingMutation}
-        onPrepare={() => prepare()}
-        onRefresh={() => {
-          refreshMutationState((value) => value + 1)
-          void summary.refetch()
-        }}
-      />
-      <IdentityTargetPicker
-        tenantId={tenantId}
-        bcId={bcId}
-        summary={current}
-        write={allowed && !busy && !pending && !pendingMutation}
-        onPrepare={() => prepare()}
-        onRefresh={() => {
-          refreshMutationState((value) => value + 1)
-          void summary.refetch()
-        }}
-      />
+      {current.scene_selection?.kind === "NATIVE_SERIES_DIRECT_VIDEO" ? (
+        <NativeCheckpointCard tenantId={tenantId} summary={current} />
+      ) : (
+        <>
+          <MiniTargetPicker
+            tenantId={tenantId}
+            bcId={bcId}
+            summary={current}
+            write={allowed && !busy && !pending && !pendingMutation}
+            onPrepare={() => prepare()}
+            onRefresh={() => {
+              refreshMutationState((value) => value + 1)
+              void summary.refetch()
+            }}
+          />
+          <DraftTargeting
+            tenantId={tenantId}
+            bcId={bcId}
+            summary={current}
+            write={allowed && !busy && !pending && !pendingMutation}
+            onPrepare={() => prepare()}
+            onRefresh={() => {
+              refreshMutationState((value) => value + 1)
+              void summary.refetch()
+            }}
+          />
+          <IdentityTargetPicker
+            tenantId={tenantId}
+            bcId={bcId}
+            summary={current}
+            write={allowed && !busy && !pending && !pendingMutation}
+            onPrepare={() => prepare()}
+            onRefresh={() => {
+              refreshMutationState((value) => value + 1)
+              void summary.refetch()
+            }}
+          />
+        </>
+      )}
       <DraftSchedule
         value={scheduleEdit ?? scheduleFromSummary(current)}
         onChange={(value) => {

@@ -114,6 +114,7 @@ _OPERATION_CAPABILITIES: dict[str, Capability] = {
     "scene.list_identities": "read",
     "scene.get_identity_video": "read",
     "scene.list_minis": "read",
+    "scene.list_native_series": "read",
     "scene.recommend_ctas": "read",
     "scene.list_regions": "read",
     "scene.check_vbo": "read",

@@ -500,9 +500,13 @@ def test_identity_selector_search_matches_name_username_and_literal_id(
             "identity": {**job.facts["identity"], "options": options},
         }
         draft = db.get(BuildDraft, draft_id)
-        draft.identity_id = options[0]["identity_id"]
-        draft.identity_type = options[0]["identity_type"]
-        draft.identity_authorized_bc_id = options[0]["identity_authorized_bc_id"]
+        draft.scene_selection = {
+            "kind": "MINI_APP",
+            "creative_identity": {
+                key: options[0][key]
+                for key in ("identity_id", "identity_type", "identity_authorized_bc_id")
+            },
+        }
     calls = len(wire[0])
     with Session(engine) as db:
         by_name = draft_identities(
@@ -525,9 +529,7 @@ def test_identity_selector_search_matches_name_username_and_literal_id(
     assert missing.selected and missing.selected.identity_id == "identity-literal_%"
     with Session(engine) as db, db.begin():
         draft = db.get(BuildDraft, draft_id)
-        draft.identity_id = None
-        draft.identity_type = None
-        draft.identity_authorized_bc_id = None
+        draft.scene_selection = {"kind": "MINI_APP", "creative_identity": None}
     with Session(engine) as db:
         unselected_missing = draft_identities(
             db, context=env["context"], draft_id=draft_id, query="missing"
@@ -894,17 +896,20 @@ def test_preparation_does_not_restart_exhausted_scene(job_env, wire, redis_clien
         assert job.failure_count == 5
 
 
-@pytest.mark.parametrize("case, expected", [
-    ("unique", "fixture-minis"),
-    ("second_page", "second-mini"),
-    ("duplicate_name", None),
-    ("unavailable", None),
-    ("different_name", None),
-    ("explicit_conflict", None),
-    ("manual_link", None),
-    ("external_url", None),
-    ("saved_conflict", None),
-])
+@pytest.mark.parametrize(
+    "case, expected",
+    [
+        ("unique", "fixture-minis"),
+        ("second_page", "second-mini"),
+        ("duplicate_name", None),
+        ("unavailable", None),
+        ("different_name", None),
+        ("explicit_conflict", None),
+        ("manual_link", None),
+        ("external_url", None),
+        ("saved_conflict", None),
+    ],
+)
 def test_selected_provider_application_matches_only_unique_available_mini(
     job_env, wire, redis_client, case, expected
 ):
@@ -926,34 +931,58 @@ def test_selected_provider_application_matches_only_unique_available_mini(
         if case == "external_url":
             link.url = "https://example.test/minis/opaque-code"
         if case == "saved_conflict":
-            remember_target(db, context=env["context"], url=link.url, minis_id="user-selected-mini", source="USER")
-        application = db.exec(select(ProviderApplication).where(
-            ProviderApplication.tenant_id == env["context"].tenant_id,
-            ProviderApplication.connection_id == link.connection_id,
-            ProviderApplication.external_id == link.application_id,
-        )).one()
+            remember_target(
+                db,
+                context=env["context"],
+                url=link.url,
+                minis_id="user-selected-mini",
+                source="USER",
+            )
+        application = db.exec(
+            select(ProviderApplication).where(
+                ProviderApplication.tenant_id == env["context"].tenant_id,
+                ProviderApplication.connection_id == link.connection_id,
+                ProviderApplication.external_id == link.application_id,
+            )
+        ).one()
         application.name = "CoveShorts"
         job = db.get(SceneJob, catalog.id)
-        first = db.exec(select(SceneJobPage).where(
-            SceneJobPage.job_id == job.id, SceneJobPage.resource == "minis",
-        )).one()
+        first = db.exec(
+            select(SceneJobPage).where(
+                SceneJobPage.job_id == job.id,
+                SceneJobPage.resource == "minis",
+            )
+        ).one()
         option = {**first.facts["options"][0], "name": "CoveShorts"}
         if case == "different_name":
             option["name"] = "Another app"
         if case == "unavailable":
             option["status"] = "INACTIVE"
         if case in {"second_page", "duplicate_name"}:
-            db.add(SceneJobPage(**{
-                **first.model_dump(exclude={"id"}), "page": 2,
-                "facts": {"options": [{**option, "minis_id": "second-mini"}]},
-            }))
-            job.facts = {**job.facts, "minis": {**job.facts["minis"], "total_page": 2, "total_number": 2}}
+            db.add(
+                SceneJobPage(
+                    **{
+                        **first.model_dump(exclude={"id"}),
+                        "page": 2,
+                        "facts": {"options": [{**option, "minis_id": "second-mini"}]},
+                    }
+                )
+            )
+            job.facts = {
+                **job.facts,
+                "minis": {**job.facts["minis"], "total_page": 2, "total_number": 2},
+            }
             if case == "second_page":
                 option["name"] = "Another app"
         first.facts = {**first.facts, "options": [option]}
         db.flush()
-        matched = match_catalog_link(db, context=env["context"], link_id=link.id, job=job)
+        matched = match_catalog_link(
+            db, context=env["context"], link_id=link.id, job=job
+        )
         assert matched == (expected is not None)
         selected = resolved_target(db, context=env["context"], url=link.url)
-        known = {"explicit_conflict": "unavailable-explicit-target", "saved_conflict": "user-selected-mini"}
+        known = {
+            "explicit_conflict": "unavailable-explicit-target",
+            "saved_conflict": "user-selected-mini",
+        }
         assert selected == known.get(case, expected)

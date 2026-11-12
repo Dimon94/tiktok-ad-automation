@@ -210,11 +210,10 @@ def create_copy_preview(
             created_by=context.actor_id,
             request_id=request_id,
             request_digest=intent_digest,
-            identity_id=snapshot["identity"]["identity_id"],
-            identity_type=snapshot["identity"]["identity_type"],
-            identity_authorized_bc_id=snapshot["identity"].get(
-                "identity_authorized_bc_id"
-            ),
+            scene_selection={
+                "kind": "MINI_APP",
+                "creative_identity": snapshot["identity"],
+            },
             delivery_config=delivery,
             status="PREPARING",
         )

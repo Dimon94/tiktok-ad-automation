@@ -82,8 +82,13 @@ def draft_summary(
             DraftAccount.draft_id == draft_id,
         )
     ).one()
-    provider = session.get(ProviderConnection, row.provider_connection_id)
+    provider = (
+        session.get(ProviderConnection, row.provider_connection_id)
+        if row.provider_connection_id
+        else None
+    )
     return DraftSummary(
+        scene_selection=row.scene_selection,
         structure_override=row.structure_override or {},
         media_kind=row.media_kind,
         targeting=row.targeting_override

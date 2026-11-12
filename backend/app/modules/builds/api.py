@@ -49,6 +49,7 @@ from .identity_selection import (
     draft_identities,
 )
 from .mini_selection import ChooseMiniRequest, DraftMinis, choose_mini, draft_minis
+from .selection_schemas import NativeCheckpoint
 from .structure import ImageStructureChange
 from .targeting_schemas import TargetingAccount, TargetingChange, TargetingDirectory
 
@@ -724,3 +725,31 @@ def update_image_structure(
     )
     session.commit()
     return DraftSaved(draft_id=draft_id, revision=revision)
+
+
+@router.get(
+    "/build-drafts/{draft_id}/native-checkpoint", response_model=NativeCheckpoint
+)
+def native_checkpoint(
+    tenant_id: UUID, draft_id: UUID, session: SessionDep, user: CurrentUser
+) -> NativeCheckpoint:
+    from app.modules.accounts.routing import freeze_route
+
+    from .scene_jobs import native_checkpoint as checkpoint
+
+    context = require_tenant(
+        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+    )
+    draft = drafts.get_draft(session, context=context, draft_id=draft_id)
+    if (
+        not draft.scene_selection
+        or draft.scene_selection.get("kind") != "NATIVE_SERIES_DIRECT_VIDEO"
+    ):
+        raise DomainError("draft_input_invalid", "当前草稿不是原生直接视频")
+    route = freeze_route(
+        session,
+        context=context,
+        bc_id=draft.bc_id,
+        connection_id=draft.execution_connection_id,
+    )
+    return checkpoint(session, context=context, draft=draft, route=route)

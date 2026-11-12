@@ -128,15 +128,32 @@ def _check_intent(
     account_lines: list[str],
     link_config: dict[str, Any],
     execution_connection_id: UUID | None = None,
+    scene_selection: dict[str, Any] | None = None,
 ) -> None:
     _authorize(session, context)
+    native = bool(
+        scene_selection and scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+    )
+    if native:
+        from .selection_schemas import NativeSeriesSelection
+
+        selection = NativeSeriesSelection.model_validate(scene_selection)
+        if (
+            provider_connection_id
+            or application_id
+            or drama_lines
+            or link_config
+            or account_lines != [selection.advertiser_id]
+        ):
+            raise DomainError(
+                "draft_input_invalid", "原生选择与 Mini 输入互斥，且仅允许一个精确账户"
+            )
     if (
         not isinstance(bc_id, str)
         or not bc_id.strip()
         or len(bc_id) > 128
-        or not isinstance(application_id, str)
-        or not application_id.strip()
-        or len(application_id) > 255
+        or (not native and not isinstance(application_id, str))
+        or (not native and (not application_id.strip() or len(application_id) > 255))
     ):
         raise DomainError("draft_input_invalid", "请选择当前 BC 和版权方应用")
     bc = session.get(TenantBC, (context.tenant_id, bc_id), populate_existing=True)
@@ -153,12 +170,13 @@ def _check_intent(
     strategy = session.get(Strategy, version.strategy_id, populate_existing=True)
     if strategy is None or not strategy.active:
         raise DomainError("strategy_not_found", "投放策略已停用或不存在")
-    get_application(
-        session,
-        context=context,
-        connection_id=provider_connection_id,
-        application_id=application_id,
-    )
+    if not native:
+        get_application(
+            session,
+            context=context,
+            connection_id=provider_connection_id,
+            application_id=application_id,
+        )
     for values, bound in ((drama_lines, 1000), (account_lines, MAX_ACCOUNT_LINES)):
         if (
             not isinstance(values, list)
@@ -242,16 +260,40 @@ def create_draft(
     request_id: UUID | None = None,
     execution_connection_id: UUID | None = None,
     media_kind: MediaKind = "VIDEO",
+    scene_selection: dict[str, Any] | None = None,
+    structure_override: dict[str, Any] | None = None,
 ) -> UUID:
+    if scene_selection is not None:
+        from pydantic import TypeAdapter
+
+        from .selection_schemas import SceneSelection
+
+        scene_selection = (
+            TypeAdapter(SceneSelection)
+            .validate_python(scene_selection)
+            .model_dump(mode="json")
+        )
     if media_kind not in {"VIDEO", "CAROUSEL"}:
         raise DomainError("draft_media_kind_invalid", "草稿素材类型无效")
-    provider_connection_id, application_id = resolve_provider(
-        session, context, provider_connection_id, application_id, custom_provider_name
+    native = bool(
+        scene_selection and scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
     )
-    provider = get_connection(
-        session, context=context, connection_id=provider_connection_id
-    )
-    manual = validate_manual_links(manual_links or [], drama_lines, provider.kind)
+    if native:
+        if media_kind != "VIDEO" or manual_links or custom_provider_name:
+            raise DomainError("draft_input_invalid", "原生直接视频输入无效")
+        manual = {}
+    else:
+        provider_connection_id, application_id = resolve_provider(
+            session,
+            context,
+            provider_connection_id,
+            application_id,
+            custom_provider_name,
+        )
+        provider = get_connection(
+            session, context=context, connection_id=provider_connection_id
+        )
+        manual = validate_manual_links(manual_links or [], drama_lines, provider.kind)
     intent: dict[str, Any] = {
         "bc_id": bc_id,
         "strategy_version_id": strategy_version_id,
@@ -261,7 +303,16 @@ def create_draft(
         "account_lines": account_lines,
         "link_config": link_config,
     }
+    if scene_selection is not None:
+        intent["scene_selection"] = scene_selection
     _check_intent(session, context, **intent)
+    if structure_override is not None:
+        from .structure import StructureOverride
+
+        structure_override = StructureOverride.model_validate(
+            structure_override
+        ).model_dump(mode="json")
+        intent["structure_override"] = structure_override
     if manual:
         intent["manual_links"] = list(manual.values())
     # 未指定连接的既有请求摘要保持原文，便于原 request_id 幂等回读。
@@ -302,6 +353,8 @@ def create_draft(
         )
     draft = BuildDraft(
         media_kind=media_kind,
+        scene_selection=scene_selection,
+        structure_override=structure_override,
         tenant_id=context.tenant_id,
         bc_id=bc_id,
         strategy_version_id=strategy_version_id,
@@ -362,6 +415,20 @@ def prepare_draft(
     )
     if existing or draft.status != "DRAFT":
         _bump_revision(session, draft, draft.revision)
+    if (
+        draft.scene_selection
+        and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+    ):
+        prep = DraftPreparation(
+            tenant_id=context.tenant_id,
+            draft_id=draft.id,
+            draft_revision=draft.revision,
+            actor_id=context.actor_id,
+            request_id=request_id,
+        )
+        return _enqueue_draft_preparation(
+            session, context, draft, prep, route, request_id
+        )
     # Every new local preparation starts account resolution afresh. Manual
     # groups survive while automatic groups are rebuilt in stable order.
     SASession.execute(
@@ -726,6 +793,36 @@ def _scenes_page(
 ) -> None:
     from .identity_selection import selected_identity
 
+    if (
+        draft.scene_selection
+        and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+    ):
+        from .scene_jobs import native_checkpoint
+
+        route = _preparation_route(session, context, draft, prep)
+        selection = draft.scene_selection
+        receipt = ensure_scene_preparation(
+            session,
+            context=context,
+            bc_id=draft.bc_id,
+            advertiser_id=selection["advertiser_id"],
+            link_id=None,
+            route=route,
+            native_selection=selection,
+        )
+        if receipt.state == "queued":
+            return
+        checkpoint = native_checkpoint(
+            session, context=context, draft=draft, route=route
+        )
+        # 本票只完成目的地检查点；不能以无 Mini 链接冒充素材整组 READY。
+        prep.status, prep.phase, draft.status = "BLOCKED", "done", "BLOCKED"
+        prep.error_code = (
+            checkpoint.reason_codes[0]
+            if checkpoint.reason_codes
+            else "native_materials_not_prepared"
+        )
+        return
     state = _scene_prep(session, draft, prep)
     route = _preparation_route(session, context, draft, prep)
     identity = selected_identity(draft)
@@ -880,7 +977,12 @@ def _accounts_page(
         .limit(PAGE_SIZE)
     ).all()
     if not rows:
-        prep.phase = "links"
+        prep.phase = (
+            "scenes"
+            if draft.scene_selection
+            and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+            else "links"
+        )
         return
     results = resolve_lines(
         session,
@@ -1314,6 +1416,8 @@ def update_draft(
     manual_links: list[dict[str, Any]] | None = None,
     custom_provider_name: str | None = None,
     execution_connection_id: UUID | None | _Unchanged = _Unchanged.VALUE,
+    scene_selection: dict[str, Any] | None = None,
+    structure_override: dict[str, Any] | None = None,
 ) -> int:
     """Input/strategy changes restart preparation; material-only edits use their
     separate endpoint to preserve every other drama's prepared grouping.
@@ -1323,6 +1427,72 @@ def update_draft(
         raise DomainError(
             "draft_revision_conflict", "草稿已更新，请保留当前编辑并读取最新版本"
         )
+    if (
+        draft.scene_selection
+        and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+    ):
+        from .selection_schemas import NativeSeriesSelection
+        from .structure import StructureOverride
+
+        selection = NativeSeriesSelection.model_validate(
+            scene_selection or draft.scene_selection
+        ).model_dump(mode="json")
+        structure = (
+            StructureOverride.model_validate(structure_override).model_dump(mode="json")
+            if structure_override is not None
+            else draft.structure_override
+        )
+        selected_strategy = strategy_version_id or draft.strategy_version_id
+        connection = (
+            draft.execution_connection_id
+            if execution_connection_id is _Unchanged.VALUE
+            else execution_connection_id
+        )
+        if manual_links or custom_provider_name:
+            raise DomainError("draft_input_invalid", "原生草稿不使用版权方链接")
+        _check_intent(
+            session,
+            context,
+            bc_id=draft.bc_id,
+            strategy_version_id=selected_strategy,
+            provider_connection_id=provider_connection_id,
+            application_id=application_id,
+            drama_lines=drama_lines or [],
+            account_lines=account_lines
+            if account_lines is not None
+            else [selection["advertiser_id"]],
+            link_config=link_config or {},
+            execution_connection_id=connection,
+            scene_selection=selection,
+        )
+        revision = _bump_revision(session, draft, expected_revision)
+        draft.scene_selection = selection
+        draft.structure_override = structure
+        draft.strategy_version_id = selected_strategy
+        draft.execution_connection_id = connection
+        draft.status = "DRAFT"
+        SASession.execute(
+            session,
+            delete(DraftAccount).where(
+                DraftAccount.tenant_id == context.tenant_id,
+                DraftAccount.draft_id == draft.id,
+            ),
+        )
+        SASession.execute(
+            session,
+            delete(DraftInput).where(
+                DraftInput.tenant_id == context.tenant_id,
+                DraftInput.draft_id == draft.id,
+            ),
+        )
+        _store_inputs(session, draft, "account", [selection["advertiser_id"]])
+        session.add(draft)
+        session.flush()
+        return revision
+    if structure_override is not None:
+        raise DomainError("draft_input_invalid", "Mini 结构修改请使用既有结构入口")
+    if scene_selection and scene_selection.get("kind") != "MINI_APP":
+        raise DomainError("draft_input_invalid", "请新建原生目的地草稿")
     if custom_provider_name is not None:
         provider_connection_id, application_id = resolve_provider(
             session, context, None, None, custom_provider_name

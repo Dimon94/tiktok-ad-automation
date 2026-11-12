@@ -1915,6 +1915,15 @@ export type Create = {
  * CreateDraftRequest
  */
 export type CreateDraftRequest = {
+    structure_override?: StructureOverride | null;
+    /**
+     * Scene Selection
+     */
+    scene_selection?: ({
+        kind: 'MINI_APP';
+    } & MiniAppSelection) | ({
+        kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    } & NativeSeriesSelection) | null;
     /**
      * Media Kind
      */
@@ -2574,6 +2583,14 @@ export type DraftSaved = {
  * DraftSummary
  */
 export type DraftSummary = {
+    /**
+     * Scene Selection
+     */
+    scene_selection?: ({
+        kind: 'MINI_APP';
+    } & MiniAppSelection) | ({
+        kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    } & NativeSeriesSelection) | null;
     structure_override?: StructureOverride;
     /**
      * Media Kind
@@ -2604,7 +2621,7 @@ export type DraftSummary = {
     /**
      * Provider Connection Id
      */
-    provider_connection_id: string;
+    provider_connection_id: string | null;
     /**
      * Execution Connection Id
      */
@@ -2612,7 +2629,7 @@ export type DraftSummary = {
     /**
      * Application Id
      */
-    application_id: string;
+    application_id: string | null;
     /**
      * Link Config
      */
@@ -5485,6 +5502,17 @@ export type MetricVector = {
 };
 
 /**
+ * MiniAppSelection
+ */
+export type MiniAppSelection = {
+    /**
+     * Kind
+     */
+    kind?: 'MINI_APP';
+    creative_identity?: SelectionIdentity | null;
+};
+
+/**
  * MiniOption
  */
 export type MiniOption = {
@@ -5777,6 +5805,99 @@ export type MutationSpec = {
      * Max Value
      */
     max_value?: number | string | null;
+};
+
+/**
+ * NativeCheckpoint
+ */
+export type NativeCheckpoint = {
+    /**
+     * State
+     */
+    state: 'PENDING' | 'BLOCKED' | 'UNVERIFIED';
+    /**
+     * Reason Codes
+     */
+    reason_codes: Array<string>;
+    /**
+     * Draft Revision
+     */
+    draft_revision: number;
+    /**
+     * Scope Basis
+     */
+    scope_basis: string;
+    /**
+     * Route
+     */
+    route: {
+        [key: string]: unknown;
+    };
+    selection: NativeSeriesSelection;
+    /**
+     * Evidence Ids
+     */
+    evidence_ids?: Array<string>;
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Expires At
+     */
+    expires_at?: string | null;
+    /**
+     * Facts
+     */
+    facts?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Materials Ready
+     */
+    materials_ready?: false;
+};
+
+/**
+ * NativeSeriesSelection
+ */
+export type NativeSeriesSelection = {
+    /**
+     * Kind
+     */
+    kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Native Series Id
+     */
+    native_series_id?: string | null;
+    /**
+     * Video Sources
+     */
+    video_sources?: Array<NativeVideoSource>;
+    series_identity?: SelectionIdentity | null;
+    creative_identity?: SelectionIdentity | null;
+    /**
+     * Regions
+     */
+    regions: Array<string>;
+};
+
+/**
+ * NativeVideoSource
+ */
+export type NativeVideoSource = {
+    /**
+     * Material Id
+     */
+    material_id: string;
+    /**
+     * Cover Material Id
+     */
+    cover_material_id?: string | null;
 };
 
 /**
@@ -6610,6 +6731,15 @@ export type ParentRestrictionPublic = {
  * PatchDraftRequest
  */
 export type PatchDraftRequest = {
+    structure_override?: StructureOverride | null;
+    /**
+     * Scene Selection
+     */
+    scene_selection?: ({
+        kind: 'MINI_APP';
+    } & MiniAppSelection) | ({
+        kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    } & NativeSeriesSelection) | null;
     /**
      * Request Id
      */
@@ -8904,6 +9034,24 @@ export type SelectedDramaRetry = {
      * Drama Ids
      */
     drama_ids: Array<string>;
+};
+
+/**
+ * SelectionIdentity
+ */
+export type SelectionIdentity = {
+    /**
+     * Identity Type
+     */
+    identity_type: 'TT_USER' | 'BC_AUTH_TT';
+    /**
+     * Identity Id
+     */
+    identity_id: string;
+    /**
+     * Identity Authorized Bc Id
+     */
+    identity_authorized_bc_id?: string | null;
 };
 
 /**
@@ -19713,6 +19861,40 @@ export type buildsUpdateImageStructureResponses = {
 };
 
 export type buildsUpdateImageStructureResponse = buildsUpdateImageStructureResponses[keyof buildsUpdateImageStructureResponses];
+
+export type buildsNativeCheckpointData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Draft Id
+         */
+        draft_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/build-drafts/{draft_id}/native-checkpoint';
+};
+
+export type buildsNativeCheckpointErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type buildsNativeCheckpointError = buildsNativeCheckpointErrors[keyof buildsNativeCheckpointErrors];
+
+export type buildsNativeCheckpointResponses = {
+    /**
+     * Successful Response
+     */
+    200: NativeCheckpoint;
+};
+
+export type buildsNativeCheckpointResponse = buildsNativeCheckpointResponses[keyof buildsNativeCheckpointResponses];
 
 export type campaignCopiesCreateData = {
     body: CopyCreateRequest;

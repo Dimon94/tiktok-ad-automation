@@ -2820,3 +2820,20 @@ test("取链全部失败时说明先恢复链接，不把未启动的小程序�
     page.getByRole("button", { name: "生成搭建预览" }),
   ).toBeDisabled()
 })
+
+test("原生草稿原子保存双角色身份与地区，不要求 Mini 链接", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
+  await pickInputs(page)
+  await page.getByRole("radio", { name: "原生 Series 直接视频", exact: true }).check()
+  await page.getByLabel("精确 Series ID", { exact: true }).fill("native-exact")
+  await page.getByLabel("投放地区", { exact: true }).fill("US,CA")
+  await page.getByLabel("series_identity ID", { exact: true }).fill("series-owner")
+  await page.getByLabel("creative_identity ID", { exact: true }).fill("creative-owner")
+  await page.getByLabel("广告账户", { exact: true }).fill("90071992547409936666")
+  await expect(page.getByRole("combobox", { name: "版权方连接", exact: true })).toHaveCount(0)
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect.poll(() => api.requests.filter(request => request.method === "POST" && request.path.endsWith("/build-drafts")).length).toBe(1)
+  const saved = api.requests.find(request => request.method === "POST" && request.path.endsWith("/build-drafts"))!.body
+  expect(saved).toMatchObject({provider_connection_id: null, application_id: null, drama_lines: [], scene_selection: {kind: "NATIVE_SERIES_DIRECT_VIDEO", native_series_id: "native-exact", regions: ["US", "CA"], series_identity: {identity_id: "series-owner"}, creative_identity: {identity_id: "creative-owner"}}})
+})

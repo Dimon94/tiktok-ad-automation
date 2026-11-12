@@ -60,17 +60,14 @@ def _same(option: IdentityOption, identity: dict[str, Any]) -> bool:
 
 
 def selected_identity(draft: BuildDraft) -> dict[str, Any] | None:
-    if not draft.identity_id or not draft.identity_type:
+    if (
+        draft.scene_selection
+        and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+    ):
+        return draft.scene_selection["creative_identity"]
+    if not draft.scene_selection:
         return None
-    return {
-        "identity_id": draft.identity_id,
-        "identity_type": draft.identity_type,
-        **(
-            {"identity_authorized_bc_id": draft.identity_authorized_bc_id}
-            if draft.identity_authorized_bc_id
-            else {}
-        ),
-    }
+    return draft.scene_selection.get("creative_identity")
 
 
 def draft_identities(
@@ -141,9 +138,14 @@ def require_preview_identity(
     chosen = selected_identity(draft)
     if chosen is None and len(options) == 1:
         chosen = options[0].model_dump(exclude_none=True)
-        draft.identity_id = chosen["identity_id"]
-        draft.identity_type = chosen["identity_type"]
-        draft.identity_authorized_bc_id = chosen.get("identity_authorized_bc_id")
+        draft.scene_selection = {
+            "kind": "MINI_APP",
+            "creative_identity": {
+                key: chosen[key]
+                for key in ("identity_id", "identity_type", "identity_authorized_bc_id")
+                if chosen.get(key) is not None
+            },
+        }
         draft.identity_display_name = chosen.get("display_name")
         draft.identity_username = chosen.get("username")
         session.add(draft)
@@ -198,9 +200,13 @@ def choose_identity(
             raise DomainError(
                 "identity_unavailable", "所选投放身份不在参考账户的可用目录中"
             )
-        draft.identity_id = candidate.identity_id
-        draft.identity_type = candidate.identity_type
-        draft.identity_authorized_bc_id = candidate.identity_authorized_bc_id
+        draft.scene_selection = {
+            "kind": "MINI_APP",
+            "creative_identity": candidate.model_dump(
+                include={"identity_id", "identity_type", "identity_authorized_bc_id"},
+                exclude_none=True,
+            ),
+        }
         draft.identity_display_name = candidate.display_name
         draft.identity_username = candidate.username
         draft.status = "DRAFT"

@@ -50,6 +50,8 @@ def _complete(job: SceneJob, resource: SceneResource) -> bool:
     facts = job.facts.get(resource)
     if not isinstance(facts, dict) or not facts:
         return False
+    if resource.startswith("native_"):
+        return facts.get("has_more") is False
     if resource in {"identity", "minis"}:
         seen, total, pages = (
             facts.get(key) for key in ("seen", "total_number", "total_page")
@@ -74,6 +76,16 @@ def _pending(job: SceneJob) -> list[SceneResource]:
         if job.minis_id is not None
         else ("minis", "identity", "cta", "vbo", "regions")
     )
+    if job.native_selection is not None:
+        required = (
+            ("native_tt_identity", "native_bc_identity")
+            + (
+                ("native_series",)
+                if job.native_selection.get("series_identity")
+                else ()
+            )
+            + ("regions",)
+        )
     return [resource for resource in required if not _complete(job, resource)]
 
 
@@ -94,13 +106,20 @@ def plan_scene_reads(session: Session, job: SceneJob, *, limit: int) -> list[Sce
     result = []
     for resource in _pending(job)[:limit]:
         number = pages.get(resource, 0) + 1
-        operation, _ = scene_arguments(
-            resource=resource,
-            advertiser_id=job.advertiser_id,
-            bc_id=job.bc_id,
-            page=number,
-            minis_id=job.minis_id,
-        )
+        if resource.startswith("native_"):
+            operation = (
+                "scene.list_native_series"
+                if resource == "native_series"
+                else "scene.list_identities"
+            )
+        else:
+            operation, _ = scene_arguments(
+                resource=resource,
+                advertiser_id=job.advertiser_id,
+                bc_id=job.bc_id,
+                page=number,
+                minis_id=job.minis_id,
+            )
         result.append(
             SceneRead(resource, number, dict(job.facts.get(resource, {})), operation)
         )
@@ -126,6 +145,7 @@ def open_scene_reads(
     route: FrozenTikTokRoute,
     advertiser_id: str,
     minis_id: str | None,
+    native_selection: dict[str, Any] | None = None,
     deadline: datetime,
     before_request: Callable[[], None],
     reads: list[SceneRead],
@@ -143,11 +163,27 @@ def open_scene_reads(
                 task_deadline=deadline,
                 before_request=before_request,
             ) as gateway:
+                if native_selection is not None and route.channel == "OFFICIAL_MCP":
+                    from app.core.errors import DomainError
+
+                    raise DomainError(
+                        "native_series_route_unsupported",
+                        "当前 MCP 连接无已核实的 Series 工具",
+                    )
+                extra = (
+                    {
+                        "native_selection": native_selection,
+                        "cursor": read.previous.get("cursor", 0),
+                    }
+                    if read.resource.startswith("native_")
+                    else {}
+                )
                 result: ScenePage | Exception = gateway.scenes.read_page(
                     resource=read.resource,
                     advertiser_id=advertiser_id,
                     page=read.page,
                     minis_id=minis_id,
+                    **extra,
                 )
         except Exception as error:
             result = error

@@ -7,7 +7,16 @@ from uuid import UUID
 CREATIVE_COMPILER_REVISION = "creative-units-v2-2026-10-29"
 
 SceneResource = Literal[
-    "account_roles", "identity", "minis", "cta", "vbo", "regions", "budget"
+    "native_series",
+    "native_tt_identity",
+    "native_bc_identity",
+    "account_roles",
+    "identity",
+    "minis",
+    "cta",
+    "vbo",
+    "regions",
+    "budget",
 ]
 
 
