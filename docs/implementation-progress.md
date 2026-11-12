@@ -5127,3 +5127,14 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 线上7f版本中发现筛查回放的轻量计划缺少报表`kind`，`screen_hot`进入`AttributeError`并按5分钟退避；修复由`_report_plan_kind`为缺失字段明确选择integrated报表入口。新增回归与阶段端点专项通过，旧4,859账户压力用例因本地PG `max_locks_per_transaction` 不足失败，未归因于本次代码。
 - f10dff97从7f快速发布，11角色全就绪、schema0118、配置/额度/并发/资源/四开关/HTTPS保持，发布锁删除、Jenkins恢复。补数16Gi与报表反亲和造成节点碎片，临时正常退出迁移报表Worker后恢复，最终Deployment规格/副本数回到原值；无扩容、DDL、强删任务或新备份。
 - 发布后lagging计划在18:35:58完成screen_hot、hot、material、live，hot/material各覆盖535账户；cohort四任务COMPLETE且revision gap为0。全局stale计数仍受切换窗口和身份缺口影响，必须继续以发布边界后的自然需求核对20分钟SLO。
+
+## 2026-11-12 — JB-3 经营报表完整性与安全续跑（本地候选）
+
+- 在用户授权的已有 fix/jb2-business-integrity 集成树实现，基线 9ebdeae0；唯一写者。
+- Calculation derive_metrics 统一查询/CSV，保留赔付小计，冻结 issues 屏蔽不完整情景。
+- 新快照内部约定版本；旧冻结任务在任何文件改动前失败；旧未冻结任务正常冻结。
+- 真实 red/green/近似错误探针、PG/Redis、CSV HTTP 下载回读及有限模型已运行。
+  针对性套件 93 passed，新增两条降权续跑检查及代表用例 4 passed；模型 5000 输入/27 状态。
+- 浏览器实际登录成功，但隔离 fixture 的 BC 选择未保留，网页查询下载 **Unknown**。
+  ty 基线 tuple 错误仍存在；未推送/部署/生产验证/Linear 写入，交 root 独立集成与两轴审查。
+- 详细命令、范围、失败、模型假设及下一步：[JB-3 验证记录](validation/2026-11-12-jb3-business-export.md)。

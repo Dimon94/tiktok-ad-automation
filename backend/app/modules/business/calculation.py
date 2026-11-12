@@ -1,7 +1,9 @@
 """纯Decimal核算；未知值保留，三个补贴情景从不相加。"""
 
+from collections.abc import Collection, Mapping
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 ZERO = Decimal(0)
 SUBSIDY_KEYS = ("subsidy_comic", "subsidy_other", "subsidy_existing")
@@ -98,3 +100,36 @@ def allocate_amount(amount: Decimal, weights: dict[str, Decimal]) -> dict[str, D
 
 def quarter_start(day: date) -> date:
     return date(day.year, ((day.month - 1) // 3) * 3 + 1, 1)
+
+
+def derive_metrics(
+    values: Mapping[str, Decimal | None],
+    *,
+    scenario: Literal["base", "comic", "other", "existing"],
+    issues: Collection[str],
+) -> dict[str, Decimal | None]:
+    values = dict(values)
+    spend = values["spend"]
+    values["platform_roas"] = (
+        values["revenue"] / spend if spend and values["revenue"] is not None else None
+    )
+    business = values["business_revenue"]
+    values["business_roas"] = (
+        business / spend if spend and business is not None else None
+    )
+    if scenario != "base":
+        subsidy = values[f"subsidy_{scenario}"]
+        comp = values["compensation"]
+        business = (
+            business + subsidy + comp
+            if business is not None and subsidy is not None and comp is not None
+            else None
+        )
+    values["scenario_revenue"] = business
+    values["scenario_roas"] = (
+        business / spend if spend and business is not None else None
+    )
+    # 赔付小计保留，缺证仅屏蔽含预计情景；issues 是唯一完整性事实。
+    if scenario != "base" and "COMPENSATION_PARTIAL" in issues:
+        values.update(scenario_revenue=None, scenario_roas=None)
+    return values

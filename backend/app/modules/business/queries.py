@@ -18,6 +18,7 @@ from app.modules.business.calculation import (
     AMOUNT_KEYS,
     SUBSIDY_KEYS,
     ZERO,
+    derive_metrics,
     quarter_start,
 )
 from app.modules.business.configuration import scope_accounts
@@ -94,32 +95,6 @@ def resolve_runs(
     ):
         raise HTTPException(409, "计算版本混用商业配置修订，请刷新")
     return allowed, selected, end, runs
-
-
-def _ratios(
-    values: dict[str, Decimal | None], scenario: str
-) -> dict[str, Decimal | None]:
-    spend = values["spend"]
-    values["platform_roas"] = (
-        values["revenue"] / spend if spend and values["revenue"] is not None else None
-    )
-    business = values["business_revenue"]
-    values["business_roas"] = (
-        business / spend if spend and business is not None else None
-    )
-    if scenario != "base":
-        subsidy = values[f"subsidy_{scenario}"]
-        comp = values["compensation"]
-        business = (
-            business + subsidy + comp
-            if business is not None and subsidy is not None and comp is not None
-            else None
-        )
-    values["scenario_revenue"] = business
-    values["scenario_roas"] = (
-        business / spend if spend and business is not None else None
-    )
-    return values
 
 
 def query_dashboard(
@@ -221,11 +196,7 @@ def query_dashboard(
         result = {k: raw[k] for k in AMOUNT_KEYS}
         if restricted:
             result.update(dict.fromkeys(SUBSIDY_KEYS))
-        calculated = _ratios(result, filters.scenario)
-        # 条件赔付可展示小计，但不能把缺失部分当0加入完整含预计情景。
-        if filters.scenario != "base" and "COMPENSATION_PARTIAL" in issues:
-            calculated.update(scenario_revenue=None, scenario_roas=None)
-        return calculated
+        return derive_metrics(result, scenario=filters.scenario, issues=issues)
 
     totals = dict(raw_totals)
     if not total and not missing:

@@ -6,13 +6,14 @@ import os
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from fastapi import HTTPException
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
 from app.core.context import TenantContext
-from app.modules.business.calculation import AMOUNT_KEYS
+from app.modules.business.calculation import AMOUNT_KEYS, derive_metrics
+from app.modules.business.export_snapshot import EXPORT_SNAPSHOT_CONTRACT
 from app.modules.business.models import BusinessExport, BusinessExportRow
-from app.modules.business.queries import _ratios
 from app.modules.materials.storage import make_s3
 from app.modules.reporting.exports import csv_safe_text
 
@@ -42,6 +43,9 @@ def write_batch(
     from app.modules.business.exports import _path, _storage_configured, check_export
 
     check_export(session, context=context, export_id=row.id)
+    # 必须先拒绝旧快照，连创建文件头和截断旧文件也不可发生。
+    if row.filters.get("_snapshot_contract") != EXPORT_SNAPSHOT_CONTRACT:
+        raise HTTPException(409, "导出快照约定已变更，请重新创建导出")
     partial = _path(f"business-exports/{row.tenant_id}/{row.id}.partial")
     partial.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not partial.exists() or partial.stat().st_size < row.file_offset:
@@ -85,7 +89,9 @@ def write_batch(
             key: Decimal(raw[key]) if raw[key] is not None else None
             for key in AMOUNT_KEYS
         }
-        ratios = _ratios(values, row.filters.get("scenario", "base"))
+        ratios = derive_metrics(
+            values, scenario=row.filters.get("scenario", "base"), issues=row.issues
+        )
         amounts = []
         for key in AMOUNT_KEYS:
             value = values[key]
