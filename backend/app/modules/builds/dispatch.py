@@ -82,8 +82,6 @@ def queue_step(
                 or safely_retryable_attempt(session, step=step)
             )
         ):
-            from .execution_state import evidence
-
             step.status, step.phase, step.error_code = (
                 "FAILED",
                 "DONE",
@@ -106,6 +104,45 @@ def queue_step(
         raise DomainError(
             "execution_requires_reconciliation", "该步骤必须先核实远端结果"
         )
+    if not reconcile:
+        from .native_execution import validate
+        from .preview_models import BuildPreview, BuildUnit
+        from .routes import verify_unit_route
+
+        frozen_unit = session.get(BuildUnit, step.unit_id)
+        if frozen_unit is not None and "native_request" in frozen_unit.scene_snapshot:
+            try:
+                context = _context(submission)
+                require_tenant(
+                    session,
+                    actor_id=context.actor_id,
+                    tenant_id=context.tenant_id,
+                    action="build",
+                )
+                route = verify_unit_route(
+                    session, context=context, unit=frozen_unit, capability="build"
+                )
+                validate(
+                    session,
+                    context=context,
+                    preview=session.get(BuildPreview, step.preview_id),
+                    route=route,
+                    unit_id=step.unit_id,
+                    refreshing=True,
+                )
+            except DomainError as error:
+                # 仅本 Unit 停止；不把本地围栏错误记录成平台拒绝。
+                step.status, step.phase, step.error_code = "FAILED", "DONE", error.code
+                step.dispatch_id = None
+                evidence(
+                    session,
+                    step=step,
+                    claim=None,
+                    conclusion="LOCAL_FAILED",
+                    summary={"reason_code": error.code},
+                )
+                session.add(step)
+                return
     name = READ_TASK if reconcile else STEP_TASK
     step.resolved = {**step.resolved, "dispatch_task": name}
     step.dispatch_revision += 1
@@ -310,7 +347,7 @@ def finalize_submission(
             from .preview_models import BuildPreview
 
             preview = session.get(BuildPreview, row.preview_id)
-            if "native_request" in preview.config:
+            if "native_request" in preview.config or "native_batch" in preview.config:
                 from .native_completion import all_native_matched
 
                 if not all_native_matched(session, row, preview):

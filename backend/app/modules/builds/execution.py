@@ -145,6 +145,7 @@ def _frozen(
             preview=session.get(BuildPreview, claim.preview_id),
             route=route,
             refreshing=refreshing,
+            unit_id=claim.unit_id,
         )
     return unit.frozen
 

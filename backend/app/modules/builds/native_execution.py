@@ -1,6 +1,7 @@
 """原生冻结意图在既有提交/执行器中的准入与编译。无网络和独立执行状态机。"""
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlmodel import select
 
@@ -15,35 +16,65 @@ from app.modules.builds.preview_models import BuildUnit, PlannedAd
 from app.modules.builds.request_compiler import cta_portfolio
 from app.modules.builds.scene_jobs import native_checkpoint
 
-from .selection_schemas import single_native_selection
+from .selection_schemas import NativeSeriesPlanSet, single_native_selection
 
 
-def validate(session, *, context, preview, route, refreshing=False):
-    payload = FrozenRequestRevision.model_validate(
-        preview.config["native_request"]
-    ).model_dump(mode="json")
+def validate(session, *, context, preview, route, refreshing=False, unit_id=None):
+    # 整批摘要绑定批准范围；资格与素材只复核当前 Unit，兄弟计划独立推进。
+    if preview.tenant_id != context.tenant_id or preview.bc_id != route.bc_id:
+        raise DomainError("execution_intent_changed", "冻结租户或BC不一致")
     draft = session.get(BuildDraft, preview.draft_id, populate_existing=True)
-    if (
-        preview.status != "FROZEN"
-        or native_request_digest(payload) != preview.content_digest
-    ):
-        raise DomainError("preview_not_frozen", "原生冻结内容摘要不匹配")
-    if (
-        draft.revision != preview.draft_revision
-        or payload["draft_revision"] != draft.revision
-    ):
+    if draft.revision != preview.draft_revision:
         raise DomainError("draft_revision_conflict", "草稿已变更，请重新预览")
-    if payload["route"] != route.model_dump(mode="json") or payload[
-        "selection"
-    ] != single_native_selection(draft.scene_selection):
-        raise DomainError("execution_intent_changed", "冻结目的地或路由已改变")
+    if preview.status != "FROZEN":
+        raise DomainError("preview_not_frozen", "原生预览未冻结")
     units = session.exec(
         select(BuildUnit).where(
             BuildUnit.preview_id == preview.id, BuildUnit.tenant_id == context.tenant_id
         )
     ).all()
-    if len(units) != 1 or units[0].scene_snapshot.get("native_request") != payload:
-        raise DomainError("execution_intent_changed", "冻结组合内容不一致")
+    plan_key = None
+    if "native_batch" in preview.config:
+        from .native_preview import read_batch
+
+        batch = read_batch(session, preview=preview)
+        item = next(
+            (p for p in batch["plans"] if p.get("unit_id") == str(unit_id)), None
+        )
+        if item is None:
+            raise DomainError("execution_intent_changed", "当前组合不在批准范围")
+        plan_key = UUID(item["plan_key"])
+        plan = next(
+            (
+                p
+                for p in NativeSeriesPlanSet.model_validate(draft.scene_selection).plans
+                if p.plan_key == plan_key
+            ),
+            None,
+        )
+        payload = FrozenRequestRevision.model_validate(item["request"]).model_dump(
+            mode="json"
+        )
+        selection = plan.selection.model_dump(mode="json") if plan else None
+        unit = next(u for u in units if u.id == unit_id)
+    else:
+        payload = FrozenRequestRevision.model_validate(
+            preview.config["native_request"]
+        ).model_dump(mode="json")
+        if native_request_digest(payload) != preview.content_digest:
+            raise DomainError("preview_not_frozen", "原生冻结内容摘要不匹配")
+        if len(units) != 1 or (unit_id is not None and units[0].id != unit_id):
+            raise DomainError("execution_intent_changed", "冻结组合内容不一致")
+        unit = units[0]
+        selection = single_native_selection(draft.scene_selection)
+    if payload["draft_revision"] != draft.revision:
+        raise DomainError("draft_revision_conflict", "草稿已变更，请重新预览")
+    if (
+        payload["route"] != route.model_dump(mode="json")
+        or payload["selection"] != selection
+        or unit.scene_snapshot.get("native_request") != payload
+    ):
+        raise DomainError("execution_intent_changed", "冻结目的地或路由已改变")
     from app.modules.accounts.access import resolve_account_access
     from app.modules.accounts.routing import verify_route
 
@@ -62,9 +93,11 @@ def validate(session, *, context, preview, route, refreshing=False):
         action="build",
         connection_id=route.connection_id,
     )
-    if (access.currency, access.timezone) != (units[0].currency, units[0].timezone):
+    if (access.currency, access.timezone) != (unit.currency, unit.timezone):
         raise DomainError("account_metadata_changed", "账户币种或时区已改变")
-    checkpoint = native_checkpoint(session, context=context, draft=draft, route=route)
+    checkpoint = native_checkpoint(
+        session, context=context, draft=draft, route=route, plan_key=plan_key
+    )
     expired_only = bool(checkpoint.reason_codes) and set(checkpoint.reason_codes) <= {
         "scene_evidence_expired",
         "account_build_evidence_expired",
@@ -113,6 +146,7 @@ def validate(session, *, context, preview, route, refreshing=False):
                 Submission.preview_id == preview.id,
                 Submission.tenant_id == context.tenant_id,
                 ExecutionStep.tenant_id == context.tenant_id,
+                ExecutionStep.unit_id == unit.id,
                 ExecutionStep.kind.in_(["CAMPAIGN", "ADGROUP"]),
                 ExecutionStep.remote_id.is_not(None),
             )
@@ -237,6 +271,7 @@ def validate_ad_assets(session, *, step, unit, body):
         context=context,
         preview=session.get(BuildPreview, step.preview_id),
         route=route,
+        unit_id=unit.id,
     )
     ad = session.get(PlannedAd, (step.tenant_id, step.preview_id, step.planned_ad_id))
     selected = next(

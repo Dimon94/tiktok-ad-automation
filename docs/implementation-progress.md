@@ -5268,3 +5268,7 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 真实 PG/Redis/SDK transport double 验证包含混合准备、全部排除、双账户冻结、独立 Unit 预算、稳定分配、双 session 同 revision 冻结、摘要变异、PG 故障回滚与 M1 创建链；真实页面显示两项 INCLUDED 和一项 EXCLUDED。漏排、重计预算、漏绑定 manifest、float 四种实际错误探针被拒绝并恢复源码。USD 原资格只允许 0.01；真实合法金额与任意精度纯函数分别测试，不放宽平台约束。详细命令、失败、修复后通过结果、JB-16 消费合同及边界见 [JB-15 验收报告](validation/2026-11-12-jb15-native-batch-preview.md)。
 
 本地候选待 root 独立审查/集成，最终 Done 归 root。未推送、部署、开 PR 或修改 Linear，未调用真实广告/授权 provider 写；原未跟踪 `.venv` / `node_modules` 软链保留。
+
+### 2026-11-12 · JB-16 native batch create candidate（未完成）
+
+从 `820a26e9` 在唯一 M2 集成树迁移原生执行复核到当前 Unit，沿现有 Submission/step/SDK/readback 链支持独立计划，并增加逐计划 MATCH 派生回执、确认框和生成类型。末次定向 8 passed / 80.09s，前端正式/demo 构建通过；真实源码完成判定/计划作用域两个破坏探针红后恢复。TLA+ 草模实际运行 16564 distinct states，但完整源码映射、预算抽象和逐性质破坏探针未达到 Spec 门槛。完整双围栏竞态和页面至执行/readback 合一纵切仍待完成，不能推进 JB-16 Done 或 JB-17 实施。无推送、部署、Linear 或真实平台写。详见 [JB-16 候选证据](validation/2026-11-12-jb16-native-batch-create.md)。

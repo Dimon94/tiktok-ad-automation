@@ -97,10 +97,7 @@ def retry_ad_covers(
     )
     from uuid import UUID
 
-    from .preview_models import BuildPreview
-
-    preview = session.get(BuildPreview, step.preview_id)
-    payload = preview.config.get("native_request")
+    payload = unit.scene_snapshot.get("native_request")
     if payload:
         # 仅默认封面位置接续视频封面任务；显式图片由原 IMAGE owner 管理。
         selected = next(
@@ -151,10 +148,7 @@ def validate_ad_assets(
     """Pure local final fence, after admission and immediately before AD arming."""
     from app.modules.materials.covers import verified_cover_image_id
 
-    from .preview_models import BuildPreview
-
-    preview = session.get(BuildPreview, step.preview_id)
-    if preview.config.get("native_request"):
+    if unit.scene_snapshot.get("native_request"):
         from .native_execution import validate_ad_assets as validate_native_assets
 
         validate_native_assets(session, step=step, unit=unit, body=body)

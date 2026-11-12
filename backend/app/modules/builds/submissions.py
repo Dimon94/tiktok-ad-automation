@@ -158,9 +158,10 @@ def submit_preview(
             session, context=context, route=route, advertiser_id=None, capability="read"
         )
         if "native_batch" in preview.config:
-            raise DomainError(
-                "native_batch_execution_pending", "批量预览已冻结，批量提交尚未开放"
-            )
+            from .native_preview import read_batch
+
+            # 接受不可变批准范围；逐项实时资格由既有 Unit 执行围栏复核。
+            read_batch(session, preview=preview)
         if "native_request" in preview.config:
             from .native_execution import validate
 
@@ -798,6 +799,11 @@ def get_submission(
 
         if not all_native_matched(session, row, preview):
             status = "NEEDS_REVIEW"
+    native_plans = []
+    if "native_batch" in preview.config:
+        from .native_completion import batch_results
+
+        status, native_plans = batch_results(session, row, preview)
     planned = ObjectCounts(
         campaign_count=scope["planned_c"],
         adgroup_count=scope["planned_g"],
@@ -828,6 +834,7 @@ def get_submission(
     from .continuation import submission_facts
 
     return SubmissionView(
+        native_plans=native_plans,
         **submission_facts(session, row),
         corrected_ad_count=stage_counts.get("AD:VERIFIED_REPLACEMENT", 0),
         execution_route=execution_route_view(

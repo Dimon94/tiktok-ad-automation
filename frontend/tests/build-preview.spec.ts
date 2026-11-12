@@ -1155,7 +1155,7 @@ test("原生真实后端提交与响应丢失恢复 @native-live", async ({ page
 test("真实多计划冻结预览 @native-batch-live", async ({ page }) => {
   test.skip(!process.env.NATIVE_TEST_HOST, "仅隔离数据库 runner 启动")
   await buildsBoundary(page)
-  await page.route(/\/api\/tenants\/[^/]+\/build-previews\//, async (route) => {
+  await page.route(/\/api\/tenants\/[^/]+\/(build-previews|submissions|submission-requests)\//, async (route) => {
     const response = await route.fetch({
       url:
         process.env.NATIVE_TEST_HOST + new URL(route.request().url()).pathname,
@@ -1179,12 +1179,21 @@ test("真实多计划冻结预览 @native-batch-live", async ({ page }) => {
   await expect(page.getByText(/基础广告 [12] · 文案版本/)).toHaveCount(4)
   await expect(
     page.getByRole("button", { name: /^创建并立即启用/ }),
-  ).toBeDisabled()
+  ).toBeEnabled()
   await expect(page.getByRole("heading", { name: /计划 .*EXCLUDED/ })).toHaveCount(1)
   await expect(page.getByText(/账户 not-authorized · Series exact-series/)).toBeVisible()
   await expect(page.getByText(/排除原因：/)).toBeVisible()
+  await page.getByRole("button", { name: /^创建并立即启用/ }).click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog.getByText(/纳入 2 项 · 排除 1 项/)).toBeVisible()
+  await expect(dialog.getByText(/CBO 日预算合计/)).toContainText("200.5")
+  await expect(dialog.getByText(/账户 second-account/)).toBeVisible()
+  await expect(dialog.getByText(/观察覆盖/)).toHaveCount(3)
+  await dialog.getByRole("button", { name: "确认创建并立即启用" }).click()
+  await expect(page).toHaveURL(/build-tasks\//)
+  await expect(page.getByText("逐计划结果", {exact:true})).toBeVisible()
   await page.screenshot({
-    path: "/tmp/tkada-native-series-20261112/m2-implementation/jb15-preview.png",
+    path: "/tmp/tkada-native-series-20261112/m2-implementation/jb16-confirm.png",
     fullPage: true,
   })
 })

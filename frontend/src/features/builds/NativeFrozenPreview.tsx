@@ -62,7 +62,7 @@ export function NativeFrozenPreview({
           CBO 日预算合计 {batch.daily_budget_sum} {preview.currency}
         </p>
         <p>
-          批量提交尚未开放。以下是完整冻结的批准范围；修改输入后须重新准备与预览。
+          仅纳入计划将直接创建并启用。以下是完整冻结的批准范围；修改输入后须重新准备与预览。
         </p>
         <Button variant="outline" onClick={back}>
           返回草稿
@@ -219,4 +219,19 @@ export function NativeFrozenPreview({
       </details>
     </div>
   )
+}
+
+
+export function NativeBatchApproval({ preview }: { preview: PreviewSummary }) {
+  const batch = preview.native_request as unknown as { plans: { plan_key: string; status: string; selection: Plan["selection"]; occupancy?: Plan["occupancy"] | null; reason_codes: string[] }[] }
+  return <div className="space-y-3">
+    <p>纳入 {batch.plans.filter(p => p.status === "INCLUDED").length} 项 · 排除 {batch.plans.filter(p => p.status === "EXCLUDED").length} 项</p>
+    <p>CBO 日预算合计 {preview.daily_budget_sum} {preview.currency}</p>
+    {batch.plans.map(p => <div key={p.plan_key} className="border-b pb-2">
+      <p>{p.status} · 账户 {p.selection.advertiser_id} · Series {p.selection.native_series_id} · 地区 {p.selection.regions.join("、")}</p>
+      <p>Series 身份 {JSON.stringify(p.selection.series_identity)} · 创意身份 {JSON.stringify(p.selection.creative_identity)}</p>
+      <p>观察覆盖 {p.occupancy ? `${p.occupancy.coverage} · ${p.occupancy.scope_limits.join("；")}` : "未取得观察证据；本项已排除"}</p>
+      {p.reason_codes.length > 0 && <p>{p.reason_codes.join("、")}</p>}
+    </div>)}
+  </div>
 }

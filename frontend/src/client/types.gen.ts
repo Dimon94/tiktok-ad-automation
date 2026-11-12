@@ -5925,6 +5925,46 @@ export type NativeMaterialMapping = {
 };
 
 /**
+ * NativePlanResult
+ */
+export type NativePlanResult = {
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    /**
+     * Unit Id
+     */
+    unit_id?: string | null;
+    /**
+     * Selection
+     */
+    selection: {
+        [key: string]: unknown;
+    };
+    /**
+     * Occupancy
+     */
+    occupancy: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Reason Codes
+     */
+    reason_codes: Array<string>;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Remote Ids
+     */
+    remote_ids: Array<{
+        [key: string]: string;
+    }>;
+};
+
+/**
  * NativeSeriesBatchCheckpoint
  */
 export type NativeSeriesBatchCheckpoint = {
@@ -10071,6 +10111,10 @@ export type SubmissionUnitPublic = {
  * SubmissionView
  */
 export type SubmissionView = {
+    /**
+     * Native Plans
+     */
+    native_plans?: Array<NativePlanResult>;
     /**
      * Local Cancelled
      */

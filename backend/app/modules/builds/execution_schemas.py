@@ -39,7 +39,18 @@ class Recovery(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class NativePlanResult(BaseModel):
+    plan_key: str
+    unit_id: str | None = None
+    selection: dict
+    occupancy: dict | None
+    reason_codes: list[str]
+    status: str
+    remote_ids: list[dict[str, str]]
+
+
 class SubmissionView(BaseModel):
+    native_plans: list[NativePlanResult] = Field(default_factory=list)
     local_cancelled: bool = False
     can_cancel: bool = False
     reused: ObjectCounts = Field(default_factory=ObjectCounts)

@@ -11,6 +11,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { CopyGroupSetting } from "@/features/campaign-copies/api"
@@ -32,7 +33,7 @@ import { WorkspacePageTitle } from "@/features/workspace/WorkspacePageTitle"
 import { cn } from "@/lib/utils"
 import { bidLabel, budgetLabel, budgetUnitLabel, buildKey } from "./api"
 import { ExecutionRoute } from "./ExecutionRoute"
-import { NativeFrozenPreview } from "./NativeFrozenPreview"
+import { NativeBatchApproval, NativeFrozenPreview } from "./NativeFrozenPreview"
 import { PreviewGenerationProgress } from "./PreviewGenerationProgress"
 import {
   BuildGuard,
@@ -524,6 +525,8 @@ export function PreviewSummaryBar({
 }) {
   const [pending, setPending] = useState(false),
     [error, setError] = useState<unknown>()
+  const [confirm, setConfirm] = useState(false)
+  const batch = preview.native_request?.revision === "native-series-batch-v1"
   const createsDisabled = preview.creation_status === "DISABLE"
   const submitAction = preview.continuation_unit_count
     ? createsDisabled
@@ -589,8 +592,6 @@ export function PreviewSummaryBar({
             <div className="flex flex-col gap-2">
               <Button
                 disabled={
-                  preview.native_request?.revision ===
-                    "native-series-batch-v1" ||
                   !onSubmit ||
                   unavailable ||
                   pending ||
@@ -602,6 +603,7 @@ export function PreviewSummaryBar({
                 aria-label={`${submitAction} ${preview.campaign_count} 个 Campaign / ${preview.adgroup_count} 个 Ad Group / ${preview.ad_count} 条 Ad`}
                 onClick={async () => {
                   if (!onSubmit || pending) return
+                  if (batch) { setConfirm(true); return }
                   setPending(true)
                   try {
                     await onSubmit(preview)
@@ -614,6 +616,20 @@ export function PreviewSummaryBar({
               >
                 {pending ? "正在确认提交结果" : submitAction}
               </Button>
+              <Dialog open={confirm} onOpenChange={setConfirm}>
+                <DialogContent className="max-h-[85vh] overflow-y-auto">
+                  <DialogHeader><DialogTitle>确认逐计划创建并直接 ENABLE</DialogTitle></DialogHeader>
+                  <NativeBatchApproval preview={preview} />
+                  <p>创建后可能立即产生消耗；占用观察仅覆盖所列范围。</p>
+                  <Button disabled={pending} onClick={async () => {
+                    if (!onSubmit || pending) return
+                    setPending(true)
+                    try { await onSubmit(preview); setConfirm(false) }
+                    catch (e) { setError(e) }
+                    finally { setPending(false) }
+                  }}>确认创建并立即启用</Button>
+                </DialogContent>
+              </Dialog>
               <p className="text-xs text-muted-foreground">
                 {preview.continuation_unit_count
                   ? `仅新增对象将创建并${submitStatus}，复用对象保持原状态。`
