@@ -746,7 +746,7 @@ def test_native_submission_rejects_changed_freeze(
             s.add(preview)
         elif change == "selection":
             value = copy.deepcopy(draft.scene_selection)
-            value["native_series_id"] = "another-series"
+            value["plans"][0]["selection"]["native_series_id"] = "another-series"
             draft.scene_selection = value
             s.add(draft)
         elif change == "revision":

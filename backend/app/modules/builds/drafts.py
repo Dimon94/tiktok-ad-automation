@@ -135,18 +135,19 @@ def _check_intent(
         scene_selection and scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
     )
     if native:
-        from .selection_schemas import NativeSeriesSelection
+        from .selection_schemas import NativeSeriesPlanSet
 
-        selection = NativeSeriesSelection.model_validate(scene_selection)
+        selection = NativeSeriesPlanSet.model_validate(scene_selection)
         if (
             provider_connection_id
             or application_id
             or drama_lines
             or link_config
-            or account_lines != [selection.advertiser_id]
+            or account_lines != selection.advertiser_ids
         ):
             raise DomainError(
-                "draft_input_invalid", "原生选择与 Mini 输入互斥，且仅允许一个精确账户"
+                "draft_input_invalid",
+                "原生选择与 Mini 输入互斥，账户须与显式计划集一致",
             )
     if (
         not isinstance(bc_id, str)
@@ -413,6 +414,28 @@ def prepare_draft(
         bc_id=draft.bc_id,
         connection_id=draft.execution_connection_id,
     )
+    if (
+        existing
+        and (draft.scene_selection or {}).get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
+    ):
+        from .draft_tasks import queue_preparation
+
+        # 同修订重试保留各计划的证据和游标；只重新评估当前冻结路由。
+        _preparation_route(session, context, draft, existing)
+        existing.status, existing.phase, existing.error_code = "PENDING", "scenes", None
+        existing.generation += 1
+        draft.status = "PREPARING"
+        session.add(
+            DraftPreparationRequest(
+                tenant_id=context.tenant_id,
+                request_id=request_id,
+                draft_id=draft.id,
+                preparation_id=existing.id,
+            )
+        )
+        queue_preparation(session, existing, delay=0)
+        session.flush()
+        return existing.id
     if existing or draft.status != "DRAFT":
         _bump_revision(session, draft, draft.revision)
     if (
@@ -797,62 +820,95 @@ def _scenes_page(
         draft.scene_selection
         and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
     ):
+        from .native_materials import prepare_native_materials
         from .scene_jobs import native_checkpoint
+        from .selection_schemas import NativeSeriesPlanSet
 
         route = _preparation_route(session, context, draft, prep)
-        selection = draft.scene_selection
-        receipt = ensure_scene_preparation(
-            session,
-            context=context,
-            bc_id=draft.bc_id,
-            advertiser_id=selection["advertiser_id"],
-            link_id=None,
-            route=route,
-            native_selection=selection,
-        )
-        if receipt.state == "queued":
-            return
-        checkpoint = native_checkpoint(
-            session, context=context, draft=draft, route=route
-        )
-        if checkpoint.state == "READY" and selection.get("video_sources"):
-            from .native_materials import prepare_native_materials
-
-            items = prepare_native_materials(
-                session,
-                context=context,
-                draft=draft,
-                prep=prep,
-                route=route,
-                checkpoint=checkpoint,
-            )
-            if any(item["state"] == "blocked" for item in items):
-                prep.status, prep.phase, draft.status = "BLOCKED", "done", "BLOCKED"
-                prep.error_code = next(
-                    item.get("reason_code") or "native_material_unverified"
-                    for item in items
-                    if item["state"] == "blocked"
+        plans = NativeSeriesPlanSet.model_validate(draft.scene_selection).plans
+        states, reasons, checkpoints = [], [], []
+        # 先取得路由/账户/SceneJob，再按全批素材 ID 顺序取锁。
+        for plan in plans:
+            selection = plan.selection.model_dump(mode="json")
+            try:
+                receipt = ensure_scene_preparation(
+                    session,
+                    context=context,
+                    bc_id=draft.bc_id,
+                    advertiser_id=selection["advertiser_id"],
+                    link_id=None,
+                    route=route,
+                    native_selection=selection,
                 )
-            elif any(item["state"] == "queued" for item in items):
-                return
+                if receipt.state == "queued":
+                    states.append("PENDING")
+                    continue
+                checkpoint = native_checkpoint(
+                    session,
+                    context=context,
+                    draft=draft,
+                    route=route,
+                    plan_key=plan.plan_key,
+                )
+                checkpoints.append((plan, checkpoint))
+            except DomainError as error:
+                states.append("BLOCKED")
+                reasons.append(error.code)
+        state = _scene_prep(session, draft, prep)
+        material_ids = set()
+        for plan, checkpoint in checkpoints:
+            if checkpoint.state != "READY" or checkpoint.materials_ready:
+                continue
+            cursor = (
+                (state.native_materials or {})
+                .get("plans", {})
+                .get(str(plan.plan_key), {})
+                .get("cursor", 0)
+            )
+            for source in plan.selection.video_sources[cursor : cursor + 20]:
+                material_ids.add(source.material_id)
+                if source.cover_material_id:
+                    material_ids.add(source.cover_material_id)
+        session.exec(
+            select(MaterialFile)
+            .where(
+                MaterialFile.tenant_id == context.tenant_id,
+                col(MaterialFile.id).in_(material_ids),
+            )
+            .order_by(col(MaterialFile.id))
+            .with_for_update()
+        ).all()
+        for plan, checkpoint in checkpoints:
+            if checkpoint.state == "READY" and not checkpoint.materials_ready:
+                prepare_native_materials(
+                    session,
+                    context=context,
+                    draft=draft,
+                    prep=prep,
+                    route=route,
+                    checkpoint=checkpoint,
+                    plan_key=plan.plan_key,
+                )
+                checkpoint = native_checkpoint(
+                    session,
+                    context=context,
+                    draft=draft,
+                    route=route,
+                    plan_key=plan.plan_key,
+                )
+            if not plan.selection.video_sources:
+                states.append("BLOCKED")
+                reasons.append("native_materials_not_prepared")
             else:
-                checked = native_checkpoint(
-                    session, context=context, draft=draft, route=route
-                )
-                prep.status = draft.status = (
-                    "READY" if checked.materials_ready else "BLOCKED"
-                )
-                prep.phase = "done"
-                prep.error_code = (
-                    None if checked.materials_ready else "native_material_unverified"
-                )
-        else:
-            prep.status, prep.phase, draft.status = "BLOCKED", "done", "BLOCKED"
-            prep.error_code = (
-                checkpoint.reason_codes[0]
-                if checkpoint.reason_codes
-                else "native_materials_not_prepared"
-            )
+                states.append(checkpoint.materials_state)
+            reasons.extend(checkpoint.reason_codes)
+            reasons.extend(issue["reason_code"] for issue in checkpoint.material_issues)
+        if "PENDING" in states:
+            return
+        # 准备聚合由逐项事实派生；不以一个失败吞掉兄弟项。
+        prep.status = draft.status = "READY" if "READY" in states else "BLOCKED"
+        prep.phase = "done"
+        prep.error_code = reasons[0] if reasons else None
         return
     state = _scene_prep(session, draft, prep)
     route = _preparation_route(session, context, draft, prep)
@@ -1462,10 +1518,10 @@ def update_draft(
         draft.scene_selection
         and draft.scene_selection.get("kind") == "NATIVE_SERIES_DIRECT_VIDEO"
     ):
-        from .selection_schemas import NativeSeriesSelection
+        from .selection_schemas import NativeSeriesPlanSet
         from .structure import StructureOverride
 
-        selection = NativeSeriesSelection.model_validate(
+        selection = NativeSeriesPlanSet.model_validate(
             scene_selection or draft.scene_selection
         ).model_dump(mode="json")
         structure = (
@@ -1491,7 +1547,7 @@ def update_draft(
             drama_lines=drama_lines or [],
             account_lines=account_lines
             if account_lines is not None
-            else [selection["advertiser_id"]],
+            else NativeSeriesPlanSet.model_validate(selection).advertiser_ids,
             link_config=link_config or {},
             execution_connection_id=connection,
             scene_selection=selection,
@@ -1516,7 +1572,12 @@ def update_draft(
                 DraftInput.draft_id == draft.id,
             ),
         )
-        _store_inputs(session, draft, "account", [selection["advertiser_id"]])
+        _store_inputs(
+            session,
+            draft,
+            "account",
+            NativeSeriesPlanSet.model_validate(selection).advertiser_ids,
+        )
         session.add(draft)
         session.flush()
         return revision

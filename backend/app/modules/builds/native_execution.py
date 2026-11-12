@@ -15,6 +15,8 @@ from app.modules.builds.preview_models import BuildUnit, PlannedAd
 from app.modules.builds.request_compiler import cta_portfolio
 from app.modules.builds.scene_jobs import native_checkpoint
 
+from .selection_schemas import single_native_selection
+
 
 def validate(session, *, context, preview, route, refreshing=False):
     payload = FrozenRequestRevision.model_validate(
@@ -31,10 +33,9 @@ def validate(session, *, context, preview, route, refreshing=False):
         or payload["draft_revision"] != draft.revision
     ):
         raise DomainError("draft_revision_conflict", "草稿已变更，请重新预览")
-    if (
-        payload["route"] != route.model_dump(mode="json")
-        or payload["selection"] != draft.scene_selection
-    ):
+    if payload["route"] != route.model_dump(mode="json") or payload[
+        "selection"
+    ] != single_native_selection(draft.scene_selection):
         raise DomainError("execution_intent_changed", "冻结目的地或路由已改变")
     units = session.exec(
         select(BuildUnit).where(

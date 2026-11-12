@@ -40,7 +40,10 @@ def test_workspace_native_atomic_save_replay_and_revision(session, context, inte
     identity = drafts.create_draft(session, context=context, **request.model_dump())
     session.flush()
     saved = draft_summary(session, context=context, draft_id=identity)
-    assert saved.scene_selection.model_dump(exclude_none=True) == native_selection()
+    assert (
+        saved.scene_selection.plans[0].selection.model_dump(exclude_none=True)
+        == native_selection()
+    )
     assert saved.provider_connection_id is None and saved.application_id is None
     assert (
         drafts.create_draft(session, context=context, **request.model_dump())
@@ -64,9 +67,17 @@ def test_workspace_native_atomic_save_replay_and_revision(session, context, inte
     assert mutations.update_draft(session, **args) == 2
     assert mutations.update_draft(session, **args) == 2
     updated = draft_summary(session, context=context, draft_id=identity)
-    assert updated.scene_selection.native_series_id == "series-exact-2"
-    assert updated.scene_selection.creative_identity.identity_id == "second-creative"
-    assert updated.scene_selection.series_identity.identity_id == "series-owner"
+    assert (
+        updated.scene_selection.plans[0].selection.native_series_id == "series-exact-2"
+    )
+    assert (
+        updated.scene_selection.plans[0].selection.creative_identity.identity_id
+        == "second-creative"
+    )
+    assert (
+        updated.scene_selection.plans[0].selection.series_identity.identity_id
+        == "series-owner"
+    )
     with pytest.raises(DomainError) as error:
         mutations.update_draft(
             session,

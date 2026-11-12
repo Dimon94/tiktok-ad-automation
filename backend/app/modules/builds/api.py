@@ -49,7 +49,7 @@ from .identity_selection import (
     draft_identities,
 )
 from .mini_selection import ChooseMiniRequest, DraftMinis, choose_mini, draft_minis
-from .selection_schemas import NativeCheckpoint
+from .selection_schemas import NativeCheckpoint, NativeSeriesBatchCheckpoint
 from .structure import ImageStructureChange
 from .targeting_schemas import TargetingAccount, TargetingChange, TargetingDirectory
 
@@ -728,11 +728,17 @@ def update_image_structure(
 
 
 @router.get(
-    "/build-drafts/{draft_id}/native-checkpoint", response_model=NativeCheckpoint
+    "/build-drafts/{draft_id}/native-checkpoint",
+    response_model=NativeCheckpoint | NativeSeriesBatchCheckpoint,
 )
 def native_checkpoint(
-    tenant_id: UUID, draft_id: UUID, session: SessionDep, user: CurrentUser
-) -> NativeCheckpoint:
+    tenant_id: UUID,
+    draft_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+    plan_key: UUID | None = None,
+    view: Literal["plan", "plans"] = "plan",
+) -> NativeCheckpoint | NativeSeriesBatchCheckpoint:
     from app.modules.accounts.routing import freeze_route
 
     from .scene_jobs import native_checkpoint as checkpoint
@@ -752,4 +758,12 @@ def native_checkpoint(
         bc_id=draft.bc_id,
         connection_id=draft.execution_connection_id,
     )
-    return checkpoint(session, context=context, draft=draft, route=route)
+    if view == "plans":
+        from .scene_jobs import evaluate_native_plan_set
+
+        return evaluate_native_plan_set(
+            session, context=context, draft=draft, route=route
+        )
+    return checkpoint(
+        session, context=context, draft=draft, route=route, plan_key=plan_key
+    )

@@ -22,6 +22,7 @@ from .preview_models import BuildPreview, PreviewContract
 from .preview_schemas import PreviewGenerationProgress, PreviewSummary
 from .routes import save_preview_route
 from .scene_jobs import native_checkpoint
+from .selection_schemas import single_native_selection
 from .structure import effective_structure_config
 
 
@@ -116,7 +117,7 @@ def generate(session, *, context, draft):
         bc_id=draft.bc_id,
         connection_id=draft.execution_connection_id,
     )
-    selection = draft.scene_selection
+    selection = single_native_selection(draft.scene_selection)
     verify_route(
         session,
         context=context,

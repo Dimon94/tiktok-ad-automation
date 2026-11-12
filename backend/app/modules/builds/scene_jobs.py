@@ -830,12 +830,32 @@ def repair_scene_jobs(*, database_engine: Any, limit: int = 100) -> int:
 
 
 def native_checkpoint(
-    session: Session, *, context: TenantContext, draft: Any, route: FrozenTikTokRoute
+    session: Session,
+    *,
+    context: TenantContext,
+    draft: Any,
+    route: FrozenTikTokRoute,
+    plan_key: UUID | None = None,
 ):
     """联合当前授权、身份能力、精确资产和地区证据；不以 ID 相等替代权限。"""
-    from .selection_schemas import NativeCheckpoint, NativeSeriesSelection
+    from .selection_schemas import (
+        NativeCheckpoint,
+        NativeSeriesPlanSet,
+        NativeSeriesSelection,
+        single_native_selection,
+    )
 
-    selection = NativeSeriesSelection.model_validate(draft.scene_selection)
+    plan_set = NativeSeriesPlanSet.model_validate(draft.scene_selection)
+    if plan_key is None:
+        selection = NativeSeriesSelection.model_validate(
+            single_native_selection(draft.scene_selection)
+        )
+        plan_key = plan_set.plans[0].plan_key
+    else:
+        plan = next((p for p in plan_set.plans if p.plan_key == plan_key), None)
+        if plan is None:
+            raise DomainError("native_plan_not_found", "计划不存在")
+        selection = plan.selection
     scope = _account_scope(
         session,
         context=context,
@@ -978,7 +998,11 @@ def native_checkpoint(
         from .native_materials import read_native_materials
 
         materials, issues = read_native_materials(
-            session, context=context, draft=draft, checkpoint=checkpoint
+            session,
+            context=context,
+            draft=draft,
+            checkpoint=checkpoint,
+            plan_key=plan_key,
         )
         from .selection_schemas import NativeMaterialMapping
 
@@ -994,7 +1018,52 @@ def native_checkpoint(
             if state == "UNVERIFIED"
             else "BLOCKED"
             if state == "BLOCKED"
+            or not selection.video_sources
             or any(issue.get("state") != "PENDING" for issue in issues)
             else "PENDING"
         )
     return checkpoint
+
+
+def evaluate_native_plan_set(session, *, context, draft, route):
+    from .selection_schemas import (
+        NativeSeriesBatchCheckpoint,
+        NativeSeriesPlanSet,
+        ReadyNativePlan,
+        UnavailableNativePlan,
+    )
+
+    results = []
+    for plan in NativeSeriesPlanSet.model_validate(draft.scene_selection).plans:
+        try:
+            proof = native_checkpoint(
+                session,
+                context=context,
+                draft=draft,
+                route=route,
+                plan_key=plan.plan_key,
+            )
+            if proof.materials_ready:
+                results.append(
+                    ReadyNativePlan(
+                        state="READY", plan_key=plan.plan_key, checkpoint=proof
+                    )
+                )
+                continue
+            state = proof.materials_state
+            reasons = proof.reason_codes + [
+                i["reason_code"] for i in proof.material_issues
+            ]
+            if not reasons:
+                reasons = ["native_materials_not_prepared"]
+        except DomainError as error:
+            state, reasons = "BLOCKED", [error.code]
+        results.append(
+            UnavailableNativePlan(
+                state=state,
+                plan_key=plan.plan_key,
+                selection=plan.selection,
+                reason_codes=reasons,
+            )
+        )
+    return NativeSeriesBatchCheckpoint(draft_revision=draft.revision, plans=results)

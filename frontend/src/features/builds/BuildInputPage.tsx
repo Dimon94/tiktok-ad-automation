@@ -4,7 +4,7 @@ import { AxiosError } from "axios"
 import { useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import {
-  type NativeSeriesSelection,
+  type NativeSeriesPlanSet,
   BuildsService,
   type DraftSummary,
   type LinkConfigSchema,
@@ -46,10 +46,10 @@ import {
   unknownOutcome,
 } from "./presentation"
 
-import { NativeSelectionFields } from "./NativeSelectionFields"
+import { NativePlanSetFields, emptyNativePlanSet } from "./NativePlanSetFields"
 
 type Values = {
-  native: NativeSeriesSelection | null
+  native: NativeSeriesPlanSet | null
   mediaKind: "VIDEO" | "CAROUSEL"
   customProvider: string
   manualLinks: NamedManualLink[]
@@ -206,36 +206,34 @@ export function BuildInputPage({
   }
   const invalid =
     !values.version ||
-    !values.account.trim() ||
     (values.native
-      ? values.account.trim().includes("\n") ||
-        !values.native.regions.length ||
-        values.native.regions.some((code) => !/^[A-Z]{2}$/.test(code))
-      : !values.connection ||
+      ? values.native.plans.some(
+          ({ selection: p }) =>
+            !p.advertiser_id ||
+            !p.native_series_id ||
+            !p.series_identity?.identity_id ||
+            !p.creative_identity?.identity_id ||
+            !p.video_sources?.length ||
+            !p.regions.length ||
+            p.regions.some((c) => !/^[A-Z]{2}$/.test(c)),
+        )
+      : !values.account.trim() ||
+        !values.connection ||
         (values.connection === "other"
           ? !values.customProvider.trim()
           : !values.application) ||
         !values.drama.trim())
   const nativeBody = values.native
     ? {
-        scene_selection: {
-          ...values.native,
-          native_series_id: values.native.native_series_id || null,
-          series_identity: values.native.series_identity?.identity_id
-            ? values.native.series_identity
-            : null,
-          creative_identity: values.native.creative_identity?.identity_id
-            ? values.native.creative_identity
-            : null,
-          advertiser_id: values.account.trim(),
-        },
-        media_kind: "VIDEO" as const,
+        scene_selection: values.native,
         provider_connection_id: null,
         application_id: null,
         custom_provider_name: null,
         manual_links: [],
         drama_lines: [],
-        account_lines: [values.account.trim()],
+        account_lines: [
+          ...new Set(values.native.plans.map((p) => p.selection.advertiser_id)),
+        ],
         link_config: {},
       }
     : {}
@@ -282,7 +280,9 @@ export function BuildInputPage({
                   ? values.customProvider.trim()
                   : null,
               manual_links: manualLinks,
-              execution_connection_id: null,
+              execution_connection_id: values.native
+                ? (summary?.execution_connection_id ?? null)
+                : null,
               application_id:
                 values.connection === "other" ? null : values.application,
               link_config: values.linkConfig,
@@ -365,23 +365,7 @@ export function BuildInputPage({
         value={values.native ? "NATIVE_SERIES_DIRECT_VIDEO" : "MINI_APP"}
         onValueChange={(kind) =>
           change({
-            native:
-              kind === "MINI_APP"
-                ? null
-                : {
-                    kind: "NATIVE_SERIES_DIRECT_VIDEO",
-                    advertiser_id: values.account.trim(),
-                    native_series_id: "",
-                    regions: [],
-                    series_identity: {
-                      identity_type: "TT_USER",
-                      identity_id: "",
-                    },
-                    creative_identity: {
-                      identity_type: "TT_USER",
-                      identity_id: "",
-                    },
-                  },
+            native: kind === "MINI_APP" ? null : emptyNativePlanSet(),
             mediaKind: "VIDEO",
           })
         }
@@ -401,7 +385,7 @@ export function BuildInputPage({
         </Field>
       </RadioGroup>
       {values.native && (
-        <NativeSelectionFields
+        <NativePlanSetFields
           tenantId={tenantId}
           draftId={summary?.draft_id}
           value={values.native}
@@ -697,7 +681,7 @@ export function BuildInputPage({
       </Card>
       <div className="grid min-w-0 gap-4 md:grid-cols-2">
         {(["drama", "account"] as const)
-          .filter((kind) => !values.native || kind === "account")
+          .filter(() => !values.native)
           .map((kind) => (
             <Card
               key={kind}
@@ -781,17 +765,33 @@ export function BuildInputPage({
       >
         <CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-5 lg:px-5">
           <p className="text-xs text-muted-foreground">
-            {values.drama.split("\n").filter((line) => line.trim()).length} 部剧
-            ·{" "}
-            {
-              new Set(
-                values.account
-                  .split("\n")
-                  .map((line) => line.trim())
-                  .filter(Boolean),
-              ).size
-            }{" "}
-            个账户
+            {values.native ? (
+              <>
+                {values.native.plans.length} 份计划 ·{" "}
+                {
+                  new Set(
+                    values.native.plans
+                      .map((p) => p.selection.advertiser_id)
+                      .filter(Boolean),
+                  ).size
+                }{" "}
+                个账户
+              </>
+            ) : (
+              <>
+                {values.drama.split("\n").filter((line) => line.trim()).length}{" "}
+                部剧 ·{" "}
+                {
+                  new Set(
+                    values.account
+                      .split("\n")
+                      .map((line) => line.trim())
+                      .filter(Boolean),
+                  ).size
+                }{" "}
+                个账户
+              </>
+            )}
             <span className="ml-3 text-xs">此步不会创建广告</span>
           </p>
           <div className="flex flex-wrap gap-2">

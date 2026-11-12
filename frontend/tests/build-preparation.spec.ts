@@ -3041,3 +3041,65 @@ test("原生准备就绪可生成预览且不受Mini链接门禁阻断", async (
     )
     .toBe(1)
 })
+
+test("真实工作区计划复制、选中批量编辑与回执 @native-plan-live", async ({
+  page,
+}) => {
+  test.skip(!process.env.NATIVE_TEST_DRAFT, "隔离宿主运行")
+  await buildsBoundary(page)
+  await page.route(
+    /\/api\/tenants\/[^/]+\/(build-drafts|build-draft-mutations)\//,
+    async (route) => {
+      const response = await route.fetch({
+        url:
+          process.env.NATIVE_TEST_HOST +
+          new URL(route.request().url()).pathname +
+          new URL(route.request().url()).search,
+      })
+      await route.fulfill({ response })
+    },
+  )
+  const url = `/tenants/${tenant}/build-drafts/${process.env.NATIVE_TEST_DRAFT}?bc_id=${bc}`
+  if (process.env.NATIVE_PLAN_MODE === "readiness") {
+    await page.goto(url)
+    await expect(page.getByText(/逐计划准备回执/)).toBeVisible()
+    await expect(page.getByText(/· READY/)).toBeVisible()
+    await expect(page.getByText(/· BLOCKED/)).toBeVisible()
+    await expect(page.getByText(/批量冻结与提交尚未开放/)).toBeVisible()
+    await page.unrouteAll({ behavior: "wait" })
+    return
+  }
+  await page.goto(url + "&edit=true")
+  await expect(
+    page.getByRole("heading", { name: "编辑搭建输入" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "复制计划 1", exact: true }).click()
+  await page.getByRole("button", { name: "复制计划 1", exact: true }).click()
+  const two = page.getByRole("region", { name: "计划 2", exact: true })
+  const three = page.getByRole("region", { name: "计划 3", exact: true })
+  await two.getByLabel("精确目标账户", { exact: true }).fill("not-authorized")
+  await two.getByLabel("精确 Series ID", { exact: true }).fill("other-series")
+  await two.getByLabel("投放地区", { exact: true }).fill("CA")
+  await three.getByLabel("投放地区", { exact: true }).fill("CA")
+  await page.getByRole("checkbox", { name: "选中计划 1" }).check()
+  await page.getByRole("checkbox", { name: "选中计划 2" }).check()
+  await page.getByLabel("批量投放地区", { exact: true }).fill("US")
+  await expect(page.getByText(/批量编辑影响：/)).toContainText("not-authorized")
+  await page.getByRole("button", { name: "应用到选中计划" }).click()
+  await expect(two.getByLabel("投放地区", { exact: true })).toHaveValue("US")
+  await expect(three.getByLabel("投放地区", { exact: true })).toHaveValue("CA")
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().includes("build-drafts"),
+  )
+  const preparing = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().endsWith("/prepare"),
+  )
+  await page
+    .getByRole("button", { name: "下一步：核对目的地与身份", exact: true })
+    .click()
+  const response = await saved
+  expect(response.status(), await response.text()).toBe(200)
+  expect((await preparing).status()).toBe(202)
+  await expect(page.getByText(/逐计划准备回执/)).toBeVisible()
+  await page.unrouteAll({ behavior: "wait" })
+})

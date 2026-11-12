@@ -70,7 +70,26 @@ class ManualLinkPatch(BaseModel):
     link: ManualLinkInput
 
 
+def validate_native_plan_input(value, handler):
+    """新计划输入要求精确选择；旧平铺输入仍可走 M1 目录发现边界。"""
+    parsed = handler(value)
+    selection = value.get("scene_selection") if isinstance(value, dict) else None
+    if isinstance(selection, dict) and "plans" in selection:
+        for plan in parsed.scene_selection.plans:
+            item = plan.selection
+            if not (
+                item.native_series_id
+                and item.series_identity
+                and item.creative_identity
+                and item.video_sources
+            ):
+                raise ValueError("每份计划必须明确账户、Series、双身份、地区和视频来源")
+    return parsed
+
+
 class CreateDraftRequest(BaseModel):
+    _native_plan_input = model_validator(mode="wrap")(validate_native_plan_input)
+
     structure_override: StructureOverride | None = None
     scene_selection: SceneSelection | None = None
     model_config = ConfigDict(extra="forbid")
@@ -103,12 +122,14 @@ class CreateDraftRequest(BaseModel):
                 or self.link_config
             ):
                 raise ValueError("原生直接视频不携带版权方或 Mini 链接")
-            if self.account_lines != [self.scene_selection.advertiser_id]:
-                raise ValueError("原生直接视频仅选择一个精确目标账户")
+            if self.account_lines != self.scene_selection.advertiser_ids:
+                raise ValueError("账户输入必须等于计划集的显式账户")
         return self
 
 
 class PatchDraftRequest(BaseModel):
+    _native_plan_input = model_validator(mode="wrap")(validate_native_plan_input)
+
     structure_override: StructureOverride | None = None
     scene_selection: SceneSelection | None = None
     model_config = ConfigDict(extra="forbid")

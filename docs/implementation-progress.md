@@ -5246,3 +5246,9 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 - 实施按本仓AGENTS使用Astra/high；Kimi K3.1 Pro已完成Spec和拆票。单批共享策略与同投放连接，逐计划明确账户、Series、双身份及地区；跨连接分批，M1原策略及证据边界保持。
 - 已读取完整实时Spec、五票及评论；全部Todo，JB-14无前置，其余原生依赖为14→15→16→17→18。创建独立本机PG测试库与Redis，复用锁定依赖，仅SDK传输替身，无真实业务读写。
 - 当前仅接续M1前置基线；尚未实现M2产品行为。完成各票后核对能力并推进，最后独立两轴审查、必要修复、本地main集成与Linear读回；不推送、不开PR、不部署。
+
+## 2026-11-12 — JB-14 显式原生计划集与独立准备
+
+在授权的 `feat/jb13-native-series-m2` 单集成树实现 canonical `NativeSeriesPlanSet`、真实工作区添加/复制/选中批量改地区、按计划键隔离的 SceneJob/素材准备回执、同 revision 重试与旧任务隔离。旧平铺 JSON 只读规范化；单项 Preview/Execution 暂用显式单项适配，多项冻结可见阻断，等待 JB-15。未新增 HTTP 入口、上传或资格 owner、业务开关。
+
+实际 PG/Redis 与 SDK transport double 检查、页面 PATCH/prepare/回执、并发重试、旧 JSON 和冻结历史、错误探针、前端构建及验证边界见 `docs/validation/2026-11-12-jb14-native-plan-set-readiness.md`。本票不关闭 Linear，不宣称 M2 MMF 完成；root 独立验收后决定 JB-15 frontier。

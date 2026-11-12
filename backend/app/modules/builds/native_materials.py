@@ -14,7 +14,9 @@ from .models import DraftPreparation
 from .scene_job_models import DraftScenePreparation
 
 
-def prepare_native_materials(session, *, context, draft, prep, route, checkpoint):
+def prepare_native_materials(
+    session, *, context, draft, prep, route, checkpoint, plan_key
+):
     from app.modules.materials.cover_models import MaterialCoverJob
     from app.modules.materials.covers import ensure_cover, get_cover_status
     from app.modules.materials.distribution import ensure_target_asset
@@ -22,8 +24,9 @@ def prepare_native_materials(session, *, context, draft, prep, route, checkpoint
     state = session.get(DraftScenePreparation, (context.tenant_id, prep.id))
     sources = checkpoint.selection.video_sources
     # 每轮至多20项，轮询复用原任务；先锁素材再锁映射，与素材 owner 同序。
-    previous = deepcopy((state.native_materials or {}).get("items", []))
-    cursor = (state.native_materials or {}).get("cursor", 0)
+    saved = (state.native_materials or {}).get("plans", {}).get(str(plan_key), {})
+    previous = deepcopy(saved.get("items", []))
+    cursor = saved.get("cursor", 0)
     selected = sources[cursor : cursor + 20]
     # 所有来源按固定 ID 锁序领取；输出仍严格使用选择顺序。
     ids = {source.material_id for source in selected} | {
@@ -72,7 +75,7 @@ def prepare_native_materials(session, *, context, draft, prep, route, checkpoint
                 bc_id=draft.bc_id,
                 material_id=source.material_id,
                 advertiser_id=checkpoint.selection.advertiser_id,
-                task_key=f"native:{prep.id}:{source.material_id}",
+                task_key=f"native:{prep.id}:{plan_key}:{source.material_id}",
                 route=route,
             )
             entry.update(
@@ -97,7 +100,7 @@ def prepare_native_materials(session, *, context, draft, prep, route, checkpoint
                     bc_id=draft.bc_id,
                     material_id=source.cover_material_id,
                     advertiser_id=checkpoint.selection.advertiser_id,
-                    task_key=f"native-cover:{prep.id}:{source.cover_material_id}",
+                    task_key=f"native-cover:{prep.id}:{plan_key}:{source.cover_material_id}",
                     route=route,
                 )
             else:
@@ -122,7 +125,7 @@ def prepare_native_materials(session, *, context, draft, prep, route, checkpoint
                         bc_id=draft.bc_id,
                         material_id=source.material_id,
                         advertiser_id=checkpoint.selection.advertiser_id,
-                        task_key=f"native-cover:{prep.id}:{source.material_id}",
+                        task_key=f"native-cover:{prep.id}:{plan_key}:{source.material_id}",
                         route=route,
                     )
             entry.update(
@@ -139,17 +142,23 @@ def prepare_native_materials(session, *, context, draft, prep, route, checkpoint
                 )
         except DomainError as error:
             entry.update(state="blocked", reason_code=error.code)
-    state.native_materials = {
+    entry_state = {
         "draft_revision": draft.revision,
         "scope_basis": checkpoint.scope_basis,
         "items": items,
         "cursor": cursor + 20 if cursor + 20 < len(sources) else 0,
     }
+    state.native_materials = {
+        "plans": {
+            **(state.native_materials or {}).get("plans", {}),
+            str(plan_key): entry_state,
+        }
+    }
     session.flush()
     return items
 
 
-def read_native_materials(session: Session, *, context, draft, checkpoint):
+def read_native_materials(session: Session, *, context, draft, checkpoint, plan_key):
     """只读消费；不通过 ID 列表重排或去重来修复损坏的准备回执。"""
     prep = session.exec(
         select(DraftPreparation).where(
@@ -161,7 +170,13 @@ def read_native_materials(session: Session, *, context, draft, checkpoint):
     if prep is None or prep.status == "OBSOLETE":
         return [], []
     state = session.get(DraftScenePreparation, (context.tenant_id, prep.id))
-    evidence = state.native_materials if state else None
+    stored = state.native_materials if state else None
+    # 旧 M1 回执只读规范化，不改写历史冻结数据。
+    evidence = (
+        stored.get("plans", {}).get(str(plan_key))
+        if stored and "plans" in stored
+        else stored
+    )
     if not evidence:
         return [], []
     if (

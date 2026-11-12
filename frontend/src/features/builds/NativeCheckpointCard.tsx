@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
 import { BuildsService, type DraftSummary } from "@/client"
-import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { BuildError } from "./presentation"
 
@@ -13,61 +12,55 @@ export function NativeCheckpointCard({
 }) {
   const query = useQuery({
     queryKey: [
-      "native-checkpoint",
+      "native-plan-readiness",
       tenantId,
       summary.draft_id,
       summary.revision,
     ],
-    queryFn: async () =>
-      (
-        await BuildsService.nativeCheckpoint({
-          path: { tenant_id: tenantId, draft_id: summary.draft_id },
-        })
-      ).data,
+    queryFn: async () => {
+      const { data } = await BuildsService.nativeCheckpoint({
+        path: { tenant_id: tenantId, draft_id: summary.draft_id },
+        query: { view: "plans" },
+      })
+      if (!("plans" in data)) throw new Error("计划回执形状不匹配")
+      return data
+    },
     refetchInterval: summary.status === "PREPARING" ? 2000 : false,
   })
   if (query.error) return <BuildError error={query.error} />
-  const result = query.data
   return (
     <Card>
       <CardHeader>
-        <CardTitle>原生目的地与身份证据</CardTitle>
+        <CardTitle>逐计划准备回执 · 修订 {summary.revision}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p>
-          Series：
-          {summary.scene_selection?.kind === "NATIVE_SERIES_DIRECT_VIDEO"
-            ? summary.scene_selection.native_series_id
-            : ""}
-        </p>
-        {result && (
-          <>
-            <p>
-              检查点：{result.state} · 草稿版本 {result.draft_revision}
-            </p>
-            <p>
-              剧集承载身份：{result.selection.series_identity?.identity_type} /{" "}
-              {result.selection.series_identity?.identity_id}
-            </p>
-            <p>
-              创意展示身份：{result.selection.creative_identity?.identity_type}{" "}
-              / {result.selection.creative_identity?.identity_id}
-            </p>
-            <p>地区：{result.selection.regions.join("、")}</p>
-            <Alert>
-              <AlertDescription>
-                {result.reason_codes.join("、") ||
-                  (result.state === "READY"
-                    ? "目的地与身份证据已准备"
-                    : "正在读取当前账户目录")}
-              </AlertDescription>
-            </Alert>
-            <p className="text-xs text-muted-foreground">
-              证据 {(result.evidence_ids ?? []).length} 页 · 有效至{" "}
-              {result.expires_at ?? "待准备"}
-              。视频与封面尚未逐条准备，当前不能提交广告。
-            </p>
-          </>
+        {query.data?.plans.map((plan) => {
+          const selection =
+            plan.state === "READY" ? plan.checkpoint.selection : plan.selection
+          return (
+            <section key={plan.plan_key} className="rounded-lg border p-3">
+              <p>
+                {plan.plan_key} · {plan.state}
+              </p>
+              <p>
+                账户 {selection.advertiser_id} · Series{" "}
+                {selection.native_series_id}
+              </p>
+              <p>
+                承载身份 {selection.series_identity?.identity_id} · 展示身份{" "}
+                {selection.creative_identity?.identity_id}
+              </p>
+              <p>地区 {selection.regions.join("、")}</p>
+              <p>
+                {plan.state === "READY"
+                  ? `已准备 ${(plan.checkpoint.materials ?? []).length} 个有序素材；有效至 ${plan.checkpoint.expires_at}`
+                  : plan.reason_codes.join("、")}
+              </p>
+            </section>
+          )
+        })}
+        {(query.data?.plans.length ?? 0) > 1 && (
+          <p>多计划配置与独立准备已开放；批量冻结与提交尚未开放。</p>
         )}
       </CardContent>
     </Card>

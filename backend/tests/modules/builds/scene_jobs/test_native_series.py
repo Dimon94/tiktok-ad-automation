@@ -210,7 +210,7 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
             session.flush()
             assert native_checkpoint(
                 session, context=env["context"], draft=draft, route=env["route"]
-            ).reason_codes == ["account_build_unverified"]
+            ).reason_codes == ["account_build_evidence_expired"]
             assert (
                 ensure_scene_preparation(
                     session,
@@ -456,8 +456,8 @@ def prepared_native_workspace(
             )
         assert result.provider_task_id is None
         assert (
-            result.scene_selection.series_identity
-            == result.scene_selection.creative_identity
+            result.scene_selection.plans[0].selection.series_identity
+            == result.scene_selection.plans[0].selection.creative_identity
         )
     assert not any("minis/get" in call[1] for call in wire[0])
     return draft_id, prep_id, expected
@@ -632,7 +632,11 @@ def test_native_material_group_rejects_partial_stale_or_corrupt_evidence(
         )
         import copy
 
-        proof = copy.deepcopy(state.native_materials)
+        proof = copy.deepcopy(
+            state.native_materials["plans"][
+                draft.scene_selection["plans"][0]["plan_key"]
+            ]
+        )
         mapping = session.get(AccountMaterial, proof["items"][1]["video_evidence_id"])
         if fault == "count":
             proof["items"].pop()
@@ -667,7 +671,9 @@ def test_native_material_group_rejects_partial_stale_or_corrupt_evidence(
             from app.modules.materials.models import MaterialFile
 
             session.get(MaterialFile, mapping.material_id).video_md5 = "f" * 32
-        state.native_materials = proof
+        state.native_materials = {
+            "plans": {draft.scene_selection["plans"][0]["plan_key"]: proof}
+        }
         session.flush()
         checkpoint = native_checkpoint(
             session, context=job_env["context"], draft=draft, route=job_env["route"]
@@ -854,7 +860,7 @@ def test_native_selected_image_cover_and_shared_source_are_exact(
         session.add(mapping)
         import copy
 
-        chosen = copy.deepcopy(draft.scene_selection)
+        chosen = copy.deepcopy(draft.scene_selection["plans"][0]["selection"])
         chosen["video_sources"][0]["cover_material_id"] = str(image.id)
         # 同一素材重复用于两个创意位置仍保持N项，同一目标映射，没有新增上传。
         chosen["video_sources"].append(copy.deepcopy(chosen["video_sources"][0]))
@@ -885,7 +891,7 @@ def test_native_selected_image_cover_and_shared_source_are_exact(
             advertiser_id="actual-account",
             link_id=None,
             route=job_env["route"],
-            native_selection=draft.scene_selection,
+            native_selection=draft.scene_selection["plans"][0]["selection"],
         )
     owner = {
         "identity_type": "TT_USER",
@@ -947,7 +953,9 @@ def test_native_video_verification_resumes_same_distribution(
     draft_id, prep_id, _ = prepared_native_workspace(job_env, wire, redis_client, True)
     with Session(engine, expire_on_commit=False) as session, session.begin():
         draft = session.get(BuildDraft, draft_id)
-        source_id = draft.scene_selection["video_sources"][1]["material_id"]
+        source_id = draft.scene_selection["plans"][0]["selection"]["video_sources"][1][
+            "material_id"
+        ]
         mapping = session.exec(
             select(AccountMaterial).where(AccountMaterial.material_id == source_id)
         ).one()

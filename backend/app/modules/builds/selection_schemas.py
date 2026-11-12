@@ -57,9 +57,59 @@ class NativeSeriesSelection(BaseModel):
         return self
 
 
+# 资源边界：每份计划最多1000素材，单次准备最多20项；20计划限制任务扇出。
+# 这是实现预算，不是平台或经营上限。
+NATIVE_PLAN_LIMIT = 20
+LEGACY_PLAN_KEY = UUID("00000000-0000-4000-8000-000000000001")
+
+
+class NativeSeriesPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plan_key: UUID
+    selection: NativeSeriesSelection
+
+
+class NativeSeriesPlanSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["NATIVE_SERIES_DIRECT_VIDEO"]
+    plans: list[NativeSeriesPlan] = Field(min_length=1, max_length=NATIVE_PLAN_LIMIT)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy(cls, value):
+        if isinstance(value, dict) and "plans" not in value:
+            return {
+                "kind": value.get("kind"),
+                "plans": [{"plan_key": LEGACY_PLAN_KEY, "selection": value}],
+            }
+        return value
+
+    @model_validator(mode="after")
+    def unique_keys(self):
+        if len({plan.plan_key for plan in self.plans}) != len(self.plans):
+            raise ValueError("计划键不能重复")
+        return self
+
+    @property
+    def advertiser_ids(self):
+        return list(dict.fromkeys(plan.selection.advertiser_id for plan in self.plans))
+
+
 SceneSelection = Annotated[
-    MiniAppSelection | NativeSeriesSelection, Field(discriminator="kind")
+    MiniAppSelection | NativeSeriesPlanSet, Field(discriminator="kind")
 ]
+
+
+def single_native_selection(value):
+    """JB-15/16 迁移前的单项适配；绝不静默取多项的首项。"""
+    plans = NativeSeriesPlanSet.model_validate(value).plans
+    if len(plans) != 1:
+        from app.core.errors import DomainError
+
+        raise DomainError(
+            "native_batch_preview_pending", "多计划已保存；批量冻结与提交尚未开放"
+        )
+    return plans[0].selection.model_dump(mode="json")
 
 
 class NativeMaterialMapping(BaseModel):
@@ -90,3 +140,23 @@ class NativeCheckpoint(BaseModel):
     materials_ready: bool = False
     materials: list[NativeMaterialMapping] = Field(default_factory=list)
     material_issues: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ReadyNativePlan(BaseModel):
+    state: Literal["READY"]
+    plan_key: UUID
+    checkpoint: NativeCheckpoint
+
+
+class UnavailableNativePlan(BaseModel):
+    state: Literal["PENDING", "BLOCKED", "UNVERIFIED"]
+    plan_key: UUID
+    selection: NativeSeriesSelection
+    reason_codes: list[str]
+
+
+class NativeSeriesBatchCheckpoint(BaseModel):
+    draft_revision: int
+    plans: list[
+        Annotated[ReadyNativePlan | UnavailableNativePlan, Field(discriminator="state")]
+    ]

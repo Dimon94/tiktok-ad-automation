@@ -17,7 +17,9 @@ from app.modules.builds.api import router as previews_router
 from app.modules.builds.submission_api import router as submission_router
 
 
-def submit_in_browser(engine, context, bc_id, preview_id):
+def submit_in_browser(
+    engine, context, bc_id, preview_id, *, draft_id=None, mode="submit"
+):
     app = FastAPI()
     app.include_router(previews_router, prefix="/api")
     app.include_router(submission_router, prefix="/api")
@@ -46,9 +48,11 @@ def submit_in_browser(engine, context, bc_id, preview_id):
                 "run",
                 "test",
                 "--project=workspace",
-                "tests/build-preview.spec.ts",
+                "tests/build-preview.spec.ts"
+                if mode == "submit"
+                else "tests/build-preparation.spec.ts",
                 "-g",
-                "@native-live",
+                "@native-live" if mode == "submit" else "@native-plan-live",
                 "--reporter=line",
             ],
             cwd=Path(__file__).resolve().parents[4] / "frontend",
@@ -58,7 +62,9 @@ def submit_in_browser(engine, context, bc_id, preview_id):
                 "NATIVE_TEST_TENANT": str(context.tenant_id),
                 "NATIVE_TEST_BC": bc_id,
                 "NATIVE_TEST_PREVIEW": str(preview_id),
-                "PLAYWRIGHT_PORT": "5197",
+                "NATIVE_TEST_DRAFT": str(draft_id),
+                "NATIVE_PLAN_MODE": mode,
+                "PLAYWRIGHT_PORT": "5197" if mode == "submit" else "5198",
             },
             capture_output=True,
             text=True,

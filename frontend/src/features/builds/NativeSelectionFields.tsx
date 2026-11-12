@@ -19,9 +19,11 @@ export function NativeSelectionFields({
   disabled,
   tenantId,
   draftId,
+  planKey,
 }: {
   tenantId: string
   draftId?: string
+  planKey?: string
   value: NativeSeriesSelection
   onChange: (value: NativeSeriesSelection) => void
   disabled: boolean
@@ -33,14 +35,16 @@ export function NativeSelectionFields({
       identity_authorized_bc_id: null,
     }
   const catalog = useQuery({
-    queryKey: ["native-edit-catalog", tenantId, draftId],
+    queryKey: ["native-edit-catalog", tenantId, draftId, planKey],
     enabled: !!draftId,
-    queryFn: async () =>
-      (
-        await BuildsService.nativeCheckpoint({
-          path: { tenant_id: tenantId, draft_id: draftId! },
-        })
-      ).data,
+    queryFn: async () => {
+      const { data } = await BuildsService.nativeCheckpoint({
+        path: { tenant_id: tenantId, draft_id: draftId! },
+        query: { plan_key: planKey },
+      })
+      if (!("selection" in data)) throw new Error("单计划目录回执形状不匹配")
+      return data
+    },
   })
   const rows = (key: string): Record<string, unknown>[] => {
     const resource = catalog.data?.facts?.[key] as
@@ -142,8 +146,13 @@ export function NativeSelectionFields({
           >
             {(["TT_USER", "BC_AUTH_TT"] as const).map((type) => (
               <Field key={type} orientation="horizontal">
-                <RadioGroupItem id={`${role}-${type}`} value={type} />
-                <FieldLabel htmlFor={`${role}-${type}`}>{type}</FieldLabel>
+                <RadioGroupItem
+                  id={`${planKey}-${role}-${type}`}
+                  value={type}
+                />
+                <FieldLabel htmlFor={`${planKey}-${role}-${type}`}>
+                  {type}
+                </FieldLabel>
               </Field>
             ))}
           </RadioGroup>

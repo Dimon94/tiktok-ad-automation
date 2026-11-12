@@ -1923,7 +1923,7 @@ export type CreateDraftRequest = {
         kind: 'MINI_APP';
     } & MiniAppSelection) | ({
         kind: 'NATIVE_SERIES_DIRECT_VIDEO';
-    } & NativeSeriesSelection) | null;
+    } & NativeSeriesPlanSet) | null;
     /**
      * Media Kind
      */
@@ -2590,7 +2590,7 @@ export type DraftSummary = {
         kind: 'MINI_APP';
     } & MiniAppSelection) | ({
         kind: 'NATIVE_SERIES_DIRECT_VIDEO';
-    } & NativeSeriesSelection) | null;
+    } & NativeSeriesPlanSet) | null;
     structure_override?: StructureOverride;
     /**
      * Media Kind
@@ -5925,6 +5925,49 @@ export type NativeMaterialMapping = {
 };
 
 /**
+ * NativeSeriesBatchCheckpoint
+ */
+export type NativeSeriesBatchCheckpoint = {
+    /**
+     * Draft Revision
+     */
+    draft_revision: number;
+    /**
+     * Plans
+     */
+    plans: Array<({
+        state: 'READY';
+    } & ReadyNativePlan) | ({
+        state: 'BLOCKED' | 'PENDING' | 'UNVERIFIED';
+    } & UnavailableNativePlan)>;
+};
+
+/**
+ * NativeSeriesPlan
+ */
+export type NativeSeriesPlan = {
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    selection: NativeSeriesSelection;
+};
+
+/**
+ * NativeSeriesPlanSet
+ */
+export type NativeSeriesPlanSet = {
+    /**
+     * Kind
+     */
+    kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    /**
+     * Plans
+     */
+    plans: Array<NativeSeriesPlan>;
+};
+
+/**
  * NativeSeriesSelection
  */
 export type NativeSeriesSelection = {
@@ -6805,7 +6848,7 @@ export type PatchDraftRequest = {
         kind: 'MINI_APP';
     } & MiniAppSelection) | ({
         kind: 'NATIVE_SERIES_DIRECT_VIDEO';
-    } & NativeSeriesSelection) | null;
+    } & NativeSeriesPlanSet) | null;
     /**
      * Request Id
      */
@@ -7947,6 +7990,21 @@ export type RatePublic = {
      * Periods
      */
     periods: Array<RatePeriod>;
+};
+
+/**
+ * ReadyNativePlan
+ */
+export type ReadyNativePlan = {
+    /**
+     * State
+     */
+    state: 'READY';
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    checkpoint: NativeCheckpoint;
 };
 
 /**
@@ -10535,6 +10593,25 @@ export type TrendPublic = {
      * Syncing
      */
     syncing?: boolean;
+};
+
+/**
+ * UnavailableNativePlan
+ */
+export type UnavailableNativePlan = {
+    /**
+     * State
+     */
+    state: 'PENDING' | 'BLOCKED' | 'UNVERIFIED';
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    selection: NativeSeriesSelection;
+    /**
+     * Reason Codes
+     */
+    reason_codes: Array<string>;
 };
 
 /**
@@ -19958,7 +20035,16 @@ export type buildsNativeCheckpointData = {
          */
         draft_id: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * Plan Key
+         */
+        plan_key?: string | null;
+        /**
+         * View
+         */
+        view?: 'plan' | 'plans';
+    };
     url: '/api/tenants/{tenant_id}/build-drafts/{draft_id}/native-checkpoint';
 };
 
@@ -19973,9 +20059,11 @@ export type buildsNativeCheckpointError = buildsNativeCheckpointErrors[keyof bui
 
 export type buildsNativeCheckpointResponses = {
     /**
+     * Response Builds-Native Checkpoint
+     *
      * Successful Response
      */
-    200: NativeCheckpoint;
+    200: NativeCheckpoint | NativeSeriesBatchCheckpoint;
 };
 
 export type buildsNativeCheckpointResponse = buildsNativeCheckpointResponses[keyof buildsNativeCheckpointResponses];
