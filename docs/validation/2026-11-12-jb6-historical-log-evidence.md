@@ -159,3 +159,25 @@ No push, PR, deployment, browser acceptance, production/BC data reconciliation o
 real external log retrieval was performed. Actual HTTP query/download acceptance
 is complete; no claim of a new real-browser session. Independent Standards/Spec
 review and integration belong to root. Known baseline fixture failure remains open.
+
+## Root acceptance and independent review
+
+Reviewed product commit `b6cc09e2506ff58b9eef9165579d952f52f4acb4` against
+merge-base `af24c3b968b9fa5cdbd8c55c9e5df4f00478df6f`: one commit, seven files;
+product blob matches the exact sync record above. Root independently ran the two
+new PostgreSQL test files: **14 passed in 1.81s**. Root also ran the finite model:
+78,732 transitions passed and all five negative variants were rejected.
+`git diff --check` passed. These results use the unchanged reviewed product source.
+
+Fresh-context Standards R1 and Spec R1 independently returned **PASS**, each with
+P0=0, P1=0, P2=0, P3=0. Both verified the fixed base/head and scope. Standards traced
+tenant/account filtering, local dates, signatures and frozen reads; Spec checked
+every T1-T7, R1-R6 and ticket AC1-8. Reviewers performed read-only source/evidence
+inspection; the Spec reviewer also ran the finite model. PostgreSQL root execution
+is attributed to root, not to either reviewer. No second review round was needed.
+
+The broad suite's baseline fixture failure remains explicitly excluded from M2
+success; it is not a new defect or a passing test. Author handoff resources above
+describe the implementation-stage snapshot. Final local integration, tracker
+closeout and owned-resource cleanup are recorded in JB-4/JB-6, without implying
+remote push, deployment, browser acceptance or production-data reconciliation.

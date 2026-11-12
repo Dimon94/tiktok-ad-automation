@@ -5146,4 +5146,5 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 已批准反例真实 PG 先红（NULL/LOG_CHAIN_INCOMPLETE）、后绿（50/pending）；管理员 API→advance→发布→查询/实际 CSV 下载完整贯通。旧 run/day/依据/CSV bytes 不变，失败重试和来源失效均经真实链路验证。
 - 相关回归 166 passed / 1 既有失败；该 repair-000 时区 fixture KeyError 已用 af24 原文件独立复现。最终新增及日志 worker 专项18 passed，六类真实变异均被拒绝并 cmp 恢复，恢复后新增14 passed；不重复无变化全量检查。
 - M2 自有有限模型78,732来源转移通过，五个负向模型失败；只覆盖声明的有界假设，不冒用M1或宣称全系统证明。Ruff、格式、语法、diff检查通过。
-- 无迁移、外部调用、推送或部署；独立审查/集成待root。专用jb6-pg/jb6-redis及/tmp/jb6-venv保留供复用；命令、源码blob、T/R映射和边界见[JB-6验证记录](validation/2026-11-12-jb6-historical-log-evidence.md)。
+- 产品提交 b6cc09e2；Standards/Spec R1 均PASS、各轴零P0–P3。root独立复验新增14项真实PG用例通过（1.81s），模型78,732转移通过及五负向拒绝；后续仅补评审证据，不改已审源码。
+- 无迁移、外部调用、推送或部署；本地集成与资源收尾以JB-4/JB-6记录为准。命令、源码blob、T/R映射和边界见[JB-6验证记录](validation/2026-11-12-jb6-historical-log-evidence.md)。
