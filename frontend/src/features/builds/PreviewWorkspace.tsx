@@ -32,6 +32,7 @@ import { WorkspacePageTitle } from "@/features/workspace/WorkspacePageTitle"
 import { cn } from "@/lib/utils"
 import { bidLabel, budgetLabel, budgetUnitLabel, buildKey } from "./api"
 import { ExecutionRoute } from "./ExecutionRoute"
+import { NativeFrozenPreview } from "./NativeFrozenPreview"
 import { PreviewGenerationProgress } from "./PreviewGenerationProgress"
 import {
   BuildGuard,
@@ -169,6 +170,10 @@ export function BuildPreviewPanel({
       params: { tenantId, draftId: current.draft_id },
       search: { bc_id: bcId },
     })
+  if (current.native_request)
+    return (
+      <NativeFrozenPreview tenantId={tenantId} preview={current} back={back} />
+    )
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">

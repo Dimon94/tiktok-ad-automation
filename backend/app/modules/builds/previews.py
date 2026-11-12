@@ -314,6 +314,10 @@ def _generate_preview(
         return identity
     if draft.status != "READY":
         raise DomainError("draft_not_ready", "草稿尚未准备完成")
+    if (draft.scene_selection or {}).get("kind") == "NATIVE_SERIES_DIRECT_VIDEO":
+        from .native_preview import generate
+
+        return generate(session, context=context, draft=draft)
     from app.modules.builds.identity_selection import require_preview_identity
     from app.modules.builds.mini_selection import require_preview_mini
 
@@ -1300,6 +1304,10 @@ def get_preview_summary(
     session: Session, *, context: TenantContext, preview_id: UUID
 ) -> PreviewSummary:
     preview = _preview(session, context, preview_id)
+    if "native_request" in preview.config:
+        from .native_preview import summary
+
+        return summary(session, context=context, preview=preview)
     rows = session.exec(
         select(
             BuildUnit.readiness,
@@ -1818,6 +1826,7 @@ def planned_unit_snapshot(
 
 def _unit_snapshot(preview, unit, drama, descriptor) -> FrozenUnit:
     return FrozenUnit(
+        native_request=preview.config.get("native_request"),
         contract_version=descriptor.version,
         media_kind=descriptor.media_kind,
         unit_id=unit.id,

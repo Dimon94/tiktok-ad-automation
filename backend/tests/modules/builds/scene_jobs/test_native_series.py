@@ -138,6 +138,11 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
                     "has_more": False,
                 },
                 region_response()["data"],
+                {
+                    "recommend_assets": [
+                        {"asset_ids": ["cta-watch"], "asset_content": "Watch now"}
+                    ]
+                },
             ]
         )
     for _ in range(8):
@@ -188,7 +193,7 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
             "route"
         ].model_dump(mode="json")
 
-        assert len(result.evidence_ids) == 6
+        assert len(result.evidence_ids) == 7  # 新增既有CTA资源页证据
         assert len(result.facts["native_tt_identity"]["items"]) == 51
         assert (
             result.facts["native_series"]["items"][1]["native_series_id"]
@@ -249,7 +254,9 @@ def test_native_job_exact_asset_complete_streams_and_unverified_combination(
     ]
 
 
-def prepared_native_workspace(job_env, wire, redis_client, materials, count=2):
+def prepared_native_workspace(
+    job_env, wire, redis_client, materials, count=2, config_changes=None
+):
     from app.modules.builds import drafts
     from app.modules.builds.catalog import draft_summary
     from app.modules.strategies.models import StrategyVersion
@@ -293,7 +300,10 @@ def prepared_native_workspace(job_env, wire, redis_client, materials, count=2):
                 chosen["video_sources"].append({"material_id": str(material.id)})
                 expected.append((str(material.id), f"target-{index}", f"cover-{index}"))
         strategy_id = create_strategy(
-            session, context=env["context"], name="Native workspace", config=config()
+            session,
+            context=env["context"],
+            name="Native workspace",
+            config=config(**(config_changes or {})),
         )
         version = session.exec(
             select(StrategyVersion).where(StrategyVersion.strategy_id == strategy_id)
@@ -356,6 +366,11 @@ def prepared_native_workspace(job_env, wire, redis_client, materials, count=2):
                 "has_more": False,
             },
             region_response()["data"],
+            {
+                "recommend_assets": [
+                    {"asset_ids": ["cta-watch"], "asset_content": "Watch now"}
+                ]
+            },
         ]
     )
     for _ in range(6):
@@ -506,6 +521,11 @@ def test_native_pending_selection_discovers_identities_without_fake_series(
             ),
             identities([]),
             region_response()["data"],
+            {
+                "recommend_assets": [
+                    {"asset_ids": ["cta-watch"], "asset_content": "Watch now"}
+                ]
+            },
         ]
     )
     for _ in range(4):
@@ -837,6 +857,11 @@ def test_native_selected_image_cover_and_shared_source_are_exact(
                 "has_more": False,
             },
             region_response()["data"],
+            {
+                "recommend_assets": [
+                    {"asset_ids": ["cta-watch"], "asset_content": "Watch now"}
+                ]
+            },
         ]
     )
     for _ in range(8):

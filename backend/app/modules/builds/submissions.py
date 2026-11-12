@@ -138,6 +138,10 @@ def submit_preview(
         )
     ).one_or_none()
     if existing is None:
+        if "native_request" in preview.config:
+            raise DomainError(
+                "native_execution_not_available", "原生预览已冻结；执行链尚未开放"
+            )
         from .copying import validate_copy_submission
         from .creative_units import preview_contract
 

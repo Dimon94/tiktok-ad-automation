@@ -3309,6 +3309,12 @@ export type FrozenTikTokRoute = {
  */
 export type FrozenUnit = {
     /**
+     * Native Request
+     */
+    native_request?: {
+        [key: string]: unknown;
+    } | null;
+    /**
      * Contract Version
      */
     contract_version: 1 | 2;
@@ -7129,6 +7135,12 @@ export type PreviewRequest = {
  * PreviewSummary
  */
 export type PreviewSummary = {
+    /**
+     * Native Request
+     */
+    native_request?: {
+        [key: string]: unknown;
+    } | null;
     /**
      * Copy Group Settings
      */

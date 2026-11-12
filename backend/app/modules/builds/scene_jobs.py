@@ -147,6 +147,13 @@ def ensure_scene_preparation(
         and job.expires_at > now
     ):
         if native_selection is not None:
+            # 旧准备证据可补读新增CTA资源，不重读已核实的身份和Series目录。
+            if "cta" not in job.facts:
+                job.status = "PENDING"
+                job.revision += 1
+                session.add(job)
+                _queue(session, job)
+                return ScenePreparation(job.id, "queued")
             proof = get_capability_evidence(
                 session,
                 context=context,

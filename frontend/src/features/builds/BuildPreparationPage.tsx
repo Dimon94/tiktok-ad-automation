@@ -1,4 +1,3 @@
-import { NativeCheckpointCard } from "./NativeCheckpointCard"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -55,6 +54,7 @@ import { IdentityTargetPicker } from "./IdentityTargetPicker"
 import { ImageBatchConfig } from "./ImageBatchConfig"
 import { imageApi, imageKey, imagePath } from "./imageCompositionApi"
 import { MiniTargetPicker } from "./MiniTargetPicker"
+import { NativeCheckpointCard } from "./NativeCheckpointCard"
 import { preparationLabel } from "./preparationProgress"
 import {
   BuildError,
@@ -178,58 +178,63 @@ function Preparation({
       imageState.data?.preview_ready === true &&
       !imageState.isError &&
       imageState.data.revision === current.revision)
+  const isNative =
+    current?.scene_selection?.kind === "NATIVE_SERIES_DIRECT_VIDEO"
   const previewReady =
     imageReady &&
     current?.status === "READY" &&
     !summary.isFetching &&
     !summary.isError &&
-    minis.isSuccess &&
-    !minis.isFetching &&
-    minis.data.state === "selected" &&
-    identities.isSuccess &&
-    !identities.isFetching &&
-    identities.data.state === "selected" &&
-    targeting.data?.state === "READY" &&
-    !targeting.isFetching &&
-    !targeting.isError &&
-    !targeting.data.unavailable_region_codes?.length
+    (isNative ||
+      (minis.isSuccess &&
+        !minis.isFetching &&
+        minis.data.state === "selected" &&
+        identities.isSuccess &&
+        !identities.isFetching &&
+        identities.data.state === "selected" &&
+        targeting.data?.state === "READY" &&
+        !targeting.isFetching &&
+        !targeting.isError &&
+        !targeting.data.unavailable_region_codes?.length))
   const previewHint = !imageReady
     ? "请完成图片组合、配乐及当前规则应用。预览会逐账户核验投放资格并列出排除广告。"
     : summary.isFetching
       ? "正在核对准备状态…"
       : current?.status !== "READY"
         ? "请先完成剧目和账户准备，再生成预览。"
-        : !current.drama_count
-          ? "推广链接尚未就绪，请点击“解析并准备”重新获取，或补充已有链接；完成后会自动匹配推广小程序。"
-          : !current.account_count
-            ? "请先修正广告账户输入并重新准备。"
-            : minis.isError
-              ? "小程序信息读取失败，请刷新重试。"
-              : minis.isPending || minis.isFetching
-                ? "正在核对推广小程序…"
-                : minis.data?.state === "pending"
-                  ? "请先更新可用小程序并完成选择。"
-                  : minis.data?.state === "unavailable"
-                    ? "当前没有可用小程序，请检查账户授权。"
-                    : minis.data?.state === "conflict"
-                      ? "剧目指向不同小程序，请先核对推广目标。"
-                      : minis.data?.state !== "selected"
-                        ? "请先选择本批次推广小程序，再生成预览。"
-                        : identities.isError
-                          ? "投放身份读取失败，请刷新重试。"
-                          : identities.isPending || identities.isFetching
-                            ? "正在核对投放身份…"
-                            : identities.data?.state === "pending"
-                              ? "请先更新可用投放身份。"
-                              : identities.data?.state === "unavailable"
-                                ? "当前没有可用投放身份，请检查账户授权。"
-                                : identities.data?.state === "stale"
-                                  ? "原投放身份已不可用，请重新选择。"
-                                  : identities.data?.state !== "selected"
-                                    ? "请先选择本批次投放身份，再生成预览。"
-                                    : !previewReady
-                                      ? "请核实受众定向与共同可投国家，再生成预览。"
-                                      : "预览将明确列出可搭建范围与排除原因。"
+        : isNative
+          ? "按当前版本核验目的地、素材、CTA及占用后冻结完整投放计划。"
+          : !current.drama_count
+            ? "推广链接尚未就绪，请点击“解析并准备”重新获取，或补充已有链接；完成后会自动匹配推广小程序。"
+            : !current.account_count
+              ? "请先修正广告账户输入并重新准备。"
+              : minis.isError
+                ? "小程序信息读取失败，请刷新重试。"
+                : minis.isPending || minis.isFetching
+                  ? "正在核对推广小程序…"
+                  : minis.data?.state === "pending"
+                    ? "请先更新可用小程序并完成选择。"
+                    : minis.data?.state === "unavailable"
+                      ? "当前没有可用小程序，请检查账户授权。"
+                      : minis.data?.state === "conflict"
+                        ? "剧目指向不同小程序，请先核对推广目标。"
+                        : minis.data?.state !== "selected"
+                          ? "请先选择本批次推广小程序，再生成预览。"
+                          : identities.isError
+                            ? "投放身份读取失败，请刷新重试。"
+                            : identities.isPending || identities.isFetching
+                              ? "正在核对投放身份…"
+                              : identities.data?.state === "pending"
+                                ? "请先更新可用投放身份。"
+                                : identities.data?.state === "unavailable"
+                                  ? "当前没有可用投放身份，请检查账户授权。"
+                                  : identities.data?.state === "stale"
+                                    ? "原投放身份已不可用，请重新选择。"
+                                    : identities.data?.state !== "selected"
+                                      ? "请先选择本批次投放身份，再生成预览。"
+                                      : !previewReady
+                                        ? "请核实受众定向与共同可投国家，再生成预览。"
+                                        : "预览将明确列出可搭建范围与排除原因。"
   useEffect(() => {
     const ctrl = new AbortController()
     controller.current = ctrl

@@ -5,6 +5,8 @@ from decimal import Decimal
 from math import isfinite
 from typing import Any, Literal
 
+from pydantic import BaseModel, ConfigDict
+
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.builds import CREATE_HIGHEST_VALUE_EVENT
 from app.modules.builds.preview_schemas import FrozenUnit
@@ -94,3 +96,38 @@ def cta_request(frozen: FrozenUnit, selected: set[str]) -> dict[str, Any]:
     if seen != selected:
         raise DomainError("cta_unavailable", "所选 CTA 缺少冻结推荐证据")
     return cta_portfolio(advertiser_id=frozen.advertiser_id, assets=content)
+
+
+# 原生执行计划为独立 tagged revision；历史 Mini FrozenUnit/decoder 原样保留。
+
+
+class FrozenRequestRevision(BaseModel):
+    """Additive JSON revision；Mini 的 V1/V2 payload 和解码器不改写。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    kind: Literal["NATIVE_SERIES_DIRECT_VIDEO"] = "NATIVE_SERIES_DIRECT_VIDEO"
+    revision: Literal["native-series-v1"] = "native-series-v1"
+    draft_revision: int
+    strategy_version_id: str
+    seed: int
+    constraint_revision: str
+    route: dict
+    selection: dict
+    checkpoint: dict
+    materials: list[dict]
+    campaign: dict
+    adgroup: dict
+    ads: list[dict]
+    occupancy: dict
+    config: dict
+
+
+def native_request_digest(payload: dict) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()

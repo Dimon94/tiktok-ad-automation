@@ -1055,3 +1055,62 @@ test("原任务结果待核实的组合不能继续提交", async ({ page }) => 
     page.getByRole("button", { name: "刷新续建预览", exact: true }),
   ).toBeEnabled()
 })
+
+test("原生冻结预览展示全部分配及占用范围", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  Object.assign(api.preview, {
+    native_request: {
+      selection: {
+        advertiser_id: "native-account",
+        native_series_id: "exact-series",
+        regions: ["US"],
+        series_identity: { identity_id: "series-owner" },
+        creative_identity: { identity_id: "creative-owner" },
+      },
+      campaign: { budget: "1000.01", currency: "USD" },
+      adgroup: { target_roas: "1.08" },
+      occupancy: {
+        coverage: "PARTIAL",
+        observed_at: null,
+        published_version: 3,
+        scope_limits: ["仅当前授权账户，不覆盖其他账户或BC"],
+        visible_conflicts: [{ remote_id: "old-group", state: "UNKNOWN" }],
+      },
+      ads: Array.from({ length: 6 }, (_, i) => ({
+        base_ad_no: 1,
+        creative_no: i + 1,
+        text: `Actual copy ${i + 1}`,
+        cta: {
+          recommend_assets: [
+            { asset_ids: ["watch"], asset_content: "Watch now" },
+          ],
+        },
+        materials: [
+          {
+            material_id: "source-video",
+            video_id: "target-vid",
+            image_id: "verified-cover",
+          },
+        ],
+      })),
+    },
+  })
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(
+    page.getByRole("heading", { name: /Series 直接视频投放预览/ }),
+  ).toBeVisible()
+  await expect(page.getByText(/CBO 日预算 1000.01 USD/)).toBeVisible()
+  await expect(page.getByText("Actual copy 6", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("cell", { name: "target-vid", exact: true }),
+  ).toHaveCount(6)
+  await expect(
+    page.getByRole("cell", { name: "verified-cover", exact: true }),
+  ).toHaveCount(6)
+  await expect(
+    page.getByText("仅当前授权账户，不覆盖其他账户或BC", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "创建并立即启用" }),
+  ).toHaveCount(0)
+})

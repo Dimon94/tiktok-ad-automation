@@ -5183,3 +5183,12 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - TDD首红：完整两条素材仍BLOCKED，1 failed/1 passed；接线后2 passed。scope近似错误探针实际失败，恢复源码并核对字节一致；收尾多连接current封面多义检查同时覆盖只读与准备阻断；补充续接检查抓到JSON嵌套修改不落库问题并修复。未声称每分支逐条先红或形式证明。
 - 最终原生与选择专项 **30 passed / 59.70s**；素材/封面/上传/route/并发/Mini工作区回归 **176 passed / 210.23s**。真实PG/Redis，替身仅官方SDK/MCP传输处；前端 TypeScript + Vite production/demo 构建通过，Ruff及diff检查通过。
 - 完整命令、日志和可复现真库演示：[JB-8验收](validation/2026-11-12-jb8-native-material-readiness.md)。真实平台接受性/经营资格为Unknown；无真实业务接口、授权或广告读写。已知旧预览总数上限基线断言未重跑/修改。JB-9～12、独立审查及整个M1验收尚待完成。
+
+## 2026-11-12 JB-9 原生Series准确预览与冻结
+
+- 从e4ddf3c在用户授权的原集成树串行实现，未派下级代理、更新Linear、推送/PR/部署或调用真实业务接口；保留node_modules软链。
+- 原生工作区READY可沿既有预览入口冻结；新鲜native_checkpoint整组正证据、官方地区ID、双身份、实际VID/封面、seed文案、完整CTA、CBO、TargetROAS、ENABLE及route/授权代数均保存。复用原Strategy Structure、BuildUnit/PlannedAd和creative_content_digest；1×6、2×3、30×1及预算不倍增，公开详情与冻结一致。
+- additive native-series-v1 JSON revision及来源引用guard迁移；历史Mini冻结正文不改，草稿revision仍由既有触发器使旧预览OBSOLETE。原生执行明确未开放，交JB-10扩展typed/wire及发送前重核合同。
+- 当前账户精确Series×location交集、显式active阻断、暂停UNKNOWN、已删除inactive、PARTIAL/STALE/UNKNOWN及目录原始查询覆盖如实展示；没有推导平台完整active枚举或跨账户无冲突。沿原目录入口请求更新，不改变同步开关。
+- 真PG/Redis+SDK传输替身工作区与聚焦验证、2项Playwright行为检查、前端生产/demo构建通过；Mini回归84通过，另4项在起点独立源码/新库同样失败（历史夹具/私有替身签名），未扩范围修复。TDD首红及ACTIVE门禁真变异有日志，恢复cmp一致；未声称形式证明。
+- 详情、精确命令、分项结果、JB-10合同及Unknown见[JB-9验证记录](validation/2026-11-12-jb9-native-preview-freeze.md)。本节所在提交为交付tip，仍待协调者独立验收；M1尚未整体完成。

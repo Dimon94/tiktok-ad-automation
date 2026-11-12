@@ -3003,3 +3003,41 @@ test("原生目录首次发现到双身份选择、精确 Series 保存与刷新
     page.getByLabel("creative_identity 授权 BC", { exact: true }),
   ).toHaveValue(bc)
 })
+
+test("原生准备就绪可生成预览且不受Mini链接门禁阻断", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  Object.assign(api.summary, {
+    drama_count: 0,
+    scene_selection: {
+      kind: "NATIVE_SERIES_DIRECT_VIDEO",
+      advertiser_id: "native-account",
+      native_series_id: "exact-series",
+      regions: ["US"],
+      video_sources: [],
+      series_identity: { identity_type: "TT_USER", identity_id: "owner" },
+      creative_identity: { identity_type: "TT_USER", identity_id: "owner" },
+    },
+  })
+  await page.route(`**/build-drafts/${D}/native-checkpoint`, (route) =>
+    route.fulfill({
+      json: {
+        state: "READY",
+        materials_ready: true,
+        reason_codes: [],
+        evidence_ids: [],
+        selection: api.summary.scene_selection,
+      },
+    }),
+  )
+  await page.goto(`/tenants/${tenant}/build-drafts/${D}?bc_id=${bc}`)
+  await expect(page.getByRole("button", { name: /生成.*预览/ })).toBeEnabled()
+  await page.getByRole("button", { name: /生成.*预览/ }).click()
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (x) => x.method === "POST" && x.path.endsWith("/previews"),
+        ).length,
+    )
+    .toBe(1)
+})

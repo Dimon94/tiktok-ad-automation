@@ -3,6 +3,10 @@ from fastapi.responses import JSONResponse
 
 # Register exact business codes here; never infer status from provider text.
 ERROR_HTTP_STATUS: dict[str, int] = {
+    "native_preview_not_ready": 409,
+    "native_structure_unsupported": 422,
+    "native_series_active_conflict": 409,
+    "native_execution_not_available": 409,
     "copy_not_found": 404,
     "copy_source_contract_obsolete": 409,
     "copy_source_read_failed": 502,

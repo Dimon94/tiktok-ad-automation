@@ -84,7 +84,7 @@ def _pending(job: SceneJob) -> list[SceneResource]:
                 if job.native_selection.get("series_identity")
                 else ()
             )
-            + ("regions",)
+            + ("regions", "cta")
         )
     return [resource for resource in required if not _complete(job, resource)]
 
