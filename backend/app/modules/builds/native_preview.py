@@ -373,6 +373,7 @@ def generate(session, *, context, draft):
 
 
 def summary(session, *, context, preview):
+    from .execution_models import Submission
     from .route_views import execution_route_view
 
     p = FrozenRequestRevision.model_validate(
@@ -382,7 +383,12 @@ def summary(session, *, context, preview):
         native_request=p,
         contract_version=2,
         media_kind="VIDEO",
-        submission_id=None,
+        submission_id=session.exec(
+            select(Submission.id).where(
+                Submission.preview_id == preview.id,
+                Submission.tenant_id == context.tenant_id,
+            )
+        ).one_or_none(),
         preview_id=preview.id,
         draft_id=preview.draft_id,
         draft_revision=preview.draft_revision,

@@ -285,6 +285,13 @@ def finalize_submission(
             row.status = "NEEDS_REVIEW"
         elif row.status in {"QUEUED", "COMPLETED", "PARTIAL", "FAILED"}:
             row.status = "RUNNING"
+        if row.status == "COMPLETED":
+            from .preview_models import BuildPreview
+
+            preview = session.get(BuildPreview, row.preview_id)
+            if "native_request" in preview.config:
+                # 撤权后的内部收尾同样不能以创建回执绕过原生核验。
+                row.status = "NEEDS_REVIEW"
         row.updated_at = datetime.now(UTC)
         session.add(row)
 

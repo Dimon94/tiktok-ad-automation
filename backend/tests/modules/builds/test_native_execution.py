@@ -1,0 +1,413 @@
+# ruff: noqa: F811, ARG001
+"""Frozen workspace submission through the SDK wire; no business-service doubles."""
+
+import json
+from uuid import uuid4
+
+import pytest
+from sqlmodel import Session, select
+from urllib3.response import HTTPResponse
+
+from app.modules.builds import execution, previews, submissions
+from app.modules.builds.execution_models import ExecutionStep
+from app.modules.builds.models import BuildDraft
+from tests.modules.builds.scene_jobs import test_native_series as native
+from tests.modules.builds.scene_jobs.test_native_series import prepared_native_workspace
+from tests.modules.builds.test_native_preview import (  # noqa: F401
+    job_env,
+    scene_env,
+    wire,
+)
+
+
+@pytest.fixture
+def retain_build_history(isolated_strategy_database):
+    return isolated_strategy_database[0]
+
+
+@pytest.fixture
+def source_env(
+    monkeypatch, redis_client, isolated_strategy_database, request, retain_build_history
+):
+    yield from native.source_env.__wrapped__(
+        monkeypatch, redis_client, isolated_strategy_database, request
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "cta_unknown",
+        "campaign_reject",
+        "group_reject",
+        "campaign_unknown",
+        "revision",
+        "revision_after_cta",
+    ],
+)
+def test_native_six_creates(
+    job_env, wire, redis_client, monkeypatch, retain_build_history, failure
+):
+    draft_id, _, _ = prepared_native_workspace(
+        job_env,
+        wire,
+        redis_client,
+        True,
+        count=6,
+        config_changes={
+            "group_generation_mode": "FIXED",
+            "group_count": 1,
+            "group_material_allocation": "SHARED",
+            "max_materials_per_group": None,
+            "ads_per_group": 1,
+            "creative_count": 6,
+            "budget": "1000.01",
+        },
+    )
+    context = job_env["context"]
+    with Session(native.engine) as s, s.begin():
+        draft = s.get(BuildDraft, draft_id)
+        pid = previews.generate_preview(
+            s, context=context, draft_id=draft_id, expected_revision=draft.revision
+        )
+        frozen_payload = previews.get_preview_summary(
+            s, context=context, preview_id=pid
+        ).native_request
+    # 初次提交真实并发竞争，而非先创建后仅验证重放。
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.core.errors import DomainError
+
+    request_id = uuid4()
+
+    def submit_again(index):
+        with Session(native.engine) as s, s.begin():
+            return submissions.submit_preview(
+                s,
+                context=context,
+                preview_id=pid,
+                request_id=request_id if index == 0 else uuid4(),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(submit_again, range(2)))
+    receipt = receipts[0]
+    assert receipts[1].submission_id == receipt.submission_id
+    with Session(native.engine) as s, s.begin():
+        with pytest.raises(DomainError, match="幂等键"):
+            submissions.submit_preview(
+                s, context=context, preview_id=uuid4(), request_id=request_id
+            )
+        while not submissions.expand_submission(
+            s, context=context, submission_id=receipt.submission_id
+        ):
+            pass
+        steps = s.exec(
+            select(ExecutionStep).where(
+                ExecutionStep.submission_id == receipt.submission_id
+            )
+        ).all()
+        ids = {
+            kind: [x.id for x in steps if x.kind == kind]
+            for kind in ["MATERIAL", "CTA", "CAMPAIGN", "ADGROUP", "AD"]
+        }
+    calls = []
+
+    def request(pool, method, url, **kw):
+        body = json.loads(kw["body"])
+        calls.append((url, body))
+        if failure == "campaign_unknown" and "/campaign/" in url:
+            raise TimeoutError("offline transport response lost")
+        if (failure == "cta_unknown" and "portfolio" in url) or (
+            failure == "group_reject" and "/adgroup/" in url
+        ):
+            return HTTPResponse(
+                body=json.dumps(
+                    {
+                        "code": 40002,
+                        "message": "fixture rejected",
+                        "request_id": "rejected-1",
+                    }
+                ).encode(),
+                status=200,
+            )
+        if failure == "campaign_reject" and "/campaign/" in url:
+            return HTTPResponse(
+                body=json.dumps(
+                    {
+                        "code": 41021,
+                        "message": "fixture rejected",
+                        "request_id": "rejected-2",
+                    }
+                ).encode(),
+                status=200,
+            )
+        if failure == "revision_after_cta" and "portfolio" in url:
+            # 物理发送已退出事务；在 CTA 回执与下一层发送之间修改输入。
+            with Session(native.engine) as changed, changed.begin():
+                draft = changed.get(BuildDraft, draft_id)
+                draft.revision += 1
+                changed.add(draft)
+        key = (
+            "creative_portfolio_id"
+            if "portfolio" in url
+            else "campaign_id"
+            if "/campaign/" in url
+            else "adgroup_id"
+            if "/adgroup/" in url
+            else "smart_plus_ad_id"
+        )
+        return HTTPResponse(
+            body=json.dumps(
+                {
+                    "code": 0,
+                    "data": {key: f"remote-{len(calls)}"},
+                    "request_id": f"r-{len(calls)}",
+                }
+            ).encode(),
+            status=200,
+        )
+
+    monkeypatch.setattr("urllib3.PoolManager.request", request)
+    monkeypatch.setattr(execution, "_require_bounded_worker", lambda: None)
+    if failure == "revision":
+        with Session(native.engine) as s, s.begin():
+            draft = s.get(BuildDraft, draft_id)
+            draft.revision += 1
+            s.add(draft)
+    for kind in ids:
+        for sid in ids[kind]:
+            outcome = execution.process_step(
+                database_engine=native.engine,
+                redis_client=redis_client,
+                context=context,
+                step_id=sid,
+                revision=0,
+            )
+            with Session(native.engine) as check:
+                saved = check.get(ExecutionStep, sid)
+                if failure is None:
+                    assert outcome == "SUCCEEDED", (
+                        kind,
+                        saved.error_code,
+                        saved.resolved,
+                    )
+                if saved.status == "UNKNOWN":
+                    # 同一消息重放不能再次 create。
+                    assert (
+                        execution.process_step(
+                            database_engine=native.engine,
+                            redis_client=redis_client,
+                            context=context,
+                            step_id=sid,
+                            revision=0,
+                        )
+                        == "UNKNOWN"
+                    )
+    if failure:
+        expected_calls = {
+            "cta_unknown": 1,
+            "campaign_reject": 2,
+            "group_reject": 3,
+            "campaign_unknown": 2,
+            "revision": 0,
+            "revision_after_cta": 1,
+        }[failure]
+        assert len(calls) == expected_calls
+        with Session(native.engine) as s:
+            actual = s.exec(
+                select(ExecutionStep).where(
+                    ExecutionStep.submission_id == receipt.submission_id
+                )
+            ).all()
+            created = [x for x in actual if x.remote_id]
+            assert (
+                len(created)
+                == {
+                    "cta_unknown": 0,
+                    "campaign_reject": 1,
+                    "group_reject": 2,
+                    "campaign_unknown": 1,
+                    "revision": 0,
+                    "revision_after_cta": 1,
+                }[failure]
+            )
+            result = submissions.get_submission(
+                s, context=context, submission_id=receipt.submission_id
+            )
+            assert result.status in (
+                {"FAILED"}
+                if failure in {"campaign_reject", "revision", "revision_after_cta"}
+                else {"PARTIAL", "NEEDS_REVIEW"}
+            )
+        return
+
+    assert len(calls) == 9
+    campaign = next(b for u, b in calls if "/campaign/" in u)
+    assert campaign["budget"] == 1000.01 and campaign["app_promotion_type"] == "MINIS"
+    group = next(b for u, b in calls if "/adgroup/" in u)
+    assert (
+        group["promotion_type"] == "NATIVE_SERIES"
+        and group["native_series_id"] == "exact-series"
+    )
+    assert (
+        group["optimization_event"] == "AD_REVENUE_VALUE"
+        and group["vbo_window"] == "ZERO_DAY"
+    )
+    assert "budget" not in group and "series_identity" not in group
+    assert {
+        k: group.get(k) for k in frozen_payload["selection"]["series_identity"]
+    } == frozen_payload["selection"]["series_identity"]
+    assert group["roas_bid"] == float(frozen_payload["adgroup"]["target_roas"])
+    for field in (
+        "targeting_spec",
+        "placements",
+        "placement_type",
+        "optimization_goal",
+        "deep_bid_type",
+        "bid_type",
+        "schedule_type",
+    ):
+        assert group[field] == frozen_payload["adgroup"][field]
+    assert group["schedule_start_time"]
+    assert group["identity_id"]
+    ads = [b for u, b in calls if "/ad/create/" in u]
+    assert len(ads) == 6 and len({b["ad_text_list"][0]["ad_text"] for b in ads}) == 6
+    assert all(b["creative_list"] == ads[0]["creative_list"] for b in ads)
+    assert len(ads[0]["creative_list"]) == 6
+    assert {a["ad_text_list"][0]["ad_text"] for a in ads} == {
+        a["text"] for a in frozen_payload["ads"]
+    }
+    for c, m in zip(
+        ads[0]["creative_list"], frozen_payload["ads"][0]["materials"], strict=True
+    ):
+        info = c["creative_info"]
+        assert info["ad_format"] == "SINGLE_VIDEO"
+        assert info["video_info"]["video_id"] == m["video_id"]
+        assert info["image_info"] == [{"web_uri": m["image_id"]}]
+        assert {
+            k: info.get(k) for k in frozen_payload["selection"]["creative_identity"]
+        } == frozen_payload["selection"]["creative_identity"]
+    assert {a["ad_configuration"]["call_to_action_id"] for a in ads} == {"remote-1"}
+    for url, body in calls:
+        if "portfolio" not in url:
+            assert body["operation_status"] == "ENABLE"
+        assert not {
+            "landing_page_url_list",
+            "distribution_link",
+            "call_to_action_list",
+            "interactive_add_on_list",
+            "minis_id",
+        }.intersection(body)
+    with Session(native.engine) as s:
+        actual = s.exec(
+            select(ExecutionStep).where(
+                ExecutionStep.submission_id == receipt.submission_id
+            )
+        ).all()
+        assert {x.remote_id for x in actual if x.remote_id} == {
+            f"remote-{i}" for i in range(1, 10)
+        }
+        assert (
+            submissions.get_submission(
+                s, context=context, submission_id=receipt.submission_id
+            ).status
+            != "COMPLETED"
+        )
+
+    from app.models import User
+    from app.modules.builds.dispatch import finalize_submission, process_unit
+    from app.modules.builds.execution_models import Submission
+
+    process_unit(
+        database_engine=native.engine,
+        context=context,
+        payload={"unit_id": str(actual[0].unit_id), "revision": 0},
+    )
+    with Session(native.engine) as s, s.begin():
+        actor = s.get(User, context.actor_id)
+        actor.is_active = False
+        s.add(actor)
+    finalize_submission(
+        database_engine=native.engine,
+        context=context,
+        submission_id=receipt.submission_id,
+    )
+    with Session(native.engine) as s:
+        assert s.get(Submission, receipt.submission_id).status == "NEEDS_REVIEW"
+
+
+@pytest.mark.parametrize(
+    "change", ["digest", "obsolete", "selection", "revision", "scope", "active"]
+)
+def test_native_submission_rejects_changed_freeze(
+    job_env, wire, redis_client, retain_build_history, change
+):
+    import copy
+    from datetime import UTC, datetime
+
+    from app.core.errors import DomainError
+    from app.modules.accounts.models import TikTokConnection
+    from app.modules.ads.models import AdObject
+    from app.modules.builds.preview_models import BuildPreview
+
+    draft_id, _, _ = prepared_native_workspace(job_env, wire, redis_client, True)
+    context = job_env["context"]
+    with Session(native.engine) as s, s.begin():
+        draft = s.get(BuildDraft, draft_id)
+        pid = previews.generate_preview(
+            s, context=context, draft_id=draft_id, expected_revision=draft.revision
+        )
+        preview = s.get(BuildPreview, pid)
+        if change == "digest":
+            from sqlalchemy.exc import ProgrammingError
+
+            with pytest.raises(ProgrammingError, match="immutable"), s.begin_nested():
+                preview.content_digest = "bad"
+                s.add(preview)
+                s.flush()
+            return
+        elif change == "obsolete":
+            preview.status = "OBSOLETE"
+            s.add(preview)
+        elif change == "selection":
+            value = copy.deepcopy(draft.scene_selection)
+            value["native_series_id"] = "another-series"
+            draft.scene_selection = value
+            s.add(draft)
+        elif change == "revision":
+            draft.revision += 1
+            s.add(draft)
+        elif change == "scope":
+            connection = s.get(TikTokConnection, job_env["connection_id"])
+            connection.authorization_revision += 1
+            s.add(connection)
+        else:
+            locations = preview.config["native_request"]["adgroup"]["location_ids"]
+            s.add(
+                AdObject(
+                    tenant_id=context.tenant_id,
+                    advertiser_id="actual-account",
+                    kind="adgroup",
+                    remote_id="existing-active",
+                    ad_type="SMART_PLUS",
+                    name="fixture",
+                    configuration={
+                        "native_series_id": "exact-series",
+                        "targeting_spec": {"location_ids": locations},
+                    },
+                    operation_status="ENABLE",
+                    delivery_status="ACTIVE",
+                    observed_at=datetime.now(UTC),
+                    published_version=1,
+                )
+            )
+        s.flush()
+        with pytest.raises(DomainError):
+            submissions.submit_preview(
+                s, context=context, preview_id=pid, request_id=uuid4()
+            )
+        from app.modules.builds.execution_models import Submission
+
+        assert not s.exec(select(Submission).where(Submission.preview_id == pid)).all()

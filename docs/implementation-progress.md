@@ -5192,3 +5192,11 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 当前账户精确Series×location交集、显式active阻断、暂停UNKNOWN、已删除inactive、PARTIAL/STALE/UNKNOWN及目录原始查询覆盖如实展示；没有推导平台完整active枚举或跨账户无冲突。沿原目录入口请求更新，不改变同步开关。
 - 真PG/Redis+SDK传输替身工作区与聚焦验证、2项Playwright行为检查、前端生产/demo构建通过；Mini回归84通过，另4项在起点独立源码/新库同样失败（历史夹具/私有替身签名），未扩范围修复。TDD首红及ACTIVE门禁真变异有日志，恢复cmp一致；未声称形式证明。
 - 详情、精确命令、分项结果、JB-10合同及Unknown见[JB-9验证记录](validation/2026-11-12-jb9-native-preview-freeze.md)。本节所在提交为交付tip，仍待协调者独立验收；M1尚未整体完成。
+
+## 2026-11-12 JB-10 原生Series沿现有执行链直接ENABLE创建
+
+- 从 `312468f7ae2188b3f7fb6917612004fe7100d23f` 在指定 `feat/jb5-native-series-m1` 单树串行实施，未派下级代理；本节所在提交为交付tip。不更新Linear、不推送/PR/部署、不调用真实平台，保留untracked node_modules软链。
+- 原生冻结计划接入现有Submission/Expansion/ExecutionStep/官方SDK执行器，新增typed原生组/广告意图、严格decoder和本地冻结编译；删除原执行不可用门禁。CTA及三级对象直接ENABLE；1×6为6个API Ad，一份CBO预算，双身份/Series/地区/视频/封面/单条文案/动态CTA在SDK传输层验证。
+- 受理及每次物理发送边界重核digest、revision、route/授权、账户及当前原生SceneContext和素材事实；显式ACTIVE冲突阻断，未知覆盖保持原限制。沿既有write-once/锁/回执保全；原生明确拒绝停止自动重试，UNKNOWN不盲create。创建回执的原生完成投影及撤权内部收尾保持NEEDS_REVIEW，交JB-11真正逐项MATCH。
+- 原生执行+预览28 passed；既有相关SDK/Mini/编译/提交/执行状态124 passed。旧Mini执行夹具5项在身份目录准备处报错，起点独立源码/新库首项同错；未改合同迎合。实际错误探针发送DISABLE被检查拒绝并恢复字节一致；完整证据及恢复后补跑见[JB-10验收](validation/2026-11-12-jb10-native-create.md)。无UI变化，无形式证明或真实平台接受声明。
+- JB-11消费稳定PlannedAd base_ad_no/creative_no、native-series-v1、各步骤request_body/digest/attempt、真实远端ID和StepEvidence；须以三级/逐创意全MATCH替换完成门禁。原生回读恢复与取消仍交JB-11/JB-12，整个M1未完成。

@@ -22,6 +22,8 @@ from app.integrations.tiktok.contracts.builds import (
     FrozenModel,
     Id,
     IdentityFields,
+    NativeAdCreate,
+    NativeAdGroupCreate,
     VideoCreative,
 )
 from app.integrations.tiktok.contracts.common import (
@@ -55,6 +57,10 @@ class _Targeting(FrozenModel):
 
 
 class _AdGroupBody(AdGroupCreate):
+    name: Id = Field(alias="adgroup_name")
+
+
+class _NativeAdGroupBody(NativeAdGroupCreate):
     name: Id = Field(alias="adgroup_name")
 
 
@@ -114,6 +120,11 @@ class _AdBody(FrozenModel):
     ad_text_list: tuple[_Text, ...] = Field(min_length=1, max_length=5)
     landing_page_url_list: tuple[_Url, ...] = Field(min_length=1, max_length=1)
     ad_configuration: _AdConfiguration
+
+
+class _NativeAdBody(_AdBody):
+    landing_page_url_list: None = None
+    ad_text_list: tuple[_Text, ...] = Field(min_length=1, max_length=1)
 
 
 class _CtaBody(FrozenModel):
@@ -176,10 +187,19 @@ def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
             raise _invalid("targeting_spec", values)
         targeting = _Targeting.model_validate(values.pop("targeting_spec", None))
         values.update(targeting.model_dump(exclude_none=True))
-        parsed_group = _AdGroupBody.model_validate(values)
-        return AdGroupCreate.model_validate(parsed_group.model_dump())
+        group_type = (
+            _NativeAdGroupBody
+            if values.get("promotion_type") == "NATIVE_SERIES"
+            else _AdGroupBody
+        )
+        intent_type = (
+            NativeAdGroupCreate if group_type is _NativeAdGroupBody else AdGroupCreate
+        )
+        parsed_group = group_type.model_validate(values)
+        return intent_type.model_validate(parsed_group.model_dump())
     if kind == "AD":
-        ad = _AdBody.model_validate(values)
+        native = "landing_page_url_list" not in values
+        ad = (_NativeAdBody if native else _AdBody).model_validate(values)
         info = ad.creative_list[0].creative_info
         identity = (
             info.identity_type,
@@ -196,7 +216,7 @@ def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
             for item in ad.creative_list
         ):
             raise _invalid("creative_list.identity", values["creative_list"])
-        return AdCreate(
+        return (NativeAdCreate if native else AdCreate)(
             advertiser_id=ad.advertiser_id,
             adgroup_id=ad.adgroup_id,
             name=ad.ad_name,
@@ -210,7 +230,9 @@ def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
             else None,
             dark_post_status=ad.ad_configuration.dark_post_status,
             product_info_enabled=ad.ad_configuration.product_info_enabled,
-            landing_page_url=ad.landing_page_url_list[0].landing_page_url,
+            landing_page_url=None
+            if native
+            else ad.landing_page_url_list[0].landing_page_url,
             portfolio_id=ad.ad_configuration.call_to_action_id,
             assets=tuple(
                 (
@@ -301,7 +323,15 @@ def encode_intent(intent: CreateIntent) -> dict[str, object]:
             "ad_text_list": [
                 {"ad_text": text} for text in intent.text_variants or (intent.text,)
             ],
-            "landing_page_url_list": [{"landing_page_url": intent.landing_page_url}],
+            **(
+                {
+                    "landing_page_url_list": [
+                        {"landing_page_url": intent.landing_page_url}
+                    ]
+                }
+                if intent.landing_page_url is not None
+                else {}
+            ),
             "ad_configuration": {
                 "call_to_action_id": intent.portfolio_id,
                 **{

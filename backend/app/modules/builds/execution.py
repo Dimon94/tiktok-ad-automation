@@ -133,12 +133,25 @@ def _frozen(session: Session, context: TenantContext, claim: StepClaim) -> Froze
         unit.frozen.timezone,
     ):
         raise DomainError("account_metadata_changed", "账户币种或时区已变化")
+    if unit.frozen.native_request is not None:
+        from .native_execution import validate
+        from .preview_models import BuildPreview
+
+        validate(
+            session,
+            context=context,
+            preview=session.get(BuildPreview, claim.preview_id),
+            route=route,
+        )
     return unit.frozen
 
 
 def _current_scene(
     session: Session, context: TenantContext, frozen: FrozenUnit
 ) -> None:
+    if frozen.native_request is not None:
+        # _frozen 在每次物理发送边界已复核原生 SceneContext 和当前 revision。
+        return
     creative_info = frozen.scene_snapshot.get("creative_fields", {}).get(
         "creative_info", {}
     )
@@ -278,6 +291,17 @@ def prepare_request(
     """Only local reads / durable material preparation; never calls an SDK."""
     step = session.get(ExecutionStep, claim.step_id)
     assert step
+    if frozen.native_request is not None:
+        from .native_execution import prepare
+
+        return prepare(
+            session,
+            step=step,
+            frozen=frozen,
+            parent_id=_parent(session, step)
+            if step.kind in {"ADGROUP", "AD"}
+            else None,
+        )
     snapshot = frozen.scene_snapshot
     if step.kind == "CTA":
         first = session.exec(

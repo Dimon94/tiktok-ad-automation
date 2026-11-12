@@ -483,6 +483,12 @@ def record_rejected(
     count = previous + 1 if type(previous) is int and previous >= 0 else 1
     counts[key] = count
     retryable = count <= _BUSINESS_REJECTION_RETRIES[remote_code]
+    from .preview_models import BuildUnit
+
+    unit = session.get(BuildUnit, step.unit_id)
+    if unit is not None and "native_request" in unit.scene_snapshot:
+        # 原生明确拒绝保留原请求和证据，由操作者处理，不自动重试拒绝。
+        retryable = False
     delay = min(30, 5 * 2 ** (count - 1))
     step.resolved = {**step.resolved, "business_rejection_counts": counts}
     evidence(

@@ -138,10 +138,6 @@ def submit_preview(
         )
     ).one_or_none()
     if existing is None:
-        if "native_request" in preview.config:
-            raise DomainError(
-                "native_execution_not_available", "原生预览已冻结；执行链尚未开放"
-            )
         from .copying import validate_copy_submission
         from .creative_units import preview_contract
 
@@ -161,6 +157,10 @@ def submit_preview(
         verify_route(
             session, context=context, route=route, advertiser_id=None, capability="read"
         )
+        if "native_request" in preview.config:
+            from .native_execution import validate
+
+            validate(session, context=context, preview=preview, route=route)
         bc = session.get(
             TenantBC, (context.tenant_id, preview.bc_id), populate_existing=True
         )
@@ -789,6 +789,9 @@ def get_submission(
         status = "QUEUED"
     if row.expanded and scope["submitted_c"] == 0:
         status = "COMPLETED"
+    if "native_request" in preview.config and status == "COMPLETED":
+        # 原生回执只证明已创建；JB-11 必须以三级及逐创意 MATCH 替换此核验门禁。
+        status = "NEEDS_REVIEW"
     planned = ObjectCounts(
         campaign_count=scope["planned_c"],
         adgroup_count=scope["planned_g"],
