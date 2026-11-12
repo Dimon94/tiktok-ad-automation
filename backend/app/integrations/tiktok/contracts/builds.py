@@ -359,6 +359,17 @@ class NativeAdCreate(AdCreate):
         return self
 
 
+class NativeAdGroupObservedFacts(NativeAdGroupCreate):
+    """平台实际枚举保留为证据；创建枚举合同不随读回放宽。"""
+
+    optimization_event: Id
+    operation_status: Id
+
+
+class NativeAdObservedFacts(NativeAdCreate):
+    operation_status: Id
+
+
 class CtaAsset(FrozenModel):
     asset_ids: tuple[Id, ...] = Field(min_length=1, max_length=50)
     asset_content: Id
@@ -402,11 +413,13 @@ class BuildRecord(FrozenModel):
     intent: CreateIntent | None
     operation_status: Id | None
     missing_fields: tuple[Id, ...]
+    observed_native: NativeAdGroupObservedFacts | NativeAdObservedFacts | None = None
     observed_adgroup: AdGroupObservedFacts | None = None
     review_status: Id | None = None
 
 
 class BuildReadQuery(FrozenModel):
+    native_series: bool = False
     intent: CreateIntent
     remote_id: Id | None = None
     page: int = Field(default=1, strict=True, ge=1, le=1000)

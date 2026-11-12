@@ -265,6 +265,32 @@ def record_created(session: Session, *, claim: StepClaim, result: CreatedObject)
         from app.modules.builds.created_directory import publish_created_object
 
         publish_created_object(session, step=step, route=claim.route)
+        unit = session.get(BuildUnit, step.unit_id)
+        if (
+            step.kind in {"CAMPAIGN", "ADGROUP", "AD"}
+            and "native_request" in unit.scene_snapshot
+        ):
+            from uuid import uuid5
+
+            key = step.step_key + ":readback"
+            read_id = uuid5(step.submission_id, key)
+            if session.get(ExecutionStep, read_id) is None:
+                session.add(
+                    ExecutionStep(
+                        id=read_id,
+                        tenant_id=step.tenant_id,
+                        submission_id=step.submission_id,
+                        preview_id=step.preview_id,
+                        bc_id=step.bc_id,
+                        unit_id=step.unit_id,
+                        kind="READBACK",
+                        step_key=key,
+                        parent_step_id=step.id,
+                        group_id=step.group_id,
+                        planned_ad_id=step.planned_ad_id,
+                    )
+                )
+                session.flush()
     return step.status
 
 

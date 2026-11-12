@@ -16,6 +16,10 @@ from app.integrations.tiktok.contracts.builds import (
     BuildPage,
     BuildReadQuery,
     BuildRecord,
+    NativeAdCreate,
+    NativeAdGroupCreate,
+    NativeAdGroupObservedFacts,
+    NativeAdObservedFacts,
     VideoCreative,
 )
 from app.integrations.tiktok.contracts.common import (
@@ -137,6 +141,8 @@ def _project_creative(shape, actual, path, missing):
             common["image_info"] = [{"web_uri": None}]
     elif info.get("ad_format") == "CAROUSEL_ADS":
         common.update(image_info=[{"web_uri": None}], music_info={"music_id": None})
+    if info.get("identity_authorized_bc_id") is not None:
+        common["identity_authorized_bc_id"] = None
     return _project({"creative_info": common}, actual, path, missing)
 
 
@@ -279,7 +285,39 @@ def parse_page(*, query: BuildReadQuery, response: McpBusinessResponse) -> Build
         if type(status) is not str or not status.strip():
             status = None
         missing: list[str] = []
+        if (
+            "secondary_status" in row
+            and row["secondary_status"] is not None
+            and _safe_status(row["secondary_status"]) is None
+        ):
+            missing.append("secondary_status")
         projected = _project(shape, row, "", missing)
+        native = isinstance(query.intent, (NativeAdGroupCreate, NativeAdCreate))
+        # 原生 CBO/直接目的地的互斥字段也必须保留，不能投影掉违规事实。
+        if native and isinstance(projected, dict):
+            for key in (
+                "budget",
+                "budget_mode",
+                "minis_id",
+                "landing_page_url_list",
+                "distribution_link",
+                "identity_authorized_bc_id",
+                "schedule_end_time",
+                "dayparting",
+            ):
+                if key in row and row[key] is not None:
+                    projected[key] = row[key]
+            if (
+                kind == "ADGROUP"
+                and isinstance(row.get("targeting_spec"), dict)
+                and isinstance(projected.get("targeting_spec"), dict)
+            ):
+                from .request_compiler import TARGETING_FIELDS
+
+                for key in TARGETING_FIELDS:
+                    if key in row["targeting_spec"]:
+                        projected["targeting_spec"][key] = row["targeting_spec"][key]
+        observed_native = None
         observed_adgroup = None
         # Smart+组接口缺status时仅保留其余实际观察到的完整typed字段，不补请求默认值。
         if (
@@ -301,13 +339,22 @@ def parse_page(*, query: BuildReadQuery, response: McpBusinessResponse) -> Build
         if not missing and isinstance(projected, dict):
             try:
                 intent = _video_omissions(
-                    query.intent, decode_observed_intent(kind, projected), missing
+                    query.intent,
+                    decode_observed_intent(kind, projected, native_observation=native),
+                    missing,
                 )
             except ValidationError as error:
                 missing.extend(
                     ".".join(str(part) for part in item["loc"]) or "intent"
                     for item in error.errors()
                 )
+        if native and intent is not None:
+            observed_native = (
+                intent
+                if isinstance(intent, NativeAdGroupObservedFacts)
+                else NativeAdObservedFacts.model_validate(intent.model_dump())
+            )
+            intent = None
         records.append(
             BuildRecord(
                 remote_id=remote_id,
@@ -315,6 +362,7 @@ def parse_page(*, query: BuildReadQuery, response: McpBusinessResponse) -> Build
                 operation_status=status,
                 missing_fields=tuple(sorted(set(missing))),
                 observed_adgroup=observed_adgroup,
+                observed_native=observed_native,
                 review_status=_safe_status(row.get("secondary_status")),
             )
         )
@@ -357,6 +405,10 @@ def compare_record(
 ) -> Literal["MATCH", "MISMATCH", "INCOMPLETE"]:
     if query.remote_id is not None and record.remote_id != query.remote_id:
         return "MISMATCH"
+    if record.review_status and any(
+        token in record.review_status for token in ("REJECT", "DISAPPROV", "DENY")
+    ):
+        return "MISMATCH"
     # 明确停用优先于缺字段：不能把已知状态不一致隐藏成仅证据不足。
     if (
         query.intent.kind != "CTA"
@@ -364,6 +416,17 @@ def compare_record(
         and record.operation_status != "ENABLE"
     ):
         return "MISMATCH"
+    if record.observed_native is not None:
+        if record.missing_fields:
+            return "INCOMPLETE"
+        expected = query.intent.model_dump()
+        actual = record.observed_native.model_dump()
+        if isinstance(query.intent, NativeAdGroupCreate) and (
+            expected["optimization_event"] == "AD_REVENUE_VALUE"
+            and actual["optimization_event"] == "IMPRESSION_LEVEL_AD_REVENUE"
+        ):
+            expected["optimization_event"] = actual["optimization_event"]
+        return "MATCH" if _equal(expected, actual) else "MISMATCH"
     if record.intent is None or record.missing_fields:
         return "INCOMPLETE"
     expected = query.intent.model_dump()
@@ -444,3 +507,28 @@ def with_adgroup_status(*, record: BuildRecord, status: AdGroupStatus) -> BuildR
             else record.review_status,
         }
     )
+
+
+def record_differences(query: BuildReadQuery, record: BuildRecord) -> list[str]:
+    """只返回差异路径；原始观察保存在同一 candidate 的强类型 record 内。"""
+    paths = list(record.missing_fields)
+    observed = record.observed_native or record.intent
+    if observed is not None:
+        left, right = query.intent.model_dump(), observed.model_dump()
+        for key in left.keys() | right.keys():
+            if not _equal(left.get(key), right.get(key)):
+                if (
+                    key == "optimization_event"
+                    and isinstance(query.intent, NativeAdGroupCreate)
+                    and (left.get(key), right.get(key))
+                    == ("AD_REVENUE_VALUE", "IMPRESSION_LEVEL_AD_REVENUE")
+                ):
+                    continue
+                paths.append(key)
+    if query.remote_id != record.remote_id:
+        paths.append("remote_id")
+    if record.review_status and any(
+        t in record.review_status for t in ("REJECT", "DISAPPROV", "DENY")
+    ):
+        paths.append("review_status")
+    return sorted(set(paths))

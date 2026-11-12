@@ -47,7 +47,13 @@ def source_env(
     ],
 )
 def test_native_six_creates(
-    job_env, wire, redis_client, monkeypatch, retain_build_history, failure
+    job_env,
+    wire,
+    redis_client,
+    monkeypatch,
+    retain_build_history,
+    failure,
+    readback=None,
 ):
     draft_id, _, _ = prepared_native_workspace(
         job_env,
@@ -241,6 +247,20 @@ def test_native_six_creates(
                 if failure in {"campaign_reject", "revision", "revision_after_cta"}
                 else {"PARTIAL", "NEEDS_REVIEW"}
             )
+        if readback == "partial":
+            from tests.modules.builds.test_native_readback_timeline import (
+                reconcile_created,
+            )
+
+            reconcile_created(
+                native.engine,
+                context,
+                redis_client,
+                monkeypatch,
+                receipt.submission_id,
+                calls,
+                readback,
+            )
         return
 
     assert len(calls) == 9
@@ -316,6 +336,19 @@ def test_native_six_creates(
             != "COMPLETED"
         )
 
+    if readback:
+        from tests.modules.builds.test_native_readback_timeline import reconcile_created
+
+        reconcile_created(
+            native.engine,
+            context,
+            redis_client,
+            monkeypatch,
+            receipt.submission_id,
+            calls,
+            readback,
+        )
+
     from app.models import User
     from app.modules.builds.dispatch import finalize_submission, process_unit
     from app.modules.builds.execution_models import Submission
@@ -335,7 +368,11 @@ def test_native_six_creates(
         submission_id=receipt.submission_id,
     )
     with Session(native.engine) as s:
-        assert s.get(Submission, receipt.submission_id).status == "NEEDS_REVIEW"
+        status = s.get(Submission, receipt.submission_id).status
+        if readback:
+            assert status == ("COMPLETED" if readback == "match" else "NEEDS_REVIEW")
+        else:
+            assert status in {"RUNNING", "NEEDS_REVIEW"}
 
 
 @pytest.mark.parametrize(
@@ -411,3 +448,20 @@ def test_native_submission_rejects_changed_freeze(
         from app.modules.builds.execution_models import Submission
 
         assert not s.exec(select(Submission).where(Submission.preview_id == pid)).all()
+
+
+@pytest.mark.parametrize(
+    "scenario", ["match", "difference", "rejected", "absent", "partial"]
+)
+def test_native_readback_timeline(
+    job_env, wire, redis_client, monkeypatch, retain_build_history, scenario
+):
+    test_native_six_creates(
+        job_env,
+        wire,
+        redis_client,
+        monkeypatch,
+        retain_build_history,
+        "group_reject" if scenario == "partial" else None,
+        readback=scenario,
+    )

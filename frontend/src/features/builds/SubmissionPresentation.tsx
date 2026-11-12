@@ -88,6 +88,11 @@ export function PlatformState({ step }: { step?: StepPublic | null }) {
       {step?.mismatch && !step.correction && (
         <span className="font-semibold">存在结果差异，需核实</span>
       )}
+      {!!step?.readback_differences?.length && (
+        <span className="font-semibold">
+          回读差异/缺失字段：{step.readback_differences.join("、")}
+        </span>
+      )}
       {step?.correction && (
         <span className="text-muted-foreground">
           补建已核实；原组 {step.correction.original_adgroup_id}{" "}

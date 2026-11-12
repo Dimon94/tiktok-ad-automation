@@ -290,8 +290,10 @@ def finalize_submission(
 
             preview = session.get(BuildPreview, row.preview_id)
             if "native_request" in preview.config:
-                # 撤权后的内部收尾同样不能以创建回执绕过原生核验。
-                row.status = "NEEDS_REVIEW"
+                from .native_completion import all_native_matched
+
+                if not all_native_matched(session, row, preview):
+                    row.status = "NEEDS_REVIEW"
         row.updated_at = datetime.now(UTC)
         session.add(row)
 

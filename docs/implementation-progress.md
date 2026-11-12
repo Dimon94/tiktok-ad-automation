@@ -5200,3 +5200,11 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 受理及每次物理发送边界重核digest、revision、route/授权、账户及当前原生SceneContext和素材事实；显式ACTIVE冲突阻断，未知覆盖保持原限制。沿既有write-once/锁/回执保全；原生明确拒绝停止自动重试，UNKNOWN不盲create。创建回执的原生完成投影及撤权内部收尾保持NEEDS_REVIEW，交JB-11真正逐项MATCH。
 - 原生执行+预览28 passed；既有相关SDK/Mini/编译/提交/执行状态124 passed。旧Mini执行夹具5项在身份目录准备处报错，起点独立源码/新库首项同错；未改合同迎合。实际错误探针发送DISABLE被检查拒绝并恢复字节一致；完整证据及恢复后补跑见[JB-10验收](validation/2026-11-12-jb10-native-create.md)。无UI变化，无形式证明或真实平台接受声明。
 - JB-11消费稳定PlannedAd base_ad_no/creative_no、native-series-v1、各步骤request_body/digest/attempt、真实远端ID和StepEvidence；须以三级/逐创意全MATCH替换完成门禁。原生回读恢复与取消仍交JB-11/JB-12，整个M1未完成。
+
+## 2026-11-12 JB-11 原生三级及逐创意回读
+
+- 从 `9f0537b68d5a21e4f08c37c14e69f356596e6146` 在指定集成树单写者实现；本节所在提交为交付 tip。没有下级代理、Linear 更新、push/PR/部署或真实平台操作；原 node_modules 软链保留。
+- 创建回执为原生对象安排既有 READBACK；强类型实际观察接入原 readback_compare/reconciliation/scan/SDK 读取 owner。原生事件映射限定 AD_REVENUE_VALUE→IMPRESSION_LEVEL_AD_REVENUE；全部逐创意视频/封面/身份、单条文案、CTA、三级精确ID/父级/账户/ENABLE与冻结字段比较，缺失/多义/查询失败不MATCH。
+- 普通聚合与撤权收尾共用全量 MATCH 门禁；原生回执不再永久 NEEDS_REVIEW，也不能凭回执完成。现有结果视图显示实际状态及具体差异路径。Mini原有事件映射及回执处理保持。
+- 真实PG/Redis与SDK传输替身验证；字段消融、多重集合/排列、全MATCH/部分创建/差异/审核拒绝/空回读时间线，错误探针实际跑红并逐字节恢复；正式/demo前端构建通过。相关回归161通过，另1个Mini UNKNOWN用例在起点独立源码同样失败，未扩大范围修旧夹具。
+- 精确命令、最终分项结果、证据、独立oracle边界与JB-12交接见[JB-11验收](validation/2026-11-12-jb11-native-readback.md)。原生UNKNOWN完整恢复/取消归JB-12；真实平台接受与完整M1验收仍Unknown，无形式证明声明。

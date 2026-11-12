@@ -10,6 +10,8 @@ from app.integrations.tiktok.contracts.builds import (
     BuildPage,
     BuildReadQuery,
     BuildRecord,
+    NativeAdCreate,
+    NativeAdGroupCreate,
 )
 from app.modules.builds.readback_compare import (
     _equal,
@@ -30,7 +32,8 @@ def reconciliation_decision(
     item = matches[0]
     return (
         "CONFIRMED"
-        if item.intent is not None and not item.missing_fields
+        if (item.intent is not None or item.observed_native is not None)
+        and not item.missing_fields
         else "UNKNOWN"
     )
 
@@ -51,7 +54,20 @@ def _core_matches(query: BuildReadQuery, record: BuildRecord) -> bool:
 
 
 def _candidate(query: BuildReadQuery, record: BuildRecord) -> bool:
-    actual = record.intent or record.observed_adgroup
+    if query.remote_id is not None and (
+        query.native_series
+        or isinstance(query.intent, (NativeAdGroupCreate, NativeAdCreate))
+    ):
+        if record.remote_id != query.remote_id:
+            raise _invalid()
+        # 精确 ID 的缺字段/父级差异仍保存观察；比较器决定未决或不一致。
+        return True
+    if query.native_series or isinstance(
+        query.intent, (NativeAdGroupCreate, NativeAdCreate)
+    ):
+        # 原生 UNKNOWN 唯一认领归恢复合同；本轮不得凭名称扫描认领。
+        raise _invalid()
+    actual = record.observed_native or record.intent or record.observed_adgroup
     if (
         actual is None
         or actual.kind != query.intent.kind
@@ -76,7 +92,9 @@ def _candidate(query: BuildReadQuery, record: BuildRecord) -> bool:
 
 def conclusion(query: BuildReadQuery, record: BuildRecord) -> ScanState:
     comparison = compare_record(query=query, record=record)
-    if record.intent is not None and not record.missing_fields:
+    if (
+        record.intent is not None or record.observed_native is not None
+    ) and not record.missing_fields:
         if comparison == "MATCH" or query.remote_id is not None:
             return "COMPLETE"
     # CreateIntent只能表示ENABLE。真实停用状态与完整观察到的相同核心字段另记差异。
@@ -91,7 +109,10 @@ def conclusion(query: BuildReadQuery, record: BuildRecord) -> ScanState:
 
 
 def candidate_summary(query: BuildReadQuery, record: BuildRecord) -> dict[str, Any]:
+    from app.modules.builds.readback_compare import record_differences
+
     return {
+        "differences": record_differences(query, record),
         "remote_id": record.remote_id,
         "comparison": compare_record(query=query, record=record),
         "operation_status": record.operation_status,

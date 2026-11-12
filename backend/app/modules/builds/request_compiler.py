@@ -24,6 +24,7 @@ from app.integrations.tiktok.contracts.builds import (
     IdentityFields,
     NativeAdCreate,
     NativeAdGroupCreate,
+    NativeAdGroupObservedFacts,
     VideoCreative,
 )
 from app.integrations.tiktok.contracts.common import (
@@ -61,6 +62,10 @@ class _AdGroupBody(AdGroupCreate):
 
 
 class _NativeAdGroupBody(NativeAdGroupCreate):
+    name: Id = Field(alias="adgroup_name")
+
+
+class _NativeObservedGroupBody(NativeAdGroupObservedFacts):
     name: Id = Field(alias="adgroup_name")
 
 
@@ -172,7 +177,9 @@ def decode_intent(kind: str, body: dict[str, object]) -> CreateIntent:
     return decode_observed_intent(kind, values)
 
 
-def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
+def decode_observed_intent(
+    kind: str, body: dict[str, object], *, native_observation: bool = False
+) -> CreateIntent:
     """远端只接受精确金额类型；SDK 浮点可能已舍入，不能转回文本冒充精确事实。"""
     if not isinstance(body, dict) or "kind" in body:
         raise _invalid("body", body)
@@ -195,6 +202,9 @@ def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
         intent_type = (
             NativeAdGroupCreate if group_type is _NativeAdGroupBody else AdGroupCreate
         )
+        if native_observation and group_type is _NativeAdGroupBody:
+            parsed_group = _NativeObservedGroupBody.model_validate(values)
+            return NativeAdGroupObservedFacts.model_validate(parsed_group.model_dump())
         parsed_group = group_type.model_validate(values)
         return intent_type.model_validate(parsed_group.model_dump())
     if kind == "AD":
@@ -387,7 +397,7 @@ def read_arguments(query: BuildReadQuery) -> tuple[str, dict[str, object]]:
         elif isinstance(query.intent, AdCreate):
             filtering["adgroup_ids"] = [query.intent.adgroup_id]
         fields = list(body)
-        fields.append(identifiers[kind][:-1])
+        fields.extend([identifiers[kind][:-1], "secondary_status"])
         arguments.update(filtering=filtering, page=query.page, page_size=100)
         # 原生 Smart+ 广告组的字段筛选会漏掉 targeting_spec 和状态；读取完整对象。
         # 仍严格校验父级、分页及所有冻结字段，不从请求补造缺失事实。

@@ -9356,6 +9356,10 @@ export type StepPublic = {
      */
     mismatch: boolean;
     /**
+     * Readback Differences
+     */
+    readback_differences?: Array<string>;
+    /**
      * Checked At
      */
     checked_at: string | null;

@@ -153,6 +153,7 @@ class StepPublic(BaseModel):
     operation_status: str | None
     review_status: str | None
     mismatch: bool
+    readback_differences: list[str] = Field(default_factory=list)
     checked_at: datetime | None
 
 

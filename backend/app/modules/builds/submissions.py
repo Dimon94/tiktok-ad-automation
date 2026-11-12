@@ -790,8 +790,10 @@ def get_submission(
     if row.expanded and scope["submitted_c"] == 0:
         status = "COMPLETED"
     if "native_request" in preview.config and status == "COMPLETED":
-        # 原生回执只证明已创建；JB-11 必须以三级及逐创意 MATCH 替换此核验门禁。
-        status = "NEEDS_REVIEW"
+        from .native_completion import all_native_matched
+
+        if not all_native_matched(session, row, preview):
+            status = "NEEDS_REVIEW"
     planned = ObjectCounts(
         campaign_count=scope["planned_c"],
         adgroup_count=scope["planned_g"],
