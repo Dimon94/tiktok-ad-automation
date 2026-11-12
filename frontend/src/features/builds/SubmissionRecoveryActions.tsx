@@ -43,12 +43,16 @@ export function SubmissionRecoveryActions({
   bcId,
   submissionId,
   recovery,
+  canCancel,
+  localCancelled,
   write,
 }: {
   tenantId: string
   bcId: string
   submissionId: string
   recovery?: Recovery
+  canCancel?: boolean
+  localCancelled?: boolean
   write: boolean
 }) {
   const key = `submission-recovery:${tenantId}:${bcId}:${submissionId}`
@@ -218,6 +222,25 @@ export function SubmissionRecoveryActions({
       if (!ctrl.signal.aborted) setBusy(false)
     }
   }
+  async function cancelUnsent() {
+    if (lock.current || !canCancel || localCancelled) return
+    lock.current = true
+    setBusy(true)
+    setError(undefined)
+    try {
+      await BuildsService.cancelSubmission({
+        path: { tenant_id: tenantId, submission_id: submissionId },
+      })
+    } catch (e) {
+      setError(e)
+      reportError(e)
+    } finally {
+      lock.current = false
+      setBusy(false)
+      // 取消幂等；响应丢失时刷新同一结果，不创建另一份任务。
+      void client.invalidateQueries({ queryKey: [...submissionKey(tenantId, bcId), submissionId] })
+    }
+  }
   const code =
     error instanceof AxiosError ? error.response?.data?.code : undefined
   const reasons =
@@ -226,6 +249,8 @@ export function SubmissionRecoveryActions({
     ) || []
   // 无待办时不占页面空间；已保存的未知请求和恢复回执必须继续可见。
   if (
+    !canCancel &&
+    !localCancelled &&
     !saved &&
     !error &&
     !busy &&
@@ -242,6 +267,19 @@ export function SubmissionRecoveryActions({
         description="离开会停止本页等待，原请求编号会保留。服务器可能已经受理；返回此任务后请继续核实原请求。"
         leaveLabel="离开并稍后核实"
       />
+      {(canCancel || localCancelled) && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            {localCancelled ? "已取消未发送步骤。" : "取消仅跳过尚未发送的本地步骤。"}
+            已发送请求继续等待实际结果，已创建广告保持现状；待核实项仍可只读核查。
+          </p>
+          {canCancel && !localCancelled && (
+            <Button className="self-start" variant="outline" disabled={busy} onClick={() => void cancelUnsent()}>
+              取消未发送步骤
+            </Button>
+          )}
+        </div>
+      )}
       {write && !denied && (
         <div className="flex flex-wrap gap-2">
           {recovery?.can_reconcile &&

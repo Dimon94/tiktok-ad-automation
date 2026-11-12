@@ -857,6 +857,17 @@ def process_step(
             or step.phase == "REQUEST_ARMED"
         ):
             return step.status
+        if submission.progress.get("local_cancelled") and step.kind != "READBACK":
+            step.status, step.phase, step.error_code = (
+                "FAILED",
+                "DONE",
+                "local_submission_cancelled",
+            )
+            step.dispatch_revision += 1
+            step.dispatch_id = None
+            evidence(session, step=step, claim=None, conclusion="LOCAL_CANCELLED")
+            session.add(step)
+            return step.status
         if step.kind == "READBACK":
             raise DomainError("invalid_build_kind", "回读步骤需要只读执行器")
         if step.kind == "MATERIAL" and step.status in {
@@ -1066,6 +1077,9 @@ def process_step(
                     step, claim, phase="REQUEST_ARMED" if armed else "CLAIMED"
                 ):
                     raise DomainError("execution_lease_lost", "执行租约已变化")
+                from .execution_state import require_local_send_open
+
+                require_local_send_open(check, step)
                 from .continuation import (
                     require_execution_owner,
                     validate_execution_source,

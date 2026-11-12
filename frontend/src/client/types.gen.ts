@@ -10013,6 +10013,14 @@ export type SubmissionUnitPublic = {
  * SubmissionView
  */
 export type SubmissionView = {
+    /**
+     * Local Cancelled
+     */
+    local_cancelled?: boolean;
+    /**
+     * Can Cancel
+     */
+    can_cancel?: boolean;
     reused?: ObjectCounts;
     /**
      * Continuation Source Ids
@@ -20936,3 +20944,37 @@ export type buildsGetSubmissionRecoveryResponses = {
 };
 
 export type buildsGetSubmissionRecoveryResponse = buildsGetSubmissionRecoveryResponses[keyof buildsGetSubmissionRecoveryResponses];
+
+export type buildsCancelSubmissionData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Submission Id
+         */
+        submission_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/submissions/{submission_id}/cancel';
+};
+
+export type buildsCancelSubmissionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type buildsCancelSubmissionError = buildsCancelSubmissionErrors[keyof buildsCancelSubmissionErrors];
+
+export type buildsCancelSubmissionResponses = {
+    /**
+     * Successful Response
+     */
+    200: SubmissionReceipt;
+};
+
+export type buildsCancelSubmissionResponse = buildsCancelSubmissionResponses[keyof buildsCancelSubmissionResponses];

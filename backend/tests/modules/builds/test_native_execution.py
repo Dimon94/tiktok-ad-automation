@@ -44,6 +44,16 @@ def source_env(
         "campaign_unknown",
         "revision",
         "revision_after_cta",
+        "cancel_before",
+        "cancel_after_campaign",
+        "cancel_inflight",
+        "unknown_unique",
+        "unknown_ambiguous",
+        "unknown_cancel",
+        "unknown_group",
+        "unknown_ad",
+        "unknown_late",
+        "unknown_revoke",
     ],
 )
 def test_native_six_creates(
@@ -123,7 +133,16 @@ def test_native_six_creates(
     def request(pool, method, url, **kw):
         body = json.loads(kw["body"])
         calls.append((url, body))
-        if failure == "campaign_unknown" and "/campaign/" in url:
+        unknown_kind = {"unknown_group": "/adgroup/", "unknown_ad": "/ad/create/"}.get(
+            failure, "/campaign/"
+        )
+        if (
+            failure
+            and failure != "unknown_late"
+            and (failure == "campaign_unknown" or failure.startswith("unknown_"))
+            and unknown_kind in url
+            and not any(unknown_kind in u for u, _ in calls[:-1])
+        ):
             raise TimeoutError("offline transport response lost")
         if (failure == "cta_unknown" and "portfolio" in url) or (
             failure == "group_reject" and "/adgroup/" in url
@@ -155,6 +174,21 @@ def test_native_six_creates(
                 draft = changed.get(BuildDraft, draft_id)
                 draft.revision += 1
                 changed.add(draft)
+        if failure == "cancel_inflight" and "/campaign/" in url:
+            with Session(native.engine) as s, s.begin():
+                submissions.cancel_submission(
+                    s, context=context, submission_id=receipt.submission_id
+                )
+        if failure == "unknown_late" and "/campaign/" in url:
+            from datetime import UTC, datetime, timedelta
+
+            with Session(native.engine) as s, s.begin():
+                step = s.get(ExecutionStep, ids["CAMPAIGN"][0])
+                step.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                s.add(step)
+                submissions.cancel_submission(
+                    s, context=context, submission_id=receipt.submission_id
+                )
         key = (
             "creative_portfolio_id"
             if "portfolio" in url
@@ -182,7 +216,16 @@ def test_native_six_creates(
             draft = s.get(BuildDraft, draft_id)
             draft.revision += 1
             s.add(draft)
+    if failure == "cancel_before":
+        from tests.modules.builds.native_cancel_http import cancel_twice
+
+        cancel_twice(native.engine, context, receipt.submission_id)
     for kind in ids:
+        if failure == "cancel_after_campaign" and kind == "ADGROUP":
+            with Session(native.engine) as s, s.begin():
+                submissions.cancel_submission(
+                    s, context=context, submission_id=receipt.submission_id
+                )
         for sid in ids[kind]:
             outcome = execution.process_step(
                 database_engine=native.engine,
@@ -211,6 +254,38 @@ def test_native_six_creates(
                         )
                         == "UNKNOWN"
                     )
+    if failure and failure.startswith("unknown_"):
+        from tests.modules.builds.test_native_recovery_timeline import recover_unknown
+
+        recover_unknown(
+            native.engine,
+            context,
+            redis_client,
+            monkeypatch,
+            receipt.submission_id,
+            calls,
+            failure,
+        )
+        return
+    if failure and failure.startswith("cancel_"):
+        assert len(calls) == (0 if failure == "cancel_before" else 2)
+        with Session(native.engine) as s:
+            result = submissions.get_submission(
+                s, context=context, submission_id=receipt.submission_id
+            )
+            assert result.local_cancelled
+            actual = s.exec(
+                select(ExecutionStep).where(
+                    ExecutionStep.submission_id == receipt.submission_id
+                )
+            ).all()
+            assert len([x for x in actual if x.remote_id]) == (
+                0 if failure == "cancel_before" else 2
+            )
+            assert all(
+                x.status == "FAILED" for x in actual if x.kind in {"ADGROUP", "AD"}
+            )
+        return
     if failure:
         expected_calls = {
             "cta_unknown": 1,

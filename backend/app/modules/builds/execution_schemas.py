@@ -40,6 +40,8 @@ class Recovery(BaseModel):
 
 
 class SubmissionView(BaseModel):
+    local_cancelled: bool = False
+    can_cancel: bool = False
     reused: ObjectCounts = Field(default_factory=ObjectCounts)
     continuation_source_ids: list[UUID] = Field(default_factory=list)
     continued_by_submission_ids: list[UUID] = Field(default_factory=list)

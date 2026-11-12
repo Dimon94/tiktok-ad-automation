@@ -326,6 +326,8 @@ function Detail({
         bcId={bcId}
         submissionId={submissionId}
         recovery={data.recovery}
+        canCancel={data.can_cancel}
+        localCancelled={data.local_cancelled}
         write={write}
       />
       <Card className="min-w-0">

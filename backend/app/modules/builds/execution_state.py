@@ -143,6 +143,7 @@ def arm_request(
         session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="build"
     )
     step = _step(session, claim)
+    require_local_send_open(session, step)
     from .continuation import require_execution_owner, validate_execution_source
 
     require_execution_owner(session, step)
@@ -265,32 +266,7 @@ def record_created(session: Session, *, claim: StepClaim, result: CreatedObject)
         from app.modules.builds.created_directory import publish_created_object
 
         publish_created_object(session, step=step, route=claim.route)
-        unit = session.get(BuildUnit, step.unit_id)
-        if (
-            step.kind in {"CAMPAIGN", "ADGROUP", "AD"}
-            and "native_request" in unit.scene_snapshot
-        ):
-            from uuid import uuid5
-
-            key = step.step_key + ":readback"
-            read_id = uuid5(step.submission_id, key)
-            if session.get(ExecutionStep, read_id) is None:
-                session.add(
-                    ExecutionStep(
-                        id=read_id,
-                        tenant_id=step.tenant_id,
-                        submission_id=step.submission_id,
-                        preview_id=step.preview_id,
-                        bc_id=step.bc_id,
-                        unit_id=step.unit_id,
-                        kind="READBACK",
-                        step_key=key,
-                        parent_step_id=step.id,
-                        group_id=step.group_id,
-                        planned_ad_id=step.planned_ad_id,
-                    )
-                )
-                session.flush()
+        ensure_native_readback(session, step)
     return step.status
 
 
@@ -761,3 +737,48 @@ def safely_retryable_attempt(session: Session, *, step: ExecutionStep) -> bool:
             {"step": step.id, "tenant": step.tenant_id},
         ).scalar_one()
     )
+
+
+def require_local_send_open(session: Session, step: ExecutionStep) -> None:
+    # 与取消共享提交行锁。锁内完成发送准入的请求属于在途；回执始终照常落账。
+    row = session.exec(
+        select(Submission)
+        .where(
+            Submission.id == step.submission_id, Submission.tenant_id == step.tenant_id
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if row.progress.get("local_cancelled"):
+        raise DomainError(
+            "local_submission_cancelled", "已取消未发送步骤；已发送请求仍需核查"
+        )
+
+
+def ensure_native_readback(session: Session, step: ExecutionStep) -> None:
+    unit = session.get(BuildUnit, step.unit_id)
+    if (
+        step.kind in {"CAMPAIGN", "ADGROUP", "AD"}
+        and "native_request" in unit.scene_snapshot
+    ):
+        from uuid import uuid5
+
+        key = step.step_key + ":readback"
+        read_id = uuid5(step.submission_id, key)
+        if session.get(ExecutionStep, read_id) is None:
+            session.add(
+                ExecutionStep(
+                    id=read_id,
+                    tenant_id=step.tenant_id,
+                    submission_id=step.submission_id,
+                    preview_id=step.preview_id,
+                    bc_id=step.bc_id,
+                    unit_id=step.unit_id,
+                    kind="READBACK",
+                    step_key=key,
+                    parent_step_id=step.id,
+                    group_id=step.group_id,
+                    planned_ad_id=step.planned_ad_id,
+                )
+            )
+            session.flush()

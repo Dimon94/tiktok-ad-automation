@@ -1,5 +1,6 @@
 """普通与新授权核查共用的有界跨页判定；只消费实际类型证据。"""
 
+import re
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -65,8 +66,23 @@ def _candidate(query: BuildReadQuery, record: BuildRecord) -> bool:
     if query.native_series or isinstance(
         query.intent, (NativeAdGroupCreate, NativeAdCreate)
     ):
-        # 原生 UNKNOWN 唯一认领归恢复合同；本轮不得凭名称扫描认领。
-        raise _invalid()
+        # 名称只作请求定位：新冻结请求含草稿 UUID；最终仍须全字段 MATCH。
+        # 历史名称不具唯一请求身份，不能自动认领。
+        if not re.search(
+            r"-R[0-9a-f]{32}(?:-G1|-A[0-9]+-C[0-9]+)?$", query.intent.name
+        ):
+            return False
+        actual = record.observed_native or record.intent
+        if actual is None:
+            return True
+        if actual.kind != query.intent.kind:
+            raise _invalid()
+        if actual.advertiser_id != query.intent.advertiser_id:
+            raise _invalid()
+        if actual.name != query.intent.name:
+            return False
+        # 同名错父、缺字段或差异也计入候选，避免忽略冲突后认领另一条。
+        return True
     actual = record.observed_native or record.intent or record.observed_adgroup
     if (
         actual is None

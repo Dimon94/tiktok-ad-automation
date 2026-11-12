@@ -15,65 +15,7 @@ def reconcile_created(
 ):
     from urllib.parse import parse_qs, urlsplit
 
-    from tests.modules.builds.test_native_readback import observed_group
-
-    rows = {}
-    for index, (url, body) in enumerate(creates, 1):
-        rid = f"remote-{index}"
-        if "/campaign/" in url:
-            row = {
-                "campaign_id": rid,
-                "advertiser_id": "actual-account",
-                "campaign_name": body["campaign_name"],
-                "objective_type": "APP_PROMOTION",
-                "app_promotion_type": "MINIS",
-                "campaign_type": "REGULAR_CAMPAIGN",
-                "budget": "1000.01",
-                "budget_mode": "BUDGET_MODE_DYNAMIC_DAILY_BUDGET",
-                "budget_optimize_on": True,
-                "operation_status": "ENABLE",
-            }
-        elif "/adgroup/" in url:
-            row = observed_group()
-            row.update(
-                advertiser_id="actual-account",
-                campaign_id="remote-2",
-                adgroup_id=rid,
-                adgroup_name=body["adgroup_name"],
-                native_series_id="exact-series",
-                schedule_start_time=body["schedule_start_time"],
-                roas_bid="1.08",
-            )
-            # 账户成人准入是既有冻结 wire 的独立约束。
-            row["targeting_spec"] = {
-                "location_ids": ["6252001"],
-                "spc_audience_age": "OVER_EIGHTEEN",
-            }
-        elif "/ad/create/" in url:
-            row = {
-                "smart_plus_ad_id": rid,
-                "advertiser_id": "actual-account",
-                "adgroup_id": "remote-3",
-                "ad_name": body["ad_name"],
-                "operation_status": "ENABLE",
-                "ad_text_list": [{"ad_text": body["ad_text_list"][0]["ad_text"]}],
-                "ad_configuration": {"call_to_action_id": "remote-1"},
-                "creative_list": [
-                    {
-                        "creative_info": {
-                            "identity_type": "TT_USER",
-                            "identity_id": "owner",
-                            "ad_format": "SINGLE_VIDEO",
-                            "video_info": {"video_id": f"target-{i}"},
-                            "image_info": [{"web_uri": f"cover-{i}"}],
-                        }
-                    }
-                    for i in reversed(range(6))
-                ],
-            }
-        else:
-            continue
-        rows[rid] = row
+    rows = observed_rows(creates)
     if scenario == "difference":
         rows["remote-4"]["creative_list"][0]["creative_info"]["video_info"][
             "video_id"
@@ -202,3 +144,66 @@ def reconcile_created(
                 db, context=context, submission_id=submission_id
             )
             assert any(item.readback_differences for item in page.items)
+
+
+def observed_rows(creates):
+    from tests.modules.builds.test_native_readback import observed_group
+
+    rows = {}
+    for index, (url, body) in enumerate(creates, 1):
+        rid = f"remote-{index}"
+        if "/campaign/" in url:
+            row = {
+                "campaign_id": rid,
+                "advertiser_id": "actual-account",
+                "campaign_name": body["campaign_name"],
+                "objective_type": "APP_PROMOTION",
+                "app_promotion_type": "MINIS",
+                "campaign_type": "REGULAR_CAMPAIGN",
+                "budget": "1000.01",
+                "budget_mode": "BUDGET_MODE_DYNAMIC_DAILY_BUDGET",
+                "budget_optimize_on": True,
+                "operation_status": "ENABLE",
+            }
+        elif "/adgroup/" in url:
+            row = observed_group()
+            row.update(
+                advertiser_id="actual-account",
+                campaign_id="remote-2",
+                adgroup_id=rid,
+                adgroup_name=body["adgroup_name"],
+                native_series_id="exact-series",
+                schedule_start_time=body["schedule_start_time"],
+                roas_bid="1.08",
+            )
+            # 账户成人准入是既有冻结 wire 的独立约束。
+            row["targeting_spec"] = {
+                "location_ids": ["6252001"],
+                "spc_audience_age": "OVER_EIGHTEEN",
+            }
+        elif "/ad/create/" in url:
+            row = {
+                "smart_plus_ad_id": rid,
+                "advertiser_id": "actual-account",
+                "adgroup_id": "remote-3",
+                "ad_name": body["ad_name"],
+                "operation_status": "ENABLE",
+                "ad_text_list": [{"ad_text": body["ad_text_list"][0]["ad_text"]}],
+                "ad_configuration": {"call_to_action_id": "remote-1"},
+                "creative_list": [
+                    {
+                        "creative_info": {
+                            "identity_type": "TT_USER",
+                            "identity_id": "owner",
+                            "ad_format": "SINGLE_VIDEO",
+                            "video_info": {"video_id": f"target-{i}"},
+                            "image_info": [{"web_uri": f"cover-{i}"}],
+                        }
+                    }
+                    for i in reversed(range(6))
+                ],
+            }
+        else:
+            continue
+        rows[rid] = row
+    return rows

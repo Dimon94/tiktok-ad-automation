@@ -20,6 +20,7 @@ const conclusions: Record<string, string> = {
   LATE_READBACK: "已收到延迟核查结果",
   LEASE_EXPIRED_ARMED: "请求等待超时，需核实结果",
   NOT_SENT: "请求未发送",
+  LOCAL_CANCELLED: "已取消未发送步骤",
   LOCAL_FAILED: "本地检查失败",
   LOCAL_RETRYABLE: "本地处理可重试",
   LOCAL_SUCCEEDED: "本地处理完成",

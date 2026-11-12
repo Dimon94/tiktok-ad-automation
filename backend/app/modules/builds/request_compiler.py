@@ -392,9 +392,9 @@ def read_arguments(query: BuildReadQuery) -> tuple[str, dict[str, object]]:
             filtering[identifiers[kind]] = [query.remote_id]
         elif kind in names:
             filtering[names[kind]] = body[names[kind]]
-        if isinstance(query.intent, AdGroupCreate):
+        if isinstance(query.intent, (AdGroupCreate, NativeAdGroupCreate)):
             filtering["campaign_ids"] = [query.intent.campaign_id]
-        elif isinstance(query.intent, AdCreate):
+        elif isinstance(query.intent, (AdCreate, NativeAdCreate)):
             filtering["adgroup_ids"] = [query.intent.adgroup_id]
         fields = list(body)
         fields.extend([identifiers[kind][:-1], "secondary_status"])

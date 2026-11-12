@@ -269,7 +269,10 @@ def generate(session, *, context, draft):
     targeting = effective_targeting(session, context, draft)
     minimum_age = targeting.automatic_minimum_age()
     delivery = draft.delivery_config or {}
-    campaign_name = f"Series-{selection['native_series_id']}-v{draft.revision}"
+    # 草稿请求标记仅用于定位；UNKNOWN 认领仍要求全部冻结字段 MATCH。
+    campaign_name = (
+        f"Series-{selection['native_series_id']}-v{draft.revision}-R{draft.id.hex}"
+    )
     payload = FrozenRequestRevision(
         constraint_revision=constraints["revision"],
         draft_revision=draft.revision,

@@ -868,6 +868,9 @@ def _finish(
         from app.modules.builds.created_directory import publish_created_object
 
         publish_created_object(session, step=source, route=claim.route)
+        from .execution_state import ensure_native_readback
+
+        ensure_native_readback(session, source)
         return _remember(
             step, ReconciliationResult("MISMATCH" if mismatch else "SUCCEEDED")
         )

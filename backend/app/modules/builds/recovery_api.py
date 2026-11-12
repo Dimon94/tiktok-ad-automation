@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from app.api.deps import CurrentUser, SessionDep
 from app.modules.builds import recovery
+from app.modules.builds.execution_schemas import SubmissionReceipt
 from app.modules.builds.recovery_models import (
     HistoricalReadReceipt,
     RecoveryReceipt,
@@ -165,3 +166,21 @@ def get_submission_recovery(
         session, actor_id=user.id, tenant_id=tenant_id, action="read"
     )
     return recovery.get_recovery(session, context=context, recovery_id=recovery_id)
+
+
+@router.post(
+    "/submissions/{submission_id}/cancel",
+    operation_id="builds-cancel_submission",
+    response_model=SubmissionReceipt,
+)
+def cancel_submission(
+    tenant_id: UUID, submission_id: UUID, session: SessionDep, user: CurrentUser
+) -> SubmissionReceipt:
+    from .submissions import cancel_submission as cancel
+
+    context = require_tenant(
+        session, actor_id=user.id, tenant_id=tenant_id, action="read"
+    )
+    receipt = cancel(session, context=context, submission_id=submission_id)
+    session.commit()
+    return receipt

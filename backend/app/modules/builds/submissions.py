@@ -326,7 +326,7 @@ def expand_submission(
             frozen = session.exec(stmt.order_by(col(BuildUnit.id)).limit(1)).first()
             if frozen is None:
                 row.expanded = True
-                row.progress = {"phase": "done"}
+                row.progress = {**row.progress, "phase": "done"}
                 row.updated_at = datetime.now(UTC)
                 session.add(row)
                 session.flush()
@@ -384,7 +384,7 @@ def expand_submission(
                         unit_id=frozen.id,
                     )
                 )
-            row.progress = {"phase": "units", "after": str(frozen.id)}
+            row.progress = {**row.progress, "phase": "units", "after": str(frozen.id)}
             session.add(row)
             session.flush()
             used += 1
@@ -837,6 +837,17 @@ def get_submission(
             else "BLOCKED"
         ),
         error_code=row.error_code,
+        local_cancelled=bool(row.progress.get("local_cancelled")),
+        can_cancel=context.actor_id == row.actor_id
+        and any(
+            "native_request" in u.scene_snapshot
+            for u in session.exec(
+                select(BuildUnit).where(
+                    BuildUnit.preview_id == row.preview_id,
+                    BuildUnit.tenant_id == row.tenant_id,
+                )
+            ).all()
+        ),
         **metadata(
             session, tenant_id=context.tenant_id, submission_id=row.id
         ).model_dump(),
@@ -1192,3 +1203,40 @@ def group_material_state(
         .one()
     )
     return "READY" if value["ready"] else "FAILED" if value["failed"] else "PENDING"
+
+
+def cancel_submission(
+    session: Session, *, context: TenantContext, submission_id: UUID
+) -> SubmissionReceipt:
+    """只关闭原生本地发送入口；不持有步骤锁，不触碰在途回执。"""
+    require_tenant(
+        session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="read"
+    )
+    row = session.exec(
+        select(Submission)
+        .where(
+            Submission.id == submission_id, Submission.tenant_id == context.tenant_id
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if row is None:
+        raise DomainError("resource_not_found", "提交不存在")
+    if row.actor_id != context.actor_id:
+        raise DomainError("action_forbidden", "仅原提交操作者可取消未发送步骤")
+    native = session.exec(
+        select(BuildUnit).where(
+            BuildUnit.preview_id == row.preview_id, BuildUnit.tenant_id == row.tenant_id
+        )
+    ).first()
+    if native is None or "native_request" not in native.scene_snapshot:
+        raise DomainError("local_cancel_unsupported", "此入口仅支持原生投放")
+    if not row.progress.get("local_cancelled"):
+        row.progress = {
+            **row.progress,
+            "local_cancelled": True,
+            "local_cancelled_at": datetime.now(UTC).isoformat(),
+        }
+        row.updated_at = datetime.now(UTC)
+        session.add(row)
+    return SubmissionReceipt(submission_id=row.id, status=row.status)

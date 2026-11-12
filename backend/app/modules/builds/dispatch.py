@@ -73,6 +73,27 @@ def queue_step(
 ) -> None:
     if (step.tenant_id, step.submission_id) != (submission.tenant_id, submission.id):
         raise DomainError("resource_not_found", "执行步骤范围无效")
+    if not reconcile and submission.progress.get("local_cancelled"):
+        if (
+            step.status not in {"SUCCEEDED", "UNKNOWN"}
+            and not step.remote_id
+            and (
+                step.request_body is None
+                or safely_retryable_attempt(session, step=step)
+            )
+        ):
+            from .execution_state import evidence
+
+            step.status, step.phase, step.error_code = (
+                "FAILED",
+                "DONE",
+                "local_submission_cancelled",
+            )
+            step.dispatch_revision += 1
+            step.dispatch_id = None
+            evidence(session, step=step, claim=None, conclusion="LOCAL_CANCELLED")
+            session.add(step)
+        return
     if not reconcile and (
         step.remote_id
         or (
