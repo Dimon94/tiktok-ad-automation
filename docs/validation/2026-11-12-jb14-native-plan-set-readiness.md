@@ -61,3 +61,52 @@ python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -
 ```
 
 该轮初始源码结果 **92 passed、2 failed / 1338.87s**，不是全绿：①旧断言把过期能力期待为 `account_build_unverified`，与已存在的 M1 TTL 分类 `account_build_evidence_expired` 不符，更新断言保持既有业务语义；②本次准备聚合遗漏 `material_issues`，导致封面多义时父回执 error_code 为空，已补回具体素材原因。两项均包含在上述 **6 passed** 的修复后针对性运行中，没有重新跑整套。其余 92 项包含单项直接 ENABLE、实际回读、UNKNOWN、取消、TTL 与最终发送围栏；配合末次素材任务键专项复验，不声称整仓或所有跨计划交错均已通过。
+
+## 候选补充验收：双授权账户、单项 TTL 与共享素材竞争
+
+本轮起点 `7e908d8edd575f055249faac3a797e264dbe6bee`，分支和唯一写树均按交接保持；原 `.venv`、`node_modules` 未跟踪软链保留。仅新增验收检查和记录，未复现需要修复的新产品缺陷，未修改页面、业务 owner、SDK pin、策略或冻结 connection 合同。Nowledge 定向检索未找到相关历史，采用本树 Spec、完整 JB-14 快照及已有报告作为合同来源。
+
+### 实际路径和独立预期
+
+新增 `test_http_two_authorized_plans_and_expired_sibling` 从实际 Workspace PATCH 保存两份计划、POST prepare、GET native-checkpoint?view=plans 读回。HTTP 使用 FastAPI TestClient/ASGI 运行正式 router、序列化、租户权限和数据库事务；仅认证身份绑定合成操作者，不替换资格/素材/草稿 owner。复用现有 M1 准备夹具作为种子，合成目录提供两个已授权账户和各自已有上传映射；没有写假 Scene、Capability 或 preparation READY。所有资格读取经官方 SDK transport double，实际 `process_preparation` dispatch generation、SceneJob、CapabilityJob、PG 和 Redis owner 生成结果；没有启动外部 Celery broker 消费进程。
+
+独立预期来自 Spec R1/R2/T2/T5：第一账户 `actual-account` / `exact-series` / `owner` 使用素材原顺序；第二账户 `second-account` / `second-series` / `second-owner` 使用反序。同名/同源素材不推导账户映射。逐键比较选择、冻结路由、VID、封面和素材顺序，两个 Scene evidence 集不相交，双项最终 READY。
+
+仅令第二项 Scene TTL 过期，第一项完整 checkpoint 保持相同；HTTP 同 revision prepare 复用 preparation，旧 dispatch generation 实际送入 `process_preparation` 无副作用，当前 generation 经异步处理入口刷新后第二项恢复 READY、Scene 证据更新、有序素材映射不变，第一项 checkpoint（包括 scope、证据和时间）逐字段不变。账户能力由 BC 级 CapabilityJob 共享；将共享能力 TTL 过期会同时失效两账户，因此不把该情形宣称为“单账户过期”。旧 revision 隔离复用并定向运行既有 `test_independent_preparation_retry_and_revision`。
+
+`test_plan_scope_and_opposite_order_drafts` 将第二账户真实 VID/封面回执借入第一项，HTTP 读回明确 `native_video_mapping_unverified`，兄弟项不变；跨 tenant HTTP 读取 403；篡改 preparation 冻结 connection 被真实 PG `immutable scene route` 约束拒绝，原路由未变。恢复证据后检查完整回读等于原值。复用原多连接封面歧义已通过证据，不扩展完整 scope 矩阵。
+
+同一测试通过 HTTP 新建两份草稿，计划顺序相反、共享相同素材，各计划自身素材顺序也相反。准备推进到 Scene 阶段后，以 Barrier 同时释放两个独立 PG session（断言不同 backend PID），设 5 秒 lock_timeout / 10 秒 statement_timeout，完成真实 continuation；两份草稿均两项 READY，逐键 VID/封面/顺序与输入一致。超时将直接失败，不吞掉锁错误。
+
+### 锁顺序与边界
+
+`drafts._scenes_page` 先遍历账户 Scene，然后对全批当前页素材按 ID 排序取锁。`scene._account_scope(lock=True)` 实际先独占锁冻结 `TikTokConnection`，随后 `ensure_scene_preparation` 锁 SceneJob；同一 connection 的不同草稿因此在进入素材阶段之前串行。`scene_jobs._lock_job` 同样连接先于 SceneJob，未发现反向锁序。素材侧 `distribution.ensure_target_asset` 与 `covers.ensure_cover` 均素材先于映射/任务；它们调用的 `require_material_route → verify_route` 为读取校验，不在已持有素材锁后另取 connection 行锁。全批 ID 排序后再调用逐项素材 owner 不反转已取得的素材锁序。
+
+该证据只覆盖本票同冻结 connection、两个草稿反向计划/素材输入的竞争；不声称所有跨连接/崩溃/取消交错或形式模型已经通过。多计划冻结仍 `native_batch_preview_pending`，未实施 JB-15。
+
+### 运行记录
+
+从本树 backend 执行，所有 Python/ruff 均经指定 M2 runner；日志仅存外部本机目录 `m2-implementation`。旧 92 pass/2 fail 及修复后6 pass、页面与构建结果沿用前文，不重新跑全套。前端与产品源码未变化，无需重复浏览器/构建。
+
+夹具调试曾出现 detached ORM、共享 Capability TTL 误影响兄弟、浅复制负例误改兄弟 position、不可变 route 约束及 create 缺显式 account_lines；这些均按真实输入/约束修正，不计产品 red 或产品修复。近似错误探针另行记录，不能用这些夹具失败冒充 TDD red。
+
+精确命令（工作目录为本树 `backend`）：
+
+```sh
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -m pytest tests/modules/builds/test_native_plan_set.py -k 'scope_and or http_two or independent_preparation' -q --tb=short
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -m pytest tests/modules/builds/test_native_plan_set.py -k scope_and -q --tb=short
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python /tmp/tkada-native-series-20261112/m2-implementation/jb14-acceptance-probes.py
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -m pytest tests/modules/builds/test_native_plan_set.py -k 'http_two or scope_and' -q --tb=short
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py ruff check tests/modules/builds/test_native_plan_set.py
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py ruff format --check tests/modules/builds/test_native_plan_set.py
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -m compileall -q tests/modules/builds/test_native_plan_set.py
+```
+
+- 第一条：2 passed / 1 failed / 3 deselected，31.11s（`jb14-final.log`）。双账户/TTL/旧 dispatch 和既有旧 revision 检查通过；第三项当时未把数据库 immutable route 拒绝写成预期异常，不隐去该失败。
+- 第二条：修正夹具后 1 passed / 5 deselected，11.49s（`jb14-scope-final.log`），包含真实双 session 并发和范围拒绝。
+- 探针：`evaluate_native_plan_set` 临时只返回首项，`http_two` 在 `['READY'] != ['READY', 'READY']` 失败；`read_native_materials.scoped` 临时放过账户范围，`scope_and` 在越界回执 `READY != BLOCKED` 失败。分别 exit 1，详见 `jb14-acceptance-probe-plans.log` / `jb14-acceptance-probe-scope.log`。每次均 finally 恢复源码、字节比较并执行 `cmp`；产品文件最终无 diff。
+- Ruff、格式检查和固定 Python 3.14 compileall 通过。
+
+JB-15 可消费合同：同一 Draft canonical `plans`，UUID `plan_key` 稳定；真实保存选择与 `native-checkpoint?view=plans` 按键对应；READY 携带完整 checkpoint，其他项保留选择与原因；素材回执仍为既有 `DraftScenePreparation.native_materials.plans[key]`；共享策略和冻结 route，不增加第二资格 owner。JB-15 必须实现完整 INCLUDED/EXCLUDED 冻结，当前多项冻结仍明确 pending；本轮不解除该限制、不发布、不更新 Linear，正式 frontier 放行归 root。
+
+恢复源码后第四条命令最终 **2 passed / 4 deselected，15.63s**（`jb14-restored-green.log`），双账户/TTL/dispatch 与范围/并发均通过。未解决的本票新产品缺陷：本轮未发现；外部平台、生产、完整矩阵和形式证明仍未验收。

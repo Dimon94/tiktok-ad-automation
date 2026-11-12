@@ -5252,3 +5252,11 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 在授权的 `feat/jb13-native-series-m2` 单集成树实现 canonical `NativeSeriesPlanSet`、真实工作区添加/复制/选中批量改地区、按计划键隔离的 SceneJob/素材准备回执、同 revision 重试与旧任务隔离。旧平铺 JSON 只读规范化；单项 Preview/Execution 暂用显式单项适配，多项冻结可见阻断，等待 JB-15。未新增 HTTP 入口、上传或资格 owner、业务开关。
 
 实际 PG/Redis 与 SDK transport double 检查、页面 PATCH/prepare/回执、并发重试、旧 JSON 和冻结历史、错误探针、前端构建及验证边界见 `docs/validation/2026-11-12-jb14-native-plan-set-readiness.md`。本票不关闭 Linear，不宣称 M2 MMF 完成；root 独立验收后决定 JB-15 frontier。
+
+## 2026-11-12 — JB-14 候选补充验收
+
+在起点 `7e908d8edd575f055249faac3a797e264dbe6bee` 的唯一 M2 集成树补齐两项 HTTP/真实 PG/Redis 验收：两个授权账户各自精确 Series/身份/反序素材均 READY；单项 Scene TTL 刷新保持 revision 与兄弟完整 checkpoint；旧 dispatch 不生效；跨账户素材证据、跨 tenant 读取及冻结 connection 改写被拒绝；两份反向计划顺序草稿共享素材、两个 PG session 并发准备完成。实际业务 owner 与官方 SDK transport double，未写假 READY。
+
+没有复现新产品缺陷，仅增加测试和证据；夹具失败和最终结果分别记录于 [JB-14 验收报告](validation/2026-11-12-jb14-native-plan-set-readiness.md)。吞掉兄弟计划及绕过素材 scope 的真跑探针均失败，产品源码逐字节恢复。复用既有 UI/构建、M1 ENABLE/MATCH/恢复取消证据，不重复全套。JB-15 消费 canonical plans 和逐键 checkpoint；多计划冻结仍 pending，是否放行归 root。未推送、部署、创建 PR 或更新 Linear，原未跟踪软链保留。
+
+补充检查最终：恢复源码后2 passed / 4 deselected / 15.63s；既有旧 revision 检查在前轮通过。Ruff/格式/固定Python compileall及diff检查通过，产品源码无变更。
