@@ -91,6 +91,49 @@ def test_validate_current_plan(job_env, wire, redis_client):
                 )
 
 
+def test_same_preview_replay_returns_original(job_env, wire, redis_client):
+    """Spec R8: committed replay with either key returns the original identity."""
+    from uuid import uuid4
+
+    from app.core.errors import DomainError
+    from app.modules.builds.execution_models import Submission, SubmissionRequest
+    from app.modules.builds.submissions import submit_preview
+
+    client, url, _, _, revision, _, _ = two_account_workspace(
+        job_env, wire, redis_client
+    )
+    response = client.post(url + "/previews", json={"expected_revision": revision})
+    assert response.status_code == 202, response.text
+    pid = UUID(response.json()["preview_id"])
+    context = job_env["context"]
+    first_key = uuid4()
+
+    def submit(key):
+        try:
+            with Session(native.engine) as session, session.begin():
+                return submit_preview(
+                    session, context=context, preview_id=pid, request_id=key
+                ).submission_id
+        except DomainError as error:
+            return error.code
+
+    original = submit(first_key)
+    assert isinstance(original, UUID)
+    for key in (first_key, uuid4()):
+        assert submit(key) == original, "R8 replay must return original Submission"
+    with Session(native.engine) as session:
+        assert session.exec(
+            select(Submission.id).where(Submission.preview_id == pid)
+        ).all() == [original]
+        assert set(
+            session.exec(
+                select(SubmissionRequest.submission_id).where(
+                    SubmissionRequest.preview_id == pid
+                )
+            ).all()
+        ) == {original}
+
+
 @pytest.mark.parametrize(
     "source_env", [{"bc_id": "90071992547409931234"}], indirect=True
 )
@@ -361,7 +404,7 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 step_id=step.id,
                 revision=delivery,
             )
-            assert len(calls) == before
+            assert len(calls) == before, "R9 duplicate worker added transport write"
     assert (
         len(calls)
         == {"match": 10, "partial": 8, "zero": 6, "unknown": 7, "reject": 4}[scenario]

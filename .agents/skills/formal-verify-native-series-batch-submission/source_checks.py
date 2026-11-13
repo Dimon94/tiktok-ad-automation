@@ -85,7 +85,54 @@ cases = [
 ]
 
 
-def check(name, targets, expected):
+# 组合 owner 的错误必须一并破坏冗余保护；不修改数据库约束或发送事实。
+compound_cases = [
+    (
+        "unique-replay",
+        [
+            (
+                "app/modules/builds/submissions.py",
+                "    if existing is None:\n",
+                "    existing = None  # broken: forget preview identity on a new key\n    if existing is None:\n",
+            )
+        ],
+        [
+            B
+            + "test_native_batch_execution.py::test_same_preview_replay_returns_original"
+        ],
+        "R8 replay must return original Submission",
+    ),
+    (
+        "unknown-retry",
+        [
+            (
+                "app/modules/builds/execution.py",
+                'or step.status in {"SUCCEEDED", "FAILED", "UNKNOWN"}\n            or step.remote_id\n            or step.phase == "REQUEST_ARMED"',
+                'or step.status in {"SUCCEEDED", "FAILED"}\n            or step.remote_id\n            or (step.phase == "REQUEST_ARMED" and step.status != "UNKNOWN")',
+            ),
+            (
+                "app/modules/builds/submissions.py",
+                'step.status in {"SUCCEEDED", "FAILED", "UNKNOWN"}\n        or step.remote_id\n        or step.phase == "REQUEST_ARMED"',
+                'step.status in {"SUCCEEDED", "FAILED"}\n        or step.remote_id\n        or (step.phase == "REQUEST_ARMED" and step.status != "UNKNOWN")',
+            ),
+            (
+                "app/modules/builds/submissions.py",
+                "or (step.lease_expires_at is not None and step.lease_expires_at > now)",
+                'or (step.status != "UNKNOWN" and step.lease_expires_at is not None and step.lease_expires_at > now)',
+            ),
+            (
+                "app/modules/builds/submissions.py",
+                "elif not safely_retryable_attempt(session, step=step):",
+                'elif step.status != "UNKNOWN" and not safely_retryable_attempt(session, step=step):',
+            ),
+        ],
+        [B + "test_native_batch_execution.py", "-k", "submit_and_execute and unknown"],
+        "R9 duplicate worker added transport write",
+    ),
+]
+
+
+def check(name, targets, expected, failure=None):
     result = subprocess.run(
         [
             "python3",
@@ -98,6 +145,7 @@ def check(name, targets, expected):
             "--tb=short",
         ],
         cwd=BACKEND,
+        check=False,
         capture_output=True,
         text=True,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
@@ -109,23 +157,40 @@ def check(name, targets, expected):
         assert "AssertionError" in log or "assert " in log, (
             f"{name}: not an assertion failure"
         )
+    if expected and failure:
+        assert failure in log, f"{name}: wrong behavioral failure; see {out}"
     print(name, "RED" if expected else "GREEN", flush=True)
 
 
-for name, filename, old, new, targets in cases:
+all_cases = [
+    (name, [(filename, old, new)], targets, None)
+    for name, filename, old, new, targets in cases
+] + compound_cases
+assert args.only == "all" or args.only in {c[0] for c in all_cases}
+for name, edits, targets, failure in all_cases:
     if args.only not in ("all", name):
         continue
-    p = BACKEND / filename
-    original = p.read_bytes()
-    assert original.decode().count(old) == 1, f"Review changed owner: {filename}"
+    originals = {
+        BACKEND / filename: (BACKEND / filename).read_bytes()
+        for filename, _, _ in edits
+    }
+    changed = {p: data.decode() for p, data in originals.items()}
+    for filename, old, new in edits:
+        p = BACKEND / filename
+        assert changed[p].count(old) == 1, f"Review changed owner: {filename}"
+        changed[p] = changed[p].replace(old, new, 1)
     with tempfile.TemporaryDirectory(prefix="jb16-source-backup-") as tmp:
-        backup = Path(tmp) / p.name
-        backup.write_bytes(original)
+        backups = {p: Path(tmp) / p.name for p in originals}
+        for p, data in originals.items():
+            backups[p].write_bytes(data)
         try:
-            p.write_text(original.decode().replace(old, new, 1))
-            check(name + "-broken", targets, 1)
+            for p, data in changed.items():
+                p.write_text(data)
+            check(name + "-broken", targets, 1, failure)
         finally:
-            p.write_bytes(backup.read_bytes())
-            assert p.read_bytes() == original
-            subprocess.run(["cmp", str(p), str(backup)], check=True)
+            for p, backup in backups.items():
+                p.write_bytes(backup.read_bytes())
+            for p, backup in backups.items():
+                assert p.read_bytes() == originals[p]
+                subprocess.run(["cmp", str(p), str(backup)], check=True)
     check(name + "-restored", targets, 0)

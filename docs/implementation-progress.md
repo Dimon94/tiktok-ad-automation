@@ -5296,3 +5296,10 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 - 最小 red 真实复现停用恢复仍多发 SDK 请求；4 个 revoke/regrant 绿，10 个 scope/新批准检查绿；绕过比较探针 4 failed，恢复后 cmp 相同。最终定向检查结果见本轮 validation 末段；前端未变，复用上一轮构建。
 - 交接与精确命令：`docs/validation/2026-11-12-jb16-native-batch-create.md` 的「R12 操作者授权代数」节。JB-16 仍需 root 审查和下一 fresh-context 形式 worker 的 stamp 冻结/递增/比较原子性映射，不能标 Done；JB-17 未放行。
 - 最终定向运行 59 passed / 2 failed；修复内部 generation 序列化泄露后权限/管理 34 passed，清除 TTL 测试 import 遮蔽后该节点 1 passed。24 个 queue/send 围栏、历史读取与 SDK User/账户双锁的绿结果复用；Ruff 10 文件 check/format、diff check 通过。完整失败与修复链保留在 validation，不宣称单次全套绿。
+
+
+## 2026-11-12 JB16 六个核心形式性质对应收口候选
+
+起点 `80aea85c5f858f03ab0a50b82e4eb2152f669fa7`，唯一 M2 树串行单写。新增可选 source_checks unique-replay / unknown-retry：前者真实 PG 重放必须返回原 Submission（错误拒绝红，恢复绿）；后者真实 SDK POST 丢响应→同 worker 消息重投（写次数4→5红，恢复无新增写绿）。组合变异理解现有多层保护，不修改 DB DDL、不伪造已发送事实。仓外备份/finally/cmp 恢复全部源文件。
+
+产品源码仍匹配 `be06268759d6b72013120d936b9fe2b458afc4ce`，无新产品缺陷或源码改动。复用3个正常模型、11个命名模型反例、8个源码探针及既有 queue/send/browser/权限/TTL证据；runner组合支持改动仅补一次廉价旧budget-double兼容复验，不重跑整套。六个核心 R5/R7/R8/R9/R12/R13 代表性闭环已齐备；范围和两模型接缝假设详见 [JB16 validation v3](validation/2026-11-12-jb16-native-batch-create.md)。未证明全系统组合、任意scope/lease/每个guard，未发现剩余真实corefinding。待root验收，不标Done、不推进JB17/18，无push/PR/部署/Linear/真实平台操作；原软链保留。

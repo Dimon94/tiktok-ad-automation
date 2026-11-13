@@ -42,8 +42,8 @@ FORMAL_OUT=/tmp/tkada-native-series-20261112/m2-implementation/formal-rerun \
 |---|---|---|
 | R5 FrozenBody / body | arm 后改正文，原 snapshot 不再匹配 | execution_state.arm_request；0006_build_execution.build_execution_scope（armed request 不可变）；send-lock 用例实际 SQL UPDATE 被拒。源码 unit-scope 探针强制首 Unit，被 test_validate_current_plan 拒绝；digest 探针忽略 manifest，被真实 digest 变异检查拒绝。body 模型变体不是 DB trigger 源码变体。 |
 | R7 ExactBudget / budget | freeze 把 Campaign 金额乘对象数 | frozen_requests.native_batch_budget；native_preview.generate_batch 的 expanded→total 与 INCLUDED 写入循环。source_checks 的 double/float 在真实函数上产生断言失败；生成预期不调用被测函数计算。 |
-| R8 UniqueSubmission / unique | 同预览第二次 Submit 创建第二份批准 | submissions.submit_preview 的 request-key advisory lock、Draft/Preview FOR UPDATE、0006_build_execution.uq_submission_preview；test_batch_submit_and_execute 的双 PG session 同/不同 key 重放。此项未移除真实唯一约束，不能报告做过该源码破坏。 |
-| R9 WriteOnce / retry | send→unknown→重新排队→第二次 send | submissions.claim_step、execution_state.arm_request/record_unknown、execution.process_step；同一真实批次用例观察重复 worker 的 transport 次数/ID/body 不变。模型不含许可的 confirmed-absent 恢复，交 JB17。未新增真实重发绕过探针。 |
+| R8 UniqueSubmission / unique | 同预览第二次 Submit 创建第二份批准 | submissions.submit_preview 的 request-key advisory lock、Draft/Preview FOR UPDATE、0006_build_execution.uq_submission_preview；test_batch_submit_and_execute 的双 PG session 同/不同 key 重放。source_checks unique-replay 在新 key 分支遗忘已有 Submission，真实 PG 回归因返回范围冲突而非原 identity 失败；未移除唯一约束，未产生第二份持久 Submission。模型 unique 的第二份创建与源码 replay 的错误拒绝是 R8 的不同违反，不能宣称两者逐步等价。 |
+| R9 WriteOnce / retry | send→unknown→重新排队→第二次 send | submissions.claim_step、execution_state.arm_request/record_unknown、execution.process_step；同一真实批次用例观察重复 worker 的 transport 次数/ID/body 不变。模型不含许可的 confirmed-absent 恢复，交 JB17。source_checks unknown-retry 同时放松 process_step 与 claim_step 的 UNKNOWN/armed、未过期 lease 及原请求重试证据检查；SDK POST 丢响应后同消息重复执行，transport 新增写被独立次数断言拒绝。原 body、stamp、DB 约束和 SDK 编译保持真实。 |
 | R5/R9 Excluded / excluded | Submit 给排除计划生成步骤 | native_preview.generate_batch/read_batch；submissions.expand_submission。真实批次用例明确 EXCLUDED 没有 Unit/步骤/预算/写；未新增过滤绕过源码探针。 |
 | R13 Completion / completion | 尚无三级及 creative MATCH 就报告完成 | native_completion.unit_native_matched/batch_results；source_checks completion 无条件 True，真实零完整 MATCH 场景失败；恢复后保留已有 Campaign ID。另有 receipt 探针将相同键重放硬写 COMPLETED，UNKNOWN 场景拒绝。模型 Publish 分别检查完整、部分、无完整与 UNKNOWN；实际回执不是持久调度 status。 |
 | R12 FinalFence / stamp | 批准→撤权→再授权→旧批准发送 | tenants.permissions.build_authorization_stamp/require_build_authorization_stamp；submissions.submit_preview 唯一 INSERT 冻结；dispatch.queue_step、execution._frozen 两边界消费。真实 stamp 比较绕过被 user/superuser regrant send 检查拒绝。 |
@@ -52,15 +52,27 @@ FORMAL_OUT=/tmp/tkada-native-series-20261112/m2-implementation/formal-rerun \
 | R12 HeldAuthority / lock | 锁内撤权改变已准入权限 | execution.process_step.send_scope→native_execution.lock_send_authority→_frozen→SDK request_scope→scope exit；真实 account-lock 删除 BCAccountAccess 行锁，5.2秒 transport 内独立 PG 撤权成功，断言拒绝；恢复后绿。 |
 | R12 FinalFence / aba | 再授权复用旧 generation，旧批准重新发送 | actor_authorization_stamp.upgrade 的 DB trigger/唯一 sequence；现有成员删除重建/权限恢复证据。未改真实 trigger 为复用代数，模型反例不冒充源码反例。 |
 
-## 结果解释及尚缺的形式 AC
+## 结果解释与核心性质覆盖
 
-每个模型变体必须出现指定 invariant violation；解析错误、环境错误或非零 exit 不算反例。source_checks 必须 exit 1 且含断言失败，恢复必须 exit 0。任何正常模型反例先按 action trace 对照真实事务，区分模型错误与产品错误；不要弱化性质来通过。
+每个模型变体必须出现指定 invariant violation；解析错误、环境错误或非零 exit 不算反例。source_checks 必须 exit 1 且含断言失败；两个新 case 还要求明确的 R8/R9 行为断言标记，恢复必须 exit 0。任何正常模型反例先按 action trace 对照真实事务，区分模型错误与产品错误；不要弱化性质来通过。
 
-当前提供可信的有限检查与8个真实源码破坏/恢复路径，但**不能宣称 JB-16 形式 AC 全部满足**：
+本轮六个核心性质 R5/R7/R8/R9/R12/R13 均已有代表性真实源码破坏→行为红→仓外备份 finally 恢复/cmp→绿，以及对应有界模型/反例。已有8个源码探针、3个正常模型与11个模型反例复用 v2 证据；新增 unique-replay、unknown-retry，详见 validation v3。产品源码仍与 **be06268759d6b72013120d936b9fe2b458afc4ce** 相同，不虚构新 sync 版本。JB16 放行仍归 root。
 
-1. R8/R9/EXCLUDED/write-once DB trigger 的对应真实回归已有，但本轮未提供其独立源码破坏闭环；route/NULL/ABA 同样尚缺各自真实 owner 破坏探针。表中已明确区分。
-2. actor User/Tenant/Membership/superuser 与账户/tenant/BC scope 被抽象，旧准备结果、权限代数与租约交错未建立组合模型或对应 refinement；现有24项真实围栏测试不等于该形式证明。
-3. creative 多重集合、冻结 manifest 全字段、TTL 刷新由真实现有检查覆盖，模型仅表示比较结论/意图版本；没有字节级摘要碰撞或任意 Decimal 精度证明。
+只复跑这次新增 case（串行，运行时独占源码）：
+
+```sh
+python3 .agents/skills/formal-verify-native-series-batch-submission/source_checks.py --runner /tmp/tkada-native-series-20261112/m2-implementation/run-test.py --out /tmp/tkada-native-series-20261112/m2-implementation/formal-rerun-source --only unique-replay
+python3 .agents/skills/formal-verify-native-series-batch-submission/source_checks.py --runner /tmp/tkada-native-series-20261112/m2-implementation/run-test.py --out /tmp/tkada-native-series-20261112/m2-implementation/formal-rerun-source --only unknown-retry
+```
+
+原子性对应：submit_preview 的 request-key advisory lock、Draft/Preview 行锁、existing 查询、COVERED 与 uq_submission_preview 共同提供提交唯一性和原 identity 回执。只删一个冗余 guard 后仍正确不是反证。R8 探针不改 DB DDL；约束还有效，错误表现为拒绝合法重放。R9 的 process_step/claim_step 共同阻止已有 UNKNOWN/armed 被领取；request-body 已存在时还必须有明确未发送证据。正常源码保留全部保护，探针同时放松组合，仍走真实 arm/send/record_unknown，而非伪造已发事实。claim 和 arm 是不同事务，SDK 网络写与回执非原子；丢响应必须保留 UNKNOWN。模型 Retry 抽象的正是将该保护整体放宽后第二次 Send，不是许可的 confirmed-absent 恢复。
+
+覆盖边界（不是本轮新增门槛，也不是已证明内容）：
+
+1. 本轮没有每个 owner 独立变异：EXCLUDED/冻结 DB trigger、route/NULL/ABA 的真实回归与模型反例可复用，但不宣称分别做过真实源码破坏。六个核心性质的代表性闭环不等于每个 guard 的证明。
+2. 两模型无 refinement/composition 证明。Submission 的 intent 可在 Lock 后 Edit，且 Send 不再读 intent；Authority 的 HeldAuthority 单独承担实际锁期不变假设。映射为真实 send_scope 持锁复核到 SDK 调用，已有 queue/send/browser 集成证据验证接线；不能把两次 TLC PASS 当组合证明。当前未发现该接缝的真实源码缺陷。
+3. actor User/Tenant/Membership/superuser 与账户/tenant/BC scope 折叠；旧准备、权限代数与任意规模 lease 完整交错未穷举。24项真实围栏检查不等于该形式证明。
+4. creative 多重集合、冻结 manifest 全字段、TTL 刷新由真实既有检查覆盖，模型只表示比较结论/意图版本；没有字节级摘要碰撞或任意 Decimal 精度证明。没有真实平台或生产证明。
 
 R10/R11 留给 JB17/18：在相同原请求、Unit、账户、路由与原批准 stamp 下加入只读恢复候选集（零/一/多个、完整/不完整 MATCH）、confirmed-absent 的明确批准以及取消 PENDING 与 armed/sent 的边界。不能把 UNKNOWN 自动转回 queued、回填历史 stamp、重建成功兄弟或通过取消隐藏远程 ID。扩展后重跑所有既有正常/破坏模型及受影响源码检查。根验收前 JB17 不放行。
 维护入口：`/maintain-formal-verification-skill`，先核对源码映射再推进覆盖版本。

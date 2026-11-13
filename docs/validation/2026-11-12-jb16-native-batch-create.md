@@ -199,3 +199,42 @@ Submission 的 Edit/Freeze/Submit/Queue/Claim/Arm/Lock/Send/Finish/Crash/Read/Cr
 **JB16 不标完成，JB17 未放行。** 形式质量仍有明确缺口：唯一约束、UNKNOWN 重发、EXCLUDED/冻结 DB trigger、route/NULL/ABA 的真实对应回归已有，但并非每个 owner 都有本轮持久化的源码破坏闭环；当前11个模型破坏不能冒充这类源码探针。Authority 将 User/Tenant/Membership/superuser/账户 scope 折叠，未组合旧准备/lease/tenant/BC 的完整交错；两个模型没有 refinement/composition 证明。creative 比较是抽象全部 MATCH，真实多重集合与摘要完整字段依赖既有检查。没有发现新的未解决真实产品反例；剩余是形式 AC 与验证对应缺口。
 
 JB17/18 扩展同目录：只读恢复候选零/一/多与完整性、原 Unit/原路由/原 stamp、confirmed-absent 明确批准、PENDING 取消与 armed/sent 窗口。保留 UNKNOWN 无盲重发、成功兄弟 ID/请求不可变、历史 NULL 不回填及远端 ID/消耗风险展示。不得借新增恢复动作弱化既有性质；根验收仍决定后续放行。
+
+
+## 提交/冻结形式验证 v3：六个核心性质对应收口（待 root 放行）
+
+起点 `80aea85c5f858f03ab0a50b82e4eb2152f669fa7`，指定唯一树/分支不变。未派下级、未改 main/外层协调状态，原 `.venv` / `node_modules` 软链保留。Nowledge 定向检索未取得相关历史；依据 canonical Spec、ticket-source 的 JB16、coordinator/state 与本报告 v2。产品源码与 `be06268759d6b72013120d936b9fe2b458afc4ce` 无差异，sync commit 保持原值。
+
+### 两个新增代表性反证
+
+本次独立预期来自 Spec R8（同/不同 key 重放必须返回原 Submission）、R9 与执行 owner（UNKNOWN/已成功步骤重复 worker 不新增写）。使用真实准备/冻结、独立 PG schema 与现有 SDK transport double；不 mock 业务 service、不伪造发送事实、不修改 DB DDL 或关闭 trigger。
+
+| case | 实际源码近似错误 | 独立行为 RED | 同源码恢复 GREEN |
+|---|---|---|---|
+| unique-replay | submissions.submit_preview 在新 key 分支丢弃 existing 查询结果 | 新增 test_same_preview_replay_returns_original：1 failed / 13.71s，预期原 UUID，却得到 preview_scope_already_submitted | 1 passed / 9.78s；相同 key、新 key 都回原 ID，PG 只有一个 Submission，两个请求别名均指原 ID |
+| unknown-retry | 同时放松 execution.process_step 与 submissions.claim_step 的 UNKNOWN/armed、未过期 lease 和已保存正文的安全重试证据保护 | 复用最小 unknown 参数用例：1 failed / 23.94s，第二账户 Campaign 的 SDK POST 丢响应，同消息重复 worker 令 transport 次数 4→5，命中 R9 指定断言 | 1 passed / 65.80s；33 deselected；重复 worker 无新增写，原 UNKNOWN、成功兄弟事实及同预览重放保持 |
+
+R8 是批准身份重放合同的真实源码破坏：COVERED/锁/唯一约束仍生效，拒绝新建第二份。它没有创建第二份持久 Submission，也没有只修改回执 status。模型 unique 则允许第二次 Submit，使 submissions=2。两者是同一 R8 的不同违反；这里只证明真实重放可观察合同敏感性，不声称源码错误与模型反例逐步 refinement。已有双 session 同/不同 key 并发证据继续承担唯一性运行检查。无需破坏共享库约束。
+
+R9 不能只删第一个 if：process_step、claim_step、lease 和已有原请求证据共同防止重发。探针保留原请求体、幂等键、授权 stamp、所有 DB trigger 和 SDK 编译，沿原 arm/send/record_unknown 真执行。首次物理 POST 后 transport 抛 TimeoutError，第二次同消息产生额外 POST，而非测试直接写 UNKNOWN。它对应模型 sent→unknown→Retry→Send 的 WriteOnce 反例；不覆盖合法 confirmed-absent 显式批准（JB17）。
+
+复跑命令在 skill，均通过 source_checks.py --only unique-replay / --only unknown-retry；日志在 `/tmp/tkada-native-series-20261112/m2-implementation/formal-v3-source/`。runner 新增组合文件变异，所有源文件先仓外备份，finally 全部恢复，再逐文件字节比较/cmp，恢复绿。两个新 case 必须 exit 1、AssertionError 且有指定 R8/R9 行为标记，collection/环境错误不计。为验证 runner 对旧单文件 case 的兼容，额外仅复跑廉价 budget-double；其余7个旧 case 未重跑，模型与前端无改动，未重复全套或浏览器。
+
+### 六个核心性质矩阵与原子假设
+
+| 性质 | 模型及反例（复用 v2） | 实际源码破坏闭环 / 运行证据 | 假设及边界 |
+|---|---|---|---|
+| R5 | FrozenBody / body | digest 忽略 manifest、validate 强制首 Unit：v2 红→恢复绿；冻结 PG 不可变证据复用 | digest/manifest/Unit 真实 owner；未逐个 DB trigger 变异，无摘要碰撞证明 |
+| R7 | ExactBudget / budget | ×2、float 源码探针及162组独立整数 oracle：v2 红→恢复绿 | 每 INCLUDED Campaign 一次，模型1/2最小货币单位；任意精度不在证明内 |
+| R8 | UniqueSubmission / unique | 本轮 unique-replay 红→恢复绿；已有双 PG session 同/不同 key 并发 | request-key advisory lock、Draft/Preview 行锁、existing/COVERED/唯一约束组合事务；模型未建模错误拒绝回执 |
+| R9 | WriteOnce / retry；Excluded / excluded | 本轮 unknown-retry 红→恢复绿；兄弟 ID/body/次数不变证据复用 | claim、arm、send、receipt 分开，网络与数据库非原子；未穷举多进程 lease，未单独变异 EXCLUDED owner |
+| R12 | FinalFence、HeldAuthority / stamp、route、null、lock、aba | actor-stamp/account-lock：v2 红→恢复绿；24围栏、34权限管理、TTL通过证据复用 | 权限代数更新在原事实行事务，stamp 冻结在提交 INSERT；最终锁持续到 SDK 返回；scope/代数为有界抽象 |
+| R13 | Completion / completion | 伪 MATCH、回执硬 COMPLETED：v2 红→恢复绿；同 Submission 页面→实际三级/逐创意 readback 证据复用 | 回执由实际事实派生；creative 比较器仅抽象为 MATCH，不宣称全字段形式证明 |
+
+核对 v2 实际日志：正常模型 distinct 为 **4226 / 37454 / 1456**。11变体命中各自命名不变量：budget 3、unique 14、excluded 8、retry 140、body 34、completion 14、stamp 797、route 605、null 475、lock 378、aba 878。只复用最终1计划2广告、2计划1广告与 Authority 日志；未完成的2计划2广告日志仍不算通过。models.py / 两个 tla 未变，因此不重复昂贵模型运行。
+
+两模型接缝已重新检查：Submission 的 Edit 可以发生在 Lock 后，其 Send 不复核 intent；这里依赖 Authority.HeldAuthority 对真实 send_scope 锁期不变的独立约束。真实实现 lock_send_authority→_frozen→SDK transport 的锁范围与已有 queue/send/browser 证据对应；没有发现新的真实接缝缺陷，但未建立组合模型/refinement，不能从两次 PASS 推出全系统证明。
+
+六个核心性质的本轮代表性源码闭环已齐备；**未发现剩余真实 core finding**。每个 guard/trigger/route/NULL/ABA 分别破坏、任意规模 lease/完整 scope 穷举、liveness、全系统 refinement、真实平台/生产仍未证明，明确作为 bounds/assumptions/未覆盖范围，不写成已验，也不自行新增无限验收门槛。R10/R11 仍归 JB17/18，未提前实施。JB16 是否放行由 root 读回决定，本 worker 不标 Done、不进入下一票。
+
+最终检查：budget-double 兼容复验 **1 failed / 0.13s → 1 passed / 0.06s**。从 backend 使用 pyproject.toml 运行两个变更 Python 文件的 Ruff check / format --check 均通过（先前从根显式指定 backend 配置导致 import 分类路径不符，已更正工作目录，未改无关 import）。git diff --check 通过；全部探针恢复后 backend/app diff 为空，HEAD 产品源码与 be062687… diff 为空。未改模型、未重跑前端或整套浏览器。
