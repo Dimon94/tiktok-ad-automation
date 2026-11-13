@@ -1,11 +1,12 @@
 # ruff: noqa: F811, ARG001
 """JB-16 checks consume actual prepared/frozen workspace facts."""
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlmodel import Session, select
 
+from app.modules.builds.execution_models import ExecutionStep
 from app.modules.builds.native_execution import validate
 from app.modules.builds.preview_models import BuildPreview, BuildUnit
 from app.modules.builds.routes import load_preview_route
@@ -256,6 +257,10 @@ def test_cancel_before_final_send_fence(job_env, wire, redis_client, monkeypatch
         "recovery-partial",
         "recovery-browser",
         "historical-rejection",
+        "native-ad-PENDING",
+        "native-ad-QUEUED",
+        "native-ad-RUNNING",
+        "native-ad-RETRYABLE",
     ],
 )
 def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scenario):
@@ -265,11 +270,21 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
 
     from urllib3.response import HTTPResponse
 
-    from app.modules.builds import execution, submissions
-    from app.modules.builds.execution_models import ExecutionStep, Submission
+    from app.modules.builds import dispatch, execution, submissions
+    from app.modules.builds.execution_models import (
+        ExecutionStep,
+        Submission,
+        SubmissionUnit,
+    )
 
     historical = scenario == "historical-rejection"
-    historical_receipts = {}
+    native_ad_state = (
+        scenario.removeprefix("native-ad-")
+        if scenario.startswith("native-ad-")
+        else None
+    )
+    if native_ad_state:
+        scenario = "match"
     if historical:
         scenario = "zero"
     terminal_recovery = scenario if scenario.startswith("recovery-") else None
@@ -348,6 +363,7 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             len(s.exec(select(Submission).where(Submission.preview_id == pid)).all())
             == 1
         )
+    historical_receipts = {}
     lock_probe = scenario == "send-lock"
     if lock_probe:
         scenario = "match"
@@ -425,6 +441,22 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                     locked.append(False)
                 revoke.rollback()
         calls.append((url, body))
+        if (
+            native_ad_state
+            and "/ad/create/" in url
+            and len([
+                u for u, b in calls
+                if "/ad/create/" in u and b["advertiser_id"] == body["advertiser_id"]
+            ]) % 2 == 1
+        ):
+            return HTTPResponse(
+                body=json.dumps({
+                    "code": 40002,
+                    "message": "explicit native ad rejection",
+                    "request_id": f"r1-rejected-{len(calls)}",
+                }).encode(),
+                status=200,
+            )
         if (
             scenario in {"unknown", "cancel-unknown"}
             and "/campaign/" in url
@@ -601,9 +633,37 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
         for step in current_steps:
             from app.modules.builds.dispatch import queue_step
 
+            if (
+                native_ad_state
+                and kind == "AD"
+                and [
+                    candidate for candidate in current_steps
+                    if candidate.unit_id == step.unit_id
+                ].index(step) == 0
+            ):
+                sibling = current_steps[current_steps.index(step) + 1]
+                with Session(native.engine) as s, s.begin():
+                    sibling = s.get(ExecutionStep, sibling.id)
+                    if native_ad_state == "QUEUED":
+                        queue_step(s, step=sibling, submission=s.get(Submission, sid))
+                    elif native_ad_state == "RUNNING":
+                        assert submissions.claim_step(
+                            s, context=context, step_id=sibling.id, owner=uuid4()
+                        ) is not None
+                    elif native_ad_state == "RETRYABLE":
+                        # 调度器合法状态代表；不是把 SDK 明确拒绝伪装成可重试。
+                        sibling.status = "RETRYABLE"
+                        s.add(sibling)
             with Session(native.engine) as s, s.begin():
                 queued = s.get(ExecutionStep, step.id)
-                if queued.status == "PENDING":
+                if queued.status == "PENDING" and not (
+                    native_ad_state == "PENDING"
+                    and kind == "AD"
+                    and [
+                        candidate for candidate in current_steps
+                        if candidate.unit_id == step.unit_id
+                    ].index(step) == 1
+                ):
                     queue_step(s, step=queued, submission=s.get(Submission, sid))
                 delivery = queued.dispatch_revision
             before = len(calls)
@@ -616,30 +676,194 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                     revision=delivery - 1,
                 )
                 assert len(calls) == before
-            result = execution.process_step(
-                database_engine=native.engine,
-                redis_client=redis_client,
-                context=context,
-                step_id=step.id,
-                revision=delivery,
+            before = len(calls)
+            held_sibling = (
+                native_ad_state
+                and kind == "AD"
+                and [
+                    candidate for candidate in current_steps
+                    if candidate.unit_id == step.unit_id
+                ].index(step) == 1
             )
+            if held_sibling:
+                result = "HELD"
+            else:
+                result = execution.process_step(
+                    database_engine=native.engine,
+                    redis_client=redis_client,
+                    context=context,
+                    step_id=step.id,
+                    revision=delivery,
+                )
             with Session(native.engine) as s:
                 saved = s.get(ExecutionStep, step.id)
-                if scenario == "match":
+                if native_ad_state and kind == "AD":
+                    if held_sibling:
+                        assert saved.status == native_ad_state
+                    else:
+                        assert result == (
+                            "FAILED"
+                            if [
+                                candidate for candidate in current_steps
+                                if candidate.unit_id == step.unit_id
+                            ].index(step) == 0
+                            else "SUCCEEDED"
+                        ), (kind, saved.error_code, saved.resolved)
+                elif scenario == "match":
                     assert result == "SUCCEEDED", (
                         kind,
                         saved.error_code,
                         saved.resolved,
                     )
             before = len(calls)
-            execution.process_step(
-                database_engine=native.engine,
-                redis_client=redis_client,
-                context=context,
-                step_id=step.id,
-                revision=delivery,
-            )
+            if not held_sibling:
+                execution.process_step(
+                    database_engine=native.engine,
+                    redis_client=redis_client,
+                    context=context,
+                    step_id=step.id,
+                    revision=delivery,
+                )
             assert len(calls) == before, "R9 duplicate worker added transport write"
+        if scenario == "partial" and kind == "ADGROUP":
+            with Session(native.engine) as s:
+                failed_units = [
+                    unit.id for unit in s.exec(
+                        select(BuildUnit).where(BuildUnit.preview_id == pid)
+                    ).all()
+                    if unit.advertiser_id == "second-account"
+                ]
+                revisions = {
+                    row.unit_id: row.dispatch_revision
+                    for row in s.exec(
+                        select(SubmissionUnit).where(SubmissionUnit.submission_id == sid)
+                    ).all()
+                }
+            for unit_id in failed_units:
+                dispatch.process_unit(
+                    database_engine=native.engine,
+                    context=context,
+                    payload={
+                        "unit_id": str(unit_id),
+                        "revision": revisions[unit_id],
+                    },
+                )
+            with Session(native.engine) as s:
+                descendants = s.exec(
+                    select(ExecutionStep).where(
+                        ExecutionStep.submission_id == sid,
+                        ExecutionStep.unit_id.in_(failed_units),
+                        ExecutionStep.kind == "AD",
+                    )
+                ).all()
+                assert len(descendants) == 2
+                assert all(row.status == "FAILED" for row in descendants)
+                assert all(row.error_code == "dependency_failed" for row in descendants)
+                assert all(row.request_body is None for row in descendants)
+                assert all(row.remote_id is None for row in descendants)
+                view = submissions.get_submission(
+                    s, context=context, submission_id=sid
+                )
+                assert view.status == "RUNNING"
+        if scenario == "zero" and kind == "ADGROUP":
+            with Session(native.engine) as s:
+                revisions = {
+                    row.unit_id: row.dispatch_revision
+                    for row in s.exec(
+                        select(SubmissionUnit).where(SubmissionUnit.submission_id == sid)
+                    ).all()
+                }
+            for unit_id, revision in revisions.items():
+                dispatch.process_unit(
+                    database_engine=native.engine,
+                    context=context,
+                    payload={"unit_id": str(unit_id), "revision": revision},
+                )
+            with Session(native.engine) as s:
+                descendants = s.exec(
+                    select(ExecutionStep).where(
+                        ExecutionStep.submission_id == sid,
+                        ExecutionStep.kind == "AD",
+                    )
+                ).all()
+                assert len(descendants) == 4
+                assert all(row.status == "FAILED" for row in descendants)
+                assert all(row.error_code == "dependency_failed" for row in descendants)
+                assert all(row.request_body is None for row in descendants)
+                view = submissions.get_submission(
+                    s, context=context, submission_id=sid
+                )
+                assert view.status == "FAILED"
+        if native_ad_state and kind == "AD":
+            for unit_id in {step.unit_id for step in current_steps}:
+                same_unit = [step for step in current_steps if step.unit_id == unit_id]
+                assert len(same_unit) == 2
+                failed_ad, held_ad = same_unit
+                with Session(native.engine) as s:
+                    failed_ad = s.get(ExecutionStep, failed_ad.id)
+                    held_ad = s.get(ExecutionStep, held_ad.id)
+                    assert failed_ad.status == "FAILED"
+                    assert failed_ad.error_code == "tiktok_business_error"
+                    assert failed_ad.resolved["business_rejection_counts"] == {"40002": 1}
+                    assert held_ad.status == native_ad_state
+                    assert held_ad.request_body is None
+                    assert held_ad.remote_id is None
+            from types import SimpleNamespace
+
+            from fastapi import FastAPI
+            from fastapi.testclient import TestClient
+
+            from app.api.deps import get_current_user, get_db
+            from app.core.errors import DomainError, domain_error_handler
+            from app.modules.builds import reconciliation
+            from app.modules.builds.submission_api import router
+
+            # 真实 READBACK 清空前置等待，避免把 READBACK 等待误当 R1 反例。
+            monkeypatch.setattr(
+                reconciliation,
+                "current_task",
+                SimpleNamespace(request=SimpleNamespace(
+                    timelimit=(45, 40), called_directly=False, is_eager=False
+                )),
+            )
+            monkeypatch.setattr(
+                reconciliation,
+                "current_process",
+                lambda: SimpleNamespace(daemon=True, name="ForkPoolWorker-1"),
+            )
+            with Session(native.engine) as s:
+                reads = s.exec(select(ExecutionStep).where(
+                    ExecutionStep.submission_id == sid,
+                    ExecutionStep.kind == "READBACK",
+                )).all()
+            for read in reads:
+                result = reconciliation.process_reconciliation(
+                    database_engine=native.engine,
+                    redis_client=redis_client,
+                    context=context,
+                    step_id=read.id,
+                    revision=read.dispatch_revision,
+                )
+                assert result.state == "SUCCEEDED", result
+            app = FastAPI()
+            app.include_router(router)
+            app.add_exception_handler(DomainError, domain_error_handler)
+
+            def database():
+                with Session(native.engine) as db:
+                    yield db
+
+            app.dependency_overrides[get_db] = database
+            app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+                id=context.actor_id
+            )
+            with TestClient(app) as reader:
+                response = reader.get(
+                    f"/tenants/{context.tenant_id}/submissions/{sid}"
+                )
+            assert response.status_code == 200, response.text
+            # Spec T12/T13：实际非全 MATCH 且仍有可执行 Ad，必须 RUNNING。
+            assert response.json()["status"] == "RUNNING", response.text
         if scenario == "cancel-after-campaign" and kind == "CAMPAIGN":
             sent_at_cancel = cancel_and_snapshot_sent()
         if scenario == "cancel-unknown" and kind == "CAMPAIGN":
@@ -653,9 +877,8 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 ).first()
             if unknown_exists is not None and not sent_at_cancel:
                 sent_at_cancel = cancel_and_snapshot_sent()
-    assert (
-        len(calls)
-        == {
+    assert len(calls) == (
+        8 if native_ad_state else {
             "match": 10,
             "partial": 8,
             "zero": 6,
@@ -685,16 +908,15 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
         view = submissions.get_submission(s, context=context, submission_id=sid)
         assert view.status != "COMPLETED"  # 创建回执不能冒充实际 MATCH。
         assert len(view.native_plans) == (3 if browser else 2)
-        if scenario == "match":
+        if scenario == "match" and not native_ad_state:
             assert all(
                 len(p.remote_ids) == 4
                 for p in view.native_plans
                 if p.status != "EXCLUDED"
             )
     assert submit(0).submission_id == sid
-    assert (
-        len(calls)
-        == {
+    assert len(calls) == (
+        8 if native_ad_state else {
             "match": 10,
             "partial": 8,
             "zero": 6,
@@ -732,9 +954,8 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 ExecutionStep.submission_id == sid, ExecutionStep.kind == "READBACK"
             )
         ).all()
-    assert (
-        len(reads)
-        == {
+    assert len(reads) == (
+        4 if native_ad_state else {
             "match": 8,
             "partial": 5,
             "zero": 2,
@@ -756,11 +977,73 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             revision=step.dispatch_revision,
         )
         assert result.state == "SUCCEEDED", result
+    if native_ad_state:
+        from datetime import UTC, datetime, timedelta
+        from app.modules.builds import dispatch
+        with Session(native.engine) as s:
+            held = s.exec(
+                select(ExecutionStep).where(
+                    ExecutionStep.submission_id == sid,
+                    ExecutionStep.kind == "AD",
+                    ExecutionStep.status.in_(
+                        ["PENDING", "QUEUED", "RUNNING", "RETRYABLE"]
+                    ),
+                )
+            ).all()
+            assert len(held) == 2
+            held = [
+                {"id": step.id, "status": step.status}
+                for step in held
+            ]
+            for step in held:
+                if step["status"] == "RUNNING":
+                    row = s.get(ExecutionStep, step["id"])
+                    row.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                    s.add(row)
+            s.commit()
+        if native_ad_state == "RUNNING":
+            dispatch.repair_execution(database_engine=native.engine)
+        for step in held:
+            with Session(native.engine) as s, s.begin():
+                queued = s.get(ExecutionStep, step["id"])
+                queue_step(s, step=queued, submission=s.get(Submission, sid))
+                delivery = queued.dispatch_revision
+            result = execution.process_step(
+                database_engine=native.engine,
+                redis_client=redis_client,
+                context=context,
+                step_id=step["id"],
+                revision=delivery,
+            )
+            assert result == "SUCCEEDED", (step["id"], result)
+        with Session(native.engine) as s:
+            reads = s.exec(
+                select(ExecutionStep).where(
+                    ExecutionStep.submission_id == sid,
+                    ExecutionStep.kind == "READBACK",
+                    ExecutionStep.status.in_(
+                        ["PENDING", "QUEUED", "RUNNING", "RETRYABLE"]
+                    ),
+                )
+            ).all()
+            assert len(reads) == 2
+            reads = [
+                {"id": step.id, "revision": step.dispatch_revision}
+                for step in reads
+            ]
+        for step in reads:
+            result = reconciliation.process_reconciliation(
+                database_engine=native.engine,
+                redis_client=redis_client,
+                context=context,
+                step_id=step["id"],
+                revision=step["revision"],
+            )
+            assert result.state == "SUCCEEDED", result
     with Session(native.engine) as s:
         view = submissions.get_submission(s, context=context, submission_id=sid)
-        assert (
-            view.status
-            == {
+        assert view.status == (
+            "FAILED" if native_ad_state else {
                 "match": "COMPLETED",
                 "partial": "PARTIAL",
                 "zero": "FAILED",
@@ -773,7 +1056,12 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 "recovery-partial": "NEEDS_REVIEW",
             }[scenario]
         ), view.model_dump()
-        if scenario == "match":
+        if native_ad_state:
+            assert all(p.status == "PARTIAL" for p in view.native_plans), [
+                (p.status, p.remote_ids) for p in view.native_plans
+            ]
+            assert all(len(p.remote_ids) == 3 for p in view.native_plans)
+        if scenario == "match" and not native_ad_state:
             assert all(
                 p.status == "COMPLETED"
                 for p in view.native_plans

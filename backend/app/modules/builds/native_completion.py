@@ -124,6 +124,14 @@ def batch_results(session, submission, preview):
                 state = "CANCELLED"
             elif any(
                 s.kind != "READBACK"
+                and s.id not in failed
+                and s.status in {"PENDING", "QUEUED", "RUNNING", "RETRYABLE"}
+                for s in steps
+            ):
+                # 明确失败不能提前终止仍可执行的兄弟步骤。
+                state = "RUNNING"
+            elif any(
+                s.kind != "READBACK"
                 and (s.id in failed or s.status in {"FAILED", "CANCELLED"})
                 for s in steps
             ):

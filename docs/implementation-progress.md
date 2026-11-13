@@ -1,3 +1,9 @@
+## 2026-11-13：M2 R1 P1 可执行兄弟终态修复（本地候选，未放行）
+
+独立 Spec R1 发现 `native_completion.batch_results` 在任一创建失败后，会把仍可执行的兄弟步骤提前覆盖为 PARTIAL/FAILED。已在唯一 M2 集成树修复同一 owner：先保留 UNKNOWN/MISMATCH 和取消语义；失败后代闭包外的非 READBACK PENDING/QUEUED/RUNNING/RETRYABLE 一律保持 RUNNING，再按实际 MATCH/失败派生。未新增状态模型，未改变发送、预算、权限、READBACK 或原 ID 合同。
+
+真实本地 HTTP+PG/Redis、SDK transport 替身场景在修复前得到两个 INCLUDED 计划各一 Ad FAILED、另一 Ad PENDING，四 READBACK MATCH 而整批 FAILED 的反例；修复后 PENDING/QUEUED/RUNNING/RETRYABLE 四状态均读回 RUNNING、原 ID 续跑和 READBACK MATCH，最终依 R13 保留 FAILED（每计划 PARTIAL）。四状态 `4 passed`；blocked-descendant 对照 `4 passed`；最终受影响结果/恢复/取消代表 `13 passed`。错误实现探针 live-sibling-completion 真实 RED→finally/cmp 字节恢复→GREEN。详见 [R1 修复验证](validation/2026-11-13-native-m2-r1-fix.md)。本轮模型只读，已列出下一 fresh Kimi 的模型同步性质；未宣称 M2 完成，无 push/PR/deploy/Linear/main 合并。
+
 ## 2026-11-13：JB18 最终验证维护候选（root 审查/集成未完成）
 
 从产品 sync `5d6706d1594fb5395e3e2b2e7c9ca3661f531ed9` 起，补齐 R11 有界模型、真实 cancel-first 围栏源码红→恢复绿、历史 flat 合法 writer→当前读取/结果纵切，以及 T1–T20/R1–R13 矩阵。默认/recovery/historical/historical-witness/cancel 模型全部运行；13 个正式源码探针红→finally/cmp→绿，产品源码最终无 diff。取消 4 场景、send-first 2 场景、historical-rejection 和独立 flat 纵切本轮通过，合计 8 passed/61.20s。

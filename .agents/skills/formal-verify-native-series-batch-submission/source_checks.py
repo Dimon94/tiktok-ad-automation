@@ -88,6 +88,18 @@ cases = [
 # 组合 owner 的错误必须一并破坏冗余保护；不修改数据库约束或发送事实。
 compound_cases = [
     (
+        "live-sibling-completion",
+        [
+            (
+                "app/modules/builds/native_completion.py",
+                "and s.id not in failed\n",
+                "and False\n",
+            )
+        ],
+        [B + "test_native_batch_execution.py", "-k", "native-ad-PENDING"],
+        'response.json()["status"] == "RUNNING"',
+    ),
+    (
         "recovery-ambiguous",
         [
             (
