@@ -96,7 +96,7 @@ compound_cases = [
                 'next_progress["matches"] < 1:',
             ),
         ],
-        [B + "test_native_batch_execution.py::test_batch_submit_and_execute[recovery]"],
+        [B + "test_native_batch_execution.py::test_batch_submit_and_execute[recovery-source_env0]"],
         "AssertionError: R10 candidate many",
     ),
     (

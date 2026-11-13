@@ -1,8 +1,8 @@
 ## 2026-11-13：JB18 最终验证维护候选（root 审查/集成未完成）
 
-从产品 sync `5d6706d1594fb5395e3e2b2e7c9ca3661f531ed9` 起，补齐 R11 有界模型、真实 cancel-first 围栏源码红→恢复绿、历史 flat 合法 writer→当前读取/结果纵切，以及 T1–T20/R1–R13 矩阵。默认/recovery/historical/historical-witness/cancel 模型全部运行；13 个正式源码探针红→finally/cmp→绿，产品源码最终无 diff。取消 4 场景、send-first 2 场景、historical-rejection 和独立 flat 纵切本轮通过。
+从产品 sync `5d6706d1594fb5395e3e2b2e7c9ca3661f531ed9` 起，补齐 R11 有界模型、真实 cancel-first 围栏源码红→恢复绿、历史 flat 合法 writer→当前读取/结果纵切，以及 T1–T20/R1–R13 矩阵。默认/recovery/historical/historical-witness/cancel 模型全部运行；13 个正式源码探针红→finally/cmp→绿，产品源码最终无 diff。取消 4 场景、send-first 2 场景、historical-rejection 和独立 flat 纵切本轮通过，合计 8 passed/61.20s。
 
-本轮 `batch-workspace`、`recovery-browser`、`cancel-before` 三浏览器场景仍阻塞在真实页面 `/prepare` 等待/按钮超时；不能把 HTTP、模型或继承浏览器证据称为最终全绿。冻结预览浏览器单项本轮通过。详见 [M2 最终验证维护记录](validation/2026-11-13-native-m2-final-verification.md)。无真实平台写、迁移、推送、发布或 Linear；M2 尚待 root 独立两轴审查与集成。
+本轮 `batch-workspace`、`recovery-browser`、`cancel-before` 三浏览器场景实测 `3 passed/63.56s`。prepare/freeze/submit、results/recovery、cancel 均走真实页面→本地 HTTP→真实 PG/Redis→SDK transport 替身。根因是 fixture `bc-fixture` 被租户数字 search schema 移除；仅把该测试场景沿用既有数字 BC fixture，不改产品源码。冻结预览及计划编辑/准备浏览器亦通过。详见 [M2 最终验证维护记录](validation/2026-11-13-native-m2-final-verification.md)。无真实平台写、迁移、推送、发布或 Linear；M2 尚待 root 独立两轴审查与集成。
 
 ## 2026-11-13：JB18 取消/canonical consumer 实现候选（未放行）
 

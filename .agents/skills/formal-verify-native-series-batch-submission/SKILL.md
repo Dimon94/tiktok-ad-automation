@@ -82,7 +82,7 @@ R10/R11 的有界扩展已合入同一模型。真实恢复仍只允许唯一完
 
 源码 sync 为 `5d6706d1594fb5395e3e2b2e7c9ca3661f531ed9`。更新自当前源码 diff，不由模型 PASS 反推。R11 只证明有界 idle pending、取消标记后禁止新发送及保留既有事实；真实 cancel-first/send-first 与独立 PG 恢复证据见 `docs/validation/2026-11-13-native-m2-final-verification.md`。历史 flat 输入由真正 flat 版本 `312468f7ae2188b3f7fb6917612004fe7100d23f` 的合法 writer 构造，原不可变 trigger 开启；当前读取/结果不改原正文、digest 或 ID。
 
-最终默认、recovery、historical、historical-witness、cancel 五个分支全部执行；所有反例都是预期 invariant violation。真实源码 `cancel-send-fence` 的破坏产生 `SUCCEEDED != FAILED` 行为红，finally/cmp 后绿；之前 queue/process/selector 保持绿不算反证。模型没有全系统 refinement、liveness、任意规模或真实平台证明。
+最终默认、recovery、historical、historical-witness、cancel 五个分支全部执行；所有反例都是预期 invariant violation。真实源码 `cancel-send-fence` 的破坏产生 `SUCCEEDED != FAILED` 行为红，finally/cmp 后绿；之前 queue/process/selector 保持绿不算反证。最终真实浏览器 prepare/freeze/submit、results/recovery、cancel 三链已通过；批次场景复用数字 BC fixture 以符合父路由 search 合同。模型没有全系统 refinement、liveness、任意规模或真实平台证明；不据此宣称 M2 完成。
 
 维护入口：`/maintain-formal-verification-skill`，先核对源码映射再推进覆盖版本。
 

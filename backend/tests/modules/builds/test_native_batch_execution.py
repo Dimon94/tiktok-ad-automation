@@ -235,6 +235,9 @@ def test_cancel_before_final_send_fence(job_env, wire, redis_client, monkeypatch
 
 
 @pytest.mark.parametrize(
+    "source_env", [{"bc_id": "90071992547409931234"}], indirect=True
+)
+@pytest.mark.parametrize(
     "scenario",
     [
         "cancel-before",

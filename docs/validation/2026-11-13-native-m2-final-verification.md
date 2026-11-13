@@ -11,7 +11,7 @@
 2. 实际最终物理发送围栏为 `backend/app/modules/builds/execution_state.py:742` 的 `require_local_send_open`，由 `arm_request` 和 `backend/app/modules/builds/execution.py:1111` 的 `send_scope` 共用。真实 owner `submissions.cancel_submission` 持 Submission 行锁。新增 `backend/tests/modules/builds/test_native_batch_execution.py::test_cancel_before_final_send_fence` 在原 authority 锁前暂停，独立 PG Session/真实 HTTP 取消先提交，再执行原围栏。实测 FAILED/local_submission_cancelled、SDK 零写，armed body/digest/attempt_id 不变。
 3. 正式探针 `cancel-send-fence` 仅破坏该共享 fence，真实 RED 为 `AssertionError: ('SUCCEEDED' == 'FAILED')`；finally/cmp 恢复后 GREEN。日志 `/tmp/tkada-native-series-20261112/m2-implementation/m2-final-verification/source-cancel/cancel-send-fence-broken.log` 与最终 source 输出。之前 queue/process/selector 及组合破坏仍绿，未算反证。没有用环境错误冒充红。
 4. 历史 flat 纵切由真正 flat 版本 `312468f7ae2188b3f7fb6917612004fe7100d23f` 的 `native_preview.generate()` 写入隔离 PG；不关闭 immutable trigger、不硬改当前冻结 JSON。仅补充该版本之后新增的非空 `batch_short_id`，不改 native_request、Unit snapshot、digest、ID。`backend/tests/modules/builds/test_historical_native_flat.py` 实测原 flat 请求、digest、Unit 在统一 read_batch、HTTP 提交/展开、结果读取和新键重放后不变。`1 passed/6.43s`，日志 `/tmp/tkada-native-series-20261112/m2-implementation/m2-final-verification/historical-flat-real.log`。这是读取/结果纵切，不声称新增 UNKNOWN 恢复。
-5. 最终默认、recovery、historical、historical-witness、cancel 五个模型入口均成功。13 个正式源码探针全 RED→finally/cmp→GREEN；T18 no-closure/lost-request 源码探针恢复绿。`test_batch_browser` 本轮 `1 passed/12.42s`。取消场景、真实 UNKNOWN/inflight 竞态、`historical-rejection` 本轮均绿。最终批次浏览器三场景本轮未通过，见末节；不拿继承证据冒充本轮浏览器通过。
+5. 最终默认、recovery、historical、historical-witness、cancel 五个模型入口均成功。13 个正式源码探针全 RED→finally/cmp→GREEN；T18 no-closure/lost-request 源码探针恢复绿。`test_batch_browser` 本轮 `1 passed/12.42s`。取消场景、真实 UNKNOWN/inflight 竞态、`historical-rejection` 本轮均绿。最终批次浏览器三场景本轮 `3 passed/63.56s`，见末节。
 
 ## 最终模型证据
 
@@ -31,7 +31,7 @@
 
 正式 `source_checks.py` 当前全部 13 项：budget-double、budget-float、digest、completion、unit-scope、actor-stamp、receipt、account-lock、recovery-ambiguous、unique-replay、unknown-retry、cancel-send-fence。每项均要求行为断言红，finally 字节恢复/cmp，再绿。`unit-scope` 随当前统一 `read_batch` owner 更新锚点；恢复探针收窄到精确恢复行为，避免浏览器环境混入恢复反证。
 
-- `backend/tests/modules/builds/test_native_batch_execution.py` 取消 before/partial/after-campaign/unknown：4 个场景分别通过；最终 9 项组合回归日志 `/tmp/tkada-native-series-20261112/m2-implementation/m2-final-verification/final-targeted.log` 为 `8 passed` 加 `[cancel-before]` 已知浏览器超时。
+- `backend/tests/modules/builds/test_native_batch_execution.py` 取消 before/partial/after-campaign/unknown：4 个场景分别通过。原最终组合日志 `final-targeted.log` 中 `[cancel-before]` 的旧超时已被后续数字 BC fixture 修正，不能拿该旧日志作最终通过证据。
 - `backend/tests/modules/builds/test_native_execution.py` cancel_inflight/unknown_late：`2 passed,46 deselected in 37.10s`。独立 PG 会话真实 transport 中取消，已发 ID、原 attempt、RESULT_UNKNOWN/LATE_CREATED 保留；这是 send-first 证据。与新增 cancel-first 一起覆盖两个可观察顺序，但不宣称任意并发证明。
 - `historical-rejection`：`1 passed,45 deselected in 33.11s`，统一历史明确拒绝恢复、原 ID/body/digest/attempt 保留。T18 no-closure/lost-request 当前源码破坏红、恢复绿。
 
@@ -56,10 +56,10 @@
 | T13 | native_completion / cancel | 全部失败或取消且无 MATCH→FAILED；`cancel-after-campaign` 本轮通过；T18 historical-rejection 本轮绿。 | 本轮实测。UNKNOWN 仍覆盖失败派生。 |
 | T14 | record_unknown / recovery | Campaign Timeout→UNKNOWN/NEEDS_REVIEW，不盲重发；`cancel-unknown` 本轮通过，JB17 recovery。 | 本轮及继承。Timeout/空 GET 不是负证据。 |
 | T15 | reconciliation / unique recovery | 部分唯一 MATCH、其他项继续，无新 POST；JB17。 | 继承。恢复只消费原范围，模型非 refinement。 |
-| T16 | reconciliation / batch results | 全部唯一 MATCH→COMPLETED；JB17 recovery-complete。 | 继承。浏览器恢复本轮未通过，见末节。 |
+| T16 | reconciliation / batch results | 全部唯一 MATCH→COMPLETED；JB17 recovery-complete；真实浏览器 recovery 本轮通过。 | 继承加浏览器实测。恢复只消费原范围，模型非 refinement。 |
 | T17 | reconciliation / partial results | 部分 MATCH、其余终态→PARTIAL；JB17 recovery-partial。 | 继承。不重建成功兄弟。 |
 | T18 | `_recover_known_rejection` / result | 历史明确无效果拒绝→FAILED；`historical-rejection` 本轮绿、两源码探针恢复绿。 | 本轮实测。仅同 source/attempt 的持久拒绝，未知响应不可清 UNKNOWN。 |
-| T19 | `cancel_submission` / UI/API | 全未发送取消、CANCELLED、零 SDK 写、重放同一 Submission；JB18 记录。新 cancel-first 真实 HTTP 本轮通过。 | 实现及新竞态本轮实测；最终浏览器取消未通过，旧浏览器记录仅继承。 |
+| T19 | `cancel_submission` / UI/API | 全未发送取消、CANCELLED、零 SDK 写、重放同一 Submission；JB18 记录。新 cancel-first 真实 HTTP 和最终浏览器取消本轮通过。 | 实现、竞态及浏览器本轮实测。 |
 | T20 | `cancel_submission` / result/readback | partial/after-campaign/unknown 本轮 4 场景绿；send-first 两场景绿。 | 本轮实测。armed/sent/UNKNOWN body/digest/attempt/ID/迟到事实不擦除。 |
 
 ## R1–R13 证据矩阵
@@ -82,8 +82,12 @@
 
 ## 最终浏览器实测与尚缺项
 
-`backend/tests/modules/builds/native_browser_http.py` 启动真实本地 uvicorn HTTP 与真实 PG/Redis，仅 SDK transport 为替身；Playwright 操作真实页面。本轮 `test_batch_browser` 冻结预览通过，JB14 的真实准备浏览器记录仍有效继承。
+`backend/tests/modules/builds/native_browser_http.py` 启动真实本地 uvicorn HTTP 与真实 PG/Redis，仅 SDK transport 为替身；Playwright 操作真实页面。
 
-但本轮最终 `batch-workspace`、`recovery-browser`、`cancel-before` 三场景均失败于 `frontend/tests/build-preview.spec.ts:1215-1216`：等待 POST `/prepare`，找不到/未能点击 `解析并准备`。日志 `final-browser-workspace.log`、`final-browser-frozen.log`。因此 prepare/freeze→submit/results/recovery/cancel 的**最终同后端浏览器覆盖尚未全部实测通过**；不能用 HTTP/模型或 JB18 旧浏览器记录替代。此现象已观察到，根因 Unknown，未证明是产品缺陷，也没有为它改产品源码。
+本轮 `batch-workspace`、`recovery-browser`、`cancel-before` 三场景实测 **3 passed/63.56s**，日志 `/tmp/tkada-native-series-20261112/m2-implementation/m2-final-verification/final-browser-numeric.log`。覆盖真实页面 prepare/freeze/submit/results、UNKNOWN 恢复和本地取消。此前 prepare 超时的根因是 harness 使用 `bc-fixture`，父租户路由仅接受数字 `bc_id`，导致 scope 丢失。仅为该 batch 场景复用 `source_env={"bc_id":"90071992547409931234"}`；无产品源码变化。
 
-尚缺：上述浏览器路径修复或环境定位并复跑；root 独立 Standards/Spec 审查、集成和 M2 放行。无真实 TikTok/生产验收，无全系统 refinement/liveness/任意规模证明，无新增迁移。模型、验证测试、skill、文档可聚焦提交；不宣称 M2 完成。
+另测 `test_native_plan_set.py` 六场景 **6 passed/28.08s**（含真实 Draft 编辑/准备），`test_batch_browser` **1 passed/12.42s**。计划编辑/准备仍标为直接补测；重复页面证据不扩大为真实平台证明。
+
+数字 BC fixture 更新后，`recovery-ambiguous` 以精确 `[recovery-source_env0]` 重跑：破坏 RED、恢复 GREEN。日志 `/tmp/tkada-native-series-20261112/m2-implementation/m2-final-verification/final-source-numeric-recovery.log`。
+
+尚缺 root 独立 Standards/Spec 审查、集成和 M2 放行。无真实 TikTok/生产验收，无全系统 refinement/liveness/任意规模证明，无新增迁移。本轮模型、验证测试、skill、文档已聚焦提交；不宣称 M2 完成。
