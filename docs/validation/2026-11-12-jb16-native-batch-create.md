@@ -156,3 +156,46 @@ python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -
 最终结果：`jb16-stamp-final.log` **59 passed / 2 failed / 191.64s**。24 个 queue/send 围栏、历史读取、SDK 双锁均通过；两个失败分别为 TTL 测试函数后部局部 Submission import 遮蔽新增断言，以及 Tenant response_model 直接序列化模型泄露新内部字段。后者通过在 generation 字段设置 `exclude=True` 保持原 API 响应，未放宽 API 断言；前者把 Submission import 统一到模块顶部，清除函数内遮蔽（首次只移除条件分支 import 仍失败，随后移除函数后部同名 import）。
 
 修复后 `<runner> python -m pytest 'tests/modules/builds/test_native_execution.py::test_native_expired_evidence_continues_frozen_plan[scene]' tests/modules/tenants/test_permissions.py tests/modules/tenants/test_management.py -q --tb=short`：`jb16-stamp-final-fix.log` 权限/管理 **34 passed**，当时 TTL 尚有上述 import 遮蔽失败；清除后单独同节点 `jb16-stamp-ttl-final.log` **1 passed / 12.56s**，断言原 stamp、revision、digest、父级 body/attempt 不变。最初误从仓库根启动该复验仅 collection exit 4，已从 backend 修正执行。最终 10 个变更 Python 文件 Ruff check / format --check 均通过，git diff --check 通过。验证按受影响范围复用，没有将初次失败记录改写成全套绿。API 表面保持原形，未新增前端构建。新增迁移尚未生产部署；根审查和形式验收仍未完成。
+
+## 提交/冻结形式验证 v2（起点 be062687；未满足全部形式 AC）
+
+唯一写树与分支未变，原未跟踪 `.venv` / `node_modules` 保留。按 create-formal-verification-skill、TDD、git-commit 实施；未派代理、未改变产品代码、UI、数据库 schema 或外层协调状态。Nowledge 定向检索无相关结果，依据完整 JB16 AC、Spec 和当前源码。
+
+替换原空性质草模，新增 Authority 子模型、TLC 正常/破坏 runner、真实源码串行破坏 runner、真实 Decimal 生成输入检查。完整 owner 映射、命令、工具校验和、反例解释、边界和下一票合同写入 `.agents/skills/formal-verify-native-series-batch-submission/SKILL.md`。已读源码 sync commit 为真实起点 `be06268759d6b72013120d936b9fe2b458afc4ce`，不是本轮提交占位符。
+
+### 本轮实际结果
+
+Temurin 21.0.13+9；TLC 2026.11.06.222357 rev d8fb231 / v1.8.0；jar SHA256 `e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f`。最终模型：
+
+| 正常模型 | generated | distinct | 结论 |
+|---|---:|---:|---|
+| 单 INCLUDED 计划，Campaign/Group/两 Ad | 24840 | 4226 | 无反例 |
+| 两 INCLUDED 计划，各 Campaign/Group/一 Ad | 257868 | 37454 | 无反例 |
+| 权限批准/持锁/发送，actor 三代、route 各两代 | 3585 | 1456 | 无反例 |
+
+Submission 的 Edit/Freeze/Submit/Queue/Claim/Arm/Lock/Send/Finish/Crash/Read/Creative/Publish 是独立动作。金额在 Freeze 中计算，有不同输入；EXCLUDED 不生成对象；UNKNOWN 不盲重发；Publish 按独立对象与 creative MATCH 事实检查完成/部分/零完整及 UNKNOWN。Authority 分开批准、排队、claim、arm、锁、发送、释放和回执；撤权再授权和 NULL 不能以当前 active 替代原 stamp，connection/binding/revision 变更与持锁时序独立可达。
+
+11 个模型变体全部产生指定不变量反例：budget（3 distinct）、unique（14）、excluded（8）、retry（140）、body（34）、completion（14）、stamp（797）、route（605）、null（475）、lock（378）、aba（878）。反例日志包含完整 action trace；这不是11个真实产品缺陷。两计划各两广告的更大模型曾主动停止以收敛默认复跑成本，不报告为通过。旧中间模型统计不作为最终结论。
+
+真实源码探针全部仓外备份、finally 恢复、字节比较及 cmp，恢复后相同定向检查通过。实际 pytest 均从本树 backend 经专用 M2 runner，PG/Redis 真实，外部调用仅 SDK transport double：
+
+| 源码破坏 | RED | 恢复 GREEN |
+|---|---|---|
+| native_batch_budget ×2 | 1 failed / 0.14s | 1 passed / 0.07s |
+| Decimal 先转 float | 1 failed / 0.11s | 1 passed / 0.07s |
+| digest 忽略 manifest | 1 failed / 0.13s | 1 passed / 0.08s |
+| unit_native_matched 无条件 True | 1 failed / 14.65s | 1 passed / 11.57s |
+| validate 强制首 Unit | 1 failed / 15.08s | 1 passed / 8.67s |
+| actor stamp 比较不拒绝 | 2 failed / 14.47s | 2 passed / 14.79s |
+| 删除 BCAccountAccess 共享锁 | 1 failed / 18.91s | 1 passed / 21.67s |
+| 相同键重放硬写 COMPLETED | 1 failed / 28.83s | 1 passed / 39.32s |
+
+新增 Decimal 检查调用真实 native_batch_budget：1–18位小数 × 1–3计划 × 0/1/7广告 = 162组，再验空集合。预期由整数等差数列系数构造，与生产求和独立。金额范围均在 Decimal 默认精度可精确表示内，不宣称任意长度数字证明。EXCLUDED 过滤接线继续由既有真实批次证据负责，未手抄另一个预算函数冒充代码证明。
+
+最终日志：`/tmp/tkada-native-series-20261112/m2-implementation/formal-v2/` 与 `formal-v2-source/`。模型在仓外副本运行，不遗留 TTrace 到源码；源码 runner 已持久化到 skill，后续不依赖遗失的 probe 脚本。实际分两段执行 run.sh 与 source_checks.py，receipt 追加用 `--only receipt`；skill 的 `run.sh --all` 顺序组合相同命令。Ruff check（三 Python 文件）、shell syntax、git diff --check 通过。格式化未改检查语义，复用已通过结果；前端不变复用已有构建。
+
+### 未闭合项和交接
+
+**JB16 不标完成，JB17 未放行。** 形式质量仍有明确缺口：唯一约束、UNKNOWN 重发、EXCLUDED/冻结 DB trigger、route/NULL/ABA 的真实对应回归已有，但并非每个 owner 都有本轮持久化的源码破坏闭环；当前11个模型破坏不能冒充这类源码探针。Authority 将 User/Tenant/Membership/superuser/账户 scope 折叠，未组合旧准备/lease/tenant/BC 的完整交错；两个模型没有 refinement/composition 证明。creative 比较是抽象全部 MATCH，真实多重集合与摘要完整字段依赖既有检查。没有发现新的未解决真实产品反例；剩余是形式 AC 与验证对应缺口。
+
+JB17/18 扩展同目录：只读恢复候选零/一/多与完整性、原 Unit/原路由/原 stamp、confirmed-absent 明确批准、PENDING 取消与 armed/sent 窗口。保留 UNKNOWN 无盲重发、成功兄弟 ID/请求不可变、历史 NULL 不回填及远端 ID/消耗风险展示。不得借新增恢复动作弱化既有性质；根验收仍决定后续放行。

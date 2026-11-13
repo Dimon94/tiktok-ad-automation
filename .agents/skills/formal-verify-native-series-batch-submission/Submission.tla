@@ -1,45 +1,70 @@
------------------------------ MODULE Submission -----------------------------
+---------------- MODULE Submission ----------------
 EXTENDS Naturals, FiniteSets, TLC
-CONSTANT Plans
-Objects == Plans \X {1,2,3,4}
-VARIABLES submissions, phase, sends, valid, frozen, body, matched, authorized, budget
-vars == <<submissions, phase, sends, valid, frozen, body, matched, authorized,budget>>
-Init == /\ submissions = 0
-        /\ phase = [p \in Objects |-> "pending"]
-        /\ sends = [p \in Objects |-> 0]
-        /\ valid = TRUE /\ frozen = 1
-        /\ body = [p \in Objects |-> 0]
-        /\ authorized = [p \in Objects |-> TRUE]
-        /\ budget = 20050 /\ matched = {}
-Submit == /\ submissions = 0 /\ valid
-          /\ submissions' = 1
-          /\ UNCHANGED <<phase,sends,valid,frozen,body,matched,authorized,budget>>
-Invalidate == /\ valid /\ valid' = FALSE
-              /\ UNCHANGED <<submissions,phase,sends,frozen,body,matched,authorized,budget>>
-Arm(p) == /\ submissions = 1 /\ valid /\ phase[p] = "pending"
-          /\ (IF p[2] = 1 THEN TRUE ELSE phase[<<p[1],p[2]-1>>] = "created")
-          /\ phase' = [phase EXCEPT ![p] = "armed"]
-          /\ body' = [body EXCEPT ![p] = frozen]
-          /\ UNCHANGED <<submissions,sends,valid,frozen,matched,authorized,budget>>
-Send(p) == /\ valid /\ phase[p] = "armed" /\ body[p] = frozen
-           /\ phase' = [phase EXCEPT ![p] = "sent"]
-           /\ sends' = [sends EXCEPT ![p] = @ + 1]
-           /\ authorized' = [authorized EXCEPT ![p] = valid]
-           /\ UNCHANGED <<submissions,valid,frozen,body,matched,budget>>
-Finish(p, result) == /\ phase[p] = "sent"
-                     /\ phase' = [phase EXCEPT ![p] = result]
-                     /\ UNCHANGED <<submissions,sends,valid,frozen,body,matched,authorized,budget>>
-Read(p) == /\ phase[p] = "created"
-           /\ matched' = matched \cup {p}
-           /\ UNCHANGED <<submissions,phase,sends,valid,frozen,body,authorized,budget>>
-Next == Submit \/ Invalidate \/ (\E p \in Objects: Arm(p) \/ Send(p) \/ Read(p) \/ (\E r \in {"created", "failed", "unknown"}: Finish(p,r)))
-UniqueSubmission == submissions <= 1
-WriteOnce == \A p \in Objects: sends[p] <= 1
-FrozenBody == \A p \in Objects: body[p] \in {0, frozen}
-MatchedCreated == \A p \in matched: phase[p] = "created" /\ sends[p] = 1
-CompletedPlans == {p \in Plans: \A k \in 1..4: <<p,k>> \in matched}
-Complete == CompletedPlans = Plans
-Completion == Complete => \A p \in Objects: phase[p] = "created"
-FinalFence == \A p \in Objects: authorized[p]
-ExactBudget == budget = 10025 + 10025
+CONSTANT N, K, Bug
+Plans == 1..N
+Objects == Plans \X (1..K)
+AdObjects == {o \in Objects: o[2] >= 3}
+VARIABLE s
+vars == <<s>>
+Init == s = [submissions |-> 0, frozen |-> FALSE, intent |-> 1, snapshot |-> 0,
+ budget |-> 0, amount |-> 1, steps |-> {},
+ phase |-> [o \in Objects |-> "pending"], body |-> [o \in Objects |-> 0],
+ sends |-> [o \in Objects |-> 0], ids |-> {}, matched |-> {}, creatives |-> {},
+ reportOK |-> TRUE]
+Edit == /\ s.intent = 1 /\ s' = [s EXCEPT !.intent = 2]
+Freeze(a) == /\ ~s.frozen /\ a \in {1,2}
+ /\ s' = [s EXCEPT !.frozen = TRUE, !.snapshot = s.intent, !.amount = a,
+ !.budget = IF Bug = "budget" THEN N*a*K ELSE N*a]
+Submit == /\ s.frozen /\ s.intent = s.snapshot
+ /\ (s.submissions = 0 \/ (Bug = "unique" /\ s.submissions = 1))
+ /\ s' = [s EXCEPT !.submissions = @ + 1, !.steps =
+     IF Bug = "excluded" THEN Objects \cup {<<N+1,1>>} ELSE Objects]
+Parent(o) == IF o[2] = 1 THEN TRUE ELSE <<o[1],IF o[2] = 2 THEN 1 ELSE 2>> \in s.ids
+Queue(o) == /\ s.submissions > 0 /\ s.phase[o] = "pending" /\ Parent(o)
+ /\ s.intent = s.snapshot /\ s' = [s EXCEPT !.phase[o] = "queued"]
+Claim(o) == /\ s.phase[o] = "queued" /\ s' = [s EXCEPT !.phase[o] = "claimed"]
+Arm(o) == /\ s.phase[o] = "claimed"
+ /\ s' = [s EXCEPT !.phase[o] = "armed", !.body[o] = s.snapshot]
+Lock(o) == /\ s.phase[o] = "armed" /\ s.intent = s.snapshot
+ /\ s' = [s EXCEPT !.phase[o] = "locked"]
+Send(o) == /\ s.phase[o] = "locked"
+ /\ s' = [s EXCEPT !.phase[o] = "sent", !.sends[o] = @ + 1]
+Finish(o,r) == /\ s.phase[o] = "sent" /\ r \in {"created","failed","unknown"}
+ /\ s' = [s EXCEPT !.phase[o] = r, !.ids = IF r = "created" THEN @ \cup {o} ELSE @]
+Crash(o) == /\ s.phase[o] \in {"armed","locked"}
+ /\ s' = [s EXCEPT !.phase[o] = "unknown"]
+Retry(o) == /\ Bug = "retry" /\ s.phase[o] = "unknown" /\ s.sends[o] = 1
+ /\ s' = [s EXCEPT !.phase[o] = "queued"]
+Read(o) == /\ o \in s.ids /\ s' = [s EXCEPT !.matched = @ \cup {o}]
+Creative(o) == /\ o \in s.ids \cap AdObjects /\ s' = [s EXCEPT !.creatives = @ \cup {o}]
+Tamper(o) == /\ Bug = "body" /\ s.body[o] # 0
+ /\ s' = [s EXCEPT !.body[o] = 3]
+Complete(p) == \A k \in 1..K: <<p,k>> \in s.matched /\ (k < 3 \/ <<p,k>> \in s.creatives)
+Publish == /\ s.submissions > 0
+ /\ LET done == {p \in Plans: Complete(p)}
+         unknown == \E o \in Objects: s.phase[o] = "unknown"
+         failed == {p \in Plans: \E k \in 1..K: s.phase[<<p,k>>] = "failed"}
+         reported == IF Bug = "completion" THEN "COMPLETED"
+                     ELSE IF unknown THEN "NEEDS_REVIEW"
+                     ELSE IF done = Plans THEN "COMPLETED"
+                     ELSE IF done \cup failed = Plans THEN
+                         IF done = {} THEN "FAILED" ELSE "PARTIAL"
+                     ELSE "RUNNING"
+     IN s' = [s EXCEPT !.reportOK =
+       (@ /\ (reported = "COMPLETED" => ~unknown /\ s.ids = Objects
+                 /\ s.matched = Objects /\ s.creatives = AdObjects)
+          /\ (reported = "PARTIAL" => ~unknown /\ done # {} /\ done # Plans)
+          /\ (reported = "FAILED" => ~unknown /\ done = {})
+          /\ (unknown => reported = "NEEDS_REVIEW"))]
+
+Next == Edit \/ (\E a \in {1,2}: Freeze(a)) \/ Submit \/ Publish \/
+ (\E o \in Objects: Queue(o) \/ Claim(o) \/ Arm(o) \/ Lock(o) \/ Send(o)
+ \/ Crash(o) \/ Retry(o) \/ Read(o) \/ Creative(o) \/ Tamper(o)
+ \/ (\E r \in {"created","failed","unknown"}: Finish(o,r)))
+UniqueSubmission == s.submissions <= 1
+WriteOnce == \A o \in Objects: s.sends[o] <= 1
+FrozenBody == \A o \in Objects: s.body[o] \in {0,s.snapshot}
+ExactBudget == s.frozen => s.budget = N*s.amount
+Excluded == s.steps \subseteq Objects
+Completion == s.reportOK
 =============================================================================
