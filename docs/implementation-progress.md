@@ -1,4 +1,8 @@
-## 2026-11-13：M2 R1 独立聚合形式同步（待 root Spec R2）
+## 2026-11-13：M2 本地验收通过，准备集成
+
+JB-13 及 JB-14～JB-18 完成实现与本地验收。Standards R1 PASS；Spec R1 live-sibling P1 已在 `0d9c8846` 修复，经独立形式同步 `47d74d4c` 与 Spec R2 PASS。root 核对当前源码与证据，并直接复跑真实 HTTP/PG/Redis 的 native-ad-PENDING 回归，1 passed/22.58s。仅文档收尾，不再改产品源码。交付、验证矩阵、两项迁移及真实平台待验范围见 [M2 交付记录](validation/2026-11-13-native-m2-delivery.md)。本地 main 合入、Linear 完成及工作树回收以最终回读为准；无 push/PR/deploy/真实广告写入。总 Epic JB-19 保持进行中。
+
+## 2026-11-13：M2 R1 独立聚合形式同步（历史，Spec R2 已通过）
 
 fresh Kimi 在既有集成树 `0d9c8846fe1d2ba7318d28c159e891a275018c62` 独立同步 `native_completion.py` 八行 live-sibling 修复；产品源码无 diff、未发现新反例。原五模型基线按既定检查通过，但旧 Submission 不含失败后代闭包和 live-sibling 中间态，不能覆盖本 P1。新增最小 `Completion.tla` 表达父子依赖、失败闭包、优先 MATCH/复核/取消/live/失败派生及多计划 FAILED 合同；不把四等价运行态笛卡尔扩展。
 
