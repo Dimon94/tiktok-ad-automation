@@ -409,3 +409,197 @@ def recover_terminal(
             )
             assert receipt.submission_id == sid and receipt.status == expected
     assert creates == baseline
+
+
+def recover_historical(
+    client, engine, context, redis, monkeypatch, sid, creates, preview_id, receipts
+):
+    """T18 合成历史输入，原 attempt/body/receipt 不变；非生产历史或 Timeout。"""
+    from app.modules.builds import submission_api, submission_catalog_api
+
+    client.app.include_router(router)
+    client.app.include_router(submission_api.router)
+    client.app.include_router(submission_catalog_api.router)
+    baseline = deepcopy(creates)
+    with Session(engine) as db:
+        seeds = db.exec(
+            select(ExecutionStep).where(
+                ExecutionStep.submission_id == sid, ExecutionStep.kind == "ADGROUP"
+            )
+        ).all()
+    for seed in seeds:
+        finish_delivery(
+            database_engine=engine,
+            context=context,
+            step_id=seed.id,
+            revision=seed.dispatch_revision,
+        )
+    with Session(engine) as db, db.begin():
+        sources = db.exec(
+            select(ExecutionStep).where(
+                ExecutionStep.submission_id == sid, ExecutionStep.kind == "ADGROUP"
+            )
+        ).all()
+        assert len(sources) == 2
+        stamp = deepcopy(db.get(Submission, sid).authorization_stamp)
+        originals = {}
+        for source in sources:
+            body, receipt = receipts[source.request_body["request_id"]]
+            assert body == source.request_body
+            original = db.exec(
+                select(StepEvidence).where(
+                    StepEvidence.step_id == source.id,
+                    StepEvidence.attempt == source.attempt,
+                    StepEvidence.request_id == receipt["request_id"],
+                )
+            ).one()
+            assert original.summary["remote_code"] == receipt["code"] == 40002
+            originals[source.id] = (
+                deepcopy(source.request_body),
+                source.request_body_digest,
+                source.unit_id,
+                source.attempt,
+                source.attempt_id,
+                receipt["request_id"],
+            )
+            # 唯一历史分类边界：保留原拒绝证据，追加显式标记的旧分类输入。
+            source.status = "UNKNOWN"
+            source.lease_token = source.lease_expires_at = None
+            source.due_at = datetime.now(UTC) - timedelta(seconds=1)
+            db.add(source)
+            db.add(
+                StepEvidence(
+                    tenant_id=source.tenant_id,
+                    submission_id=sid,
+                    step_id=source.id,
+                    attempt=source.attempt,
+                    request_id=receipt["request_id"],
+                    conclusion="RESULT_UNKNOWN",
+                    summary={
+                        **original.summary,
+                        "fixture": "synthetic-historical-v1",
+                        "original_evidence_id": str(original.id),
+                        "original_receipt": receipt,
+                        "original_body_digest": source.request_body_digest,
+                    },
+                )
+            )
+        parents = [
+            (s.id, s.remote_id)
+            for s in db.exec(
+                select(ExecutionStep).where(
+                    ExecutionStep.submission_id == sid, ExecutionStep.kind == "CAMPAIGN"
+                )
+            ).all()
+        ]
+        assert len(parents) == 2 and all(remote for _, remote in parents)
+    base = f"/tenants/{context.tenant_id}"
+
+    def view():
+        response = client.get(f"{base}/submissions/{sid}")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert view()["status"] == "NEEDS_REVIEW"
+
+    def no_transport(*_args, **_kwargs):
+        raise AssertionError("T18 original rejection needs no new platform request")
+
+    monkeypatch.setattr("urllib3.PoolManager.request", no_transport)
+    request_id = str(uuid4())
+    response = client.post(
+        f"{base}/submissions/{sid}/reconcile", json={"request_id": request_id}
+    )
+    assert response.status_code == 202, response.text
+    assert (
+        client.post(
+            f"{base}/submissions/{sid}/reconcile", json={"request_id": request_id}
+        ).json()
+        == response.json()
+    )
+    payload = {"recovery_id": response.json()["recovery_id"], "revision": 0}
+    recovery.process_recovery(database_engine=engine, context=context, payload=payload)
+    deliveries = []
+    for source_id in originals:
+        with Session(engine) as db:
+            revision = db.get(ExecutionStep, source_id).dispatch_revision
+        delivery = {"step_id": str(source_id), "revision": revision}
+        deliveries.append(delivery)
+        deliver_step(
+            database_engine=engine,
+            redis_client=redis,
+            context=context,
+            payload=delivery,
+            reconcile=True,
+        )
+    result = view()
+    assert result["status"] == "FAILED", "T18 historical rejection must terminate"
+    events_url = f"{base}/submissions/{sid}/events"
+    events = client.get(events_url)
+    assert events.status_code == 200, events.text
+    assert "REMOTE_REJECTED_RECOVERED" in events.text
+    assert all(
+        p["status"] != "COMPLETED" and p["remote_ids"] for p in result["native_plans"]
+    )
+    with Session(engine) as db:
+        evidence_count = len(
+            db.exec(select(StepEvidence).where(StepEvidence.submission_id == sid)).all()
+        )
+    for _ in range(2):
+        recovery.process_recovery(
+            database_engine=engine, context=context, payload=payload
+        )
+        for delivery in deliveries:
+            deliver_step(
+                database_engine=engine,
+                redis_client=redis,
+                context=context,
+                payload=delivery,
+                reconcile=True,
+            )
+        assert view() == result
+        assert client.get(events_url).json() == events.json()
+    key = str(uuid4())
+    for replay_key in (key, key, str(uuid4())):
+        replay = client.post(
+            f"{base}/build-previews/{preview_id}/submit",
+            json={"request_id": replay_key},
+        )
+        assert replay.status_code == 202, replay.text
+        assert replay.json() == {"submission_id": str(sid), "status": "FAILED"}
+    with Session(engine) as db:
+        assert db.get(Submission, sid).authorization_stamp == stamp
+        assert [
+            (
+                db.get(ExecutionStep, identity).id,
+                db.get(ExecutionStep, identity).remote_id,
+            )
+            for identity, _ in parents
+        ] == parents
+        for identity, original in originals.items():
+            step = db.get(ExecutionStep, identity)
+            assert step.status == "FAILED"
+            assert (
+                step.request_body,
+                step.request_body_digest,
+                step.unit_id,
+                step.attempt,
+                step.attempt_id,
+            ) == original[:5]
+            evidence = db.exec(
+                select(StepEvidence).where(
+                    StepEvidence.step_id == identity,
+                    StepEvidence.conclusion == "REMOTE_REJECTED_RECOVERED",
+                )
+            ).one()
+            assert evidence.request_id == original[5]
+            assert evidence.summary["remote_code"] == 40002
+        assert (
+            len(
+                db.exec(
+                    select(StepEvidence).where(StepEvidence.submission_id == sid)
+                ).all()
+            )
+            == evidence_count
+        )
+    assert creates == baseline

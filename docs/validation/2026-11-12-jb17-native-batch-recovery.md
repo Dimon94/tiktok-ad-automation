@@ -96,3 +96,51 @@ python3 /tmp/tkada-native-series-20261112/m2-implementation/jb17-terminal-probes
 JB18消费合同：继续复用原Submission/Unit/Step/READBACK；零候选UNKNOWN不消失；恢复只补原事实、不能刷新原批准stamp、新建或再次ENABLE；已创建父级/广告ID与风险不丢。R11尚未实施。JB17仍InProgress，root审查T18合同缺口及本轮证据后决定17/18，不由worker标Done。
 
 最终源码probe：`missing-readback`删除reconciliation中的ensure_native_readback调用，17.21s在R13完成断言真红；`wrong-match`强制conclusion比较为MATCH，18.60s在错误video候选（index1）R10断言真红。每轮仓外备份、finally恢复、cmp逐字节一致。随后含全部9个Ad反例的T16/T17 **2 passed/35.62s**；最终浏览器含stamp/兄弟事实/重放断言 **1 passed/24.53s**。日志分别为 `missing-readback-red.log`、`wrong-match-red.log`、`jb17-terminal-green.log`、`jb17-browser-final.log`，均位于上述m2-implementation目录。三Python文件Ruff check/format通过；git diff --check通过；产品backend/app diff为空。未再次执行无变化M1 101项、形式模型或前端产品构建。提交前仅本轮4个测试文件和2个文档改变，原两untracked软链不动。
+
+## T18 历史条件路径补验（2026-11-13，fresh context）
+
+本节按 root 本轮明确批准的历史输入特例，取代上文“T18 未验”的结论；不改变当前
+Timeout/空 GET 必须保持 UNKNOWN 的边界。起点 `9fed527926c795fda1d42baa529d2aa09e056be3`。
+无产品代码、前端、数据库 schema 修改。
+
+输入来源为可复现的**合成历史 fixture**，不是生产旧数据，也不是当前 SDK 自然产生的 UNKNOWN。
+原 HTTP 准备/冻结/提交和正常 worker 生成两 INCLUDED 的真实 Unit/Step/attempt，两个 Campaign
+成功并正常 readback。两次 ADGROUP 原 SDK POST 各获 transport double 明确 40002 回执；当前
+分类器照常按拒绝处理。正常 finish_delivery 释放投递后，fixture 关联原 REMOTE_REJECTED
+的 evidence ID、request_id、attempt、原 body/digest，追加标注 synthetic-historical-v1 的
+RESULT_UNKNOWN，预置源 UNKNOWN；不改原证据、body、父级 ID、计划归属或批准 stamp。
+数据库原约束保持启用，没有私有 matcher/service mock，没有直接调用恢复私有函数。
+
+正式 HTTP reconcile 202 → process_recovery → deliver_step(reconcile=True) → 原历史恢复
+owner，将两 UNKNOWN 解析 FAILED，并持久 REMOTE_REJECTED_RECOVERED，回执 request_id 与
+原拒绝完全一致。Submission HTTP GET 显示 FAILED（UI 既有“无计划完成”状态），两计划均无完整
+MATCH，两个 Campaign ID 和拒绝原因仍可见，不能解释为未创建任何远程对象或无消耗风险。
+本轮验证 API/持久事实，未重跑无变化浏览器；沿用前轮 24.53s 浏览器证据，不冒称本轮看过 T18 页面。
+恢复阶段 transport 一旦调用就断言失败，因此新增平台 GET/POST 均为零。重复 recovery 消息、
+读消息与事件 GET 保持相同回执/事件数；同 preview 的相同/不同 key 经 HTTP 重放均为原 sid/FAILED。
+原 body/digest、attempt/attempt_id、Unit、父级 ID、approval stamp 全部不变。
+
+缺负证据对照复用同文件 recover_batch 的真实 Timeout→empty/many/missing 保持 UNKNOWN 实证，
+不把此历史特例替代当前 Timeout 纵切。允许码仍由 NO_EFFECT_REJECTIONS 定义并排除 41021；
+没有新增 importer、自动重试、平台否定查询或广告写权限。
+
+形式实际结果及命令见 formal skill 新 T18 节：单/双计划正常安全性质通过（1,628 / 437,408
+distinct states），保留 R9/R10/R13，新增 NegativeProof / HistoricalPreservation；四个指定故障
+变体均产生对应反例。双计划可达 witness 40,642 distinct states 命中 NoHistoricalTerminal，
+显示该条件路径非空。R12 Authority 与其他未改模型/旧探针复用；没有全系统 composition 证明。
+
+运行证据位于 `/tmp/tkada-native-series-20261112/m2-implementation/`：
+`t18-second.log` 初次通过 1 passed/11.19s；`t18-no-closure-red.log`、
+`t18-lost-request-red.log` 是实际源码故障断言失败，外备份 `t18-reconciliation.backup.py`，
+`t18-probes.py` 用 finally 恢复并执行 cmp 后再 green。`t18-formal/` 保存全部模型输出。
+初次 seed 未 ACK 导致 recovery_no_candidates 409，修复测试 seed 收尾；首次 no-closure 探针
+先触发事件缺失断言，调整断言顺序后命中精确 T18 终态断言；均非产品缺陷，未调整业务期望。
+
+本票核心 T18 与 FAILED 恢复后重放缺口已补齐，可交 root 验收；本轮未发现剩余真实 core 缺陷。
+JB17 不标 Done，是否放行 JB18 仍归 root。原 T15/T16/T17、9 creative 变体、M1 timeline 6 pass、
+R10 multipleclaimprobe 和浏览器证据复用，无前端构建、push、PR、deploy、Linear 修改或真实平台调用。
+
+最终串行恢复后 `t18-final-green.log`：**1 passed / 12.41s**；no-closure 命中
+`T18 historical rejection must terminate`，lost-request 命中原 receipt request_id 关联断言。
+Ruff check/format 与 git diff --check 通过；backend/app diff 为空。提交前原 `.venv`、
+`node_modules` 两项 untracked 保留，仅上述测试、formal 文件和两个文档纳入提交。

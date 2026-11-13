@@ -5317,3 +5317,14 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 最终终态2 passed/35.62s、浏览器1 passed/24.53s；M1+初版接线6 passed/61.55s。漏READBACK及强制MATCH两个真实源码probe真红、finally/cmp恢复后绿。Ruff三文件和diff check通过；产品前端不变复用构建，R10/R9/R12/R13形式证据复用不推进synccommit。初次属性名、漏只读READBACK、静态CTA fixture路径错误均在报告保留。
 
 **T18仍未满足**：当前SDK明确负面码直接NO_EFFECT，不会产生带该码的新UNKNOWN；丢响应无明确拒绝回执，空GET不能证明未建。历史_recover_known_rejection有owner但本任务无合法历史回执输入，不种植UNKNOWN/伪造confirmedabsence。恢复后FAILED重放也未验。详见docs/validation/2026-11-12-jb17-native-batch-recovery.md的完整owner/指纹/授权映射与命令。JB17仍InProgress，JB18未实施、未放行；root决定合同缺口处理。无push/PR/deploy/Linear/真实平台调用，原untracked .venv/node_modules保留。
+
+### 2026-11-13 JB17 T18 历史条件路径补验
+
+指定集成树起点 9fed527926c795fda1d42baa529d2aa09e056be3；只补测试、同一 Submission 模型与证据文档。
+两 INCLUDED 的原请求明确拒绝回执，经显式合成历史 RESULT_UNKNOWN fixture 绑定原 attempt/body/digest，
+正式 HTTP recovery 闭合到原 Submission FAILED/无完整 MATCH，父级 ID/风险、stamp、请求与计划归属不变；
+同/不同 request key HTTP 重放、重复 recovery/读消息/事件读取零新增远程请求。
+新增负证据模型性质、保留 R9/R10/R13；单/双计划及预期反例实际运行，R12 与前轮浏览器/M1 无变化证据复用。
+源码故障探针串行外备份/finally/cmp 恢复，产品代码未改。详见 docs/validation/2026-11-12-jb17-native-batch-recovery.md
+与 formal skill T18 节。当前 Timeout/空查询仍应 UNKNOWN，无新平台能力。可交 root 验收，非 Done，JB18 放行归 root。
+最终 T18 串行恢复 green：1 passed / 12.41s；两个实际源码故障探针均红，恢复 cmp 一致；Ruff/diffcheck 通过。

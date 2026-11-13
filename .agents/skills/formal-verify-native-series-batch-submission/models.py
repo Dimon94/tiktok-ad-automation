@@ -1,4 +1,3 @@
-# ruff: noqa: T201
 """Run bounded TLC baselines and require named invariant counterexamples."""
 
 import hashlib
@@ -41,6 +40,7 @@ def run(module, bug, constants, invariants):
                 temp,
                 str(Path(temp) / f"{module}.tla"),
             ],
+            check=False,
             capture_output=True,
             text=True,
         )
@@ -65,18 +65,40 @@ def run(module, bug, constants, invariants):
         )
 
 
+if os.environ.get("FORMAL_ONLY") == "historical-witness":
+    run("Submission", "witness", "N = 2 K = 3", "NoHistoricalTerminal")
+    raise SystemExit(0)
+
+if os.environ.get("FORMAL_ONLY") == "historical":
+    for n in (1, 2):
+        run(
+            "Submission",
+            "none",
+            f"N = {n} K = 3",
+            "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof\nPROPERTY HistoricalPreservation",
+        )
+    run("Submission", "witness", "N = 2 K = 3", "NoHistoricalTerminal")
+    for bug, invariant in [
+        ("negativeproof", "NegativeProof"),
+        ("recovery", "Recovery"),
+        ("retry", "WriteOnce"),
+        ("completion", "Completion"),
+    ]:
+        run("Submission", bug, "N = 1 K = 3", invariant)
+    raise SystemExit(0)
+
 if os.environ.get("FORMAL_ONLY") == "recovery":
     run(
         "Submission",
         "none",
         "N = 1 K = 3",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof",
     )
     run(
         "Submission",
         "none",
         "N = 2 K = 3",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof",
     )
     run("Submission", "recovery", "N = 1 K = 3", "Recovery")
     run("Submission", "retry", "N = 1 K = 2", "WriteOnce")
@@ -89,7 +111,7 @@ for n, k in [(1, 4), (2, 3)]:
         "Submission",
         "none",
         f"N = {n} K = {k}",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof",
     )
 for bug, inv in [
     ("recovery", "Recovery"),

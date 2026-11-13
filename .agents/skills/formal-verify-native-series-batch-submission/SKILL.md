@@ -90,3 +90,36 @@ FORMAL_ONLY=recovery TLA_JAVA=/tmp/tkada-native-series-20261112/m2-implementatio
 实际 TLC 正常一计划三层 1034、两计划三层175454 distinct；Authority1456。R10多候选认领反例45、R9重发187、R13伪完成14 distinct。R10实际源码变异 `matches != 1`→`matches < 1` 后，多候选从UNKNOWN错误变SUCCEEDED，HTTP恢复检查断言失败；仓外备份/finally/cmp恢复后1 passed。日志见 validation。恢复动作后仍检查全部已有Submission不变量；未削弱既有R5/R7/R8/R9/R13，R12复验未修改的Authority模型。既有2广告正常模型本轮未跑，新增恢复模型是每计划一广告的边界。
 
 明确未覆盖：confirmed-absent/原已知拒绝解析、T16–T18真实纵切、浏览器恢复、恢复期间授权变化的完整组合、creative配对/重复项是原比较器测试而非模型证明。Recover当前不含negative-evidence分支；零候选始终UNKNOWN。R11仍归JB18，但JB17尚不放行。禁止凭此候选推进取消实现。
+
+## JB17 T18 历史拒绝条件路径（2026-11-13）
+
+源码映射基于 `9fed527926c795fda1d42baa529d2aa09e056be3`，本次没有产品源码修改。
+`HistoricalReceipt` 是**合成历史持久输入**，不是当前 SDK 的自然状态转移：原
+StepEvidence.RESULT_UNKNOWN 持有同一 source/attempt 的明确拒绝回执，
+`known_no_effect_rejection` 对 ADGROUP 40002 或 AD 40002/51002 证明无创建效果，
+`_recover_known_rejection` 明确排除 41021。模型 historical 集合仅抽象该已绑定事实，
+不把空 GET、Timeout、缺字段或任意非零码当作 negative proof；不表示平台新增查询能力。
+
+`RejectHistorical` 映射原 owner 的事务内 FAILED 与 REMOTE_REJECTED_RECOVERED；
+NegativeProof 禁止无该历史事实就 UNKNOWN→FAILED，HistoricalPreservation 检查该动作不改
+所有对象 ID、sends、body、snapshot。原 R9 WriteOnce、R10 Recovery、R13 Completion 保留。
+双计划 NoHistoricalTerminal 的**预期反例**提供可达 witness：两计划父级创建后历史拒绝关闭，
+无 UNKNOWN、无完整 MATCH，Publish 按原表达式得 FAILED；不是正常安全性质失败。
+
+```sh
+FORMAL_ONLY=historical TLA_JAVA=/tmp/tkada-native-series-20261112/m2-implementation/formal-tools/jdk-21.0.13+9-jre/Contents/Home/bin/java TLA_JAR=/tmp/tkada-native-series-20261112/m2-implementation/formal-tools/tla2tools.jar FORMAL_OUT=/tmp/tkada-native-series-20261112/m2-implementation/t18-formal .agents/skills/formal-verify-native-series-batch-submission/run.sh
+```
+
+实际运行 N=1,K=3：10,718 generated / 1,628 distinct；N=2,K=3：5,198,052 /
+437,408，均通过安全性质与 HistoricalPreservation。negativeproof、recovery、retry、completion
+均命中对应不变量。随后 `FORMAL_ONLY=historical-witness` 独立跑新增可达 witness：
+312,018 / 40,642，NoHistoricalTerminal 预期反例。R12 Authority 未改复用前轮，不重跑旧全集。
+
+真实接线：test_batch_submit_and_execute[historical-rejection] 经正式 HTTP、process_recovery、
+deliver_step(reconcile=True) 与持久证据、Submission GET/事件 GET/submit HTTP。
+seed 真实创建两个 Campaign、原 ADGROUP 请求获 transport double 40002；当前 SDK 正确归类拒绝。
+fixture 只追加标注旧 RESULT_UNKNOWN 并把源状态预置 UNKNOWN，保留原拒绝证据、request_id、
+attempt/attempt_id、body/digest、Unit 与 stamp。恢复不调用私有 owner、不手写 FAILED。
+no-closure 与 lost-request 真源码探针分别由终态与请求关联断言拒绝，finally/cmp 后恢复绿。
+空 GET 对照复用此前真实 Timeout 的 recover_batch(empty) 证据及 R10 模型；不新增大矩阵。
+原模型 composition、任意 scope/lease、liveness 与生产边界仍未证明。

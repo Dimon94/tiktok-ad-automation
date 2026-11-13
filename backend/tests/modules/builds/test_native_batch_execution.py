@@ -151,6 +151,7 @@ def test_same_preview_replay_returns_original(job_env, wire, redis_client):
         "recovery-complete",
         "recovery-partial",
         "recovery-browser",
+        "historical-rejection",
     ],
 )
 def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scenario):
@@ -163,6 +164,10 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     from app.modules.builds import execution, submissions
     from app.modules.builds.execution_models import ExecutionStep, Submission
 
+    historical = scenario == "historical-rejection"
+    historical_receipts = {}
+    if historical:
+        scenario = "zero"
     terminal_recovery = scenario if scenario.startswith("recovery-") else None
     recovering = scenario == "recovery"
     if recovering:
@@ -331,10 +336,17 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 == ("actual-account" if terminal_recovery else "second-account")
             )
         ):
+            receipt = {
+                "code": 40002,
+                "message": "synthetic original parameter rejection",
+                "request_id": f"historical-receipt-{len(calls)}",
+            }
+            if historical:
+                historical_receipts[body["request_id"]] = (dict(body), receipt)
+            else:
+                receipt = {"code": 41021, "message": "fixture rejection"}
             return HTTPResponse(
-                body=json.dumps(
-                    {"code": 41021, "message": "fixture rejection"}
-                ).encode(),
+                body=json.dumps(receipt).encode(),
                 status=200,
             )
         key = (
@@ -629,6 +641,20 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 with pytest.raises(DBAPIError), s.begin_nested():
                     s.execute(text(statement), {"id": identity, "tenant": uuid4()})
         assert calls == before_calls
+    if historical:
+        from tests.modules.builds.test_native_batch_recovery import recover_historical
+
+        recover_historical(
+            client,
+            native.engine,
+            context,
+            redis_client,
+            monkeypatch,
+            sid,
+            calls,
+            pid,
+            historical_receipts,
+        )
     if terminal_recovery:
         from tests.modules.builds.test_native_batch_recovery import recover_terminal
 
