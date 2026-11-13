@@ -838,24 +838,20 @@ def native_checkpoint(
     plan_key: UUID | None = None,
 ):
     """联合当前授权、身份能力、精确资产和地区证据；不以 ID 相等替代权限。"""
-    from .selection_schemas import (
-        NativeCheckpoint,
-        NativeSeriesPlanSet,
-        NativeSeriesSelection,
-        single_native_selection,
-    )
+    from .selection_schemas import NativeCheckpoint, NativeSeriesPlanSet
 
     plan_set = NativeSeriesPlanSet.model_validate(draft.scene_selection)
     if plan_key is None:
-        selection = NativeSeriesSelection.model_validate(
-            single_native_selection(draft.scene_selection)
-        )
-        plan_key = plan_set.plans[0].plan_key
+        # 旧调用只能隐式定位单项；多项必须由当前计划集逐项显式传入。
+        if len(plan_set.plans) != 1:
+            raise DomainError("native_plan_not_found", "多计划必须指定计划键")
+        plan = plan_set.plans[0]
     else:
         plan = next((p for p in plan_set.plans if p.plan_key == plan_key), None)
         if plan is None:
             raise DomainError("native_plan_not_found", "计划不存在")
-        selection = plan.selection
+    plan_key = plan.plan_key
+    selection = plan.selection
     scope = _account_scope(
         session,
         context=context,

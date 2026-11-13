@@ -100,18 +100,6 @@ SceneSelection = Annotated[
 ]
 
 
-def single_native_selection(value):
-    """JB-15/16 迁移前的单项适配；绝不静默取多项的首项。"""
-    plans = NativeSeriesPlanSet.model_validate(value).plans
-    if len(plans) != 1:
-        from app.core.errors import DomainError
-
-        raise DomainError(
-            "native_batch_preview_pending", "多计划已保存；批量冻结与提交尚未开放"
-        )
-    return plans[0].selection.model_dump(mode="json")
-
-
 class NativeMaterialMapping(BaseModel):
     position: int
     material_id: UUID

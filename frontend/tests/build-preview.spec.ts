@@ -1139,6 +1139,10 @@ test("原生真实后端提交与响应丢失恢复 @native-live", async ({ page
     page.getByRole("heading", { name: /Series 直接视频投放预览/ }),
   ).toBeVisible()
   await page.getByRole("button", { name: /^创建并立即启用/ }).click()
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "确认创建并立即启用" })
+    .click()
   await expect(
     page.getByRole("button", { name: "查询原提交结果" }),
   ).toBeVisible()
@@ -1162,6 +1166,20 @@ test("真实多计划冻结预览 @native-batch-live", async ({ page }) => {
     })
     await route.fulfill({ response })
   })
+  if (process.env.NATIVE_PLAN_MODE === "batch-cancel") {
+    await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
+    await expect(page.getByRole("button", {name: "取消未发送步骤"})).toBeEnabled()
+    const cancelling = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/cancel"))
+    await page.getByRole("button", {name: "取消未发送步骤"}).click()
+    expect((await cancelling).status()).toBe(200)
+    await expect(page.getByText("已取消未发送步骤。", {exact: true})).toBeVisible()
+    await page.reload()
+    await expect(page.getByText(/计划 .* · CANCELLED/)).toHaveCount(2)
+    await expect(page.getByText(/计划 .* · EXCLUDED/)).toHaveCount(1)
+    await expect(page.getByRole("button", {name: "取消未发送步骤"})).toHaveCount(0)
+    await page.screenshot({path: "/tmp/tkada-native-series-20261112/m2-implementation/jb18-cancel.png", fullPage: true})
+    return
+  }
   if (process.env.NATIVE_PLAN_MODE === "batch-recovery") {
     await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
     await expect(page.getByText(/计划 .* · NEEDS_REVIEW/)).toHaveCount(1)

@@ -96,7 +96,7 @@ def test_native_six_creates(
         )
         frozen_payload = previews.get_preview_summary(
             s, context=context, preview_id=pid
-        ).native_request
+        ).native_request["plans"][0]["request"]
     if browser:
         from tests.modules.builds.native_browser_http import submit_in_browser
 
@@ -151,6 +151,8 @@ def test_native_six_creates(
 
     scene_transport = urllib3.PoolManager.request
     calls = []
+    cancel_threads = []
+    cancel_errors = []
 
     def request(pool, method, url, **kw):
         body = json.loads(kw["body"])
@@ -194,26 +196,54 @@ def test_native_six_creates(
                 status=200,
             )
         if failure == "revision_after_cta" and "portfolio" in url:
-            # 物理发送已退出事务；在 CTA 回执与下一层发送之间修改输入。
-            with Session(native.engine) as changed, changed.begin():
-                draft = changed.get(BuildDraft, draft_id)
-                draft.revision += 1
-                changed.add(draft)
-        if failure == "cancel_inflight" and "/campaign/" in url:
-            with Session(native.engine) as s, s.begin():
-                submissions.cancel_submission(
-                    s, context=context, submission_id=receipt.submission_id
-                )
-        if failure == "unknown_late" and "/campaign/" in url:
-            from datetime import UTC, datetime, timedelta
+            # 先返回 CTA 成功回执；revision 变更在回执事务之后生效。
+            from threading import Thread
 
-            with Session(native.engine) as s, s.begin():
-                step = s.get(ExecutionStep, ids["CAMPAIGN"][0])
-                step.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
-                s.add(step)
-                submissions.cancel_submission(
-                    s, context=context, submission_id=receipt.submission_id
-                )
+            def change_revision() -> None:
+                with Session(native.engine) as changed, changed.begin():
+                    draft = changed.get(BuildDraft, draft_id)
+                    draft.revision += 1
+                    changed.add(draft)
+
+            thread = Thread(target=change_revision)
+            thread.start()
+            cancel_threads.append(thread)
+        if failure == "unknown_late" and "/campaign/" in url:
+            # 同步调用会等待本发送者的 Submission 锁；用真实独立 PG 线程模拟取消。
+            from datetime import UTC, datetime, timedelta
+            from threading import Thread
+
+            def cancel_late() -> None:
+                try:
+                    with Session(native.engine) as s, s.begin():
+                        step = s.get(ExecutionStep, ids["CAMPAIGN"][0])
+                        step.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                        s.add(step)
+                        submissions.cancel_submission(
+                            s, context=context, submission_id=receipt.submission_id
+                        )
+                except Exception as error:
+                    cancel_errors.append(error)
+
+            thread = Thread(target=cancel_late)
+            thread.start()
+            cancel_threads.append(thread)
+        if failure == "cancel_inflight" and "/campaign/" in url:
+            # 独立 PG 线程模拟真实并发；不能让 SDK 请求同步等待自己的行锁。
+            from threading import Thread
+
+            def cancel_inflight() -> None:
+                try:
+                    with Session(native.engine) as s, s.begin():
+                        submissions.cancel_submission(
+                            s, context=context, submission_id=receipt.submission_id
+                        )
+                except Exception as error:
+                    cancel_errors.append(error)
+
+            thread = Thread(target=cancel_inflight)
+            thread.start()
+            cancel_threads.append(thread)
         key = (
             "creative_portfolio_id"
             if "portfolio" in url
@@ -535,6 +565,10 @@ def test_native_six_creates(
         )
         return
     if failure and failure.startswith("cancel_"):
+        for thread in cancel_threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        assert cancel_errors == []
         assert len(calls) == (0 if failure == "cancel_before" else 2)
         with Session(native.engine) as s:
             result = submissions.get_submission(
@@ -554,6 +588,10 @@ def test_native_six_creates(
             )
         return
     if failure:
+        for thread in cancel_threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        assert cancel_errors == []
         expected_calls = {
             "cta_unknown": 1,
             "campaign_reject": 2,
@@ -570,17 +608,16 @@ def test_native_six_creates(
                 )
             ).all()
             created = [x for x in actual if x.remote_id]
-            assert (
-                len(created)
-                == {
-                    "cta_unknown": 0,
-                    "campaign_reject": 1,
-                    "group_reject": 2,
-                    "campaign_unknown": 1,
-                    "revision": 0,
-                    "revision_after_cta": 1,
-                }[failure]
-            )
+            assert len(created) == {
+                "cta_unknown": 0,
+                "campaign_reject": 1,
+                "group_reject": 2,
+                "campaign_unknown": 1,
+                "revision": 0,
+                "revision_after_cta": 1,
+            }[failure], [
+                (x.kind, x.status, x.phase, x.error_code, x.remote_id) for x in actual
+            ]
             result = submissions.get_submission(
                 s, context=context, submission_id=receipt.submission_id
             )
@@ -588,7 +625,7 @@ def test_native_six_creates(
                 {"FAILED"}
                 if failure in {"campaign_reject", "revision", "revision_after_cta"}
                 else {"PARTIAL", "NEEDS_REVIEW"}
-            )
+            ), [(x.kind, x.status, x.phase, x.error_code) for x in actual]
         if readback == "partial":
             from tests.modules.builds.test_native_readback_timeline import (
                 reconcile_created,
@@ -762,7 +799,15 @@ def test_native_submission_rejects_changed_freeze(
             connection.authorization_revision += 1
             s.add(connection)
         else:
-            locations = preview.config["native_request"]["adgroup"]["location_ids"]
+            summary = previews.get_preview_summary(
+                s, context=context, preview_id=pid
+            )
+            plan = next(
+                item
+                for item in summary.native_request["plans"]
+                if item["status"] == "INCLUDED"
+            )
+            locations = plan["request"]["adgroup"]["location_ids"]
             s.add(
                 AdObject(
                     tenant_id=context.tenant_id,
@@ -889,6 +934,7 @@ def test_native_final_material_fence(
         monkeypatch,
         retain_build_history,
         None,
+        readback=None,
         source_mode="explicit",
         tamper=tamper,
     )

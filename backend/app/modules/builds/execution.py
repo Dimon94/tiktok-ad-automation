@@ -891,7 +891,9 @@ def process_step(
             or step.phase == "REQUEST_ARMED"
         ):
             return step.status
-        if submission.progress.get("local_cancelled") and step.kind != "READBACK":
+        if (submission.progress.get("local_cancelled") and step.kind != "READBACK"
+                and step.status in {"PENDING", "QUEUED"}
+                and step.request_body is None):
             step.status, step.phase, step.error_code = (
                 "FAILED",
                 "DONE",

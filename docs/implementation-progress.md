@@ -1,3 +1,7 @@
+## 2026-11-13：JB18 取消/canonical consumer 实现候选（未放行）
+
+在唯一 M2 集成树接续 dirty 现场，完成原生 Submission 未发送取消、queue/process/物理发送三道围栏、真实独立 PG 会话在途取消与 UNKNOWN 迟到回执保留；统一新旧单/多计划的冻结读取、当前 Unit 执行和资格校验，删除内部 single_native_selection 死码。受影响真实 PG/Redis/API/SDK-transport 套件最终 111 passed；浏览器取消、混合 PARTIAL/FAILED/NEEDS_REVIEW、旧迁移字节保持通过。没有真实平台写、迁移、推送、发布或 Linear 操作。取消源码错误探针未得到有效红→恢复绿，历史 frozen-read 独立纵切、R11 最终模型和完整 20T/13R 仍交后续 fresh context；root 尚未两轴 review/main 集成。详见 [JB18 validation](validation/2026-11-12-jb18-native-batch-cancel.md)。
+
 ## 2026-11-12：第三版双侧栏、多搭建方案与配置上下文原型通过检查
 
 ## 2026-11-12：JB16 提交/冻结形式 v2（候选，仍未放行）

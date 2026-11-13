@@ -276,7 +276,6 @@ def test_reorder_preserves_allocation_and_all_conflicts_exclude(
                     draft=draft,
                     route=job_env["route"],
                     plan=p,
-                    batch=True,
                 )[0]
                 for p in order
             }
@@ -412,6 +411,8 @@ def test_concurrent_batch_freeze_one_manifest(job_env, wire, redis_client):
             ("campaign", "budget"),
             ("occupancy", "scope_limits"),
         ]:
+            from app.modules.builds.frozen_requests import native_request_digest
+
             changed = deepcopy(item["request"])
             node = changed
             for key in path[:-1]:

@@ -170,15 +170,21 @@ def submit_preview(
         verify_route(
             session, context=context, route=route, advertiser_id=None, capability="read"
         )
-        if "native_batch" in preview.config:
+        if "native_request" in preview.config or "native_batch" in preview.config:
+            from .native_execution import validate
             from .native_preview import read_batch
 
-            # 接受不可变批准范围；逐项实时资格由既有 Unit 执行围栏复核。
-            read_batch(session, preview=preview)
-        if "native_request" in preview.config:
-            from .native_execution import validate
-
-            validate(session, context=context, preview=preview, route=route)
+            # 单项与多项都按当前 Unit 走同一资格围栏，不只复核首项。
+            batch = read_batch(session, preview=preview)
+            for item in batch["plans"]:
+                if item["status"] == "INCLUDED":
+                    validate(
+                        session,
+                        context=context,
+                        preview=preview,
+                        route=route,
+                        unit_id=UUID(item["unit_id"]),
+                    )
         bc = session.get(
             TenantBC, (context.tenant_id, preview.bc_id), populate_existing=True
         )
@@ -814,15 +820,11 @@ def get_submission(
         status = "QUEUED"
     if row.expanded and scope["submitted_c"] == 0:
         status = "COMPLETED"
-    if "native_request" in preview.config and status == "COMPLETED":
-        from .native_completion import all_native_matched
-
-        if not all_native_matched(session, row, preview):
-            status = "NEEDS_REVIEW"
     native_plans = []
-    if "native_batch" in preview.config:
+    if "native_request" in preview.config or "native_batch" in preview.config:
         from .native_completion import batch_results
 
+        # 取消、MATCH 和 UNKNOWN 对单项/多项使用同一事实聚合。
         status, native_plans = batch_results(session, row, preview)
     planned = ObjectCounts(
         campaign_count=scope["planned_c"],
@@ -1239,7 +1241,7 @@ def group_material_state(
 def cancel_submission(
     session: Session, *, context: TenantContext, submission_id: UUID
 ) -> SubmissionReceipt:
-    """只关闭原生本地发送入口；不持有步骤锁，不触碰在途回执。"""
+    """关闭发送入口并取消空闲未发送步骤；在途锁与回执仍归执行器。"""
     require_tenant(
         session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="read"
     )
@@ -1270,4 +1272,28 @@ def cancel_submission(
         }
         row.updated_at = datetime.now(UTC)
         session.add(row)
-    return SubmissionReceipt(submission_id=row.id, status=row.status)
+    # 发送器先锁步骤再锁 Submission；取消绝不反向等待步骤锁。
+    # 已锁步骤跳过，随后由原发送围栏观察关闭标记；已准入发送保留事实。
+    from .execution_state import evidence
+
+    pending = session.exec(
+        select(ExecutionStep).where(
+            ExecutionStep.submission_id == row.id,
+            ExecutionStep.tenant_id == row.tenant_id,
+            ExecutionStep.status.in_(["PENDING", "QUEUED"]),
+            ExecutionStep.request_body.is_(None),
+            ExecutionStep.remote_id.is_(None),
+            ExecutionStep.kind != "READBACK",
+        ).with_for_update(skip_locked=True)
+    ).all()
+    for step in pending:
+        step.status, step.phase, step.error_code = (
+            "FAILED", "DONE", "local_submission_cancelled"
+        )
+        step.dispatch_revision += 1
+        step.dispatch_id = None
+        evidence(session, step=step, claim=None, conclusion="LOCAL_CANCELLED")
+        session.add(step)
+    session.flush()
+    view = get_submission(session, context=context, submission_id=row.id)
+    return SubmissionReceipt(submission_id=row.id, status=view.status)

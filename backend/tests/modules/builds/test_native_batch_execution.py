@@ -140,6 +140,10 @@ def test_same_preview_replay_returns_original(job_env, wire, redis_client):
 @pytest.mark.parametrize(
     "scenario",
     [
+        "cancel-before",
+        "cancel-partial",
+        "cancel-after-campaign",
+        "cancel-unknown",
         "match",
         "partial",
         "zero",
@@ -172,7 +176,7 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     recovering = scenario == "recovery"
     if recovering:
         scenario = "unknown"
-    browser = scenario in {"browser", "recovery-browser"}
+    browser = scenario in {"browser", "recovery-browser", "cancel-before"}
     client, url, draft_id, _, revision, value, _ = two_account_workspace(
         job_env, wire, redis_client
     )
@@ -322,7 +326,7 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 revoke.rollback()
         calls.append((url, body))
         if (
-            scenario == "unknown"
+            scenario in {"unknown", "cancel-unknown"}
             and "/campaign/" in url
             and body["advertiser_id"] == "second-account"
         ):
@@ -393,6 +397,63 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
 
     monkeypatch.setattr("urllib3.PoolManager.request", transport)
     monkeypatch.setattr(execution, "_require_bounded_worker", lambda: None)
+
+    def cancel_and_snapshot_sent():
+        from tests.modules.builds.native_cancel_http import cancel_twice
+
+        cancel_twice(native.engine, context, sid)
+        with Session(native.engine) as s:
+            return {
+                step.id: (
+                    step.request_body,
+                    step.request_body_digest,
+                    step.attempt,
+                    step.attempt_id,
+                    step.remote_id,
+                    step.status,
+                    step.error_code,
+                )
+                for step in s.exec(
+                    select(ExecutionStep).where(
+                        ExecutionStep.submission_id == sid
+                    )
+                ).all()
+                if step.request_body is not None or step.remote_id is not None
+            }
+
+    from tests.modules.builds.native_cancel_http import cancel_twice
+
+    if scenario == "cancel-before":
+        from tests.modules.builds.native_browser_http import submit_in_browser
+
+        # T19 真实浏览器取消后，再用原 Submission API 验证幂等。
+        submit_in_browser(
+            native.engine,
+            context,
+            job_env["bc_id"],
+            pid,
+            mode="batch-cancel",
+            submission_id=sid,
+        )
+        cancel_twice(native.engine, context, sid)
+        with Session(native.engine) as s:
+            view = submissions.get_submission(s, context=context, submission_id=sid)
+            assert view.status == "CANCELLED", "T19 all unsent must be cancelled"
+            assert all(p.status == "CANCELLED" for p in view.native_plans)
+            before_steps = [(x.id, x.request_body, x.attempt_id) for x in s.exec(
+                select(ExecutionStep).where(ExecutionStep.submission_id == sid)
+            ).all()]
+        for step in steps:
+            execution.process_step(database_engine=native.engine, redis_client=redis_client,
+                context=context, step_id=step.id, revision=step.dispatch_revision)
+        assert calls == [], "R11 cancelled steps must never send"
+        assert submit(0).submission_id == sid
+        with Session(native.engine) as s:
+            after_steps = [(x.id, x.request_body, x.attempt_id) for x in s.exec(
+                select(ExecutionStep).where(ExecutionStep.submission_id == sid)
+            ).all()]
+            assert after_steps == before_steps
+        return
     if lock_probe:
         from app.core.context import TenantContext
         from app.core.errors import DomainError
@@ -408,8 +469,36 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 revision=0,
             )
         assert calls == []
-    for kind in ["MATERIAL", "CTA", "CAMPAIGN", "ADGROUP", "AD"]:
-        for step in [x for x in steps if x.kind == kind]:
+    kinds = ["MATERIAL", "CTA", "CAMPAIGN", "ADGROUP", "AD"]
+    if scenario == "cancel-partial":
+        with Session(native.engine) as s:
+            advertisers = {
+                unit.id: unit.advertiser_id
+                for unit in s.exec(
+                    select(BuildUnit).where(BuildUnit.preview_id == pid)
+                ).all()
+            }
+        ordered = sorted(
+            steps,
+            key=lambda step: (
+                advertisers[step.unit_id] != "actual-account",
+                kinds.index(step.kind),
+            ),
+        )
+        groups = [(step.kind, [step]) for step in ordered]
+    else:
+        groups = [
+            (kind, [step for step in steps if step.kind == kind]) for kind in kinds
+        ]
+    sent_at_cancel = {}
+    for kind, current_steps in groups:
+        if (
+            scenario == "cancel-partial"
+            and advertisers[current_steps[0].unit_id] == "second-account"
+            and not sent_at_cancel
+        ):
+            sent_at_cancel = cancel_and_snapshot_sent()
+        for step in current_steps:
             from app.modules.builds.dispatch import queue_step
 
             with Session(native.engine) as s, s.begin():
@@ -451,6 +540,19 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 revision=delivery,
             )
             assert len(calls) == before, "R9 duplicate worker added transport write"
+        if scenario == "cancel-after-campaign" and kind == "CAMPAIGN":
+            sent_at_cancel = cancel_and_snapshot_sent()
+        if scenario == "cancel-unknown" and kind == "CAMPAIGN":
+            with Session(native.engine) as s:
+                unknown_exists = s.exec(
+                    select(ExecutionStep.id).where(
+                        ExecutionStep.submission_id == sid,
+                        ExecutionStep.kind == "CAMPAIGN",
+                        ExecutionStep.status == "UNKNOWN",
+                    )
+                ).first()
+            if unknown_exists is not None and not sent_at_cancel:
+                sent_at_cancel = cancel_and_snapshot_sent()
     assert (
         len(calls)
         == {
@@ -458,6 +560,9 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             "partial": 8,
             "zero": 6,
             "unknown": 7,
+            "cancel-partial": 5,
+            "cancel-after-campaign": 4,
+            "cancel-unknown": 4,
             "reject": 4,
             "recovery-complete": 10,
             "recovery-partial": 8,
@@ -465,14 +570,17 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     )
     if lock_probe:
         assert locked == [True, True]
-    assert {b["advertiser_id"] for _, b in calls} == {
-        "actual-account",
-        "second-account",
-    }
+    assert {b["advertiser_id"] for _, b in calls} == (
+        {"actual-account"}
+        if scenario == "cancel-partial"
+        else {"actual-account", "second-account"}
+    )
     assert all(
         b["operation_status"] == "ENABLE" for u, b in calls if "portfolio" not in u
     )
-    assert [b["budget"] for u, b in calls if "/campaign/" in u] == [100.25, 100.25]
+    assert [b["budget"] for u, b in calls if "/campaign/" in u] == (
+        [100.25] if scenario == "cancel-partial" else [100.25, 100.25]
+    )
     with Session(native.engine) as s:
         view = submissions.get_submission(s, context=context, submission_id=sid)
         assert view.status != "COMPLETED"  # 创建回执不能冒充实际 MATCH。
@@ -491,6 +599,9 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             "partial": 8,
             "zero": 6,
             "unknown": 7,
+            "cancel-partial": 5,
+            "cancel-after-campaign": 4,
+            "cancel-unknown": 4,
             "reject": 4,
             "recovery-complete": 10,
             "recovery-partial": 8,
@@ -528,6 +639,9 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             "partial": 5,
             "zero": 2,
             "unknown": 4,
+            "cancel-partial": 4,
+            "cancel-after-campaign": 2,
+            "cancel-unknown": 1,
             "reject": 0,
             "recovery-complete": 7,
             "recovery-partial": 4,
@@ -551,6 +665,9 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 "partial": "PARTIAL",
                 "zero": "FAILED",
                 "unknown": "NEEDS_REVIEW",
+                "cancel-partial": "PARTIAL",
+                "cancel-after-campaign": "FAILED",
+                "cancel-unknown": "NEEDS_REVIEW",
                 "reject": "FAILED",
                 "recovery-complete": "NEEDS_REVIEW",
                 "recovery-partial": "NEEDS_REVIEW",
@@ -566,6 +683,21 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             assert all(
                 p.remote_ids for p in view.native_plans if p.status != "EXCLUDED"
             )
+        if scenario == "cancel-partial":
+            assert [p.status for p in view.native_plans] == [
+                "COMPLETED",
+                "CANCELLED",
+            ]
+            assert view.native_plans[0].remote_ids
+            assert not view.native_plans[1].remote_ids
+        if scenario == "cancel-after-campaign":
+            assert [p.status for p in view.native_plans] == ["PARTIAL", "PARTIAL"]
+            assert all(p.remote_ids for p in view.native_plans)
+        if scenario == "cancel-unknown":
+            assert [p.status for p in view.native_plans] == [
+                "PARTIAL",
+                "NEEDS_REVIEW",
+            ]
     assert submit(0).submission_id == sid
 
     # 终态/待核查：相同键及新键在独立会话并发重放，读取当前回执。
@@ -584,6 +716,20 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
 
     before_calls = list(calls)
     with Session(native.engine) as s:
+        if sent_at_cancel:
+            for step in s.exec(
+                select(ExecutionStep).where(ExecutionStep.submission_id == sid)
+            ).all():
+                if step.id in sent_at_cancel:
+                    assert (
+                        step.request_body,
+                        step.request_body_digest,
+                        step.attempt,
+                        step.attempt_id,
+                        step.remote_id,
+                        step.status,
+                        step.error_code,
+                    ) == sent_at_cancel[step.id]
         before_steps = [
             (x.id, x.request_body, x.request_body_digest, x.remote_id)
             for x in s.exec(

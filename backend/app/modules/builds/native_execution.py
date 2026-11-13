@@ -6,17 +6,13 @@ from uuid import UUID
 from sqlmodel import select
 
 from app.core.errors import DomainError
-from app.modules.builds.frozen_requests import (
-    FrozenRequestRevision,
-    native_request_digest,
-)
 from app.modules.builds.models import BuildDraft
 from app.modules.builds.native_preview import observe_occupancy
 from app.modules.builds.preview_models import BuildUnit, PlannedAd
 from app.modules.builds.request_compiler import cta_portfolio
 from app.modules.builds.scene_jobs import native_checkpoint
 
-from .selection_schemas import NativeSeriesPlanSet, single_native_selection
+from .selection_schemas import NativeSeriesPlanSet
 
 
 def lock_send_authority(session, *, context, claim):
@@ -81,40 +77,29 @@ def validate(session, *, context, preview, route, refreshing=False, unit_id=None
             BuildUnit.preview_id == preview.id, BuildUnit.tenant_id == context.tenant_id
         )
     ).all()
-    plan_key = None
-    if "native_batch" in preview.config:
-        from .native_preview import read_batch
+    # 新旧原生冻结都经同一读取器；历史平铺只在读取边界适配，不回写。
+    from .native_preview import read_batch
 
-        batch = read_batch(session, preview=preview)
-        item = next(
-            (p for p in batch["plans"] if p.get("unit_id") == str(unit_id)), None
-        )
-        if item is None:
-            raise DomainError("execution_intent_changed", "当前组合不在批准范围")
-        plan_key = UUID(item["plan_key"])
-        plan = next(
-            (
-                p
-                for p in NativeSeriesPlanSet.model_validate(draft.scene_selection).plans
-                if p.plan_key == plan_key
-            ),
-            None,
-        )
-        payload = FrozenRequestRevision.model_validate(item["request"]).model_dump(
-            mode="json"
-        )
-        selection = plan.selection.model_dump(mode="json") if plan else None
-        unit = next(u for u in units if u.id == unit_id)
-    else:
-        payload = FrozenRequestRevision.model_validate(
-            preview.config["native_request"]
-        ).model_dump(mode="json")
-        if native_request_digest(payload) != preview.content_digest:
-            raise DomainError("preview_not_frozen", "原生冻结内容摘要不匹配")
-        if len(units) != 1 or (unit_id is not None and units[0].id != unit_id):
-            raise DomainError("execution_intent_changed", "冻结组合内容不一致")
-        unit = units[0]
-        selection = single_native_selection(draft.scene_selection)
+    batch = read_batch(session, preview=preview)
+    item = next(
+        (p for p in batch["plans"] if p.get("unit_id") == str(unit_id)), None
+    )
+    if item is None:
+        raise DomainError("execution_intent_changed", "当前组合不在批准范围")
+    plan_key = UUID(item["plan_key"])
+    plan = next(
+        (
+            p
+            for p in NativeSeriesPlanSet.model_validate(draft.scene_selection).plans
+            if p.plan_key == plan_key
+        ),
+        None,
+    )
+    if plan is None:
+        raise DomainError("execution_intent_changed", "冻结计划已不在当前输入")
+    payload = item["request"]
+    selection = plan.selection.model_dump(mode="json")
+    unit = next(u for u in units if u.id == unit_id)
     if payload["draft_revision"] != draft.revision:
         raise DomainError("draft_revision_conflict", "草稿已变更，请重新预览")
     if (

@@ -78,12 +78,10 @@ def queue_step(
         raise DomainError("resource_not_found", "执行步骤范围无效")
     if not reconcile and submission.progress.get("local_cancelled"):
         if (
-            step.status not in {"SUCCEEDED", "UNKNOWN"}
+            step.status in {"PENDING", "QUEUED"}
             and not step.remote_id
-            and (
-                step.request_body is None
-                or safely_retryable_attempt(session, step=step)
-            )
+            and step.request_body is None
+            and step.kind != "READBACK"
         ):
             step.status, step.phase, step.error_code = (
                 "FAILED",

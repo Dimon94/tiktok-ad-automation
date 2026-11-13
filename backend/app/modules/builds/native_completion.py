@@ -96,7 +96,6 @@ def batch_results(session, submission, preview):
                     if s.parent_step_id in failed
                     and s.status in {"PENDING", "QUEUED", "RETRYABLE"}
                     and not s.remote_id
-                    and s.request_body is None
                 }
                 if blocked <= failed:
                     break
@@ -105,8 +104,40 @@ def batch_results(session, submission, preview):
             if any(s.mismatch for s in steps):
                 states.add("MISMATCH")
             state = aggregate_status(states)
+            if (steps and all(s.error_code == "local_submission_cancelled" for s in steps)
+                    and all(s.request_body is None and not s.remote_id for s in steps)):
+                state = "CANCELLED"
+            elif not steps and submission.progress.get("local_cancelled"):
+                state = "CANCELLED"
+            create_steps = [
+                s for s in steps if s.kind in {"CAMPAIGN", "ADGROUP", "AD"}
+            ]
             if unit_native_matched(session, submission, unit):
                 state = "COMPLETED"
+            elif any(s.status in {"UNKNOWN", "MISMATCH"} or s.mismatch for s in steps):
+                state = "NEEDS_REVIEW"
+            elif create_steps and all(
+                s.status == "FAILED" and s.error_code == "local_submission_cancelled"
+                for s in create_steps
+            ):
+                # 素材准备成功不妨碍“所有广告对象均未发送”的整计划取消。
+                state = "CANCELLED"
+            elif any(
+                s.kind != "READBACK"
+                and (s.id in failed or s.status in {"FAILED", "CANCELLED"})
+                for s in steps
+            ):
+                # 创建链已不能 MATCH；READBACK 或兄弟等待不掩盖终态。
+                # CTA/素材只是前置条件，部分对象仅指 Campaign/组/广告。
+                state = (
+                    "PARTIAL"
+                    if any(
+                        s.kind in {"CAMPAIGN", "ADGROUP", "AD"}
+                        and s.status == "SUCCEEDED"
+                        for s in steps
+                    )
+                    else "FAILED"
+                )
             elif state == "COMPLETED":
                 state = "NEEDS_REVIEW"
             elif state == "PARTIAL":
@@ -128,9 +159,16 @@ def batch_results(session, submission, preview):
         status = "NEEDS_REVIEW"
     elif states & {"RUNNING", "QUEUED"}:
         status = "RUNNING" if submission.expanded else "QUEUED"
+    elif states == {"CANCELLED"}:
+        status = "CANCELLED"
     elif states == {"COMPLETED"}:
         status = "COMPLETED"
     elif "COMPLETED" in states:
+        status = "PARTIAL"
+    elif states == {"PARTIAL"} and sum(
+        p["status"] != "EXCLUDED" for p in results
+    ) == 1:
+        # M1 单计划保留已有部分对象的回执；多计划无 MATCH 仍是 FAILED。
         status = "PARTIAL"
     else:
         status = "FAILED"

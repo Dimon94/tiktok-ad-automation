@@ -74,12 +74,19 @@ def submit_in_browser(
                     "batch-result",
                     "batch-workspace",
                     "batch-recovery",
+                    "batch-cancel",
                 }
                 else "tests/build-preparation.spec.ts",
                 "-g",
                 "@native-batch-live"
                 if mode
-                in {"batch", "batch-result", "batch-workspace", "batch-recovery"}
+                in {
+                    "batch",
+                    "batch-result",
+                    "batch-workspace",
+                    "batch-recovery",
+                    "batch-cancel",
+                }
                 else "@native-live"
                 if mode == "submit"
                 else "@native-plan-live",
@@ -103,6 +110,7 @@ def submit_in_browser(
                     "batch-result",
                     "batch-workspace",
                     "batch-recovery",
+                    "batch-cancel",
                 }
                 else "5198",
             },
