@@ -5280,3 +5280,12 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 现有权限模型没有独立 actor authorization generation，撤权后重新授权对旧代次的隔离仍未证明，不能以当前权限锁或形式模型代替该合同。形式 skill 完全未改；后续需 root 源码验收，再串行形式补全。JB-16 不宣称完成，JB-17 不推进。无真实平台/授权 provider 调用、推送、PR、部署或 Linear 修改，原未跟踪软链保留。
 
 本轮最终源码检查：10 passed / 141.81s，另复用本轮双边界 10 passed / 106.39s；前端正式/demo 构建、6 文件 Ruff/格式及 diff 检查通过。新发送事务持锁可增加同批次物理写/撤权的等待；吞吐与真实 Celery 宿主硬超时未验，不把本地测试宿主当生产验收。
+
+## 2026-11-12 JB-16 R12 操作者授权代数候选（待 root / 形式验收）
+
+- 起点 `15cb546468cc270249f09cd626635c7040244833`；唯一集成树/分支未变，只保留原 `.venv` / `node_modules` 未跟踪软链。无下级代理、无 push/PR/deploy/Linear/真实平台写，未改形式 skill、未推进 JB-17。
+- 最小持久代数归现有 User/Tenant/Membership 行；DB trigger 覆盖 active/role/superuser 和插入，sequence 防成员删除重建 ABA。唯一批准快照在原生首次明确提交的 Submission 上，绑定真实 actor，数据库禁止后续修改；队列与最终 SDK 发送从同权限 owner 比较，原锁序与期限保留。
+- 新向前迁移 `actor_authorization_stamp` 已仅在专用 M2 本地数据库应用并读回 head；历史 Submission NULL 不回填，新写拒绝、历史结果/完整请求不改。重新投放须按原唯一性合同新工作区/新预览明确批准，不复活旧 Submission，不添加第二 ENABLE。
+- 最小 red 真实复现停用恢复仍多发 SDK 请求；4 个 revoke/regrant 绿，10 个 scope/新批准检查绿；绕过比较探针 4 failed，恢复后 cmp 相同。最终定向检查结果见本轮 validation 末段；前端未变，复用上一轮构建。
+- 交接与精确命令：`docs/validation/2026-11-12-jb16-native-batch-create.md` 的「R12 操作者授权代数」节。JB-16 仍需 root 审查和下一 fresh-context 形式 worker 的 stamp 冻结/递增/比较原子性映射，不能标 Done；JB-17 未放行。
+- 最终定向运行 59 passed / 2 failed；修复内部 generation 序列化泄露后权限/管理 34 passed，清除 TTL 测试 import 遮蔽后该节点 1 passed。24 个 queue/send 围栏、历史读取与 SDK User/账户双锁的绿结果复用；Ruff 10 文件 check/format、diff check 通过。完整失败与修复链保留在 validation，不宣称单次全套绿。

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import field_validator
-from sqlalchemy import CheckConstraint, DateTime
+from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, text
 from sqlmodel import Field, Relationship, SQLModel
 from sqlmodel._compat import SQLModelConfig
 
@@ -67,6 +67,15 @@ class UpdatePassword(SQLModel):
 
 # Database model, database table inferred from class name
 class User(UserBase, table=True):
+    authorization_generation: int = Field(
+        default=0,
+        exclude=True,
+        sa_column=Column(
+            BigInteger,
+            nullable=False,
+            server_default=text("nextval('authority_generation_seq')"),
+        ),
+    )
     __table_args__ = (
         CheckConstraint(
             "username ~ '^[a-z0-9_.-]{3,64}$'", name="ck_user_username_format"

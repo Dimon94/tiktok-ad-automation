@@ -243,6 +243,19 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 else:
                     locked.append(False)
                 revoke.rollback()
+            # 同一物理发送事务也必须阻止全局 User 代数变化。
+            with Session(native.engine) as revoke:
+                revoke.execute(text("SET LOCAL lock_timeout = '100ms'"))
+                try:
+                    revoke.execute(
+                        text('UPDATE "user" SET is_active=false WHERE id=:actor'),
+                        {"actor": context.actor_id},
+                    )
+                except OperationalError as error:
+                    locked.append("lock timeout" in str(error))
+                else:
+                    locked.append(False)
+                revoke.rollback()
         calls.append((url, body))
         if (
             scenario == "unknown"
@@ -354,7 +367,7 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
         == {"match": 10, "partial": 8, "zero": 6, "unknown": 7, "reject": 4}[scenario]
     )
     if lock_probe:
-        assert locked == [True]
+        assert locked == [True, True]
     assert {b["advertiser_id"] for _, b in calls} == {
         "actual-account",
         "second-account",
@@ -526,7 +539,21 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
 
 @pytest.mark.parametrize("boundary", ["queue", "send"])
 @pytest.mark.parametrize(
-    "change", ["account", "actor", "authorization", "binding", "revision"]
+    "change",
+    [
+        "account",
+        "actor",
+        "authorization",
+        "binding",
+        "revision",
+        "user_regrant",
+        "member_regrant",
+        "member_recreate",
+        "tenant_regrant",
+        "superuser_regrant",
+        "unrelated",
+        "fresh_approval",
+    ],
 )
 def test_batch_fences(job_env, wire, redis_client, monkeypatch, boundary, change):
     import json
@@ -545,12 +572,24 @@ def test_batch_fences(job_env, wire, redis_client, monkeypatch, boundary, change
     response = client.post(url + "/previews", json={"expected_revision": revision})
     assert response.status_code == 202, response.text
     pid = UUID(response.json()["preview_id"])
+    if change == "fresh_approval":
+        from app.crud import update_user
+        from app.models import User, UserUpdate
+
+        with Session(native.engine) as s:
+            actor = s.get(User, context.actor_id)
+            for active in (False, True):
+                update_user(
+                    session=s, db_user=actor, user_in=UserUpdate(is_active=active)
+                )
     with Session(native.engine, expire_on_commit=False) as s, s.begin():
         sid = submissions.submit_preview(
             s, context=context, preview_id=pid, request_id=uuid4()
         ).submission_id
         while not submissions.expand_submission(s, context=context, submission_id=sid):
             pass
+        approved_stamp = s.get(Submission, sid).authorization_stamp
+        original_preview = s.get(BuildPreview, pid).content_digest
         steps = s.exec(
             select(ExecutionStep).where(ExecutionStep.submission_id == sid)
         ).all()
@@ -608,7 +647,116 @@ def test_batch_fences(job_env, wire, redis_client, monkeypatch, boundary, change
             return row.dispatch_revision
 
     delivery = queue() if boundary == "send" else 0
-    if change == "revision":
+    if change in {"user_regrant", "member_regrant"}:
+        from app.core.context import TenantContext
+        from app.crud import update_user
+        from app.models import User, UserUpdate
+        from app.modules.tenants.service import set_member
+
+        with Session(native.engine) as s:
+            if change == "user_regrant":
+                actor = s.get(User, context.actor_id)
+                update_user(
+                    session=s, db_user=actor, user_in=UserUpdate(is_active=False)
+                )
+                update_user(
+                    session=s, db_user=actor, user_in=UserUpdate(is_active=True)
+                )
+            else:
+                admin = User(
+                    username="stamp-admin-" + uuid4().hex,
+                    hashed_password="unused",
+                    is_superuser=True,
+                )
+                s.add(admin)
+                s.commit()
+                manager = TenantContext(
+                    tenant_id=context.tenant_id,
+                    actor_id=admin.id,
+                    role="platform_admin",
+                )
+                for role in ("viewer", "operator"):
+                    set_member(
+                        s,
+                        context=manager,
+                        user_id=context.actor_id,
+                        role=role,
+                        active=True,
+                    )
+                    s.commit()
+    elif change in {
+        "member_recreate",
+        "tenant_regrant",
+        "superuser_regrant",
+        "unrelated",
+    }:
+        from app.crud import update_user
+        from app.models import User, UserUpdate
+        from app.modules.tenants.models import Tenant, TenantMembership
+
+        with Session(native.engine) as s:
+            if change == "member_recreate":
+                member = s.get(TenantMembership, (context.tenant_id, context.actor_id))
+                role = member.role
+                s.delete(member)
+                s.commit()
+                s.add(
+                    TenantMembership(
+                        tenant_id=context.tenant_id, user_id=context.actor_id, role=role
+                    )
+                )
+                s.commit()
+            elif change == "superuser_regrant":
+                actor = s.get(User, context.actor_id)
+                for superuser in (True, False):
+                    update_user(
+                        session=s,
+                        db_user=actor,
+                        user_in=UserUpdate(is_superuser=superuser),
+                    )
+            elif change == "tenant_regrant":
+                from app.modules.tenants.service import update_tenant
+
+                admin = User(
+                    username="stamp-admin-" + uuid4().hex,
+                    hashed_password="unused",
+                    is_superuser=True,
+                )
+                s.add(admin)
+                s.commit()
+                for active in (False, True):
+                    update_tenant(
+                        s,
+                        actor_id=admin.id,
+                        tenant_id=context.tenant_id,
+                        changes={"active": active},
+                    )
+                    s.commit()
+            else:
+                other = User(
+                    username="stamp-other-" + uuid4().hex, hashed_password="unused"
+                )
+                tenant = Tenant(name="stamp-other-" + uuid4().hex)
+                s.add(other)
+                s.add(tenant)
+                s.commit()
+                s.add(
+                    TenantMembership(
+                        tenant_id=context.tenant_id, user_id=other.id, role="viewer"
+                    )
+                )
+                s.add(
+                    TenantMembership(
+                        tenant_id=tenant.id, user_id=context.actor_id, role="viewer"
+                    )
+                )
+                s.commit()
+                update_user(
+                    session=s, db_user=other, user_in=UserUpdate(is_active=False)
+                )
+    elif change == "fresh_approval":
+        pass
+    elif change == "revision":
         value["plans"][1]["selection"]["native_series_id"] = "changed-series"
         patched = client.patch(
             url, json={"expected_revision": revision, "scene_selection": value}
@@ -640,11 +788,70 @@ def test_batch_fences(job_env, wire, redis_client, monkeypatch, boundary, change
         from app.core.errors import DomainError
 
         assert isinstance(error, DomainError), error
-    assert calls == before
+    assert len(calls) == len(before) + (
+        1 if change in {"unrelated", "fresh_approval"} else 0
+    )
     with Session(native.engine) as s:
         row = s.get(ExecutionStep, target.id)
-        assert row.remote_id is None
-        if boundary == "queue":
+        assert s.get(Submission, sid).authorization_stamp == approved_stamp
+        assert s.get(BuildPreview, pid).content_digest == original_preview
+        if change in {"unrelated", "fresh_approval"}:
+            assert row.remote_id == "fence-cta"
+        else:
+            assert row.remote_id is None
+        if boundary == "queue" and change not in {"unrelated", "fresh_approval"}:
             assert row.status == "FAILED" and row.error_code
         successful = s.get(ExecutionStep, sibling.id)
         assert successful.status == "SUCCEEDED" and successful.remote_id == "fence-cta"
+
+
+def test_legacy_approval_readable_but_cannot_send(job_env, wire, redis_client):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.modules.builds import dispatch, submissions
+    from app.modules.builds.execution_models import ExecutionStep, Submission
+
+    context = job_env["context"]
+    client, url, draft_id, _, revision, _, _ = two_account_workspace(
+        job_env, wire, redis_client
+    )
+    response = client.post(url + "/previews", json={"expected_revision": revision})
+    assert response.status_code == 202
+    pid = UUID(response.json()["preview_id"])
+    with Session(native.engine) as s, s.begin():
+        preview = s.get(BuildPreview, pid)
+        digest, config = preview.content_digest, preview.config
+        # 合法历史形状：迁移不能假装取得操作者的新批准。
+        row = Submission(
+            tenant_id=context.tenant_id,
+            bc_id=job_env["bc_id"],
+            preview_id=pid,
+            draft_id=draft_id,
+            actor_id=context.actor_id,
+            ordinal=1,
+        )
+        s.add(row)
+        s.flush()
+        while not submissions.expand_submission(
+            s, context=context, submission_id=row.id
+        ):
+            pass
+        step = s.exec(
+            select(ExecutionStep).where(
+                ExecutionStep.submission_id == row.id, ExecutionStep.kind == "CTA"
+            )
+        ).first()
+        dispatch.queue_step(s, step=step, submission=row)
+        assert step.status == "FAILED"
+        assert step.error_code == "actor_authorization_changed"
+        assert step.dispatch_id is None
+        assert (
+            submissions.get_submission(
+                s, context=context, submission_id=row.id
+            ).submission_id
+            == row.id
+        )
+        assert (preview.content_digest, preview.config) == (digest, config)
+        with pytest.raises(IntegrityError), s.begin_nested():
+            row.authorization_stamp = {"forged": True}
+            s.flush()

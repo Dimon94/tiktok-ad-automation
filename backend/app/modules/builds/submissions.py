@@ -43,7 +43,7 @@ from app.modules.builds.routes import (
     save_attempt_context,
     verify_unit_route,
 )
-from app.modules.tenants.permissions import require_tenant
+from app.modules.tenants.permissions import build_authorization_stamp, require_tenant
 
 from .ad_readiness import included_ad_sql, included_group_sql
 from .submission_counts import INCLUDED_OBJECT_COUNTS
@@ -122,6 +122,14 @@ def submit_preview(
     ).one_or_none()
     if preview is None:
         raise DomainError("preview_not_found", "预览不存在")
+    # 新批准的操作者来自提交者；先锁权限再锁 Draft/Preview，与发送顺序一致。
+    approval_stamp = (
+        build_authorization_stamp(
+            session, actor_id=context.actor_id, tenant_id=context.tenant_id
+        )
+        if ("native_request" in preview.config or "native_batch" in preview.config)
+        else None
+    )
     draft = session.exec(
         select(BuildDraft)
         .where(
@@ -237,6 +245,7 @@ def submit_preview(
             preview_id=preview.id,
             draft_id=draft.id,
             actor_id=context.actor_id,
+            authorization_stamp=approval_stamp,
             ordinal=ordinal,
         )
         session.add(existing)

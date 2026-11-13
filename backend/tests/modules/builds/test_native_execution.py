@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 from urllib3.response import HTTPResponse
 
 from app.modules.builds import execution, previews, submissions
-from app.modules.builds.execution_models import ExecutionStep
+from app.modules.builds.execution_models import ExecutionStep, Submission
 from app.modules.builds.models import BuildDraft
 from tests.modules.builds.scene_jobs import test_native_series as native
 from tests.modules.builds.scene_jobs.test_native_series import prepared_native_workspace
@@ -101,7 +101,6 @@ def test_native_six_creates(
         from tests.modules.builds.native_browser_http import submit_in_browser
 
         submit_in_browser(native.engine, context, job_env["bc_id"], pid)
-        from app.modules.builds.execution_models import Submission
 
         with Session(native.engine) as s:
             assert (
@@ -334,6 +333,9 @@ def test_native_six_creates(
                     s.add(old)
                 original_revision = s.get(BuildDraft, draft_id).revision
                 original_digest = s.get(BuildPreview, pid).content_digest
+                original_stamp = s.get(
+                    Submission, receipt.submission_id
+                ).authorization_stamp
                 parent_facts = {
                     sid: (
                         row.remote_id,
@@ -451,6 +453,10 @@ def test_native_six_creates(
                 s.add(step)
                 assert s.get(BuildDraft, draft_id).revision == original_revision
                 assert s.get(BuildPreview, pid).content_digest == original_digest
+                assert (
+                    s.get(Submission, receipt.submission_id).authorization_stamp
+                    == original_stamp
+                )
                 for sid, original in parent_facts.items():
                     row = s.get(ExecutionStep, sid)
                     assert (
@@ -687,7 +693,6 @@ def test_native_six_creates(
 
     from app.models import User
     from app.modules.builds.dispatch import finalize_submission, process_unit
-    from app.modules.builds.execution_models import Submission
 
     process_unit(
         database_engine=native.engine,
@@ -781,7 +786,6 @@ def test_native_submission_rejects_changed_freeze(
             submissions.submit_preview(
                 s, context=context, preview_id=pid, request_id=uuid4()
             )
-        from app.modules.builds.execution_models import Submission
 
         assert not s.exec(select(Submission).where(Submission.preview_id == pid)).all()
 

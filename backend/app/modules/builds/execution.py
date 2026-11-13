@@ -60,7 +60,10 @@ from app.modules.builds.scene import read_scene_context
 from app.modules.builds.scene_jobs import ensure_scene_preparation
 from app.modules.builds.submissions import claim_step, load_execution_unit
 from app.modules.materials.distribution import ensure_target_asset
-from app.modules.tenants.permissions import require_tenant
+from app.modules.tenants.permissions import (
+    require_build_authorization_stamp,
+    require_tenant,
+)
 
 SCENE_FIELDS = (
     "campaign_fields",
@@ -137,6 +140,9 @@ def _frozen(
     ):
         raise DomainError("account_metadata_changed", "账户币种或时区已变化")
     if unit.frozen.native_request is not None:
+        require_build_authorization_stamp(
+            session, submission=session.get(Submission, claim.submission_id)
+        )
         from .native_execution import validate
         from .preview_models import BuildPreview
 

@@ -3,18 +3,29 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKeyConstraint,
     Index,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 
 class Tenant(SQLModel, table=True):
+    authorization_generation: int = Field(
+        default=0,
+        exclude=True,
+        sa_column=Column(
+            BigInteger,
+            nullable=False,
+            server_default=text("nextval('authority_generation_seq')"),
+        ),
+    )
     __tablename__ = "tenant"
     __table_args__ = (
         UniqueConstraint("name", name="uq_tenant_name"),
@@ -33,6 +44,15 @@ class Tenant(SQLModel, table=True):
 
 
 class TenantMembership(SQLModel, table=True):
+    authorization_generation: int = Field(
+        default=0,
+        exclude=True,
+        sa_column=Column(
+            BigInteger,
+            nullable=False,
+            server_default=text("nextval('authority_generation_seq')"),
+        ),
+    )
     __tablename__ = "tenant_membership"
     __table_args__ = (
         CheckConstraint(

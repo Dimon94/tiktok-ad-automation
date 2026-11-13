@@ -118,3 +118,41 @@ python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -
 - 形式模型的 Decimal 预算、Completion 集合、R5/R7/R8/R9/R12/R13 源码映射与反例仍由下一位 fresh-context worker 串行补；R10/R11 属后续票。**本提交不能令 JB-16 Done，也不放行 JB-17。** root 先读实际源码/缺口再决定后续。
 
 最终恢复后的 `jb16-runtime-final.log`：**10 passed / 10 deselected / 141.81s**；10 deselected 为已通过且未改语义的 fences 矩阵。`bun run --cwd frontend build` 正式/demo TypeScript + Vite 构建通过（`jb16-runtime-build.log`）。6 个变更 Python 文件的 `ruff check`、`ruff format --check` 均通过，git diff --check 通过。未运行无变化整仓。新持锁范围会使同 Submission 的物理写等待原 Submission 排他锁，且管理员撤权可能等待当前有界请求完成；不宣称本轮测量过吞吐或外部 Celery 硬超时。上述 actor generation 缺口仍是运行 AC，不只是形式文档缺口。
+
+## R12 操作者授权代数（起点 15cb546，待 root / 形式验收）
+
+本轮唯一写树、分支保持不变；起点 `15cb546468cc270249f09cd626635c7040244833`，原 `.venv` / `node_modules` 未跟踪软链保留。未派代理、未改形式 skill、未推进 JB-17、未修改 Linear、未推送/部署/真实平台调用。Nowledge 定向检索未取得相关历史，依据本树 Spec R12 和完整 JB-16 快照实施。
+
+### Owner、批准与历史策略
+
+- 权限仍由 `tenants.permissions.require_tenant` 的 User/Tenant/TenantMembership 事实决定。新增三行各自的 `authorization_generation`；向前迁移 `actor_authorization_stamp` 的 DB trigger 在 User 的 active/superuser、Tenant 的 active、Membership 的 active/role 改变时分配新代数。插入也重新分配，成员删除重建不能 ABA。全局 sequence 仅提供不重复的序号（允许空洞），不作为全局失效版本；只比较实际 actor scope 的三行。普通昵称等非权限修改保留代数。ORM、管理 API/service、后台 SQL 共用触发器，不增加影子角色或权限 owner。
+- 代数批准的唯一持久 owner 是 `build_submission.authorization_stamp`。首次明确 `submit_preview` 为真实提交者读取并锁定当前权限，在原唯一 Submission INSERT 时冻结；不是准备任务或预览创建者，也不限制原本合法的操作者协作。Native 预览仅冻结广告意图，提交批准单独绑定权限代数，无第二份 FrozenRequest。平台 superuser 使用 User/Tenant 代数，不依赖无关 Membership。
+- `submit_preview` 在 Draft/Preview 锁之前依 User→Tenant→Membership 顺序取得共享锁并核验权限，直到原提交事务结束。重复提交仍返回原 Submission，临时读取当前权限不覆盖原 stamp。DB UPDATE trigger 拒绝 stamp 变更（包括历史 NULL 回填）。TTL、旧准备完成、恢复或重投均无 stamp 写入口。
+- `dispatch.queue_step` 原生分支和 `execution._frozen` 共用 `require_build_authorization_stamp`。前者不匹配即 LOCAL_FAILED；后者在原 SDK send_scope 的物理发送事务内再次比较。原 step/Submission 排他锁、User→Tenant→Membership→账户等行锁和 HARD_LIMIT 期限不变；权限锁已持有时的重读不会释放锁。撤权 UPDATE 与代数更新同事务，先撤权则拒绝、先准入发送则撤权等待本次有界请求退出。
+- 升级已有权限行获得当前代数，**已有 Submission 不回填**；NULL stamp 的原生任务不再获准新写，已创建 ID、历史 body/digest、manifest、预算和结果查询保持原文。历史冻结但未提交的预览，在当前合法操作者明确提交时才产生新批准。已提交预览永远重放原 Submission，不自动复活。需要继续新投放时按既有唯一性合同新建工作区/草稿并重新准备、预览、明确提交；同草稿已覆盖范围仍受 `COVERED` 约束，不能仅换 request key 绕过。已有对象须由操作者考虑其消耗与占用；没有第二 ENABLE 或自动重建。
+- 本次只围住原生发送；旧 Mini 执行合同未改。UNKNOWN 保持原只读恢复流程，不能用 stamp 更新或自动重发解锁。JB-17 须消费原 Submission stamp，区分只读证据恢复与新写授权，不能把当前代数回填成旧批准。
+
+### 本地运行证据
+
+命令均从本树 backend，以 `python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py` 前缀运行。Python 3.14、专用 M2 PG/Redis；没有读取/输出私有 env，没有清库或更换共享软链。`python -m alembic current` 实际读回 `actor_authorization_stamp (head)`；迁移 fixture 亦从空 schema 完整升级通过，未改历史迁移。前端/API schema 未变，复用上一轮前端构建。
+
+- RED：`python -m pytest tests/modules/builds/test_native_batch_execution.py -k 'fences and user_regrant and queue' -q --tb=short`，`jb16-stamp-red.log`：旧实现在 User 管理 owner 停用再启用后多发送一次 SDK CTA 请求，1 failed。
+- GREEN：`-k 'fences and regrant'`，`jb16-stamp-green.log`：4 passed / 31.13s，User 与成员管理 owner 的 revoke/regrant 在 queue/send 两个时点均零新增写、成功兄弟保持原 ID。
+- scope：`-k 'fences and (recreate or tenant_regrant or superuser_regrant or unrelated or fresh_approval)'`，`jb16-stamp-scopes.log`：10 passed / 72.49s。覆盖成员删除重建、Tenant 管理 owner 停用恢复、User superuser 恢复、无关用户及其他租户成员、新明确批准后的实际 SDK 发送。
+- 历史 NULL：真实历史形状 fixture 经过 expand/queue/get_submission，拒绝排队、回执仍可读、digest/config 不变，DB 拒绝回填 stamp。`jb16-stamp-regression.log` 中该例通过；另一 send-lock 检查因新增第二个锁结果后断言仍预期单元素失败，实测两次撤权都被锁阻止；断言已按两种独立撤权的预期修正。
+- 近似错误：临时将 canonical stamp 比较条件改为永不拒绝；`-k 'fences and user_regrant'` 同时选中 user/superuser 的 queue/send，`jb16-stamp-probe.log` **4 failed / 34.55s**，均多发实际 SDK 请求。仓外备份 finally 恢复并字节比较，另 `cmp` 通过。探针与业务复验串行，无污染。
+- 最终命令（一次拼错测试节点仅 collection exit 4，修正后执行）：
+
+```sh
+python3 /tmp/tkada-native-series-20261112/m2-implementation/run-test.py python -m pytest tests/modules/builds/test_native_batch_execution.py::test_batch_fences tests/modules/builds/test_native_batch_execution.py::test_legacy_approval_readable_but_cannot_send 'tests/modules/builds/test_native_batch_execution.py::test_batch_submit_and_execute[send-lock-source_env0]' 'tests/modules/builds/test_native_execution.py::test_native_expired_evidence_continues_frozen_plan[scene]' tests/modules/tenants/test_permissions.py tests/modules/tenants/test_management.py -q --tb=short
+```
+
+结果追加下方。该命令定向复验最终接线、当前权限 owner、5.2 秒 SDK 请求期间 User 代数 UPDATE 被锁、M1 纯 TTL 的原 stamp/revision/digest/父级 body/attempt 保持。其余未改场景复用上一轮证据；合成数据、SDK transport double、有界 worker 宿主检查替身的限制不变，不代表生产或真实 TikTok 验证。
+
+### 下一位形式 worker
+
+不得把旧草模当运行 AC。对应位置：`actor_authorization_stamp.upgrade`（原事实行代数递增和 stamp write-once）、`tenants.permissions.build_authorization_stamp/require_build_authorization_stamp`（相同权限事实读取与比较）、`submissions.submit_preview`（明确批准且同事务唯一 INSERT）、`dispatch.queue_step`（入队拒绝）、`execution._frozen` 与既有 `send_scope/lock_send_authority`（物理发送期间持锁比较）。模型须包含撤权恢复、成员删除重建、历史 NULL、旧消息不换 stamp、当前批准的新 Submission 可发送、无关 scope 不失效；抽象 sequence 只要求新代数不复用。数据库发送锁并非远端写与本地回执的原子事务，UNKNOWN 不能重发。形式映射、根审查与最终验收仍待完成；**JB-16 不标 Done，JB-17 未放行**。
+
+最终结果：`jb16-stamp-final.log` **59 passed / 2 failed / 191.64s**。24 个 queue/send 围栏、历史读取、SDK 双锁均通过；两个失败分别为 TTL 测试函数后部局部 Submission import 遮蔽新增断言，以及 Tenant response_model 直接序列化模型泄露新内部字段。后者通过在 generation 字段设置 `exclude=True` 保持原 API 响应，未放宽 API 断言；前者把 Submission import 统一到模块顶部，清除函数内遮蔽（首次只移除条件分支 import 仍失败，随后移除函数后部同名 import）。
+
+修复后 `<runner> python -m pytest 'tests/modules/builds/test_native_execution.py::test_native_expired_evidence_continues_frozen_plan[scene]' tests/modules/tenants/test_permissions.py tests/modules/tenants/test_management.py -q --tb=short`：`jb16-stamp-final-fix.log` 权限/管理 **34 passed**，当时 TTL 尚有上述 import 遮蔽失败；清除后单独同节点 `jb16-stamp-ttl-final.log` **1 passed / 12.56s**，断言原 stamp、revision、digest、父级 body/attempt 不变。最初误从仓库根启动该复验仅 collection exit 4，已从 backend 修正执行。最终 10 个变更 Python 文件 Ruff check / format --check 均通过，git diff --check 通过。验证按受影响范围复用，没有将初次失败记录改写成全套绿。API 表面保持原形，未新增前端构建。新增迁移尚未生产部署；根审查和形式验收仍未完成。

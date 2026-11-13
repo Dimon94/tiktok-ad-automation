@@ -33,7 +33,10 @@ from app.modules.builds.submissions import (
     get_submission,
     group_material_state,
 )
-from app.modules.tenants.permissions import require_tenant
+from app.modules.tenants.permissions import (
+    require_build_authorization_stamp,
+    require_tenant,
+)
 
 STEP_TASK = "builds.execute_step"
 READ_TASK = "builds.reconcile_step"
@@ -112,6 +115,7 @@ def queue_step(
         frozen_unit = session.get(BuildUnit, step.unit_id)
         if frozen_unit is not None and "native_request" in frozen_unit.scene_snapshot:
             try:
+                require_build_authorization_stamp(session, submission=submission)
                 context = _context(submission)
                 require_tenant(
                     session,
