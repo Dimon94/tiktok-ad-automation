@@ -10,7 +10,7 @@ Init == s = [submissions |-> 0, frozen |-> FALSE, intent |-> 1, snapshot |-> 0,
  budget |-> 0, amount |-> 1, steps |-> {},
  phase |-> [o \in Objects |-> "pending"], body |-> [o \in Objects |-> 0],
  sends |-> [o \in Objects |-> 0], ids |-> {}, matched |-> {}, creatives |-> {},
- reportOK |-> TRUE]
+ recoveryOK |-> TRUE, reportOK |-> TRUE]
 Edit == /\ s.intent = 1 /\ s' = [s EXCEPT !.intent = 2]
 Freeze(a) == /\ ~s.frozen /\ a \in {1,2}
  /\ s' = [s EXCEPT !.frozen = TRUE, !.snapshot = s.intent, !.amount = a,
@@ -35,6 +35,13 @@ Crash(o) == /\ s.phase[o] \in {"armed","locked"}
  /\ s' = [s EXCEPT !.phase[o] = "unknown"]
 Retry(o) == /\ Bug = "retry" /\ s.phase[o] = "unknown" /\ s.sends[o] = 1
  /\ s' = [s EXCEPT !.phase[o] = "queued"]
+Recover(o,count,full,scope) == /\ s.phase[o] = "unknown"
+ /\ count \in {0,1,2} /\ full \in BOOLEAN /\ scope \in BOOLEAN
+ /\ LET claim == (count = 1 /\ full /\ scope) \/ (Bug = "recovery" /\ count = 2 /\ full /\ scope)
+     IN s' = [s EXCEPT !.phase[o] = IF claim THEN "created" ELSE @,
+          !.ids = IF claim THEN @ \cup {o} ELSE @,
+          !.matched = IF claim THEN @ \cup {o} ELSE @,
+          !.recoveryOK = @ /\ (claim => count = 1 /\ full /\ scope)]
 Read(o) == /\ o \in s.ids /\ s' = [s EXCEPT !.matched = @ \cup {o}]
 Creative(o) == /\ o \in s.ids \cap AdObjects /\ s' = [s EXCEPT !.creatives = @ \cup {o}]
 Tamper(o) == /\ Bug = "body" /\ s.body[o] # 0
@@ -59,6 +66,7 @@ Publish == /\ s.submissions > 0
 
 Next == Edit \/ (\E a \in {1,2}: Freeze(a)) \/ Submit \/ Publish \/
  (\E o \in Objects: Queue(o) \/ Claim(o) \/ Arm(o) \/ Lock(o) \/ Send(o)
+ \/ (\E count \in {0,1,2}, full \in BOOLEAN, scope \in BOOLEAN: Recover(o,count,full,scope))
  \/ Crash(o) \/ Retry(o) \/ Read(o) \/ Creative(o) \/ Tamper(o)
  \/ (\E r \in {"created","failed","unknown"}: Finish(o,r)))
 UniqueSubmission == s.submissions <= 1
@@ -66,5 +74,6 @@ WriteOnce == \A o \in Objects: s.sends[o] <= 1
 FrozenBody == \A o \in Objects: s.body[o] \in {0,s.snapshot}
 ExactBudget == s.frozen => s.budget = N*s.amount
 Excluded == s.steps \subseteq Objects
+Recovery == s.recoveryOK
 Completion == s.reportOK
 =============================================================================

@@ -65,14 +65,34 @@ def run(module, bug, constants, invariants):
         )
 
 
+if os.environ.get("FORMAL_ONLY") == "recovery":
+    run(
+        "Submission",
+        "none",
+        "N = 1 K = 3",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery",
+    )
+    run(
+        "Submission",
+        "none",
+        "N = 2 K = 3",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery",
+    )
+    run("Submission", "recovery", "N = 1 K = 3", "Recovery")
+    run("Submission", "retry", "N = 1 K = 2", "WriteOnce")
+    run("Submission", "completion", "N = 1 K = 2", "Completion")
+    run("Authority", "none", "", "FinalFence HeldAuthority")
+    raise SystemExit(0)
+
 for n, k in [(1, 4), (2, 3)]:
     run(
         "Submission",
         "none",
         f"N = {n} K = {k}",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery",
     )
 for bug, inv in [
+    ("recovery", "Recovery"),
     ("budget", "ExactBudget"),
     ("unique", "UniqueSubmission"),
     ("excluded", "Excluded"),

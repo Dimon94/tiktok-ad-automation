@@ -67,9 +67,12 @@ def _candidate(query: BuildReadQuery, record: BuildRecord) -> bool:
         query.intent, (NativeAdGroupCreate, NativeAdCreate)
     ):
         # 名称只作请求定位：新冻结请求含草稿 UUID；最终仍须全字段 MATCH。
+        # M2 名称另含冻结 plan_key；完整名称比较仍禁止改挂兄弟计划。
         # 历史名称不具唯一请求身份，不能自动认领。
         if not re.search(
-            r"-R[0-9a-f]{32}(?:-G1|-A[0-9]+-C[0-9]+)?$", query.intent.name
+            r"-R[0-9a-f]{32}(?::[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?"
+            r"(?:-G1|-A[0-9]+-C[0-9]+)?$",
+            query.intent.name,
         ):
             return False
         actual = record.observed_native or record.intent

@@ -139,7 +139,16 @@ def test_same_preview_replay_returns_original(job_env, wire, redis_client):
 )
 @pytest.mark.parametrize(
     "scenario",
-    ["match", "partial", "zero", "unknown", "reject", "send-lock", "browser"],
+    [
+        "match",
+        "partial",
+        "zero",
+        "unknown",
+        "reject",
+        "send-lock",
+        "browser",
+        "recovery",
+    ],
 )
 def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scenario):
     import json
@@ -151,6 +160,9 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     from app.modules.builds import execution, submissions
     from app.modules.builds.execution_models import ExecutionStep, Submission
 
+    recovering = scenario == "recovery"
+    if recovering:
+        scenario = "unknown"
     browser = scenario == "browser"
     client, url, draft_id, _, revision, value, _ = two_account_workspace(
         job_env, wire, redis_client
@@ -569,6 +581,12 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 with pytest.raises(DBAPIError), s.begin_nested():
                     s.execute(text(statement), {"id": identity, "tenant": uuid4()})
         assert calls == before_calls
+    if recovering:
+        from tests.modules.builds.test_native_batch_recovery import recover_batch
+
+        recover_batch(
+            client, native.engine, context, redis_client, monkeypatch, sid, calls
+        )
     if browser:
         submit_in_browser(
             native.engine,

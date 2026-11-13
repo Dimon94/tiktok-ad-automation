@@ -88,6 +88,18 @@ cases = [
 # 组合 owner 的错误必须一并破坏冗余保护；不修改数据库约束或发送事实。
 compound_cases = [
     (
+        "recovery-ambiguous",
+        [
+            (
+                "app/modules/builds/reconciliation_scan.py",
+                'next_progress["matches"] != 1:',
+                'next_progress["matches"] < 1:',
+            ),
+        ],
+        [B + "test_native_batch_execution.py", "-k", "submit_and_execute and recovery"],
+        "AssertionError: R10 candidate many",
+    ),
+    (
         "unique-replay",
         [
             (
