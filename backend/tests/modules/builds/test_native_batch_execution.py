@@ -148,6 +148,9 @@ def test_same_preview_replay_returns_original(job_env, wire, redis_client):
         "send-lock",
         "browser",
         "recovery",
+        "recovery-complete",
+        "recovery-partial",
+        "recovery-browser",
     ],
 )
 def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scenario):
@@ -160,10 +163,11 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     from app.modules.builds import execution, submissions
     from app.modules.builds.execution_models import ExecutionStep, Submission
 
+    terminal_recovery = scenario if scenario.startswith("recovery-") else None
     recovering = scenario == "recovery"
     if recovering:
         scenario = "unknown"
-    browser = scenario == "browser"
+    browser = scenario in {"browser", "recovery-browser"}
     client, url, draft_id, _, revision, value, _ = two_account_workspace(
         job_env, wire, redis_client
     )
@@ -203,7 +207,7 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                     BuildPreview.draft_revision == revision,
                 )
             ).one()
-        scenario = "match"
+        scenario = "recovery-complete" if terminal_recovery else "match"
     else:
         response = client.post(url + "/previews", json={"expected_revision": revision})
         assert response.status_code == 202, response.text
@@ -319,9 +323,13 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
         ):
             raise TimeoutError("physical send response lost")
         if (scenario == "reject" and "/campaign/" in url) or (
-            scenario in {"partial", "zero"}
+            scenario in {"partial", "zero", "recovery-partial"}
             and "/adgroup/" in url
-            and (scenario == "zero" or body["advertiser_id"] == "second-account")
+            and (
+                scenario == "zero"
+                or body["advertiser_id"]
+                == ("actual-account" if terminal_recovery else "second-account")
+            )
         ):
             return HTTPResponse(
                 body=json.dumps(
@@ -346,6 +354,20 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 objects[f"remote-{len(calls)}"]["campaign_type"] = "REGULAR_CAMPAIGN"
             if "/adgroup/" in url:
                 objects[f"remote-{len(calls)}"]["billing_event"] = "OCPM"
+        if (
+            terminal_recovery
+            and "/ad/create/" in url
+            and body["advertiser_id"] == "second-account"
+            and len(
+                [
+                    u
+                    for u, b in calls
+                    if "/ad/create/" in u and b["advertiser_id"] == "second-account"
+                ]
+            )
+            == 2
+        ):
+            raise TimeoutError("last Ad physical response lost")
         return HTTPResponse(
             body=json.dumps(
                 {
@@ -419,7 +441,15 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
             assert len(calls) == before, "R9 duplicate worker added transport write"
     assert (
         len(calls)
-        == {"match": 10, "partial": 8, "zero": 6, "unknown": 7, "reject": 4}[scenario]
+        == {
+            "match": 10,
+            "partial": 8,
+            "zero": 6,
+            "unknown": 7,
+            "reject": 4,
+            "recovery-complete": 10,
+            "recovery-partial": 8,
+        }[scenario]
     )
     if lock_probe:
         assert locked == [True, True]
@@ -444,7 +474,15 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
     assert submit(0).submission_id == sid
     assert (
         len(calls)
-        == {"match": 10, "partial": 8, "zero": 6, "unknown": 7, "reject": 4}[scenario]
+        == {
+            "match": 10,
+            "partial": 8,
+            "zero": 6,
+            "unknown": 7,
+            "reject": 4,
+            "recovery-complete": 10,
+            "recovery-partial": 8,
+        }[scenario]
     )
 
     from types import SimpleNamespace
@@ -473,7 +511,15 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
         ).all()
     assert (
         len(reads)
-        == {"match": 8, "partial": 5, "zero": 2, "unknown": 4, "reject": 0}[scenario]
+        == {
+            "match": 8,
+            "partial": 5,
+            "zero": 2,
+            "unknown": 4,
+            "reject": 0,
+            "recovery-complete": 7,
+            "recovery-partial": 4,
+        }[scenario]
     )
     for step in reads:
         result = reconciliation.process_reconciliation(
@@ -494,6 +540,8 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 "zero": "FAILED",
                 "unknown": "NEEDS_REVIEW",
                 "reject": "FAILED",
+                "recovery-complete": "NEEDS_REVIEW",
+                "recovery-partial": "NEEDS_REVIEW",
             }[scenario]
         ), view.model_dump()
         if scenario == "match":
@@ -581,13 +629,29 @@ def test_batch_submit_and_execute(job_env, wire, redis_client, monkeypatch, scen
                 with pytest.raises(DBAPIError), s.begin_nested():
                     s.execute(text(statement), {"id": identity, "tenant": uuid4()})
         assert calls == before_calls
+    if terminal_recovery:
+        from tests.modules.builds.test_native_batch_recovery import recover_terminal
+
+        recover_terminal(
+            client,
+            native.engine,
+            context,
+            redis_client,
+            monkeypatch,
+            sid,
+            calls,
+            objects,
+            "PARTIAL" if terminal_recovery == "recovery-partial" else "COMPLETED",
+            pid,
+            browser_bc=job_env["bc_id"] if browser else None,
+        )
     if recovering:
         from tests.modules.builds.test_native_batch_recovery import recover_batch
 
         recover_batch(
             client, native.engine, context, redis_client, monkeypatch, sid, calls
         )
-    if browser:
+    if browser and not terminal_recovery:
         submit_in_browser(
             native.engine,
             context,

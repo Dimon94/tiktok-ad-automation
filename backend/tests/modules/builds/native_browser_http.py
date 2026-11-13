@@ -31,6 +31,9 @@ def submit_in_browser(
     app = FastAPI()
     app.include_router(previews_router, prefix="/api")
     app.include_router(submission_router, prefix="/api")
+    from app.modules.builds.recovery_api import router as recovery_router
+
+    app.include_router(recovery_router, prefix="/api")
     app.add_exception_handler(DomainError, domain_error_handler)
 
     def database():
@@ -64,11 +67,19 @@ def submit_in_browser(
                 "test",
                 "--project=workspace",
                 "tests/build-preview.spec.ts"
-                if mode in {"submit", "batch", "batch-result", "batch-workspace"}
+                if mode
+                in {
+                    "submit",
+                    "batch",
+                    "batch-result",
+                    "batch-workspace",
+                    "batch-recovery",
+                }
                 else "tests/build-preparation.spec.ts",
                 "-g",
                 "@native-batch-live"
-                if mode in {"batch", "batch-result", "batch-workspace"}
+                if mode
+                in {"batch", "batch-result", "batch-workspace", "batch-recovery"}
                 else "@native-live"
                 if mode == "submit"
                 else "@native-plan-live",
@@ -85,7 +96,14 @@ def submit_in_browser(
                 "NATIVE_PLAN_MODE": mode,
                 "NATIVE_TEST_SUBMISSION": str(submission_id),
                 "PLAYWRIGHT_PORT": "5197"
-                if mode in {"submit", "batch", "batch-result", "batch-workspace"}
+                if mode
+                in {
+                    "submit",
+                    "batch",
+                    "batch-result",
+                    "batch-workspace",
+                    "batch-recovery",
+                }
                 else "5198",
             },
             capture_output=True,

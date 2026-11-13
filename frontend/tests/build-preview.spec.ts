@@ -1162,6 +1162,22 @@ test("真实多计划冻结预览 @native-batch-live", async ({ page }) => {
     })
     await route.fulfill({ response })
   })
+  if (process.env.NATIVE_PLAN_MODE === "batch-recovery") {
+    await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
+    await expect(page.getByText(/计划 .* · NEEDS_REVIEW/)).toHaveCount(1)
+    const response = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/reconcile"))
+    await page.getByRole("button", { name: /^核查待核实项/ }).click()
+    const receipt = await response
+    expect(receipt.status()).toBe(202)
+    const advanced = await page.request.post(`${process.env.NATIVE_TEST_HOST}/test-drive/${(await receipt.json()).recovery_id}`)
+    expect(advanced.ok()).toBeTruthy()
+    await page.reload()
+    await expect(page.getByText(/计划 .* · COMPLETED/)).toHaveCount(2)
+    await expect(page.getByText("已完成", {exact: true}).first()).toBeVisible()
+    await expect(page.getByText(/已创建对象可能产生消耗/)).toBeVisible()
+    await page.screenshot({path: "/tmp/tkada-native-series-20261112/m2-implementation/jb17-recovered.png", fullPage: true})
+    return
+  }
   if (process.env.NATIVE_PLAN_MODE === "batch-result") {
     await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
     await expect(page.getByText(/计划 .* · COMPLETED/)).toHaveCount(2)

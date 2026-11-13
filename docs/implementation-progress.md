@@ -5309,3 +5309,11 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 起点48adee03，代码候选d4b63a34。真实两账户SDK丢响应→HTTP恢复暴露M2名称含`:plan_key`但M1扫描regex拒绝的缺陷；修复原owner，不改冻结请求或新增恢复worker。空/多/缺字段保留UNKNOWN，唯一Campaign MATCH后T15回RUNNING，7次创建基线和成功兄弟保持。真实多候选误认领源码探针红→finally/cmp恢复绿；101项M1扫描/字段检查绿。R10有界模型及R9/R13/Authority复验已跑，范围见[JB17候选证据](validation/2026-11-12-jb17-native-batch-recovery.md)。
 
 **整票未完成**：浏览器恢复、T16–T18、完整恢复scope/creative/事件接线和M1运行时恢复仍需验收。不能放行JB18，不改Linear/外层协调状态、不push/PR/部署；原未跟踪软链保留。
+
+### 2026-11-13 · JB17 fresh-context 运行补验（未放行18）
+
+起点d982b5030346c34902b2deee889adadc10c47b10，仍在指定feat/jb13-native-series-m2单写者树。产品owner/模型/迁移未改；补原SDK最后Ad丢响应→原HTTP恢复/只读任务→三级READBACK的T16 COMPLETED、T17 PARTIAL。创建基线10/8次不增；原stamp/body/Unit/兄弟事实、恢复后同/不同key原Submission重放保持。Ad真实GET接线覆盖9个代表性缺失/错误候选与完整重排；M1原UNKNOWN运行时间线（含组distribution、Ad addon、连接撤权）定向通过。原页面批准的同Submission在结果页点击真实核查后完成，认证壳合成边界和两次浏览器会话如实记录。
+
+最终终态2 passed/35.62s、浏览器1 passed/24.53s；M1+初版接线6 passed/61.55s。漏READBACK及强制MATCH两个真实源码probe真红、finally/cmp恢复后绿。Ruff三文件和diff check通过；产品前端不变复用构建，R10/R9/R12/R13形式证据复用不推进synccommit。初次属性名、漏只读READBACK、静态CTA fixture路径错误均在报告保留。
+
+**T18仍未满足**：当前SDK明确负面码直接NO_EFFECT，不会产生带该码的新UNKNOWN；丢响应无明确拒绝回执，空GET不能证明未建。历史_recover_known_rejection有owner但本任务无合法历史回执输入，不种植UNKNOWN/伪造confirmedabsence。恢复后FAILED重放也未验。详见docs/validation/2026-11-12-jb17-native-batch-recovery.md的完整owner/指纹/授权映射与命令。JB17仍InProgress，JB18未实施、未放行；root决定合同缺口处理。无push/PR/deploy/Linear/真实平台调用，原untracked .venv/node_modules保留。
