@@ -137,6 +137,103 @@ def test_same_preview_replay_returns_original(job_env, wire, redis_client):
 @pytest.mark.parametrize(
     "source_env", [{"bc_id": "90071992547409931234"}], indirect=True
 )
+def test_cancel_before_final_send_fence(job_env, wire, redis_client, monkeypatch):
+    import threading
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from urllib3.response import HTTPResponse
+
+    from app.modules.builds import execution, native_execution, submissions
+    from app.modules.builds.execution_models import ExecutionStep, Submission
+
+    context = job_env["context"]
+    client, url, _, _, revision, _, _ = two_account_workspace(
+        job_env, wire, redis_client
+    )
+    response = client.post(url + "/previews", json={"expected_revision": revision})
+    assert response.status_code == 202, response.text
+    pid = UUID(response.json()["preview_id"])
+    with Session(native.engine, expire_on_commit=False) as s, s.begin():
+        receipt = submissions.submit_preview(s, context=context, preview_id=pid, request_id=uuid4())
+        while not submissions.expand_submission(s, context=context, submission_id=receipt.submission_id):
+            pass
+        steps = s.exec(select(ExecutionStep).where(
+            ExecutionStep.submission_id == receipt.submission_id
+        )).all()
+    calls = []
+    monkeypatch.setattr(execution, "_require_bounded_worker", lambda: None)
+    monkeypatch.setattr(
+        "urllib3.PoolManager.request",
+        lambda pool, method, url, **kw: (
+            calls.append((url, kw["body"])),
+            HTTPResponse(body=b'{"code":0,"data":{"creative_portfolio_id":"cta"}}', status=200),
+        )[1],
+    )
+    for step in steps:
+        if step.kind == "MATERIAL":
+            assert execution.process_step(
+                database_engine=native.engine, redis_client=redis_client,
+                context=context, step_id=step.id, revision=step.dispatch_revision,
+            ) == "SUCCEEDED"
+    target = next(step for step in steps if step.kind == "CTA")
+    arrived, release = threading.Event(), threading.Event()
+    original_lock = native_execution.lock_send_authority
+    errors = []
+
+    def paused_before_authority(session, **kwargs):
+        with Session(native.engine) as check:
+            assert check.get(ExecutionStep, target.id).request_body is not None
+        arrived.set()
+        assert release.wait(timeout=30)
+        return original_lock(session, **kwargs)
+
+    monkeypatch.setattr(native_execution, "lock_send_authority", paused_before_authority)
+
+    def cancel_first():
+        from tests.modules.builds.native_cancel_http import cancel_twice
+        try:
+            assert arrived.wait(timeout=30)
+            cancel_twice(native.engine, context, receipt.submission_id)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            release.set()
+
+    thread = threading.Thread(target=cancel_first)
+    thread.start()
+    outcome = execution.process_step(
+        database_engine=native.engine, redis_client=redis_client,
+        context=context, step_id=target.id, revision=target.dispatch_revision,
+    )
+    thread.join(timeout=30)
+    assert arrived.is_set() and not thread.is_alive() and not errors
+    assert outcome == "FAILED" and calls == []
+    with Session(native.engine) as s:
+        saved = s.get(ExecutionStep, target.id)
+        assert saved.phase == "DONE" and saved.status == "FAILED"
+        assert saved.error_code == "local_submission_cancelled"
+        assert saved.request_body is not None
+        assert saved.request_body_digest and saved.attempt_id and saved.remote_id is None
+        assert s.get(Submission, receipt.submission_id).progress["local_cancelled"]
+        armed = (saved.request_body, saved.request_body_digest, saved.attempt_id)
+    with Session(native.engine) as s, s.begin():
+        for step in steps:
+            if step.id != target.id:
+                execution.process_step(
+                    database_engine=native.engine, redis_client=redis_client,
+                    context=context, step_id=step.id, revision=step.dispatch_revision,
+                )
+    with Session(native.engine) as s:
+        assert (s.get(ExecutionStep, target.id).request_body,
+                s.get(ExecutionStep, target.id).request_body_digest,
+                s.get(ExecutionStep, target.id).attempt_id) == armed
+        assert all(step.remote_id is None for step in s.exec(
+            select(ExecutionStep).where(ExecutionStep.submission_id == receipt.submission_id)
+        ))
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     "scenario",
     [

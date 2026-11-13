@@ -10,7 +10,8 @@ Init == s = [submissions |-> 0, frozen |-> FALSE, intent |-> 1, snapshot |-> 0,
  budget |-> 0, amount |-> 1, steps |-> {},
  phase |-> [o \in Objects |-> "pending"], body |-> [o \in Objects |-> 0],
  sends |-> [o \in Objects |-> 0], ids |-> {}, matched |-> {}, creatives |-> {},
- historical |-> {}, negativeOK |-> TRUE, recoveryOK |-> TRUE, reportOK |-> TRUE]
+ historical |-> {}, negativeOK |-> TRUE, recoveryOK |-> TRUE, reportOK |-> TRUE,
+ cancelled |-> FALSE, sendAfterCancel |-> FALSE]
 Edit == /\ s.intent = 1 /\ s' = [s EXCEPT !.intent = 2]
 Freeze(a) == /\ ~s.frozen /\ a \in {1,2}
  /\ s' = [s EXCEPT !.frozen = TRUE, !.snapshot = s.intent, !.amount = a,
@@ -20,17 +21,25 @@ Submit == /\ s.frozen /\ s.intent = s.snapshot
  /\ s' = [s EXCEPT !.submissions = @ + 1, !.steps =
      IF Bug = "excluded" THEN Objects \cup {<<N+1,1>>} ELSE Objects]
 Parent(o) == IF o[2] = 1 THEN TRUE ELSE <<o[1],IF o[2] = 2 THEN 1 ELSE 2>> \in s.ids
-Queue(o) == /\ s.submissions > 0 /\ s.phase[o] = "pending" /\ Parent(o)
+Queue(o) == /\ ~s.cancelled /\ s.submissions > 0 /\ s.phase[o] = "pending" /\ Parent(o)
  /\ s.intent = s.snapshot /\ s' = [s EXCEPT !.phase[o] = "queued"]
-Claim(o) == /\ s.phase[o] = "queued" /\ s' = [s EXCEPT !.phase[o] = "claimed"]
-Arm(o) == /\ s.phase[o] = "claimed"
+Claim(o) == /\ ~s.cancelled /\ s.phase[o] = "queued" /\ s' = [s EXCEPT !.phase[o] = "claimed"]
+SendAdmissionOpen == ~s.cancelled
+Arm(o) == /\ SendAdmissionOpen /\ s.phase[o] = "claimed"
  /\ s' = [s EXCEPT !.phase[o] = "armed", !.body[o] = s.snapshot]
 Lock(o) == /\ s.phase[o] = "armed" /\ s.intent = s.snapshot
  /\ s' = [s EXCEPT !.phase[o] = "locked"]
-Send(o) == /\ s.phase[o] = "locked"
- /\ s' = [s EXCEPT !.phase[o] = "sent", !.sends[o] = @ + 1]
+Send(o) == /\ (SendAdmissionOpen \/ (Bug = "cancel-fence" /\ s.cancelled)) /\ s.phase[o] = "locked"
+ /\ s' = [s EXCEPT !.phase[o] = "sent", !.sends[o] = @ + 1,
+          !.sendAfterCancel = @ \/ s.cancelled]
 Finish(o,r) == /\ s.phase[o] = "sent" /\ r \in {"created","failed","unknown"}
  /\ s' = [s EXCEPT !.phase[o] = r, !.ids = IF r = "created" THEN @ \cup {o} ELSE @]
+\* R11: cancel marks the Submission once and converts only idle pending work.
+LocalCancel == /\ ~s.cancelled /\ s' = [s EXCEPT !.cancelled = TRUE]
+CancelPending(o) == /\ s.cancelled
+ /\ ((s.phase[o] = "pending" /\ s.body[o] = 0 /\ s.sends[o] = 0 /\ o \notin s.matched)
+    \/ Bug = "cancel-armed")
+ /\ s' = [s EXCEPT !.phase[o] = "cancelled"]
 Crash(o) == /\ s.phase[o] \in {"armed","locked"}
  /\ s' = [s EXCEPT !.phase[o] = "unknown"]
 Retry(o) == /\ Bug = "retry" /\ s.phase[o] = "unknown" /\ s.sends[o] = 1
@@ -57,9 +66,11 @@ Complete(p) == \A k \in 1..K: <<p,k>> \in s.matched /\ (k < 3 \/ <<p,k>> \in s.c
 Publish == /\ s.submissions > 0
  /\ LET done == {p \in Plans: Complete(p)}
          unknown == \E o \in Objects: s.phase[o] = "unknown"
-         failed == {p \in Plans: \E k \in 1..K: s.phase[<<p,k>>] = "failed"}
+         failed == {p \in Plans: \E k \in 1..K: s.phase[<<p,k>>] \in {"failed","cancelled"}}
+         cancelledPlans == {p \in Plans: \A k \in 1..K: s.phase[<<p,k>>] = "cancelled"}
          reported == IF Bug = "completion" THEN "COMPLETED"
                      ELSE IF unknown THEN "NEEDS_REVIEW"
+                     ELSE IF cancelledPlans = Plans THEN "CANCELLED"
                      ELSE IF done = Plans THEN "COMPLETED"
                      ELSE IF done \cup failed = Plans THEN
                          IF done = {} THEN "FAILED" ELSE "PARTIAL"
@@ -69,16 +80,20 @@ Publish == /\ s.submissions > 0
                  /\ s.matched = Objects /\ s.creatives = AdObjects)
           /\ (reported = "PARTIAL" => ~unknown /\ done # {} /\ done # Plans)
           /\ (reported = "FAILED" => ~unknown /\ done = {})
+          /\ (reported = "CANCELLED" => ~unknown /\ cancelledPlans = Plans)
           /\ (unknown => reported = "NEEDS_REVIEW"))]
 
-Next == Edit \/ (\E a \in {1,2}: Freeze(a)) \/ Submit \/ Publish \/
- (\E o \in Objects: Queue(o) \/ Claim(o) \/ Arm(o) \/ Lock(o) \/ Send(o)
+Next == Edit \/ (\E a \in {1,2}: Freeze(a)) \/ Submit \/ Publish \/ LocalCancel \/
+ (\E o \in Objects: Queue(o) \/ Claim(o) \/ Arm(o) \/ Lock(o) \/ Send(o) \/ CancelPending(o)
  \/ (\E count \in {0,1,2}, full \in BOOLEAN, scope \in BOOLEAN: Recover(o,count,full,scope))
  \/ HistoricalReceipt(o) \/ RejectHistorical(o)
  \/ Crash(o) \/ Retry(o) \/ Read(o) \/ Creative(o) \/ Tamper(o)
  \/ (\E r \in {"created","failed","unknown"}: Finish(o,r)))
 UniqueSubmission == s.submissions <= 1
 WriteOnce == \A o \in Objects: s.sends[o] <= 1
+CancelOnlyIdle == \A o \in Objects: s.phase[o] = "cancelled" =>
+ /\ s.body[o] = 0 /\ s.sends[o] = 0 /\ o \notin s.matched
+CancelFence == ~s.sendAfterCancel
 FrozenBody == \A o \in Objects: s.body[o] \in {0,s.snapshot}
 ExactBudget == s.frozen => s.budget = N*s.amount
 Excluded == s.steps \subseteq Objects

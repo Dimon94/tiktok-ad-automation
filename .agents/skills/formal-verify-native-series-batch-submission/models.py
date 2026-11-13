@@ -75,7 +75,7 @@ if os.environ.get("FORMAL_ONLY") == "historical":
             "Submission",
             "none",
             f"N = {n} K = 3",
-            "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof\nPROPERTY HistoricalPreservation",
+            "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof CancelOnlyIdle CancelFence\nPROPERTY HistoricalPreservation",
         )
     run("Submission", "witness", "N = 2 K = 3", "NoHistoricalTerminal")
     for bug, invariant in [
@@ -83,26 +83,43 @@ if os.environ.get("FORMAL_ONLY") == "historical":
         ("recovery", "Recovery"),
         ("retry", "WriteOnce"),
         ("completion", "Completion"),
+        ("cancel-fence", "CancelFence"),
+        ("cancel-armed", "CancelOnlyIdle"),
     ]:
         run("Submission", bug, "N = 1 K = 3", invariant)
     raise SystemExit(0)
 
+if os.environ.get("FORMAL_ONLY") == "cancel":
+    for n in (1, 2):
+        run(
+            "Submission",
+            "none",
+            f"N = {n} K = 3",
+            "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof CancelOnlyIdle CancelFence",
+        )
+    for bug, invariant in [
+        ("cancel-fence", "CancelFence"),
+        ("cancel-armed", "CancelOnlyIdle"),
+    ]:
+        run("Submission", bug, "N = 1 K = 2", invariant)
+    raise SystemExit(0)
+
 if os.environ.get("FORMAL_ONLY") == "recovery":
-    run(
-        "Submission",
-        "none",
-        "N = 1 K = 3",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof",
-    )
-    run(
-        "Submission",
-        "none",
-        "N = 2 K = 3",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof",
-    )
-    run("Submission", "recovery", "N = 1 K = 3", "Recovery")
-    run("Submission", "retry", "N = 1 K = 2", "WriteOnce")
-    run("Submission", "completion", "N = 1 K = 2", "Completion")
+    for n in (1, 2):
+        run(
+            "Submission",
+            "none",
+            f"N = {n} K = 3",
+            "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof CancelOnlyIdle CancelFence",
+        )
+    for bug, invariant in [
+        ("recovery", "Recovery"),
+        ("retry", "WriteOnce"),
+        ("completion", "Completion"),
+        ("cancel-fence", "CancelFence"),
+        ("cancel-armed", "CancelOnlyIdle"),
+    ]:
+        run("Submission", bug, "N = 1 K = 2", invariant)
     run("Authority", "none", "", "FinalFence HeldAuthority")
     raise SystemExit(0)
 
@@ -111,7 +128,7 @@ for n, k in [(1, 4), (2, 3)]:
         "Submission",
         "none",
         f"N = {n} K = {k}",
-        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof",
+        "UniqueSubmission WriteOnce FrozenBody ExactBudget Excluded Completion Recovery NegativeProof CancelOnlyIdle CancelFence",
     )
 for bug, inv in [
     ("recovery", "Recovery"),
@@ -121,6 +138,8 @@ for bug, inv in [
     ("retry", "WriteOnce"),
     ("body", "FrozenBody"),
     ("completion", "Completion"),
+    ("cancel-fence", "CancelFence"),
+    ("cancel-armed", "CancelOnlyIdle"),
 ]:
     run("Submission", bug, "N = 1 K = 2", inv)
 run("Authority", "none", "", "FinalFence HeldAuthority")

@@ -53,8 +53,8 @@ cases = [
     (
         "unit-scope",
         "app/modules/builds/native_execution.py",
-        "    plan_key = None\n",
-        "    unit_id = units[0].id\n    plan_key = None\n",
+        "    from .native_preview import read_batch\n",
+        "    unit_id = units[0].id  # broken: bypass frozen Unit authorization\n    from .native_preview import read_batch\n",
         [B + "test_native_batch_execution.py::test_validate_current_plan"],
     ),
     (
@@ -96,7 +96,7 @@ compound_cases = [
                 'next_progress["matches"] < 1:',
             ),
         ],
-        [B + "test_native_batch_execution.py", "-k", "submit_and_execute and recovery"],
+        [B + "test_native_batch_execution.py::test_batch_submit_and_execute[recovery]"],
         "AssertionError: R10 candidate many",
     ),
     (
@@ -140,6 +140,21 @@ compound_cases = [
         ],
         [B + "test_native_batch_execution.py", "-k", "submit_and_execute and unknown"],
         "R9 duplicate worker added transport write",
+    ),
+    (
+        "cancel-send-fence",
+        [
+            (
+                "app/modules/builds/execution_state.py",
+                '    if row.progress.get("local_cancelled"):\n',
+                '    if False:  # broken: arm and physical send ignore committed cancellation\n',
+            )
+        ],
+        [
+            B
+            + "test_native_batch_execution.py::test_cancel_before_final_send_fence"
+        ],
+        "assert outcome ==",
     ),
 ]
 
