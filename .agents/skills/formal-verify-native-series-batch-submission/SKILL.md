@@ -76,3 +76,17 @@ python3 .agents/skills/formal-verify-native-series-batch-submission/source_check
 
 R10/R11 留给 JB17/18：在相同原请求、Unit、账户、路由与原批准 stamp 下加入只读恢复候选集（零/一/多个、完整/不完整 MATCH）、confirmed-absent 的明确批准以及取消 PENDING 与 armed/sent 的边界。不能把 UNKNOWN 自动转回 queued、回填历史 stamp、重建成功兄弟或通过取消隐藏远程 ID。扩展后重跑所有既有正常/破坏模型及受影响源码检查。根验收前 JB17 不放行。
 维护入口：`/maintain-formal-verification-skill`，先核对源码映射再推进覆盖版本。
+
+## JB17 R10 候选扩展（未达到整票放行）
+
+新增恢复 owner 源码 sync commit：`d4b63a34b4366a4abbd00269e02bc6c51386916b`。其余六核心 owner 语义未改，沿用上文证据。`Submission.Recover` 消费候选数0/1/2、full、scope，只允许唯一完整原范围候选补充原对象；不改变 sends/body/snapshot。scope 抽象代表原 Unit/计划键、账户、冻结路由和原请求范围，**不是这些字段的完整实现证明**；当前实现映射为 reconciliation._claim 的原步骤锁、digest/route 校验，reconciliation_scan.advance 的分页完整性/计数和全字段 comparison，以及 _finish 的活跃 claim/授权复核和原步骤证据事务。模型的 Recover 折叠一次扫描结果提交；SDK读取与 claim/finish 是分开的真实事务，尚未在模型细化读期间 scope 变化，依赖原有 claim fence，不能称 refinement。
+
+扩展运行（不会重新执行旧11变体/10探针）：
+
+```sh
+FORMAL_ONLY=recovery TLA_JAVA=/tmp/tkada-native-series-20261112/m2-implementation/formal-tools/jdk-21.0.13+9-jre/Contents/Home/bin/java TLA_JAR=/tmp/tkada-native-series-20261112/m2-implementation/formal-tools/tla2tools.jar FORMAL_OUT=/tmp/tkada-native-series-20261112/m2-implementation/jb17-formal-rerun .agents/skills/formal-verify-native-series-batch-submission/run.sh && python3 .agents/skills/formal-verify-native-series-batch-submission/source_checks.py --runner /tmp/tkada-native-series-20261112/m2-implementation/run-test.py --out /tmp/tkada-native-series-20261112/m2-implementation/jb17-source-rerun --only recovery-ambiguous
+```
+
+实际 TLC 正常一计划三层 1034、两计划三层175454 distinct；Authority1456。R10多候选认领反例45、R9重发187、R13伪完成14 distinct。R10实际源码变异 `matches != 1`→`matches < 1` 后，多候选从UNKNOWN错误变SUCCEEDED，HTTP恢复检查断言失败；仓外备份/finally/cmp恢复后1 passed。日志见 validation。恢复动作后仍检查全部已有Submission不变量；未削弱既有R5/R7/R8/R9/R13，R12复验未修改的Authority模型。既有2广告正常模型本轮未跑，新增恢复模型是每计划一广告的边界。
+
+明确未覆盖：confirmed-absent/原已知拒绝解析、T16–T18真实纵切、浏览器恢复、恢复期间授权变化的完整组合、creative配对/重复项是原比较器测试而非模型证明。Recover当前不含negative-evidence分支；零候选始终UNKNOWN。R11仍归JB18，但JB17尚不放行。禁止凭此候选推进取消实现。

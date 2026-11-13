@@ -5303,3 +5303,9 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 起点 `80aea85c5f858f03ab0a50b82e4eb2152f669fa7`，唯一 M2 树串行单写。新增可选 source_checks unique-replay / unknown-retry：前者真实 PG 重放必须返回原 Submission（错误拒绝红，恢复绿）；后者真实 SDK POST 丢响应→同 worker 消息重投（写次数4→5红，恢复无新增写绿）。组合变异理解现有多层保护，不修改 DB DDL、不伪造已发送事实。仓外备份/finally/cmp 恢复全部源文件。
 
 产品源码仍匹配 `be06268759d6b72013120d936b9fe2b458afc4ce`，无新产品缺陷或源码改动。复用3个正常模型、11个命名模型反例、8个源码探针及既有 queue/send/browser/权限/TTL证据；runner组合支持改动仅补一次廉价旧budget-double兼容复验，不重跑整套。六个核心 R5/R7/R8/R9/R12/R13 代表性闭环已齐备；范围和两模型接缝假设详见 [JB16 validation v3](validation/2026-11-12-jb16-native-batch-create.md)。未证明全系统组合、任意scope/lease/每个guard，未发现剩余真实corefinding。待root验收，不标Done、不推进JB17/18，无push/PR/部署/Linear/真实平台操作；原软链保留。
+
+## 2026-11-12 JB17 部分候选：只读恢复识别冻结计划键
+
+起点48adee03，代码候选d4b63a34。真实两账户SDK丢响应→HTTP恢复暴露M2名称含`:plan_key`但M1扫描regex拒绝的缺陷；修复原owner，不改冻结请求或新增恢复worker。空/多/缺字段保留UNKNOWN，唯一Campaign MATCH后T15回RUNNING，7次创建基线和成功兄弟保持。真实多候选误认领源码探针红→finally/cmp恢复绿；101项M1扫描/字段检查绿。R10有界模型及R9/R13/Authority复验已跑，范围见[JB17候选证据](validation/2026-11-12-jb17-native-batch-recovery.md)。
+
+**整票未完成**：浏览器恢复、T16–T18、完整恢复scope/creative/事件接线和M1运行时恢复仍需验收。不能放行JB18，不改Linear/外层协调状态、不push/PR/部署；原未跟踪软链保留。
