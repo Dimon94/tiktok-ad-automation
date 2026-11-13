@@ -86,7 +86,25 @@ R10/R11 的有界扩展已合入同一模型。真实恢复仍只允许唯一完
 
 维护入口：`/maintain-formal-verification-skill`，先核对源码映射再推进覆盖版本。
 
+## JB13 M2 R1 八行 live-sibling 独立同步（2026-11-13，待 root Spec R2）
 
+本轮源码 sync 为 `0d9c8846fe1d2ba7318d28c159e891a275018c62`，前基线 `5d6706d1594fb5395e3e2b2e7c9ca3661f531ed9`；产品 diff 仅为 `native_completion.batch_results` 新增失败后代闭包外非 READBACK 活跃兄弟保持 RUNNING 的八行分支。原五分支模型在本轮修改前通过，但旧 `Submission` 没有失败后代闭包及 live-sibling 中间态，故该 PASS 不覆盖 R1。
+
+新增 `Completion.tla` 是**最小独立聚合模型**，不扩展旧 Submission 的完整调度维度。N=1,K=4 表示一个 Campaign→AdGroup→两个 Ad，N=2,K=3 表示每计划一个 Ad；另有一个代表性准备步骤。create/readback/creative MATCH 独立；`pending` 只在 live guard 抽象 PENDING/QUEUED/RUNNING/RETRYABLE，真实 HTTP 四态回归区分原状态。`RecordBlocked` 表达稍后持久化的 blocked 后代，闭包直接决定聚合。优先级依次为完整 MATCH、UNKNOWN/MISMATCH、取消、可执行兄弟、失败派生；无完整 MATCH 的多计划不是 PARTIAL。
+
+```sh
+FORMAL_ONLY=completion \
+TLA_JAVA=/tmp/tkada-native-series-20261112/m2-implementation/formal-tools/jdk-21.0.13+9-jre/Contents/Home/bin/java \
+TLA_JAR=/tmp/tkada-native-series-20261112/m2-implementation/formal-tools/tla2tools.jar \
+FORMAL_OUT=/tmp/tkada-native-series-20261112/m2-implementation/m2-r1-formal-sync/completion-final-clean \
+bash .agents/skills/formal-verify-native-series-batch-submission/run.sh
+```
+
+正常两组分别 6941 generated/2082 distinct、327889/69696，均无反例。live-sibling 错误变体 N=1,K=4 在 53 generated/45 distinct 处违反 `LiveSiblingSafety`：一 Ad 失败、另一 Ad 仍可执行时提前 PARTIAL，而非 RUNNING；N=2,K=3 另违反 `Completion`（23/23）。正常模型的 `NoBlockedDescendantTerminal` 预期反例是两计划 Campaign 成功、AdGroup 失败、未记录 Ad 后代仍 pending，闭包排除兄弟后计划 PARTIAL、批次 FAILED；2362 generated/1066 distinct，证明该中间态可达且非无限 RUNNING。这是 witness，不是产品安全失败。
+
+真实源码 `live-sibling-completion` 探针已复跑：删除 `s.id not in failed` 后真实 `native-ad-PENDING` 红，finally/cmp 字节恢复后绿。其余未变 12 个权限、金额、冻结等探针复用，不全量重跑。受影响 completion/receipt 选择 `16 passed, 32 deselected`；真实 HTTP 四态 `4 passed`、blocked 对照 `4 passed` 与此前受影响代表 `13 passed` 复用 R1 修复日志。产品源码最终无 diff，未发现新的产品反例。完整证据与边界见 `docs/validation/2026-11-13-native-m2-r1-formal-sync.md`。
+
+这里只证明上述小边界内的聚合安全性；没有 full refinement、composition、liveness、调度推进、任意规模或真实平台/生产证明。不把 R1 摘要中的“两条新 Ad 创建后最终 PARTIAL”解释为改变批次终态：完整报告、Spec 与真实日志仍是两计划各缺一 Ad MATCH→计划 PARTIAL→批次 FAILED。M2 仍待 root Spec R2。
 
 新增恢复 owner 源码 sync commit：`d4b63a34b4366a4abbd00269e02bc6c51386916b`。其余六核心 owner 语义未改，沿用上文证据。`Submission.Recover` 消费候选数0/1/2、full、scope，只允许唯一完整原范围候选补充原对象；不改变 sends/body/snapshot。scope 抽象代表原 Unit/计划键、账户、冻结路由和原请求范围，**不是这些字段的完整实现证明**；当前实现映射为 reconciliation._claim 的原步骤锁、digest/route 校验，reconciliation_scan.advance 的分页完整性/计数和全字段 comparison，以及 _finish 的活跃 claim/授权复核和原步骤证据事务。模型的 Recover 折叠一次扫描结果提交；SDK读取与 claim/finish 是分开的真实事务，尚未在模型细化读期间 scope 变化，依赖原有 claim fence，不能称 refinement。
 

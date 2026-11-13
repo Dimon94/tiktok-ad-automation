@@ -10,6 +10,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 OUT = Path(os.environ.get("FORMAL_OUT", tempfile.mkdtemp(prefix="jb16-formal-")))
 OUT.mkdir(parents=True, exist_ok=True)
+# TLC tool metadata is pinned by run.sh and the jar digest below.
 jar = Path(os.environ["TLA_JAR"])
 assert (
     hashlib.sha256(jar.read_bytes()).hexdigest()
@@ -17,7 +18,7 @@ assert (
 )
 
 
-def run(module, bug, constants, invariants):
+def run(module, bug, constants, invariants, expect_error=False):
     name = f"{module}-{bug}-" + constants.replace(" ", "")
     with tempfile.TemporaryDirectory(prefix="jb16-tlc-") as temp:
         shutil.copyfile(HERE / f"{module}.tla", Path(temp) / f"{module}.tla")
@@ -46,7 +47,7 @@ def run(module, bug, constants, invariants):
         )
         log = result.stdout + result.stderr
         (OUT / f"{name}.log").write_text(log)
-        if bug == "none":
+        if bug == "none" and not expect_error:
             assert result.returncode == 0 and "No error has been found" in log, log[
                 -4000:
             ]
@@ -64,6 +65,23 @@ def run(module, bug, constants, invariants):
             flush=True,
         )
 
+
+if os.environ.get("FORMAL_ONLY") == "completion":
+    # K=4 exercises failed/live Ad siblings; N=2 exercises batch precedence.
+    # Do not Cartesian-expand the four equivalent live DB states here.
+    run("Completion", "none", "N = 1 K = 4", "Completion LiveSiblingSafety")
+    run("Completion", "none", "N = 2 K = 3", "Completion LiveSiblingSafety")
+    run("Completion", "live-sibling", "N = 1 K = 4", "LiveSiblingSafety")
+    run("Completion", "live-sibling", "N = 2 K = 3", "Completion")
+    run(
+        "Completion",
+        "none",
+        "N = 2 K = 3",
+        "NoBlockedDescendantTerminal",
+        expect_error=True,
+    )
+    print(f"Evidence: {OUT}")
+    raise SystemExit(0)
 
 if os.environ.get("FORMAL_ONLY") == "historical-witness":
     run("Submission", "witness", "N = 2 K = 3", "NoHistoricalTerminal")

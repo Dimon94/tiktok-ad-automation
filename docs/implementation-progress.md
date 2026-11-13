@@ -1,3 +1,9 @@
+## 2026-11-13：M2 R1 独立聚合形式同步（待 root Spec R2）
+
+fresh Kimi 在既有集成树 `0d9c8846fe1d2ba7318d28c159e891a275018c62` 独立同步 `native_completion.py` 八行 live-sibling 修复；产品源码无 diff、未发现新反例。原五模型基线按既定检查通过，但旧 Submission 不含失败后代闭包和 live-sibling 中间态，不能覆盖本 P1。新增最小 `Completion.tla` 表达父子依赖、失败闭包、优先 MATCH/复核/取消/live/失败派生及多计划 FAILED 合同；不把四等价运行态笛卡尔扩展。
+
+正常 TLC N=1,K=4 为 2082 distinct，N=2,K=3 为 69696 distinct；live-sibling 错误变体命中实际提前 PARTIAL 的 LiveSiblingSafety 反例；blocked-descendant 预期 witness 证明不可执行后代不会无限 RUNNING。真实 `live-sibling-completion` 源码探针复跑 RED→finally/cmp→GREEN；受影响 completion/receipt `16 passed, 32 deselected`。四态、blocked 和未变探针复用既有精确日志。仅是有界聚合安全验证，不是 refinement、liveness、任意规模或生产证明。
+
 ## 2026-11-13：M2 R1 P1 可执行兄弟终态修复（本地候选，未放行）
 
 独立 Spec R1 发现 `native_completion.batch_results` 在任一创建失败后，会把仍可执行的兄弟步骤提前覆盖为 PARTIAL/FAILED。已在唯一 M2 集成树修复同一 owner：先保留 UNKNOWN/MISMATCH 和取消语义；失败后代闭包外的非 READBACK PENDING/QUEUED/RUNNING/RETRYABLE 一律保持 RUNNING，再按实际 MATCH/失败派生。未新增状态模型，未改变发送、预算、权限、READBACK 或原 ID 合同。
