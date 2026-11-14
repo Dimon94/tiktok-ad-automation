@@ -5575,3 +5575,5 @@ JB37消费完整contract3/material-instance-result-v1及新增metrics/reconcilia
 JB36产品候选提交 `981579bc`；形式化模型与源码绑定单独提交随后记录于Git。源探针保留仓外备份/finally恢复/cmp；初次无效parent.ids绑定已替换为真正父控制来源。提交前无关状态始终只有原`.venv`/`node_modules`软链（形式化文件在第二提交前待暂存）。
 
 JB36最终入口补证：Playwright查看vid1指标及轮播后清空筛选，浏览器取得完整五类快照并点击原导出；真实Celery/PG/Redis/HTTP下载核对1 passed / 15.34s，完整payload437107 bytes、CSV357311 bytes。HTTP仅保留补充断言，不代替完整浏览器导出。产品981579bc、形式化03ccd781；入口补证单独提交。
+
+- M4b JB36 root阶段接受：精确候选c6282cd3，独立metrics+tracer13 passed（完整真实浏览器/Worker/五类CSV），32有限组合通过；源码/构建继承候选有效证据。下一fresh Sol/high推进JB37查询原子失败、15分钟到期、显式重查，再JB38导出生命周期。M4b整体未放行。

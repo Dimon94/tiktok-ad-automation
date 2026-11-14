@@ -67,3 +67,9 @@ JB38 消费同一 export.frozen_rows/result_contract/publication_map。五行类
 本票本地关键断言已闭合；官方creative口径、真实平台适用范围、生产容量保持Unknown。JB37/JB38生命周期、整个MMF的独立Standards/Spec审查与本地集成尚未执行，不把票标Done。
 
 最终入口补证：第一次试图在同一浏览器先排队筛选导出再排队全行导出，原UI正确显示“导出中…”而工装未启动消费Worker，第二按钮等待超时。调整为先查看筛选实例和轮播，再清空筛选、只从浏览器导出完整五类集合；不mock响应、不绕过UI锁。最终15.34s通过，取代此前HTTP创建全行导出的证据。
+
+## Root 独立阶段验收
+
+Root在精确候选 `c6282cd3d751130d1038bb8345fd266c1d62e616` 核对 metric_catalog、frozen_result、material_query、exports 与页面调用，确认完整分母、独立父级选择、筛选子集拒算、逐指标未确认原因及CSV去重沿同一冻结owner。亲跑 metrics+tracer 13 passed / 15.96s，包含真实浏览器→原同步/导出Worker→完整五类CSV；8条既有弃用警告。亲跑32有界金额/范围组合通过，diff check通过。候选25项相关回归、4个实际源码拒错和前端构建结果继承，未冒称再次运行。
+
+结论：JB36本地阶段接受，放行新上下文JB37查询失败/重查/TTL；随后JB38继续唯一写者串行实施。整M4b尚待生命周期、fresh两轴审查及本地集成，Linear不提前Done。creative官方支持/口径和生产容量继续Unknown，无本轮真实平台验证或发布。
