@@ -30,6 +30,7 @@ from app.modules.reporting.query_models import (
     QuerySnapshotBuild,
     is_transaction_cleanup,
     read_snapshot,
+    snapshot_contract_current,
     snapshot_transaction,
 )
 from app.modules.reporting.schemas import MATERIAL_QUERY_CONTRACT, ReportingFilter
@@ -466,7 +467,7 @@ def reuse_in_transaction(
         .order_by(col(QuerySnapshot.created_at).desc())
         .limit(1)
     ).first()
-    if snapshot:
+    if snapshot and snapshot_contract_current(snapshot):
         query_diagnostics.count("reused", 1)
         return read_snapshot(
             session, context=context, bc_id=bc_id, snapshot_id=snapshot.id
@@ -545,7 +546,11 @@ def _find_or_build_snapshot(
             entry = session.get(QuerySnapshotBuild, key)
             if entry and entry.snapshot_id and entry.dependency_digest == stamp.digest:
                 snapshot = session.get(QuerySnapshot, entry.snapshot_id)
-                if snapshot and snapshot.expires_at > datetime.now(UTC):
+                if (
+                    snapshot
+                    and snapshot_contract_current(snapshot)
+                    and snapshot.expires_at > datetime.now(UTC)
+                ):
                     read_snapshot(
                         session, context=context, bc_id=bc_id, snapshot_id=snapshot.id
                     )
@@ -609,6 +614,7 @@ def _find_or_build_snapshot(
                     )
                     if (
                         not snapshot
+                        or not snapshot_contract_current(snapshot)
                         or snapshot.dependency_digest != actual.digest
                         or snapshot.expires_at <= datetime.now(UTC)
                     ):

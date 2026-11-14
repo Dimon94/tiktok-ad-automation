@@ -107,6 +107,8 @@ def watch(
         "filters": filters.model_dump(mode="json"),
         "limit": limit,
     }
+    if force:
+        redis.delete(key + ":error")
     redis.set(watch_key(key), json.dumps(descriptor), ex=ACTIVE_SECONDS)
     # 普通命中不推迟已安排的刷新；手动刷新把本键提前到下一次Control扫描。
     redis.zadd(due_key(), {key: time.time()}, nx=not force)
@@ -209,6 +211,8 @@ def query_cached_ads(
                     return page.model_copy(
                         update={"cache_hit": first is not None and not force_refresh}
                     )
+                if redis.exists(key + ":error"):
+                    raise HTTPException(503, detail="query_build_failed")
                 if time.monotonic() >= deadline:
                     raise HTTPException(503, detail="query_build_busy")
                 # 等待新一代时也及时发现撤权；两轮之间不持有数据库连接。
@@ -387,14 +391,17 @@ def refresh_page(redis: Redis, key: str, token: str) -> bool:
             )
         )
         if published:
+            redis.delete(key + ":error")
             redis.zadd(due_key(), {key: max(time.time(), expires.timestamp() - 45)})
         return published
     except HTTPException, DomainError:
+        _publish_failure(redis, key, token)
         logger.info(
             "report_page_scope_or_build_unavailable", extra={"key_hash": key[-12:]}
         )
         return False
     except Exception as error:
+        _publish_failure(redis, key, token)
         logger.warning(
             "report_page_refresh_failed",
             extra={"key_hash": key[-12:], "error_type": type(error).__name__},
@@ -406,3 +413,16 @@ def refresh_page(redis: Redis, key: str, token: str) -> bool:
         owned = redis.eval(RELEASE, 1, lease_key(key), token)
         if owned and not published and redis.exists(watch_key(key)):
             redis.zadd(due_key(), {key: time.time() + 5})
+
+
+def _publish_failure(redis: Redis, key: str, token: str) -> None:
+    """只发布仍持租约的失败，不存半结果；复用原一分钟缓存寿命与重查入口。"""
+    redis.eval(
+        """if redis.call('get',KEYS[1])==ARGV[1] then
+        return redis.call('set',KEYS[2],'query_build_failed','EX',ARGV[2]) end return 0""",
+        2,
+        lease_key(key),
+        key + ":error",
+        token,
+        CACHE_SECONDS,
+    )

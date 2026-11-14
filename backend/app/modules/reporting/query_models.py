@@ -360,6 +360,18 @@ def snapshot_transaction(
                 event.remove(connection, "before_cursor_execute", remaining_budget)
 
 
+def snapshot_contract_current(snapshot: QuerySnapshot) -> bool:
+    """显式读旧身份须退出；新查询的复用候选也必须通过同一合同判断。"""
+    from app.modules.reporting.frozen_result import result_contract
+
+    dimension = snapshot.filters["dimension"]
+    return (
+        dimension != "material"
+        or snapshot.publication_versions.get("material_query_contract")
+        == MATERIAL_QUERY_CONTRACT
+    ) and snapshot.result_contract == result_contract(dimension)
+
+
 def read_snapshot(
     session: Session, *, context: TenantContext, bc_id: str, snapshot_id: UUID
 ) -> QuerySnapshot:
@@ -386,15 +398,7 @@ def read_snapshot(
     allowed = authorized_grants(session, context=context, bc_id=bc_id)
     if not set(snapshot.advertiser_ids) <= {grant.advertiser_id for grant in allowed}:
         raise HTTPException(403, detail="report_scope_forbidden")
-    if (
-        snapshot.filters.get("dimension") == "material"
-        and snapshot.publication_versions.get("material_query_contract")
-        != MATERIAL_QUERY_CONTRACT
-    ):
-        raise HTTPException(409, detail="query_snapshot_contract_changed")
-    from app.modules.reporting.frozen_result import result_contract
-
-    if snapshot.result_contract != result_contract(snapshot.filters["dimension"]):
+    if not snapshot_contract_current(snapshot):
         raise HTTPException(409, detail="query_snapshot_contract_changed")
     if snapshot.expires_at <= datetime.now(UTC):
         raise HTTPException(409, detail="query_snapshot_expired")

@@ -353,14 +353,56 @@ def test_material_workspace_sdk_worker_csv(
     with factory() as s:
         finish_projections(s)
         s.commit()
-    live_campaign_workspace(
-        seed,
-        factory,
-        level="material",
-        label="素材",
-        name="vid1.mp4",
-        material_extended=True,
-    )
+    from uuid import UUID
+
+    from sqlalchemy import text
+
+    from app.modules.reporting.query_models import QuerySnapshot
+
+    trigger = "jb37_" + seed.tenant_id.hex
+
+    def lifecycle(command):
+        with factory() as s:
+            action = command["action"]
+            if action in {"expire", "contract"}:
+                snapshot = s.get(QuerySnapshot, UUID(command["snapshot_id"]))
+                assert snapshot.tenant_id == seed.tenant_id
+                if action == "expire":
+                    snapshot.created_at = datetime.now(UTC) - timedelta(minutes=16)
+                    snapshot.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                else:
+                    snapshot.result_contract = {"revision": "old-material"}
+                s.add(snapshot)
+            elif action == "fault":
+                s.execute(
+                    text(f"""CREATE FUNCTION {trigger}() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN IF NEW.tenant_id='{seed.tenant_id}'::uuid AND NEW.filters->>'dimension'='material'
+                THEN RAISE EXCEPTION 'JB37 local storage fault'; END IF; RETURN NEW; END $$""")
+                )
+                s.execute(
+                    text(
+                        f"CREATE TRIGGER {trigger} BEFORE INSERT ON query_snapshot FOR EACH ROW EXECUTE FUNCTION {trigger}()"
+                    )
+                )
+            elif action == "repair":
+                s.execute(text(f"DROP TRIGGER IF EXISTS {trigger} ON query_snapshot"))
+                s.execute(text(f"DROP FUNCTION IF EXISTS {trigger}()"))
+            s.commit()
+        return {"action": action}
+
+    try:
+        live_campaign_workspace(
+            seed,
+            factory,
+            level="material",
+            label="素材",
+            name="vid1.mp4",
+            material_extended=True,
+            material_lifecycle=True,
+            snapshot_refresh=lifecycle,
+        )
+    finally:
+        lifecycle({"action": "repair"})
 
 
 def test_multi_creative_five_states_and_special_identity(session, sync_seed):

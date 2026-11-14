@@ -375,6 +375,7 @@ def live_campaign_workspace(
     scope_demo=False,
     snapshot_refresh=None,
     material_extended=False,
+    material_lifecycle=False,
 ):
     """真实 FastAPI/Vite/浏览器；唯一平台替身在 urllib3 transport。"""
     import json
@@ -435,11 +436,17 @@ def live_campaign_workspace(
         while not stop.wait(0.05):
             if barrier.exists():
                 try:
-                    outcome = snapshot_refresh()
+                    outcome = (
+                        snapshot_refresh(json.loads(barrier.read_text()))
+                        if material_lifecycle
+                        else snapshot_refresh()
+                    )
+                    barrier.unlink()
                     barrier.with_suffix(".done").write_text(json.dumps(outcome))
                 except Exception as error:
                     snapshot_errors.append(error)
-                return
+                if not material_lifecycle:
+                    return
 
     if snapshot_refresh:
         from datetime import UTC, datetime
@@ -593,7 +600,7 @@ def live_campaign_workspace(
                 )
         thread.start()
         pending_exports = []
-        if snapshot_refresh:
+        if snapshot_refresh and not material_lifecycle:
             import httpx
 
             from tests.modules.reporting.native_export_harness import capture
@@ -619,6 +626,7 @@ def live_campaign_workspace(
                 "API_PROXY_TARGET": f"http://127.0.0.1:{port}",
                 "NATIVE_CAMPAIGN_TENANT": str(seed.tenant_id),
                 "NATIVE_LEVEL": level,
+                "JB37_LIFECYCLE": "1" if material_lifecycle else "",
                 "JB34_CAPTURE": str(barrier.with_suffix(".json")),
                 "JB29_REFRESH_BARRIER": str(barrier) if snapshot_refresh else "",
                 "JB28_SCOPE_DEMO": "1" if scope_demo else "",
@@ -636,6 +644,32 @@ def live_campaign_workspace(
         if level == "material":
             captured = json.loads(barrier.with_suffix(".json").read_text())
             pending_exports = [(captured["export_id"], captured["page"])]
+            if material_lifecycle:
+                frozen = captured["page"]
+                print(  # noqa: T201
+                    "JB37 final interface "
+                    + json.dumps(
+                        {
+                            "snapshot_id": frozen["snapshot"]["snapshot_id"],
+                            "rows": frozen["total"],
+                            "digests": [r["evidence_digest"] for r in frozen["items"]],
+                            "instances": sum(
+                                len(r["material_instances"]) for r in frozen["items"]
+                            ),
+                            "parents": sum(
+                                len(r["parent_controls"]) for r in frozen["items"]
+                            ),
+                            "reconciliation": sum(
+                                len(r["reconciliation_rows"]) for r in frozen["items"]
+                            ),
+                            "publication_map_count": len(
+                                frozen["snapshot"]["publication_map"]
+                            ),
+                            "summary_scope": frozen["summary"]["scope"],
+                        },
+                        sort_keys=True,
+                    )
+                )
         if material_extended:
             import httpx
 

@@ -5577,3 +5577,11 @@ JB36产品候选提交 `981579bc`；形式化模型与源码绑定单独提交�
 JB36最终入口补证：Playwright查看vid1指标及轮播后清空筛选，浏览器取得完整五类快照并点击原导出；真实Celery/PG/Redis/HTTP下载核对1 passed / 15.34s，完整payload437107 bytes、CSV357311 bytes。HTTP仅保留补充断言，不代替完整浏览器导出。产品981579bc、形式化03ccd781；入口补证单独提交。
 
 - M4b JB36 root阶段接受：精确候选c6282cd3，独立metrics+tracer13 passed（完整真实浏览器/Worker/五类CSV），32有限组合通过；源码/构建继承候选有效证据。下一fresh Sol/high推进JB37查询原子失败、15分钟到期、显式重查，再JB38导出生命周期。M4b整体未放行。
+
+### 2026-11-14 · JB37 / M4B-04 本地查询生命周期候选
+
+指定M4b共享树从 `b62be2ca` 串行实施，一名写者/无子代理，原依赖链接保留。原page_cache将本代真实构建失败显式传至HTTP，沿原缓存/租约/force刷新；工作区显示“重新查询”、清旧快照/游标并停止错误自动重试。query_models统一合同判断接入query_reuse全部候选：旧ID退出，新查询跳过旧合同另建身份。完整冻结仍由原RR一次提交，contract3/material-instance-result-v1和15分钟TTL不变，无新owner/迁移。
+
+亲跑JB36最终payload/五CSV前置13 passed；三类PG存储故障各两次失败/完整回滚、HTTP503和失败ID导出404，修复后新ID；过期和旧合同page/detail/新export拒绝，旧成品字节/原24小时期限保持，旧待生成合同不重解。真实浏览器持续错误→重查失败→修复成功以及原Worker同冻结CSV通过。最终相关四模块35 passed/1清理测试夹具随机游标失败；只固定其自身扫描窗口后定向1 passed，业务清理未改。最终tsc/Vite构建、Ruff和diff检查通过。
+
+现有reporting-data skill新增24有界生命周期组合及3种broken模型拒错；四个实际源码探针和既有四个隔离探针均RED→外部备份/finally/cmp→GREEN。详情、准确命令/日志/计数/digest/失败修复、继承证据及JB38消费合同见 [JB37验证](validation/2026-11-14-jb37-material-query-lifecycle.md)。本地AC闭合；JB38完整导出故障/重试/幂等/阶段权限/24小时矩阵和整个MMF fresh两轴审查/集成由root继续。JB35/JB36阶段接受不改，Linear状态/依赖不动；未推送、PR、合并或部署，平台语义/生产容量Unknown。

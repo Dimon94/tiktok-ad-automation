@@ -1006,4 +1006,35 @@ test("素材实例与独立父控制 @material-instance-live", async ({ page }) 
   writeFileSync(process.env.JB34_CAPTURE!, JSON.stringify({
     export_id: fullExport.id, page: fullPage,
   }))
+  if (process.env.JB37_LIFECYCLE) {
+    const { existsSync, unlinkSync } = await import("node:fs")
+    const barrier = process.env.JB29_REFRESH_BARRIER!
+    const command = async (action: string, snapshotId?: string) => {
+      if (existsSync(`${barrier}.done`)) unlinkSync(`${barrier}.done`)
+      writeFileSync(barrier, JSON.stringify({ action, snapshot_id: snapshotId }))
+      await expect.poll(() => existsSync(`${barrier}.done`)).toBeTruthy()
+    }
+    const snapshotId = fullPage.snapshot.snapshot_id
+    for (const action of ["expire", "contract"]) {
+      await command(action, snapshotId)
+      const rejected = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads`, {
+        params: { bc_id: "123456", dimension: "material", start_date: "2026-11-13", end_date: "2026-11-13", snapshot_id: snapshotId },
+      })
+      expect(rejected.status()).toBe(409)
+      expect((await rejected.json()).detail).toBe(action === "expire" ? "query_snapshot_expired" : "query_snapshot_contract_changed")
+    }
+    await command("fault")
+    // 强制新查询穿过原缓存Worker，持久故障的第二次重查仍须明确失败。
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt === 0) await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+      else await page.getByRole("button", { name: "重新查询", exact: true }).click()
+      await expect(page.getByRole("alert").filter({ hasText: "请重新查询" })).toBeVisible()
+      await expect(page.getByRole("button", { name: "vid1.mp4", exact: true })).toHaveCount(0)
+    }
+    await command("repair")
+    const recovered = page.waitForResponse((r) => r.url().includes("/ads?") && r.url().includes("dimension=material") && r.status() === 200)
+    await page.getByRole("button", { name: "重新查询", exact: true }).click()
+    expect((await (await recovered).json()).snapshot.snapshot_id).not.toBe(snapshotId)
+    await expect(page.getByRole("button", { name: "vid1.mp4", exact: true }).first()).toBeVisible()
+  }
 })

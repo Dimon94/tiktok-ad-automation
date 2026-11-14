@@ -92,7 +92,7 @@ export function AdsWorkspace() {
       ? applied
       : { ...applied, page: 1, cursor: undefined, snapshot_id: undefined }
   const ads = useAdsQuery(requestSearch, queryRevision)
-  const items = ads.query.data?.items ?? []
+  const items = ads.query.isError ? [] : ads.query.data?.items ?? []
   const catalog = useMetricCatalog()
   const [submittedTask, setSubmittedTask] = useState<{
     task_id: string
@@ -388,6 +388,7 @@ export function AdsWorkspace() {
   const update = (next: Partial<AdsSearch>) =>
     setSearch((current) => ({ ...current, ...next, page: next.page ?? 1 }))
   const apply = () => {
+    forceNextQuery()
     ads.selection.clear()
     clearManagementPreview()
     setCursorHistory([])
@@ -649,6 +650,7 @@ export function AdsWorkspace() {
     !selectionMutation.isPending &&
     !adMaterialSelection.isPending &&
     !ads.query.isFetching &&
+    !ads.query.isError &&
     applied.page === 1
   useEffect(() => {
     if (!syncStatus.data) return
@@ -982,7 +984,10 @@ export function AdsWorkspace() {
       )}
       {ads.query.isError && (
         <p role="alert" className="text-sm text-destructive">
-          广告报表读取失败，请刷新重试。
+          查询失败、已过期或合同已更新，请重新查询。
+          <Button variant="outline" onClick={() => loadLatest()}>
+            重新查询
+          </Button>
         </p>
       )}
       <AdsDetailSheet
