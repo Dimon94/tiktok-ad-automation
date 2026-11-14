@@ -218,3 +218,7 @@ complete current snapshot PG suite passed **8 cases in 6.00s**. The controlled
 RR race independently passed **1 case in 0.79s** after committing its fixture
 publications. Final source-probe restoration/commit is recorded in the skill
 maintenance commit; no product byte changes accompany it.
+
+## Root local phase acceptance
+
+Root independently inspected frozen_result, RR single-flight transaction, same-plan SQL projection, page/detail authorization and legacy rejection, additive migration and JB30 boundary. Native snapshot + query reuse checks: 19 passed/5.75s. Normal R9 128 cases passed; broken live-read variant failed on evidence-only refresh as expected. An initial command referenced a nonexistent test_snapshot_members.py and collected no tests; the successful command used test_native_snapshot.py and test_query_reuse.py. Source-matching prior browser/build, seven source-probe and capacity evidence is inherited, not rerun. No new product fix was required. JB29 locally accepted to release JB30; whole-MMF review, CSV/local integration and real production acceptance remain.

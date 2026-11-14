@@ -5501,3 +5501,7 @@ JB29 产品候选提交：`8f986018f3dc389aeebaf8002a82e86e1d1ff947`。
 形式维护按该精确产品头更新R9，原48/57与新增128正常通过，破坏模式拒绝，完整snapshot PG 8项通过。
 迁移实测保留旧快照成员/总数及direct金额，拒绝旧合同；真实两连接在SQL选择与格式化之间发布新观测，
 旧行/summary保持10/20、新查询100/200。最终源码探针与skill同步单列提交，产品字节不再修改。
+
+## 2026-11-14 JB29 root phase acceptance
+
+Root independently checked frozen payload/contract, RR build, page/detail and current authorization, legacy exit/migration; 19 snapshot/reuse checks passed and R9 normal/broken variant behaved as expected. No product changes. JB30 released locally; tracker remains open until whole M4a review/local merge.
