@@ -5376,3 +5376,7 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 ### 2026-11-14 M3 R1 未知创意字段修复
 
 Standards R1 PASS，Spec R1 一个 P1：已发布 creative_list/creative_info 为 null 时详情500。root 在原详情投影处理合法未知配置，保留原始null、已观察关系及覆盖原因；未改同步/发布/模型/公开DTO。两个SDK→发布→PG→HTTP场景真实RED→GREEN，丢创意/借组身份两探针均红且字节恢复；相关原生与详情9项通过，Ruff/diffcheck通过。见[修复证据](validation/2026-11-14-native-m3-r1-null-fix.md)。待独立Spec R2，M3未放行；未push/部署/改Linear/合main。
+
+### 2026-11-14 M3 本地验收收口
+
+Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接受M3本地功能与有效验证，正式Spec、三份独立审查报告及[交付验收记录](validation/2026-11-14-native-m3-delivery.md)已入库，进入本地main集成与JB-21/22/23统一收尾。产品源码仍为已审2937e6dc，文档提交不改变行为；落地/状态/回收结果以记录指定的closeout回执为准。真实平台/生产仍Unknown，不push或部署。
