@@ -40,7 +40,7 @@ JB38 消费同一 export.frozen_rows/result_contract/publication_map。五行类
 |币种/时区|真实PG两账户、USD/EUR、Hong_Kong/New_York 分桶；同币种跨时区用原聚合 owner 得到MIXED，实例保留本地时区；没有新增禁查规则|
 |父未就绪/子集|PG FAILED父覆盖和vid1子集均 NOT_COMPARABLE、空指标桶；子集父控制仍为完整10|
 |真正完整对账|真实publisher分别发布完整parent10和creative2+8，基础消耗差额0；收益合同未知仍无数字；summary10，不加父10|
-|五类CSV|真实浏览器打开vid1、展开实例/父控制、显示9/40=.225、未确认与不可比原因、点击原导出；真实HTTP补充全行查询，原Celery Worker生成CSV。文件五类逐行身份/证据/digest核对，父控制去重一次；不可比差额无金额|
+|五类CSV|真实浏览器打开vid1、展开实例/父控制、显示9/40=.225、未确认与不可比原因、点击原导出；浏览器清空筛选、取得全行快照并点击原导出，原Celery Worker生成CSV；真实HTTP仅补充全行接口断言。文件五类逐行身份/证据/digest核对，父控制去重一次；不可比差额无金额|
 |冻结稳定|原tracer查询后creative更新/目录删除、旧分页和新旧digest核对在本轮重新通过；完整差额同时包含在原始冻结对象比较中|
 |容量|见下，合成样本不足，生产性能/容量Unknown|
 |形式化/源码绑定|32有界组合，4种破坏模型均RED；4个真实源码探针均业务断言RED、finally恢复/cmp、PG GREEN|
@@ -55,13 +55,15 @@ JB38 消费同一 export.frozen_rows/result_contract/publication_map。五行类
 - 普通实例summary接线首次写成list而既有API要求dict，导致验证失败；改为保留原summary元数据并替换buckets，未改API形状。一次定向启动误与前一浏览器suite尾段重叠；不使用该失败轮作为有效数据库证据，之后所有fixture检查和探针均串行重跑。
 - 浏览器第一次要求 SELECTED_MATERIAL_SUBSET，但该样本中的特殊映射缺口先导致 CREATIVE_COVERAGE_INCOMPLETE；校准到真实场景原因，独立PG子集用例仍严格要求SUBSET并保持空差额。
 - 首次父范围源码探针只改父filter.ids未触发失败：显式member是实际父读取选择者。改绑定实际parent_payload金额来源，保持业务预期；最终4个源码探针均有效RED。不是把模型通过外推为产品正确。
-- 最终 metrics + tracer：13 passed（包含真实浏览器/原同步和导出链）；最终residual来源元数据补齐后，浏览器/Worker/五类CSV再验1 passed / 10.89s。
+- 最终 metrics + tracer：13 passed（包含真实浏览器/原同步和导出链）；最终residual来源元数据补齐后再验通过；最后完整五类行从浏览器点击导出到原Worker/CSV：1 passed / 15.34s。
 - 既有 metric_catalog、material_query、exports、native_exports：25 passed；先前五文件轮32 passed/1 browser assertion failed已由上述最终结果取代。
 - Ruff修改产品/测试文件全部通过；`git diff --check`通过。前端 `bun run build`（tsc +生产/演示Vite）通过。没有重跑无关巨型suite或历史410诊断mypy基线。额外Biome格式化被已有root/frontend双root配置拒绝（显式config路径也相同），未修改其配置，TSX按现有风格手工排版；不宣称Biome通过。
 - material_metrics模型32组合GREEN，broken scope/cross-scope/nullzero/parent-total各预期AssertionError RED；真实源码探针逐个PG GREEN，日志 `/tmp/jb36-probes-final.log`。假设是已提交publisher事实、原身份、原RR原子捕获和冻结，不是无界证明。
 
 ## 规模与限制
 
-最后完整合成场景5 creative、1普通实例、轮播/冲突/未映射及父控制/对账，PG-backed冻结payload约437,107 bytes，筛选结果约421,336 bytes（同父控制证据在多个素材展开中重复保存）。一条窄PG查询约81.72ms；一次CSV277,322 bytes、全行CSV357,473 bytes；Worker+HTTP约119/122ms。单机低负载合成数据只证明该规模能处理；不是客户分布、并发/大分页、生产P95或容量上限。生产容量预算Unknown，不能承诺无限实例或复用这组数字估算租户规模。
+最后完整合成场景5 creative、1普通实例、轮播/冲突/未映射及父控制/对账，PG-backed冻结payload约437,107 bytes，筛选结果约421,336 bytes（同父控制证据在多个素材展开中重复保存）。一条窄PG查询约81.72ms；早期筛选CSV277,322 bytes；最终浏览器全行CSV357,311 bytes，Worker+HTTP约123ms。单机低负载合成数据只证明该规模能处理；不是客户分布、并发/大分页、生产P95或容量上限。生产容量预算Unknown，不能承诺无限实例或复用这组数字估算租户规模。
 
 本票本地关键断言已闭合；官方creative口径、真实平台适用范围、生产容量保持Unknown。JB37/JB38生命周期、整个MMF的独立Standards/Spec审查与本地集成尚未执行，不把票标Done。
+
+最终入口补证：第一次试图在同一浏览器先排队筛选导出再排队全行导出，原UI正确显示“导出中…”而工装未启动消费Worker，第二按钮等待超时。调整为先查看筛选实例和轮播，再清空筛选、只从浏览器导出完整五类集合；不mock响应、不绕过UI锁。最终15.34s通过，取代此前HTTP创建全行导出的证据。

@@ -673,16 +673,6 @@ def live_campaign_workspace(
                 assert exact["creative_ids"] == ["cr1", "cr2"]
                 assert exact["metric_buckets"][0]["values"]["spend"] == "40"
                 assert exact["field_state_counts"]["spend"]["VALUE"] == 2
-                export = http.post(
-                    f"/api/tenants/{seed.tenant_id}/report-exports",
-                    params={"bc_id": TEST_BC},
-                    json={
-                        "snapshot_id": page["snapshot"]["snapshot_id"],
-                        "idempotency_key": "jb35-full",
-                    },
-                )
-                assert export.status_code == 200, export.text
-                pending_exports.append((export.json()["id"], page))
         if pending_exports:
             from tests.modules.reporting.native_export_harness import complete
 

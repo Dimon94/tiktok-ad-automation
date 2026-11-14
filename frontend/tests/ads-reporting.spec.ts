@@ -978,26 +978,32 @@ test("素材实例与独立父控制 @material-instance-live", async ({ page }) 
   await expect(evidence).toContainText("父广告对照 · ad1")
   await expect(evidence).toContainText("消耗 100")
   await expect(evidence).toContainText("尚未确认")
-  const payload = await (await responsePromise).json()
+  await (await responsePromise).json()
   await page.keyboard.press("Escape")
-  const exportResponse = page.waitForResponse(
-    (response) =>
-      response.url().includes("/report-exports?") &&
-      response.request().method() === "POST" &&
-      response.status() === 200,
-  )
-  await page.getByRole("button", { name: "导出", exact: true }).click()
-  const exported = await exportResponse
-  expect(exported.ok()).toBeTruthy()
   const { writeFileSync } = await import("node:fs")
-  writeFileSync(
-    process.env.JB34_CAPTURE!,
-    JSON.stringify({ export_id: (await exported.json()).id, page: payload }),
-  )
   await page.getByRole("textbox", { name: "搜索广告", exact: true }).fill("carousel")
   await page.getByRole("button", { name: "应用筛选", exact: true }).click()
   await page.getByRole("button", { name: "轮播创意 carousel", exact: true }).first().click()
   await page.getByRole("tab", { name: "素材", exact: true }).last().click()
   await expect(page.getByTestId("material-instance-result")).toContainText("轮播组合")
   await expect(page.getByTestId("material-instance-result")).toContainText("特殊行不计入普通实例合计")
+  await page.keyboard.press("Escape")
+  const fullResponse = page.waitForResponse((response) =>
+    response.url().includes("/api/tenants/") &&
+    response.url().includes("/ads?") &&
+    response.url().includes("dimension=material") &&
+    !new URL(response.url()).searchParams.get("query") && response.status() === 200,
+  )
+  await page.getByRole("textbox", { name: "搜索广告", exact: true }).fill("")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const fullPage = await (await fullResponse).json()
+  const fullExportResponse = page.waitForResponse((response) =>
+    response.url().includes("/report-exports?") &&
+    response.request().method() === "POST" && response.status() === 200,
+  )
+  await page.getByRole("button", { name: "导出", exact: true }).click()
+  const fullExport = await (await fullExportResponse).json()
+  writeFileSync(process.env.JB34_CAPTURE!, JSON.stringify({
+    export_id: fullExport.id, page: fullPage,
+  }))
 })
