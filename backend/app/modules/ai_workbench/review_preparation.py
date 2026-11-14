@@ -94,6 +94,16 @@ def _daily_backtest_inputs(session, *, task, advertiser_id, cutoff, version):
         ORDER BY stat_date, campaign_id
     """), {"tenant": task.tenant_id, "advertiser": advertiser_id,
            "start": start, "cutoff": cutoff.date()}).mappings().all()
+    material_rows = session.execute(text("""
+        SELECT stat_date, row_key, creative_id, platform_material_id, material_name,
+               currency, timezone, spend, revenue_d0, revenue_d3, revenue_d7,
+               revenue_d14, revenue_d30, revenue_total
+        FROM creative_material_entity_day
+        WHERE tenant_id=:tenant AND advertiser_id=:advertiser
+          AND stat_date >= :start AND stat_date < :cutoff
+        ORDER BY stat_date, row_key
+    """), {"tenant": task.tenant_id, "advertiser": advertiser_id,
+           "start": start, "cutoff": cutoff.date()}).mappings().all()
     state = session.execute(text("""
         SELECT stat_date, status, revision, observed_at, last_success_at
         FROM account_report_day_state
@@ -102,10 +112,19 @@ def _daily_backtest_inputs(session, *, task, advertiser_id, cutoff, version):
         ORDER BY stat_date
     """), {"tenant": task.tenant_id, "advertiser": advertiser_id,
            "start": start, "cutoff": cutoff.date()}).mappings().all()
+    material_state = session.execute(text("""
+        SELECT stat_date, status, publication_version, observed_at, last_success_at
+        FROM report_sync_state
+        WHERE tenant_id=:tenant AND advertiser_id=:advertiser AND report_kind='creative_day'
+          AND stat_date >= :start AND stat_date < :cutoff ORDER BY stat_date
+    """), {"tenant": task.tenant_id, "advertiser": advertiser_id,
+           "start": start, "cutoff": cutoff.date()}).mappings().all()
     by_date = {r["stat_date"].isoformat(): r for r in state}
     dates = sorted({r["stat_date"].isoformat() for r in rows})
     expected = [(start + timedelta(days=i)).isoformat() for i in range((cutoff.date()-start).days)]
     missing = [d for d in expected if d not in by_date or by_date[d]["status"] != "COMPLETE"]
+    material_by_date = {r["stat_date"].isoformat(): r for r in material_state}
+    material_missing = [d for d in expected if d not in material_by_date or material_by_date[d]["status"] != "COMPLETE"]
     return {
         "advertiser_id": advertiser_id, "bc_id": version.bc_id,
         "currency": next((r["currency"] for r in rows if r["currency"]), None),
@@ -116,8 +135,12 @@ def _daily_backtest_inputs(session, *, task, advertiser_id, cutoff, version):
                       "states": [{**dict(v), "stat_date": v["stat_date"].isoformat(),
                                    "observed_at": v["observed_at"].isoformat() if v["observed_at"] else None,
                                    "last_success_at": v["last_success_at"].isoformat() if v["last_success_at"] else None} for v in state]},
+        "material_coverage": {"expected_days": len(expected), "observed_days": len(material_by_date),
+                               "missing_days": material_missing, "complete": not material_missing},
         "rows": [{k: (str(v) if getattr(v, "as_tuple", None) else v) for k, v in
                    {**dict(r), "stat_date": r["stat_date"].isoformat()}.items()} for r in rows],
+        "material_rows": [{k: (str(v) if getattr(v, "as_tuple", None) else v) for k, v in
+                   {**dict(r), "stat_date": r["stat_date"].isoformat()}.items()} for r in material_rows],
         "provenance": {"source": "campaign_report_day", "state_source": "account_report_day_state",
                         "cutoff": cutoff.isoformat(), "full_population": True},
     }

@@ -92,7 +92,7 @@ def _daily_replay(session, *, task, rule_id, candidate_definitions):
             continue
         unsupported = []
         if definition.action.type != "PAUSE": unsupported.append("action_not_pause")
-        if definition.apply_to.level != "campaign":
+        if definition.apply_to.level not in ("campaign", "material"):
             unsupported.append("daily_source_dimension_unavailable")
         if definition.aggregation not in ("EACH", "ALL"):
             unsupported.append("aggregation_not_supported")
@@ -107,24 +107,22 @@ def _daily_replay(session, *, task, rule_id, candidate_definitions):
         all_rows = []
         missing = []
         for pack in facts:
-            if not pack.get("coverage", {}).get("complete"):
-                missing.extend(pack.get("coverage", {}).get("missing_days", []))
-            for row in pack.get("rows", []):
+            coverage_key = "material_coverage" if definition.apply_to.level == "material" else "coverage"
+            if not pack.get(coverage_key, {}).get("complete"):
+                missing.extend(pack.get(coverage_key, {}).get("missing_days", []))
+            source_rows = pack.get("material_rows", []) if definition.apply_to.level == "material" else pack.get("rows", [])
+            for row in source_rows:
                 row = dict(row); row["advertiser_id"] = pack["advertiser_id"]
                 all_rows.append(row)
         days = sorted({r["stat_date"] for r in all_rows})
         if len(days) < 2:
             variants.append({"name": name, "status": "INSUFFICIENT_HISTORY", "days": len(days)})
             continue
-        # 当前冻结源按 campaign 维度提供；material 规则必须明确标注为近似，不冒充素材级精确回测。
-        if definition.apply_to.level == "material":
-            unsupported.append("material_identity_not_frozen_for_exact_replay")
-        if unsupported:
-            variants.append({"name": name, "status": "UNSUPPORTED", "unsupported": unsupported})
-            continue
-        # object level is campaign_report_day; duplicate keys are impossible in the frozen source.
+        # 每个冻结事实只落到一个账户/对象/日期键，避免跨广告重复计入。
         by_object = defaultdict(list)
-        for row in all_rows: by_object[(row["advertiser_id"], row.get("campaign_id"))].append(row)
+        for row in all_rows:
+            object_id = (row.get("row_key") or row.get("platform_material_id") or row.get("creative_id")) if definition.apply_to.level == "material" else row.get("campaign_id")
+            by_object[(row["advertiser_id"], object_id, row.get("currency"), row.get("timezone"))].append(row)
         paused = set(); hit_on = {}; blocked = []; kept = []
         for day in days:
             prior_day = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
@@ -141,6 +139,17 @@ def _daily_replay(session, *, task, rule_id, candidate_definitions):
                 (blocked if key in paused and hit_on[key] < day else kept).append((key, day, spend, revenue))
         def total(items, idx): return sum((item[idx] for item in items), Decimal(0))
         b_spend, b_rev = total(blocked, 2), total(blocked, 3); k_spend, k_rev = total(kept, 2), total(kept, 3)
+        partition_rows = defaultdict(lambda: [[], []])
+        for item in blocked:
+            partition_rows[(item[0][2], item[0][3])][0].append(item)
+        for item in kept:
+            partition_rows[(item[0][2], item[0][3])][1].append(item)
+        partition_metrics = []
+        for (currency, timezone), (pb, pk) in sorted(partition_rows.items()):
+            ps, pr = total(pb, 2), total(pb, 3); qs, qr = total(pk, 2), total(pk, 3)
+            partition_metrics.append({"currency": currency, "timezone": timezone,
+                "blocked_spend": str(ps), "blocked_revenue": str(pr), "kept_spend": str(qs), "kept_revenue": str(qr),
+                "blocked_roas": str(pr/ps) if ps else None, "kept_roas": str(qr/qs) if qs else None})
         wrong = Decimal(0)
         for key, hit in hit_on.items():
             future = [x for x in by_object[key] if x["stat_date"] > hit]
@@ -149,14 +158,15 @@ def _daily_replay(session, *, task, rule_id, candidate_definitions):
         variants.append({"name": name, "status": "COMPLETE" if not missing else "PARTIAL_COVERAGE",
             "coverage": {"missing_days": sorted(set(missing)), "days": days},
             "decision": {"prior_day_only": True, "pause_next_day": True, "objects_paused": len(paused)},
-            "metrics": {"actual_spend": str(b_spend + k_spend), "actual_revenue": str(b_rev + k_rev),
-                        "actual_roas": str((b_rev + k_rev)/(b_spend+k_spend)) if b_spend+k_spend else None,
-                        "kept_spend": str(k_spend), "kept_revenue": str(k_rev), "kept_roas": str(k_rev/k_spend) if k_spend else None,
-                        "blocked_spend": str(b_spend), "blocked_revenue": str(b_rev), "blocked_roas": str(b_rev/b_spend) if b_spend else None,
+            "metrics": {"actual_spend": str(b_spend + k_spend) if len(partition_metrics) <= 1 else None, "actual_revenue": str(b_rev + k_rev) if len(partition_metrics) <= 1 else None,
+                        "actual_roas": str((b_rev + k_rev)/(b_spend+k_spend)) if b_spend+k_spend and len(partition_metrics) <= 1 else None,
+                        "kept_spend": str(k_spend) if len(partition_metrics) <= 1 else None, "kept_revenue": str(k_rev) if len(partition_metrics) <= 1 else None, "kept_roas": str(k_rev/k_spend) if k_spend and len(partition_metrics) <= 1 else None,
+                        "blocked_spend": str(b_spend) if len(partition_metrics) <= 1 else None, "blocked_revenue": str(b_rev) if len(partition_metrics) <= 1 else None, "blocked_roas": str(b_rev/b_spend) if b_spend and len(partition_metrics) <= 1 else None,
                         "retrospective_blocked_loss": str(b_spend - b_rev if b_spend > b_rev else Decimal(0)), "wrong_stop_future_spend": str(wrong),
-                        "wrong_stop_future_share": str(wrong/b_spend) if b_spend else None,
-                        "inefficiency_spend": str(b_spend - b_rev) if b_spend > b_rev else "0",
-                        "inefficiency_share": str((b_spend-b_rev)/b_spend) if b_spend else None}})
+                        "wrong_stop_future_share": str(wrong/b_spend) if b_spend and len(partition_metrics) <= 1 else None,
+                        "inefficiency_spend": str(b_spend - b_rev) if b_spend > b_rev and len(partition_metrics) <= 1 else ("0" if len(partition_metrics) <= 1 else None),
+                        "inefficiency_share": str((b_spend-b_rev)/b_spend) if b_spend and len(partition_metrics) <= 1 else None,
+                        "partitions": partition_metrics, "currency_partitioned": len(partition_metrics) > 1}})
     return {"status": "COMPLETE", "rule_id": str(rule_id), "variants": variants,
             "interpretation": "Historical replay only; blocked loss and wrong-stop are observed counterfactual proxies, not causal avoided loss."}
 
