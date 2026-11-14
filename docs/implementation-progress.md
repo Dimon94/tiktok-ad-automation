@@ -5471,3 +5471,10 @@ Ruff/diff及实际skill入口通过；不重跑浏览器/构建/2k计划/旧mypy
 [完整17AC矩阵及边界](validation/2026-11-14-jb28-native-growth-formal.md)。
 尚待root独立验收，不自标Done或放行M4a/JB29；无Linear/Spec/main/push/PR/deploy/生产操作，
 原未跟踪.venv/node_modules保留。
+
+## 2026-11-14 JB28 root phase acceptance
+
+- Root independently ran scope+dimension: 79 passed/1 deselected; generated model 1296 arithmetic/9 coordinate/12 clock cases passed. Inherited matching browser/build/source-probe evidence.
+- Real PG RED reproduced empty-summary ABSENT versus NO_RETURNED_ROW and missing CPM formula multiplier; corrected shared vector_provenance only, preserved monetary/source contracts.
+- Final affected scope: 63 passed/1 deselected (28.97s), Ruff passed. No source decision or arithmetic model drift; bounded assumptions remain explicit.
+- JB28 locally accepted for JB29 consumption. All M4a tickets remain open until full review/local integration; no push/deploy/real platform acceptance. See docs/validation/2026-11-14-jb28-native-growth-formal.md.

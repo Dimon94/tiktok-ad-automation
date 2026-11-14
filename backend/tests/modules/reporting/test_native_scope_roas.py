@@ -407,6 +407,37 @@ def test_complete_empty_retains_direct_coordinates(session, sync_seed):
             assert vector.values["spend"] is None
             assert vector.provenance["spend"].buckets
             assert vector.provenance["spend"].reason == "NO_RETURNED_ROW"
+        summary = MetricVector.model_validate(page.summary["buckets"][0])
+        assert summary.provenance["spend"].field_state_counts == {"NO_RETURNED_ROW": 1}
+
+
+def test_scaled_ratio_provenance_matches_values(session, sync_seed):
+    publish_campaign_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "UTC")},
+        start=D,
+        end=D,
+        requested_at=datetime.now(UTC),
+        route=FrozenTikTokRoute(**_route(sync_seed)),
+        rows=[
+            {
+                "dimensions": {"campaign_id": "c0", "stat_time_day": str(D)},
+                "metrics": {"spend": "5", "impressions": "100", "clicks": "2"},
+            }
+        ],
+    )
+    page = query(session, sync_seed)
+    for vector in (
+        page.items[0].metric_buckets[0],
+        MetricVector.model_validate(page.summary["buckets"][0]),
+    ):
+        assert vector.values["cpm"] == Decimal(50)
+        assert (
+            vector.provenance["cpm"].formula
+            == "SUM(spend) / COMPLETE_SUM(impressions) * 1000"
+        )
 
 
 def test_row_contract_conflict_never_uses_current_publication_contract(

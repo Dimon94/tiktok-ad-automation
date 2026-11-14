@@ -1254,7 +1254,8 @@ def vector_provenance(
             for field in ratio[1:3] if ratio else (name,):
                 state = r["fields"].get(field, {}).get("status") or (
                     "NO_RETURNED_ROW"
-                    if not r["fact"]
+                    # SQL 空桶保留坐标和 NULL 列，不能用非空字典冒充实际返回行。
+                    if not r.get("returned", bool(r["fact"]))
                     else "VALUE"
                     if r["fact"].get(field) is not None
                     else "ABSENT"
@@ -1280,7 +1281,12 @@ def vector_provenance(
             buckets=stamps,
             field_state_counts=counts,
             reason=reason,
-            formula=f"SUM({ratio[1]}) / COMPLETE_SUM({ratio[2]})" if ratio else None,
+            formula=(
+                f"SUM({ratio[1]}) / COMPLETE_SUM({ratio[2]})"
+                + (f" * {ratio[3]}" if ratio[3] != 1 else "")
+            )
+            if ratio
+            else None,
             known_count=known
             if not ratio
             else sum(r["fact"].get(ratio[1]) is not None for r in selected),

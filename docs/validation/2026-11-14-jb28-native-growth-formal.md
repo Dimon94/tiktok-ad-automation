@@ -136,3 +136,21 @@ Ruff check/format、diffcheck通过；逐文件读取精确起点Git对象与磁
 
 最后增强矩阵定向：`RUN python -m pytest backend/tests/modules/reporting/test_native_scope_roas.py -k 'directory_scope_matrix or rejects_unsupported' -q --tb=short`：10 passed/53 deselected，7.73s。
 随后Ruff check全部四个本轮Python验证文件通过，diffcheck通过。
+
+## Root phase acceptance
+
+主线程在 `941fa52a` 独立运行 scope+dimension：79 passed / 1 deselected，
+24.80s；亲跑生成入口：1,296 算术、9 坐标、12 本地时间案例通过。
+逐项审阅同一 SQL 来源选择、完整分母、逐日 provenance、空发布坐标迁移及
+JB29 消费合同；匹配源码的浏览器、构建及源码探针复用上文证据。
+
+主线程另发现两个解释层缺陷并通过真实 PG 入口复现 RED：SQL 空发布汇总
+field_state_counts 误标 ABSENT 而非 NO_RETURNED_ROW；CPM 值为 50，说明公式却
+漏掉乘数 1000。修复共用 vector_provenance，显式识别 returned 标志并按原
+DERIVED_RATIOS 展示缩放系数；不改变金额、来源选择或平台缺项。现有空桶检查
+新增汇总字段状态断言，新增公开 query 入口检查 CPM 数值与公式的一致性。
+本次模型的算术、分桶、窗口性质未受影响，原有界结论仍按上述边界解释。
+相关最终检查结果与主线程接受记录另列于 implementation-progress。
+
+JB28 的本地阶段完成后允许 JB29 开工；整份 M4a 仍须快照/CSV、独立双轴审查及
+本地集成验收，Linear 票在整份 MMF 合入前保持进行中。
