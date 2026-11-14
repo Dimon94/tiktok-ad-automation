@@ -392,11 +392,10 @@ def read_snapshot(
         != MATERIAL_QUERY_CONTRACT
     ):
         raise HTTPException(409, detail="query_snapshot_contract_changed")
-    if snapshot.filters.get("dimension") != "material":
-        from app.modules.reporting.frozen_result import RESULT_CONTRACT
+    from app.modules.reporting.frozen_result import result_contract
 
-        if snapshot.result_contract != RESULT_CONTRACT:
-            raise HTTPException(409, detail="query_snapshot_contract_changed")
+    if snapshot.result_contract != result_contract(snapshot.filters["dimension"]):
+        raise HTTPException(409, detail="query_snapshot_contract_changed")
     if snapshot.expires_at <= datetime.now(UTC):
         raise HTTPException(409, detail="query_snapshot_expired")
     return snapshot

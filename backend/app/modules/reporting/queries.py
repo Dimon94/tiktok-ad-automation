@@ -24,7 +24,6 @@ from app.core.db import engine
 from app.modules.accounts.models import TenantBC
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.dimension_query import (
-    materialize_rows,
     metric_vector,
 )
 from app.modules.reporting.filters import authorized_grants, compile_filter
@@ -56,7 +55,7 @@ from app.modules.reporting.schemas import (
     QuerySnapshotPublic,
     ReportingFilter,
 )
-from app.modules.reporting.snapshot_members import pin_snapshot_names, snapshot_members
+from app.modules.reporting.snapshot_members import pin_snapshot_names
 from app.modules.reporting.store_models import METRIC_COLUMNS, ReportSyncState
 from app.modules.tenants.permissions import require_tenant
 
@@ -307,7 +306,15 @@ def _build_snapshot(
             if not totals.complete
             else snapshot.coverage["status"],
         }
-    if filters.dimension != "material":
+    if filters.dimension == "material":
+        from app.modules.reporting.frozen_result import (
+            MATERIAL_RESULT_CONTRACT,
+            freeze_material_results,
+        )
+
+        snapshot.result_contract = MATERIAL_RESULT_CONTRACT
+        freeze_material_results(session, snapshot, filters)
+    else:
         from app.modules.reporting.frozen_result import RESULT_CONTRACT, freeze_results
 
         snapshot.result_contract = RESULT_CONTRACT
@@ -371,19 +378,9 @@ def _read_page(
     )
     # 分页会话与构建RR连接独立；同样只在本次读事务禁用一次性LLVM编译。
     session.connection().execute(text("SET LOCAL jit = off"))
-    if filters.dimension != "material":
-        from app.modules.reporting.frozen_result import frozen_row
+    from app.modules.reporting.frozen_result import frozen_row
 
-        items = tuple(frozen_row(row) for row in rows)
-    else:
-        members = snapshot_members(session, snapshot=snapshot, rows=rows)
-        items = materialize_rows(
-            session,
-            tenant_id=context.tenant_id,
-            filters=filters,
-            members=[members[row.row_key] for row in rows],
-            advertisers=snapshot.advertiser_ids,
-        )
+    items = tuple(frozen_row(row) for row in rows)
     if filters.dimension == "account":
         # 账户行保留其下全部系列引用供冻结选择展开；列表响应不返回，避免每行带回上百条。
         items = tuple(item.model_copy(update={"refs": ()}) for item in items)
@@ -401,14 +398,7 @@ def _read_page(
         )
     metrics_coverage = {}
     if filters.dimension == "material":
-        metrics_coverage = read_projection_coverage(
-            session,
-            kind="creative_material",
-            tenant_id=context.tenant_id,
-            advertisers=snapshot.advertiser_ids,
-            start=filters.start_date,
-            end=filters.end_date,
-        )
+        metrics_coverage = snapshot.coverage["projection"]
         raw_observed = metrics_coverage["metrics_observed_at"]
         observed = datetime.fromisoformat(raw_observed) if raw_observed else None
     else:

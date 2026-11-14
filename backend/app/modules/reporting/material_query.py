@@ -43,16 +43,27 @@ def _use(data):
 
 
 def materialize_material_rows(
-    session, *, tenant_id, filters, members, advertisers, exact_ad=None
+    session,
+    *,
+    tenant_id,
+    filters,
+    members,
+    advertisers,
+    exact_ad=None,
+    selected_facts=None,
 ):
     scope = set(advertisers)
-    facts = read_facts(
-        session,
-        tenant_id=tenant_id,
-        advertisers=advertisers,
-        filters=filters,
-        row_keys=[m.row_key for m in members],
-        exact_ad=exact_ad,
+    facts = (
+        selected_facts
+        if selected_facts is not None
+        else read_facts(
+            session,
+            tenant_id=tenant_id,
+            advertisers=advertisers,
+            filters=filters,
+            row_keys=[m.row_key for m in members],
+            exact_ad=exact_ad,
+        )
     )
     directory = read_facts(
         session,
@@ -337,3 +348,218 @@ def materialize_material_rows(
             )
         )
     return tuple(result)
+
+
+def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
+    """首切仅发布精确单creative实例；复杂身份仍保留原行覆盖，交由后票扩展。"""
+    from app.core.context import TenantContext
+    from app.modules.reporting.dimension_query import materialize_rows
+    from app.modules.reporting.filters import authorized_grants
+    from app.modules.reporting.row_set import SnapshotMember
+    from app.modules.reporting.schemas import (
+        MaterialInstanceResult,
+        ParentAdControl,
+        ReportingFilter,
+    )
+
+    context = TenantContext(
+        tenant_id=snapshot.tenant_id, actor_id=snapshot.actor_id, role="operator"
+    )
+    grants = authorized_grants(
+        session,
+        context=context,
+        bc_id=snapshot.bc_id,
+        advertiser_ids=tuple(snapshot.advertiser_ids),
+    )
+    connections = defaultdict(set)
+    for grant in grants:
+        connections[grant.advertiser_id].add(str(grant.connection_id))
+    grouped = defaultdict(list)
+    for f in facts:
+        if f["attribution_status"] == "RESOLVED" and f["creative_id"]:
+            grouped[
+                (
+                    f["row_key"],
+                    f["advertiser_id"],
+                    f["ad_remote_id"],
+                    f["ad_material_id"],
+                    f["material_type"],
+                    f["platform_material_id"],
+                )
+            ].append(f)
+
+    def digest(payload):
+        return sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+    result = []
+    for report in reports:
+        instances, controls = [], {}
+        for (row_key, adv, parent, mid, kind, vid), items in sorted(
+            grouped.items(), key=lambda pair: str(pair[0])
+        ):
+            if (
+                row_key != report.row_key
+                or len({f["creative_id"] for f in items}) != 1
+                or len(connections[adv]) != 1
+            ):
+                continue
+            key = {
+                "tenant_id": str(snapshot.tenant_id),
+                "bc_id": snapshot.bc_id,
+                "connection_id": next(iter(connections[adv])),
+                "advertiser_id": adv,
+                "parent_ad_id": parent,
+                "platform_material_id": vid,
+                "ad_material_id": mid,
+                "material_type": kind,
+            }
+            vectors = merge_metric_buckets(
+                [
+                    (
+                        (
+                            metric_vector(
+                                dict(f)
+                                | {
+                                    "level": "creative",
+                                    "source_kind": "PLATFORM_DIRECT",
+                                    "contract_revision": "creative-observed-v1",
+                                },
+                                currency=f["currency"],
+                                timezone=f["timezone"],
+                                partial={
+                                    m for m in METRIC_COLUMNS if f[f"{m}_has_null"]
+                                },
+                            ),
+                        ),
+                        f["source_status"] != "COMPLETE",
+                    )
+                    for f in items
+                ]
+            )
+            observations = []
+            for f in sorted(
+                items, key=lambda item: (str(item["stat_date"]), item["creative_id"])
+            ):
+                # 原事实自己的观测坐标；派生完整水位不能替代实际creative观测。
+                observations.append(
+                    {
+                        "tenant_id": str(snapshot.tenant_id),
+                        "advertiser_id": adv,
+                        "creative_id": f["creative_id"],
+                        "fact_key": json.dumps(
+                            [
+                                str(snapshot.tenant_id),
+                                adv,
+                                f["creative_id"],
+                                str(f["stat_date"]),
+                            ]
+                        ),
+                        "local_day": str(f["stat_date"]),
+                        "observed_at": f["fact_observed_at"].isoformat(),
+                        "sync_job_id": str(f["fact_sync_job_id"]),
+                        "source_info": f["source_info"],
+                        "source_status": f["source_status"],
+                    }
+                )
+            payload = {
+                "key": key,
+                "creative_ids": tuple(sorted({f["creative_id"] for f in items})),
+                "fact_keys": tuple(sorted(o["fact_key"] for o in observations)),
+                "metric_buckets": vectors,
+                "coverage": dict(report.coverage)
+                | {
+                    "metric_semantics": "UNCONFIRMED",
+                    "field_evidence": "LEGACY_UNKNOWN",
+                },
+                "observations": observations,
+            }
+            instance = MaterialInstanceResult(
+                **payload,
+                evidence_digest=digest(
+                    MaterialInstanceResult(**payload, evidence_digest="").model_dump(
+                        mode="json"
+                    )
+                ),
+            )
+            instances.append(instance)
+            parent_key = (adv, parent)
+            if parent_key not in controls:
+                # 父控制只有父ID和完整日期范围，绝不继承素材子集筛选。
+                parent_filters = ReportingFilter(
+                    dimension="ad",
+                    start_date=filters.start_date,
+                    end_date=filters.end_date,
+                    advertiser_ids=(adv,),
+                    ids=(parent,),
+                )
+                parent_rows = materialize_rows(
+                    session,
+                    tenant_id=snapshot.tenant_id,
+                    filters=parent_filters,
+                    advertisers=[adv],
+                    members=[
+                        SnapshotMember(
+                            f"{adv}:ad:{parent}",
+                            (
+                                {
+                                    "tenant_id": str(snapshot.tenant_id),
+                                    "advertiser_id": adv,
+                                    "kind": "ad",
+                                    "remote_id": parent,
+                                },
+                            ),
+                            (),
+                        )
+                    ],
+                )
+                parent_row = parent_rows[0]
+                parent_payload = {
+                    "key": {
+                        k: v
+                        for k, v in key.items()
+                        if k
+                        in {
+                            "tenant_id",
+                            "bc_id",
+                            "connection_id",
+                            "advertiser_id",
+                            "parent_ad_id",
+                        }
+                    },
+                    "scope": "FULL_PARENT_AD",
+                    "metric_buckets": parent_row.metric_buckets,
+                    "coverage": parent_row.coverage,
+                }
+                controls[parent_key] = ParentAdControl(
+                    **parent_payload,
+                    evidence_digest=digest(
+                        ParentAdControl(
+                            **parent_payload, evidence_digest=""
+                        ).model_dump(mode="json")
+                    ),
+                )
+        for instance in instances:
+            for observation in instance.observations:
+                coordinate = dict(observation) | {
+                    "report_kind": "creative_day",
+                    "observation_source": "SELECTED_FACT",
+                }
+                if coordinate not in snapshot.publication_map:
+                    snapshot.publication_map = [*snapshot.publication_map, coordinate]
+        payload = report.model_dump(mode="json") | {
+            "coverage": dict(report.coverage)
+            | {
+                "instance_count": len(instances),
+                "creative_count": len({c for i in instances for c in i.creative_ids}),
+                "instance_scope": "EXACT_SINGLE_CREATIVE",
+                "metric_semantics": "UNCONFIRMED",
+            },
+            "material_instances": [i.model_dump(mode="json") for i in instances],
+            "parent_controls": [c.model_dump(mode="json") for c in controls.values()],
+        }
+        result.append(
+            ReportRow.model_validate(payload | {"evidence_digest": digest(payload)})
+        )
+    return result

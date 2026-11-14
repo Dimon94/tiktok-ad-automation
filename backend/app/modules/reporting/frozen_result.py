@@ -26,6 +26,71 @@ RESULT_CONTRACT = {
 }
 
 
+MATERIAL_RESULT_CONTRACT = {
+    "revision": "material-instance-result-v1",
+    "material_query_contract": 3,
+    "creative_semantics": "UNCONFIRMED",
+    "creative_contract_revision": "creative-observed-v1",
+    "d0_click_hours": None,
+    "traffic_scope": "UNCONFIRMED",
+    "total_maturity": "UNKNOWN",
+}
+
+
+def result_contract(dimension: str) -> dict:
+    return MATERIAL_RESULT_CONTRACT if dimension == "material" else RESULT_CONTRACT
+
+
+def freeze_material_results(session, snapshot, filters):
+    """复用SQL成员计划，在同一RR内分批冻结展示载荷；后续读取不再解引用目录。"""
+    from app.modules.reporting.material_query import (
+        freeze_instance_tracer,
+        materialize_material_rows,
+    )
+    from app.modules.reporting.snapshot_members import snapshot_members
+
+    after = -1
+    while True:
+        rows = session.exec(
+            select(QuerySnapshotRow)
+            .where(
+                QuerySnapshotRow.snapshot_id == snapshot.id,
+                QuerySnapshotRow.stable_sequence > after,
+            )
+            .order_by(col(QuerySnapshotRow.stable_sequence))
+            .limit(100)
+        ).all()
+        if not rows:
+            break
+        members = snapshot_members(session, snapshot=snapshot, rows=rows)
+        from app.modules.reporting.creative_query import read_facts
+
+        facts = read_facts(
+            session,
+            tenant_id=snapshot.tenant_id,
+            advertisers=snapshot.advertiser_ids,
+            filters=filters,
+            row_keys=[r.row_key for r in rows],
+            observations=True,
+        )
+        reports = materialize_material_rows(
+            session,
+            tenant_id=snapshot.tenant_id,
+            filters=filters,
+            members=[members[r.row_key] for r in rows],
+            advertisers=snapshot.advertiser_ids,
+            selected_facts=facts,
+        )
+        reports = freeze_instance_tracer(
+            session, snapshot=snapshot, filters=filters, reports=reports, facts=facts
+        )
+        for row, report in zip(rows, reports, strict=True):
+            row.frozen_result = report.model_dump(mode="json")
+            session.add(row)
+        session.flush()
+        after = rows[-1].stable_sequence
+
+
 def frozen_row(row: QuerySnapshotRow) -> ReportRow:
     if not row.frozen_result or not row.frozen_result.get("metric_buckets"):
         raise HTTPException(409, detail="query_snapshot_result_unavailable")

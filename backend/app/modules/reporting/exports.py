@@ -1,7 +1,7 @@
 """冻结报表导出。
 
 导出创建时把快照成员与顺序复制到 ``ReportExport.frozen_rows``，后台生成阶段
-直接读取冻结结果（素材仍沿原成员补全合同）。下载和生成都重新检查当前租户、BC 与账户授权；
+直接读取冻结结果（包括素材实例及独立父对照）。下载和生成都重新检查当前租户、BC 与账户授权；
 撤权后即使队列消息迟到也不会写出或下载旧报表。
 """
 
@@ -27,18 +27,15 @@ from app.core.config import settings
 from app.core.context import TenantContext
 from app.modules.accounts.models import TenantBC
 from app.modules.materials.storage import make_s3
-from app.modules.reporting.dimension_query import materialize_rows
 from app.modules.reporting.filters import authorized_grants
-from app.modules.reporting.frozen_result import RESULT_CONTRACT, frozen_row
+from app.modules.reporting.frozen_result import frozen_row
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     QuerySnapshotRow,
     ReportExport,
     read_snapshot,
 )
-from app.modules.reporting.row_set import SnapshotMember
-from app.modules.reporting.schemas import ExportPublic, ReportingFilter
-from app.modules.reporting.snapshot_members import snapshot_members, snapshot_names
+from app.modules.reporting.schemas import ExportPublic
 from app.modules.tenants.permissions import require_tenant
 
 _EXPORT_PREFIX = "report-exports"
@@ -120,21 +117,8 @@ def _rows_for_snapshot(
     ).all()
     if len(rows) != snapshot.total:
         raise HTTPException(409, detail="query_snapshot_incomplete")
-    if snapshot.filters.get("dimension") != "material":
-        return [frozen_row(row).model_dump(mode="json") for row in rows], dict(
-            snapshot.naming_versions
-        )
-    members = snapshot_members(session, snapshot=snapshot, rows=rows)
-    frozen_rows = [
-        {
-            "row_key": row.row_key,
-            "refs": list(members[row.row_key].refs),
-            "material_uses": list(members[row.row_key].material_uses),
-        }
-        for row in rows
-    ]
-    return frozen_rows, snapshot_names(
-        session, snapshot=snapshot, rows=rows, members=members
+    return [frozen_row(row).model_dump(mode="json") for row in rows], dict(
+        snapshot.naming_versions
     )
 
 
@@ -311,6 +295,14 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         "publication_map",
         "metric_vector",
         "report_display",
+        "row_kind",
+        "identity",
+        "creative_ids",
+        "fact_keys",
+        "evidence_digest",
+        "result_digest",
+        "observations",
+        "row_coverage",
     ]
     if frozen:
         fields.extend(evidence_fields)
@@ -373,14 +365,20 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                     "publication_map": export.publication_map,
                     "metric_vector": bucket,
                     "report_display": display,
+                    "row_kind": raw.get("row_kind", "SUMMARY"),
+                    "identity": raw.get("key", {}),
+                    "creative_ids": raw.get("creative_ids", []),
+                    "fact_keys": raw.get("fact_keys", []),
+                    "evidence_digest": raw.get("evidence_digest", ""),
+                    "result_digest": raw.get("result_digest", ""),
+                    "observations": raw.get("observations", []),
+                    "row_coverage": coverage,
                 }
                 for field, cell in metadata.items():
                     data[field] = csv_safe_text(
                         cell
                         if isinstance(cell, str)
-                        else json.dumps(
-                            cell, ensure_ascii=False, separators=(",", ":")
-                        )
+                        else json.dumps(cell, ensure_ascii=False, separators=(",", ":"))
                     )
             writer.writerow(data)
     return out.getvalue().encode("utf-8")
@@ -452,29 +450,34 @@ def _delete_object(key: str) -> None:
     _object_path(key).unlink(missing_ok=True)
 
 
-def _export_rows(session: Session, export: ReportExport) -> Iterator[dict[str, Any]]:
-    """普通报表只消费任务自有冻结结果；素材保留原有读取路径。"""
-    if export.filters.get("dimension") != "material":
-        if export.result_contract != RESULT_CONTRACT:
-            raise HTTPException(
-                409, detail="report_export_contract_incompatible_reexport"
-            )
+def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, Any]]:
+    """所有报表只消费任务自有冻结结果；父控制用明确行类型隔离。"""
+    from app.modules.reporting.frozen_result import result_contract
+
+    if export.result_contract != result_contract(export.filters["dimension"]):
+        raise HTTPException(409, detail="report_export_contract_incompatible_reexport")
+    if export.filters["dimension"] != "material":
         yield from export.frozen_rows
         return
-    filters = ReportingFilter.model_validate(export.filters)
-    members = [
-        SnapshotMember(raw["row_key"], tuple(raw["refs"]), tuple(raw["material_uses"]))
-        for raw in export.frozen_rows
-    ]
-    for start in range(0, len(members), EXPORT_BATCH):
-        for row in materialize_rows(
-            session,
-            tenant_id=export.tenant_id,
-            filters=filters,
-            members=members[start : start + EXPORT_BATCH],
-            advertisers=export.advertiser_ids,
-        ):
-            yield row.model_dump(mode="json")
+    seen_parents = set()
+    for row in export.frozen_rows:
+        common = {"display": row["display"], "result_digest": row["evidence_digest"]}
+        instances = row.get("material_instances", [])
+        if not instances:
+            yield row | {"row_kind": "SUMMARY"}
+        for instance in instances:
+            yield (
+                common | instance | {"row_key": row["row_key"], "row_kind": "INSTANCE"}
+            )
+        for control in row.get("parent_controls", []):
+            identity = json.dumps(control["key"], sort_keys=True)
+            if identity not in seen_parents:
+                seen_parents.add(identity)
+                yield (
+                    common
+                    | control
+                    | {"row_key": identity, "row_kind": "PARENT_CONTROL"}
+                )
 
 
 def generate_export(session: Session, export: ReportExport) -> None:

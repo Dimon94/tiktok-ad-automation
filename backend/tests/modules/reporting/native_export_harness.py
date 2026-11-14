@@ -86,17 +86,19 @@ def complete(base_url, seed, factory, pending):
         ):
             with httpx.Client(base_url=base_url, timeout=30) as client:
                 for export_id, page in pending:
-                    ref = page["items"][0]["refs"][0]
-                    detail = client.get(
-                        f"/api/tenants/{seed.tenant_id}/ads/{ref['kind']}/{ref['remote_id']}",
-                        params={
-                            "bc_id": TEST_BC,
-                            "advertiser_id": ref["advertiser_id"],
-                            "snapshot_id": page["snapshot"]["snapshot_id"],
-                        },
-                    )
-                    assert detail.status_code == 200, detail.text
-                    assert detail.json()["report_result"] == page["items"][0]
+                    material = page["snapshot"]["filters"]["dimension"] == "material"
+                    if not material:
+                        ref = page["items"][0]["refs"][0]
+                        detail = client.get(
+                            f"/api/tenants/{seed.tenant_id}/ads/{ref['kind']}/{ref['remote_id']}",
+                            params={
+                                "bc_id": TEST_BC,
+                                "advertiser_id": ref["advertiser_id"],
+                                "snapshot_id": page["snapshot"]["snapshot_id"],
+                            },
+                        )
+                        assert detail.status_code == 200, detail.text
+                        assert detail.json()["report_result"] == page["items"][0]
                     with factory() as s:
                         record = next(
                             r
@@ -132,23 +134,48 @@ def complete(base_url, seed, factory, pending):
                     download = client.get(url + "/download", params={"bc_id": TEST_BC})
                     assert download.status_code == 200, download.text
                     rows = list(csv.DictReader(io.StringIO(download.text)))
-                    expected = [
-                        (r, v) for r in page["items"] for v in r["metric_buckets"]
-                    ]
-                    assert len(rows) == len(expected)
-                    for csvrow, (report, vector) in zip(rows, expected, strict=True):
-                        assert csvrow["row_key"] == report["row_key"]
-                        assert json.loads(csvrow["metric_vector"]) == vector
-                        assert json.loads(csvrow["report_display"]) == report["display"]
+                    if material:
+                        assert [r["row_kind"] for r in rows] == [
+                            "INSTANCE",
+                            "PARENT_CONTROL",
+                        ]
+                        assert [r["消耗"] for r in rows] == ["40", "100"]
+                        report = page["items"][0]
                         assert (
-                            json.loads(csvrow["publication_map"])
-                            == page["snapshot"]["publication_map"]
+                            rows[0]["evidence_digest"]
+                            == report["material_instances"][0]["evidence_digest"]
                         )
-                    # 金额来自SDK固定夹具：父层40/50，Ad dash；非从被测实现推导。
-                    revenue = rows[0]["Native Growth 总展示价值（平台原字段）"]
-                    assert revenue == (
-                        "" if page["snapshot"]["filters"]["dimension"] == "ad" else "40"
-                    )
+                        assert (
+                            rows[1]["evidence_digest"]
+                            == report["parent_controls"][0]["evidence_digest"]
+                        )
+                        assert json.loads(rows[0]["identity"])["parent_ad_id"] == "ad1"
+                        assert rows[0]["result_digest"] == report["evidence_digest"]
+                    else:
+                        expected = [
+                            (r, v) for r in page["items"] for v in r["metric_buckets"]
+                        ]
+                        assert len(rows) == len(expected)
+                        for csvrow, (report, vector) in zip(
+                            rows, expected, strict=True
+                        ):
+                            assert csvrow["row_key"] == report["row_key"]
+                            assert json.loads(csvrow["metric_vector"]) == vector
+                            assert (
+                                json.loads(csvrow["report_display"])
+                                == report["display"]
+                            )
+                            assert (
+                                json.loads(csvrow["publication_map"])
+                                == page["snapshot"]["publication_map"]
+                            )
+                        # 金额来自SDK固定夹具：父层40/50，Ad dash；非从被测实现推导。
+                        revenue = rows[0]["Native Growth 总展示价值（平台原字段）"]
+                        assert revenue == (
+                            ""
+                            if page["snapshot"]["filters"]["dimension"] == "ad"
+                            else "40"
+                        )
                     with factory() as s:
                         export = s.get(ReportExport, UUID(export_id))
                         print(  # noqa: T201

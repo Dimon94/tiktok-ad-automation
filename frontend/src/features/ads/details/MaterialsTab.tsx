@@ -39,9 +39,13 @@ function statusText(status: string | null | undefined) {
 /** 素材维度详情：只列出该素材的使用位置（数据在素材行本身）。 */
 export function MaterialsTab({
   materials,
+  row,
 }: {
+  row: ReportRow
   materials: MaterialUsePublic[]
 }) {
+  if (row.material_instances?.length)
+    return <MaterialInstanceEvidence row={row} />
   if (!materials.length)
     return (
       <p className="text-sm text-muted-foreground">
@@ -50,6 +54,9 @@ export function MaterialsTab({
     )
   return (
     <div className="overflow-x-auto rounded-md border">
+      <p className="p-3 text-sm text-muted-foreground">
+        当前结果未形成可精确展开的单 creative 实例；下方仅为使用位置。
+      </p>
       <Table>
         <TableHeader>
           <TableRow>
@@ -501,6 +508,113 @@ export function CreativeEvidence({ row }: { row: ReportRow }) {
             .join(" → ")}
         </p>
       ))}
+    </div>
+  )
+}
+
+/** 所有展开内容直接来自当前查询的冻结载荷，不触发实时详情读取。 */
+function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
+  const [page, setPage] = useState(0)
+  const instances = row.material_instances ?? []
+  const shown = instances.slice(page * 10, (page + 1) * 10)
+  return (
+    <div className="space-y-3" data-testid="material-instance-result">
+      <p className="text-sm">投放实例 · {instances.length} 条</p>
+      <p className="text-xs text-muted-foreground">
+        creative
+        收益支持、D0窗口、自然与付费组成及成熟截止尚未确认；缺失值保持未知。
+      </p>
+      {shown.map((instance) => (
+        <section
+          key={instance.evidence_digest}
+          className="rounded-md border p-3 text-sm space-y-2"
+        >
+          <h3 className="font-medium">
+            素材投放实例 · {instance.key.platform_material_id}
+          </h3>
+          <p>
+            账户 {instance.key.advertiser_id} · 父广告{" "}
+            {instance.key.parent_ad_id} · 使用位置{" "}
+            {instance.key.ad_material_id ?? "未知"}
+          </p>
+          <p>creative：{instance.creative_ids.join("、")}</p>
+          {instance.metric_buckets.map((bucket) => (
+            <p key={`${bucket.currency}:${bucket.timezone}`}>
+              {bucket.currency} · {bucket.timezone} · 消耗{" "}
+              {bucket.values?.spend ?? "未知"} · 收入{" "}
+              {bucket.values?.revenue_total ?? "未知"}
+            </p>
+          ))}
+          <p className="text-muted-foreground">
+            覆盖：{String(instance.coverage.status ?? "未知")}
+            ；字段证据：历史未知
+          </p>
+          <details>
+            <summary className="cursor-pointer">查看来源与冻结身份</summary>
+            <pre className="whitespace-pre-wrap break-all text-xs">
+              {JSON.stringify(
+                {
+                  key: instance.key,
+                  facts: instance.fact_keys,
+                  observations: instance.observations,
+                  digest: instance.evidence_digest,
+                },
+                null,
+                2,
+              )}
+            </pre>
+          </details>
+        </section>
+      ))}
+      {instances.length > 10 && (
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={page === 0}
+            onClick={() => setPage(page - 1)}
+          >
+            上一页
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={(page + 1) * 10 >= instances.length}
+            onClick={() => setPage(page + 1)}
+          >
+            下一页
+          </Button>
+        </div>
+      )}
+      {(row.parent_controls ?? []).map((control) => (
+        <section
+          key={control.evidence_digest}
+          className="rounded-md border p-3 text-sm space-y-1"
+        >
+          <h3 className="font-medium">
+            父广告对照 · {control.key.parent_ad_id}
+          </h3>
+          <p className="text-muted-foreground">
+            完整父广告范围；不计入素材合计，不计算差额。
+          </p>
+          {control.metric_buckets.map((bucket) => (
+            <p key={`${bucket.currency}:${bucket.timezone}`}>
+              {bucket.currency} · 消耗 {bucket.values?.spend ?? "未知"} · 收入{" "}
+              {bucket.values?.revenue_total ?? "未知"}
+            </p>
+          ))}
+          <details>
+            <summary className="cursor-pointer">查看父级来源</summary>
+            <pre className="whitespace-pre-wrap break-all text-xs">
+              {JSON.stringify(control, null, 2)}
+            </pre>
+          </details>
+        </section>
+      ))}
+      <details>
+        <summary className="cursor-pointer text-xs">冻结结果标识</summary>
+        <p className="break-all text-xs">{row.evidence_digest}</p>
+      </details>
     </div>
   )
 }

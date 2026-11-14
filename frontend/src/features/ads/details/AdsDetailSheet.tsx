@@ -382,6 +382,7 @@ function DetailBody({
               />
             ) : (
               <MaterialsTab
+                row={row}
                 materials={(row.material_uses ?? []).map((use) => ({
                   use_ref: use,
                   name: row.display?.material_name ?? "",

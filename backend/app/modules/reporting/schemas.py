@@ -17,7 +17,7 @@ from app.integrations.tiktok.contracts.carousel import CarouselCreativeIdentity
 from app.modules.reporting.metric_catalog import MetricContract
 
 # 素材经济事实源与行键已切换；缓存和冻结快照必须使用同一合同代数。
-MATERIAL_QUERY_CONTRACT = 2
+MATERIAL_QUERY_CONTRACT = 3
 
 Dimension = Literal["account", "campaign", "adgroup", "ad", "material", "drama"]
 # PARTIAL 表示部分合计：只合计有值的成员（跨日、跨账户或跨对象），缺失成员既不
@@ -185,7 +185,9 @@ class MetricVector(BaseModel):
     currency: str
     timezone: str
     attribution: str
-    level: Literal["campaign", "adgroup", "ad"] | None = None
+    level: (
+        Literal["campaign", "adgroup", "ad", "creative", "material_instance"] | None
+    ) = None
     source_kind: Literal["PLATFORM_DIRECT", "CHILD_DERIVED"] | None = None
     contract_revision: str | None = None
     # A 当前没有 optimization_goal 坐标；None 是唯一可发布值。
@@ -207,11 +209,36 @@ class MetricVector(BaseModel):
         return self
 
 
+class MaterialInstanceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: dict[str, str | None]
+    creative_ids: tuple[str, ...]
+    fact_keys: tuple[str, ...]
+    metric_buckets: tuple[MetricVector, ...]
+    coverage: dict[str, object]
+    observations: tuple[dict[str, Any], ...]
+    evidence_digest: str
+
+
+class ParentAdControl(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: dict[str, str | None]
+    scope: Literal["FULL_PARENT_AD"] = "FULL_PARENT_AD"
+    metric_buckets: tuple[MetricVector, ...]
+    coverage: dict[str, object]
+    evidence_digest: str
+
+
 class ReportRow(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     row_key: str
     # 描述性轮播组合；指标仍以广告行唯一键发布。
+    material_instances: tuple[MaterialInstanceResult, ...] = ()
+    parent_controls: tuple[ParentAdControl, ...] = ()
+    evidence_digest: str = ""
     carousel_creatives: tuple[CarouselCreativeIdentity, ...] = ()
     display: dict[str, str | None] = Field(default_factory=dict)
     refs: tuple[EntityRef, ...] = ()

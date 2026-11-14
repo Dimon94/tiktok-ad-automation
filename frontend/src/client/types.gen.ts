@@ -5283,6 +5283,46 @@ export type MappingInput = {
 };
 
 /**
+ * MaterialInstanceResult
+ */
+export type MaterialInstanceResult = {
+    /**
+     * Key
+     */
+    key: {
+        [key: string]: string | null;
+    };
+    /**
+     * Creative Ids
+     */
+    creative_ids: Array<string>;
+    /**
+     * Fact Keys
+     */
+    fact_keys: Array<string>;
+    /**
+     * Metric Buckets
+     */
+    metric_buckets: Array<MetricVector>;
+    /**
+     * Coverage
+     */
+    coverage: {
+        [key: string]: unknown;
+    };
+    /**
+     * Observations
+     */
+    observations: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Evidence Digest
+     */
+    evidence_digest: string;
+};
+
+/**
  * MaterialPublic
  */
 export type MaterialPublic = {
@@ -5890,7 +5930,7 @@ export type MetricVector = {
     /**
      * Level
      */
-    level?: 'campaign' | 'adgroup' | 'ad' | null;
+    level?: 'campaign' | 'adgroup' | 'ad' | 'creative' | 'material_instance' | null;
     /**
      * Source Kind
      */
@@ -7309,6 +7349,36 @@ export type Page_VersionPublic_ = {
      * Total
      */
     total: number;
+};
+
+/**
+ * ParentAdControl
+ */
+export type ParentAdControl = {
+    /**
+     * Key
+     */
+    key: {
+        [key: string]: string | null;
+    };
+    /**
+     * Scope
+     */
+    scope?: 'FULL_PARENT_AD';
+    /**
+     * Metric Buckets
+     */
+    metric_buckets: Array<MetricVector>;
+    /**
+     * Coverage
+     */
+    coverage: {
+        [key: string]: unknown;
+    };
+    /**
+     * Evidence Digest
+     */
+    evidence_digest: string;
 };
 
 /**
@@ -8796,6 +8866,18 @@ export type ReportRow = {
      * Row Key
      */
     row_key: string;
+    /**
+     * Material Instances
+     */
+    material_instances?: Array<MaterialInstanceResult>;
+    /**
+     * Parent Controls
+     */
+    parent_controls?: Array<ParentAdControl>;
+    /**
+     * Evidence Digest
+     */
+    evidence_digest?: string;
     /**
      * Carousel Creatives
      */

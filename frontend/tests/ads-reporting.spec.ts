@@ -929,3 +929,66 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
   }
 
 })
+
+test("素材实例与独立父控制 @material-instance-live", async ({ page }) => {
+  test.skip(!process.env.JB34_CAPTURE, "由JB34专用PG/Redis runner启动")
+  await page.addInitScript(() =>
+    localStorage.setItem("access_token", "local-test-actor"),
+  )
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/tenants/") &&
+      response.url().includes("/ads?") &&
+      response.url().includes("dimension=material") &&
+      response.url().includes("query=vid1") &&
+      response.status() === 200,
+  )
+  await page.goto(
+    `/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads?bc_id=123456&dimension=material&query=vid1&start_date=2026-11-13&end_date=2026-11-13`,
+  )
+  await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
+  await page.getByRole("option", { name: /123456/ }).click()
+  await page.getByRole("tab", { name: "素材", exact: true }).click()
+  await page
+    .getByRole("textbox", { name: "开始日期", exact: true })
+    .fill("2026-11-13")
+  await page
+    .getByRole("textbox", { name: "结束日期", exact: true })
+    .fill("2026-11-13")
+  await page
+    .getByRole("textbox", { name: "搜索广告", exact: true })
+    .fill("vid1")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page
+    .getByRole("row")
+    .filter({
+      has: page.getByRole("button", { name: "vid1.mp4", exact: true }),
+    })
+    .first()
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-metric="spend"]')).toContainText("40")
+  await row.getByRole("button", { name: "vid1.mp4", exact: true }).click()
+  await page.getByRole("tab", { name: "素材", exact: true }).last().click()
+  const evidence = page.getByTestId("material-instance-result")
+  await expect(evidence).toContainText("素材投放实例 · vid1")
+  await expect(evidence).toContainText("消耗 40")
+  await expect(evidence).toContainText("父广告对照 · ad1")
+  await expect(evidence).toContainText("消耗 100")
+  await expect(evidence).toContainText("尚未确认")
+  const payload = await (await responsePromise).json()
+  await page.keyboard.press("Escape")
+  const exportResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes("/report-exports?") &&
+      response.request().method() === "POST" &&
+      response.status() === 200,
+  )
+  await page.getByRole("button", { name: "导出", exact: true }).click()
+  const exported = await exportResponse
+  expect(exported.ok()).toBeTruthy()
+  const { writeFileSync } = await import("node:fs")
+  writeFileSync(
+    process.env.JB34_CAPTURE!,
+    JSON.stringify({ export_id: (await exported.json()).id, page: payload }),
+  )
+})

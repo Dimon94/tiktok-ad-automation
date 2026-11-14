@@ -143,6 +143,7 @@ def read_facts(
     row_keys=None,
     directory=False,
     exact_ad=None,
+    observations=False,
 ):
     from app.modules.reporting.row_set import _Params
 
@@ -158,6 +159,22 @@ def read_facts(
     if row_keys is not None:
         params.values["row_keys"] = list(row_keys)
         where = "WHERE row_key=ANY(:row_keys)"
+    if observations:
+        return (
+            session.connection()
+            .execute(
+                text(f"""WITH {ctes}
+            SELECT f.*,r.fetched_at AS fact_observed_at,r.sync_job_id AS fact_sync_job_id
+            FROM creative_filtered f LEFT JOIN creative_report_day r
+            ON r.tenant_id=f.tenant_id AND r.advertiser_id=f.advertiser_id
+            AND r.creative_id=f.creative_id AND r.stat_date=f.stat_date
+            {where.replace("row_key=", "f.row_key=")}
+        """),
+                params.values,
+            )
+            .mappings()
+            .all()
+        )
     return (
         session.connection()
         .execute(

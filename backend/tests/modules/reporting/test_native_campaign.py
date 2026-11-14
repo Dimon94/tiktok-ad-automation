@@ -486,108 +486,117 @@ def live_campaign_workspace(
     if source_thread:
         source_thread.start()
     try:
-        with TestClient(app) as client:
-            import time
+        if level != "material":
+            with TestClient(app) as client:
+                import time
 
-            started = time.perf_counter()
-            response = client.get(
-                f"/api/tenants/{seed.tenant_id}/ads",
-                params={
-                    "bc_id": TEST_BC,
-                    "dimension": level,
-                    "force_refresh": bool(snapshot_refresh),
-                    "start_date": str(D),
-                    "end_date": str(D),
-                    "advertiser_id": "acc-1",
-                },
-            )
-            assert response.status_code == 200, response.text
-            sync_response = client.get(
-                f"/api/tenants/{seed.tenant_id}/ad-sync-status",
-                params={"bc_id": TEST_BC, "start_date": str(D), "end_date": str(D)},
-            )
-            assert sync_response.status_code == 200, sync_response.text
-            layers = sync_response.json()["accounts"][0]["levels"]
-            assert {item["level"] for item in layers} == {"campaign", "adgroup", "ad"}
-            selected = next(item for item in layers if item["level"] == level)
-            assert selected["status"] == attempt_status
-            assert selected["publication_version"] > 0
-            assert (
-                selected["last_success_at"]
-                and selected["last_attempt_at"]
-                and selected["observed_at"]
-            )
-            first_ms = (time.perf_counter() - started) * 1000
-            payload = response.json()
-            if snapshot_refresh:
+                started = time.perf_counter()
+                response = client.get(
+                    f"/api/tenants/{seed.tenant_id}/ads",
+                    params={
+                        "bc_id": TEST_BC,
+                        "dimension": level,
+                        "force_refresh": bool(snapshot_refresh),
+                        "start_date": str(D),
+                        "end_date": str(D),
+                        "advertiser_id": "acc-1",
+                    },
+                )
+                assert response.status_code == 200, response.text
+                sync_response = client.get(
+                    f"/api/tenants/{seed.tenant_id}/ad-sync-status",
+                    params={"bc_id": TEST_BC, "start_date": str(D), "end_date": str(D)},
+                )
+                assert sync_response.status_code == 200, sync_response.text
+                layers = sync_response.json()["accounts"][0]["levels"]
+                assert {item["level"] for item in layers} == {
+                    "campaign",
+                    "adgroup",
+                    "ad",
+                }
+                selected = next(item for item in layers if item["level"] == level)
+                assert selected["status"] == attempt_status
+                assert selected["publication_version"] > 0
                 assert (
-                    payload["items"][0]["display"]["report_refresh_status"]
-                    == "COMPLETE"
-                ), payload["items"][0]["display"]["report_layer_status"]
-            started = time.perf_counter()
-            page1 = client.get(
-                f"/api/tenants/{seed.tenant_id}/ads",
-                params={
-                    "bc_id": TEST_BC,
-                    "dimension": level,
-                    "start_date": str(D),
-                    "end_date": str(D),
-                    "advertiser_id": "acc-1",
-                    "limit": 1,
-                },
-            ).json()
-            page2 = client.get(
-                f"/api/tenants/{seed.tenant_id}/ads",
-                params={
-                    "bc_id": TEST_BC,
-                    "dimension": level,
-                    "start_date": str(D),
-                    "end_date": str(D),
-                    "advertiser_id": "acc-1",
-                    "limit": 1,
-                    "snapshot_id": page1["snapshot"]["snapshot_id"],
-                    "cursor": page1["next_cursor"],
-                },
-            )
-            assert page2.status_code == 200
-            assert page2.json()["items"][0]["row_key"] != page1["items"][0]["row_key"]
-            print(  # noqa: T201
-                f"JB25 HTTP first={first_ms:.2f}ms; limit1 first+next={(time.perf_counter() - started) * 1000:.2f}ms; SDK requests=2"
-            )
-            assert (
-                payload["items"][0]["display"]["platform_roas_total"]
-                == "0.801234567890123456789"
-            )
-            assert (
-                payload["items"][0]["metric_buckets"][0]["values"]["revenue_total"]
-                == "40"
-            )
-            catalog = client.get(
-                f"/api/tenants/{seed.tenant_id}/ads/metric-catalog"
-            ).json()
-            d0 = next(m for m in catalog if m["key"] == "revenue_d0")
-            assert d0["contract"]["window"] == "CLICK_HOURS"
-            assert d0["contract"]["click_hours"] == 24
-            assert d0["contract"]["traffic_scope"] == "UNCONFIRMED"
-            assert d0["levels"] == ["campaign", "adgroup", "ad"]
-            assert d0["source_kind"] == "PLATFORM_DIRECT"
-            roas = next(m for m in catalog if m["key"] == "roas_total")
-            assert roas["contract"]["aggregation"] == "RATIO_OF_SUMS"
-            assert roas["source_kind"] == "LOCAL_CALCULATION"
-            assert roas["contract"]["numerator"] == "revenue_total"
-            assert (
-                roas["platform_observation"]["aggregation"] == "SINGLE_OBSERVATION_ONLY"
-            )
-            assert (
-                roas["platform_observation"]["field"] == "native_growth_ad_revenue_roas"
-            )
-
+                    selected["last_success_at"]
+                    and selected["last_attempt_at"]
+                    and selected["observed_at"]
+                )
+                first_ms = (time.perf_counter() - started) * 1000
+                payload = response.json()
+                if snapshot_refresh:
+                    assert (
+                        payload["items"][0]["display"]["report_refresh_status"]
+                        == "COMPLETE"
+                    ), payload["items"][0]["display"]["report_layer_status"]
+                started = time.perf_counter()
+                page1 = client.get(
+                    f"/api/tenants/{seed.tenant_id}/ads",
+                    params={
+                        "bc_id": TEST_BC,
+                        "dimension": level,
+                        "start_date": str(D),
+                        "end_date": str(D),
+                        "advertiser_id": "acc-1",
+                        "limit": 1,
+                    },
+                ).json()
+                page2 = client.get(
+                    f"/api/tenants/{seed.tenant_id}/ads",
+                    params={
+                        "bc_id": TEST_BC,
+                        "dimension": level,
+                        "start_date": str(D),
+                        "end_date": str(D),
+                        "advertiser_id": "acc-1",
+                        "limit": 1,
+                        "snapshot_id": page1["snapshot"]["snapshot_id"],
+                        "cursor": page1["next_cursor"],
+                    },
+                )
+                assert page2.status_code == 200
+                assert (
+                    page2.json()["items"][0]["row_key"] != page1["items"][0]["row_key"]
+                )
+                print(  # noqa: T201
+                    f"JB25 HTTP first={first_ms:.2f}ms; limit1 first+next={(time.perf_counter() - started) * 1000:.2f}ms; SDK requests=2"
+                )
+                assert (
+                    payload["items"][0]["display"]["platform_roas_total"]
+                    == "0.801234567890123456789"
+                )
+                assert (
+                    payload["items"][0]["metric_buckets"][0]["values"]["revenue_total"]
+                    == "40"
+                )
+                catalog = client.get(
+                    f"/api/tenants/{seed.tenant_id}/ads/metric-catalog"
+                ).json()
+                d0 = next(m for m in catalog if m["key"] == "revenue_d0")
+                assert d0["contract"]["window"] == "CLICK_HOURS"
+                assert d0["contract"]["click_hours"] == 24
+                assert d0["contract"]["traffic_scope"] == "UNCONFIRMED"
+                assert d0["levels"] == ["campaign", "adgroup", "ad"]
+                assert d0["source_kind"] == "PLATFORM_DIRECT"
+                roas = next(m for m in catalog if m["key"] == "roas_total")
+                assert roas["contract"]["aggregation"] == "RATIO_OF_SUMS"
+                assert roas["source_kind"] == "LOCAL_CALCULATION"
+                assert roas["contract"]["numerator"] == "revenue_total"
+                assert (
+                    roas["platform_observation"]["aggregation"]
+                    == "SINGLE_OBSERVATION_ONLY"
+                )
+                assert (
+                    roas["platform_observation"]["field"]
+                    == "native_growth_ad_revenue_roas"
+                )
         thread.start()
         pending_exports = []
         if snapshot_refresh:
             import httpx
 
             from tests.modules.reporting.native_export_harness import capture
+
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as http:
                 pending_exports = capture(http, seed)
         result = subprocess.run(
@@ -598,7 +607,9 @@ def live_campaign_workspace(
                 "--project=workspace",
                 "tests/ads-reporting.spec.ts",
                 "-g",
-                "@native-campaign-live",
+                "@material-instance-live"
+                if level == "material"
+                else "@native-campaign-live",
                 "--reporter=line",
             ],
             cwd=Path(__file__).resolve().parents[4] / "frontend",
@@ -607,6 +618,7 @@ def live_campaign_workspace(
                 "API_PROXY_TARGET": f"http://127.0.0.1:{port}",
                 "NATIVE_CAMPAIGN_TENANT": str(seed.tenant_id),
                 "NATIVE_LEVEL": level,
+                "JB34_CAPTURE": str(barrier.with_suffix(".json")),
                 "JB29_REFRESH_BARRIER": str(barrier) if snapshot_refresh else "",
                 "JB28_SCOPE_DEMO": "1" if scope_demo else "",
                 "NATIVE_LABEL": label,
@@ -620,8 +632,12 @@ def live_campaign_workspace(
         )
         assert not snapshot_errors, snapshot_errors
         assert result.returncode == 0, result.stdout + result.stderr
+        if level == "material":
+            captured = json.loads(barrier.with_suffix(".json").read_text())
+            pending_exports = [(captured["export_id"], captured["page"])]
         if pending_exports:
             from tests.modules.reporting.native_export_harness import complete
+
             complete(f"http://127.0.0.1:{port}", seed, factory, pending_exports)
     finally:
         stop.set()
