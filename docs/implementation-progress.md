@@ -5561,3 +5561,5 @@ Root22 relevant checks passed including material browser/Celery/CSV. Corrected l
 ## 2026-11-14 JB35 素材身份与逐事实证据（本地候选）
 
 在feat/jb33-native-material-m4b、起点cf20640上串行厚化原contract3冻结结果：多creative、精确MID、COMPOSITE/UNMAPPED_CREATIVE、连接歧义、publisher五态与自身观测scope/version/digest；原UI/CSV共源。新增本地additive creative_fact_evidence迁移，旧事实保留NULL证据。真实SDKtransport/原sync与export Workers/PGRedis/浏览器/HTTP/CSV通过，21相关检查绿；creative_reporting既有调度期望失配单列。窄mypy新增0，未宣称全仓绿。详见docs/validation/2026-11-14-jb35-material-identity-evidence.md。等待root阶段接受/全MMF审查，未写tracker/推送/合并/部署；JB36完整指标与对账仍待实施。
+
+- M4b JB35 root阶段接受：候选6454a666，独立核心21 passed、creative_reporting修正M4a旧数量断言后6 passed；32+12有限案例通过。产品调度不改，原软链保留。下一fresh Sol/high推进JB36指标/父Ad对账；M4b整体未放行。

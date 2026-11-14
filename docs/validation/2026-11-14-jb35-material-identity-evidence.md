@@ -59,3 +59,11 @@ JB34接口实际复跑：`test_material_result_is_frozen_before_export`，creati
 原字段增量：MaterialInstanceResult.row_kind / identity_reason / field_state_counts；observations包含values、field_states、publisher、evidence、identity。coverage同样冻结field_state_counts及field_evidence；instance_count只含INSTANCE，special_row_count单列。CSV原writer增量携带同字段。父控制仍独立完整Ad范围，不受素材过滤、不进普通实例合计。
 
 JB36继续完整金额grain/ratio/coverage分母、严格父范围可比性与差额、最终五种CSV行类；当前无实例的原summary/残差尚未变成最终五类，不提前声称完成JB36。CREATIVE_OBSERVED_CONTRACT唯一常量仅标本地观察，D0/NativeGrowth支持/自然付费/total成熟均UNCONFIRMED/Unknown。无真实平台或生产验收；SDKdouble不是平台证明。
+
+## Root 独立阶段验收
+
+Root 在候选 `6454a666baeff6a736813ea8d42b667c8cd58fea` 核对增量、正式 JB35/JB36 边界及发布/投影/冻结/导出调用。独立复跑 tracer、creative projection、material query：21 passed / 13.41s，包含真实浏览器与原 Worker/CSV 链；原7条弃用警告不影响行为。亲跑 material.py：原32与新增12个有界案例通过，不外推为全系统证明。源码拒错、构建与窄 mypy 证据继承候选的源码匹配结果，未重复无关全仓检查。
+
+Root 复现 creative_reporting 旧调度断言：5 passed、1 failed，差异仅为 M4a 已有 campaign_day/adgroup_day。候选未改该调度和旧测试；本轮只将此断言更新为明确的四类日报，保留所有单账户断言，不改产品逻辑。更新后该文件6 passed / 0.67s。差异检查通过。
+
+结论：JB35 本地阶段接受，可以在同一集成树推进 JB36；不是整 M4b 放行，不提前关闭 Linear。JB36 仍负责完整金额 grain/分母、可比父范围与最终五种 CSV 行；真实历史可恢复性、creative 平台口径及生产容量仍 Unknown。
