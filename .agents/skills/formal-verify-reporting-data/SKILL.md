@@ -216,3 +216,55 @@ rollback refusal, then runs the same-version SDK/API/Worker/export seam. Never
 point it at production. See [JB30 validation](../../../docs/validation/2026-11-14-jb30-native-growth-csv.md)
 for actual commands/failures/measurements and inherited T/R matrix. No model
 finding is called a product defect without the corresponding real code failure.
+
+## M4a R1 precise Ad observations
+
+sync_commit: `95c5f2728b626522c9228a5090ba3393a380fa5c` (product source checked).
+Outcome **updated** for the R9 observation abstraction; R4/R10 direct authority
+and whole-account R7 publication remain **in sync**. Read the diff from JB30
+`2a42c983e6dd364032f6ea7875b29d2be1080a90` through this product commit,
+particularly publish.py, row_set.py, dimension_query.py and frozen_result.py.
+The old 128-state snapshot model still passes but its single coordinate per
+layer cannot describe targeted facts mixed with older untouched Ad facts.
+It is supplemented, not used as proof of the new selection.
+
+```bash
+python3 .agents/skills/formal-verify-reporting-data/scripts/targeted.py
+python3 .agents/skills/formal-verify-reporting-data/scripts/targeted.py --broken-account-stamp
+python3 .agents/skills/formal-verify-reporting-data/scripts/targeted_probes.py
+```
+
+Normal targeted model passes 8 cases (existing/no account publication, two
+abstract payload digests, prior native/legacy contract). Broken model must fail.
+Each fact is one paired abstract money token and immutable observation. A target
+transition replaces only C1; account t0/V/H and C2 remain untouched. The derived
+candidate carries both observations. A frozen query/detail/export retains that
+captured tuple after the next target publication. No money is stored twice in
+the product: the abstract token represents the existing Numeric column only.
+
+Mapping: publish_ad_day stamps exact scope/digest/job ID/contract on existing
+AdReportDay.evidence in the same transaction as its amount; no new sync owner
+or account version. row_set's lateral child branch and fact_coordinates consume
+actual row contracts and observations; direct parent state and complete empty
+buckets retain authority. The same facts CTE drives SQL membership, sums,
+filter/sort and MetricVector. RR freeze_results copies the chosen observation
+into existing query rows and publication_map; existing export copying retains it.
+
+Assumptions unchanged: publication is one committed PG transaction under the
+existing account advisory lock, query capture is RR, exported tuples are
+immutable. The model does not verify those transaction mechanics or promise
+new monotonic ordering for overlapping targeted tasks. Real PG publication
+regressions bind the existing transaction/fence rules. No claim about unbounded
+concurrency, TikTok maturity, permission proof or production deployment.
+
+Real R1 replay: test_targeted_provenance.py first failed on a1=100 with t0;
+then passed on t1 + precise C1 digest/contract, preserving a2/account t0.
+The source probes independently force old account observation and borrowed
+account contract, require business AssertionError, restore an external backup
+in finally, invoke cmp, then require unchanged GREEN. Never overlap them with
+PG fixtures or another source writer. This binds the model counterexample to
+real publisher/query SQL, rather than repairing a model alone.
+
+Evidence and known root-owned P2 failures:
+[precise provenance validation](../../../docs/validation/2026-11-14-native-m4a-r1-targeted-provenance.md).
+Root must fix the three P2s and perform fresh R2; this sync is not M4a approval.

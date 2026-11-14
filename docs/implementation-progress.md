@@ -5537,3 +5537,5 @@ Root independently checked frozen payload/contract, RR build, page/detail and cu
 ## 2026-11-14 — M4a R1 唯一 P1 定向事实 provenance 修复
 
 指定集成树从 `573ebc8fc2f50d212856c9d8ec23a29645ae3b59` 修复：原 Ad 行 evidence 保存真实精确 scope 发布坐标，不推进整账户 COMPLETE/version；ordinary/contribution/CHILD_DERIVED 共用 SQL 选择并保留逐子观测，RR/CSV 冻结实际发布图。真实 PG 初始反例 RED；相关134测试通过；两项真实源码消融 RED→finally/cmp→GREEN。三个 P2 留 root，native_levels 的已知 ratio P2 失败如实保留；未放行 M4a。见 `docs/validation/2026-11-14-native-m4a-r1-targeted-provenance.md`。产品/测试与形式模型维护独立提交，不推送/集成/部署。
+
+本轮产品提交 `95c5f2728b626522c9228a5090ba3393a380fa5c`。形式维护独立提交：新增8例精确scope模型及两个真实PG源码消融，skill同步至该产品源码；账户完整性/原子发布假设未扩大。

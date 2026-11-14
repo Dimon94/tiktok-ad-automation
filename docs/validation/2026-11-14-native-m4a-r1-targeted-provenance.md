@@ -44,3 +44,5 @@ matched 字段：金额100；来源 PLATFORM_DIRECT 或 CHILD_DERIVED；native �
 三个 P2 刻意未修：creative 快照局部变量；legacy NULL 的 ABSENT；未请求 ratio 的 NO_RETURNED_ROW。R1 Spec 曾在 ratio P2 处阻断的 native_levels 全路径需 root 修 P2 后 fresh R2 执行。生产/平台语义确认仍 Unknown。最终形式验证同步见独立模型提交及 skill R1 段；其 atomic publication/RR 假设没有扩大为无界证明。
 
 最终小范围复验：发布图去重后 targeted + native_exports **17 passed，5.28s**；compileall、Ruff、git diff --check 通过。新增同类范围断言已覆盖；不再重复全量验证。
+
+形式维护（独立提交）：product sync `95c5f2728b626522c9228a5090ba3393a380fa5c`。读旧 JB30 sync 到该产品提交的发布/选择/冻结变化；R4/R10 48 states、R7 57 component states、旧 R9 128 observations 基线通过。新增 targeted.py 8 cases 描述“账户完整性坐标与精确事实观测分离”，正常 PASS、`--broken-account-stamp` 以 AssertionError 拒绝错误归属；两项真实 PG 源码 probes 绑定该反例。原单层坐标模型不能表达同层多个观测，因此为 updated，不称旧模型已经证明 P1。原 PG 事务/advisory lock 与 RR atomic capture 假设未改变；无界并发和重叠 target 任务新时序保证未建模。三个 root P2 未修改，模型维护不依赖这些展示修复；root 修后仍需 fresh R2 真业务验收。
