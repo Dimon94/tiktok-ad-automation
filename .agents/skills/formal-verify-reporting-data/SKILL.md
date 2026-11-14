@@ -161,3 +161,58 @@ No new product defect is left open from these checks; the empty-Account level
 and layer-overview regressions found during verification were product bugs and
 were fixed in the candidate. This does not prove unbounded concurrency, liveness,
 SDK behavior, arbitrary production scale or CSV consistency; CSV remains JB30.
+
+## JB30 R9 independent export lifetime
+
+sync_commit: `2a42c983e6dd364032f6ea7875b29d2be1080a90` (product head checked).
+Outcome **updated** for export R9; R4/R10, R7 and JB28 arithmetic remain **in sync**.
+The covered publisher/selector/query/vector/catalog code has no diff from JB29's
+8f986018 source sync. Query model additions only extend the existing export
+record; no new publication or arithmetic owner. The old 128-case description
+still passes but did not describe export consumption. `snapshot.py` now includes
+an export-owned captured tuple surviving removal of the source snapshot. Normal
+passes; `--broken-export` and `--broken-read` each fail on evidence-only refresh.
+This keeps the original finite bounds/atomicity and immutable-capture assumptions;
+it does not prove file storage, permissions, arbitrary concurrency or capacity.
+
+Run serially from the product root using the dedicated local guard:
+
+```bash
+python3 .agents/skills/formal-verify-reporting-data/scripts/snapshot.py
+python3 .agents/skills/formal-verify-reporting-data/scripts/snapshot.py --broken-export
+python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py python -m pytest backend/tests/modules/reporting/test_native_exports.py -q
+python3 .agents/skills/formal-verify-reporting-data/scripts/export_probes.py
+```
+
+Broken model command must exit with AssertionError. Six source mutations map the
+new property to real PG: export live recomputation, removed current grants,
+removed BC check, legacy task reinterpretation, float money and NULL→zero. Each
+must fail on a business assertion, restore external backup in finally with cmp,
+and pass unchanged GREEN. The probes accept optional names `live permission
+scope legacy precision null`. Do not run any fixture suite concurrently.
+Existing snapshot scope/page/detail probes and R7 at-most-once-publication
+mapping remain source-matching inherited evidence; export duplicate creation
+uses the original idempotency owner rather than a second publication mechanism.
+
+The export PG regression publishes independent 0.100000000000000001/0/0.3/dash
+values, creates the task, refreshes source, deletes the original snapshot, and
+requires original CSV/vector/map plus cleanup of copied payload. Separate
+regressions bind current access, repeated creation/retry and legacy Worker
+failure/preserved completed bytes. The original live native_levels harness now
+adds real Uvicorn create/download, actual Celery on a unique Redis queue, three
+CSV comparisons and HTTP revocation after SDK source refresh. No business
+service or browser response double is introduced.
+
+Optional, deliberately creates and retains a new dedicated loopback test DB:
+
+```bash
+python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py python .agents/skills/formal-verify-reporting-data/scripts/upgrade_rehearsal.py
+```
+
+It loads exact old application git blobs in memory (no checkout/branch creation),
+commits through the real old writer then exits that process; upgrades via
+Alembic, verifies unchanged old money/LEGACY_UNKNOWN/no parent backfill and
+rollback refusal, then runs the same-version SDK/API/Worker/export seam. Never
+point it at production. See [JB30 validation](../../../docs/validation/2026-11-14-jb30-native-growth-csv.md)
+for actual commands/failures/measurements and inherited T/R matrix. No model
+finding is called a product defect without the corresponding real code failure.

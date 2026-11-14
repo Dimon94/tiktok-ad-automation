@@ -167,3 +167,14 @@ caught a new reused loop-variable type; renamed it without changing behavior.
 The two changed typed owners (exports/query_models) then pass; export_tasks
 retains its three existing Celery decorator/generic dict diagnostics. No new
 diagnostics remain and the pre-existing whole-repository baseline was not rerun.
+
+Product candidate: `2a42c983e6dd364032f6ea7875b29d2be1080a90`.
+Formal upkeep is a separate verification-only change. The maintained skill was
+followed from that head: existing/extended 128-case models pass, broken read and
+broken export each fail on evidence-only refresh; final export PG cases **3
+passed**. R4/R7/R10 and vector source diffs from JB29 sync are empty. The local
+upgrade script is now retained at
+`.agents/skills/formal-verify-reporting-data/scripts/upgrade_rehearsal.py` with an
+explicit dedicated-test/loopback gate, so the `/tmp` rehearsal can be reproduced
+without a new checkout. It deliberately retains its synthetic database; running
+it again is optional and was not repeated after adding that boundary check.

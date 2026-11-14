@@ -5529,3 +5529,7 @@ Root independently checked frozen payload/contract, RR build, page/detail and cu
   `docs/validation/2026-11-14-jb30-native-growth-csv.md`.
 - Candidate only; no Linear change, push/PR/main merge, deploy or whole M4a release.
   Root fresh Standards/Spec reviews and local integration remain outstanding.
+- JB30 product candidate `2a42c983e6dd364032f6ea7875b29d2be1080a90`.
+  Separate formal upkeep extends R9 export lifetime at this source sync, keeps
+  unchanged R4/R7/R10/vector mappings, and retains guarded isolated upgrade
+  rehearsal plus six real-code export probes. Final export PG cases: 3 pass.
