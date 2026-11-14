@@ -235,6 +235,8 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
                 )
             task.evidence = bound_evidence
             session.add(task)
+        from app.modules.ai_workbench.review_store import source_catalog
+
         payload = {
             "task": {
                 "id": str(task.id),
@@ -243,7 +245,10 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
                 "fence": task.fence,
                 "expires_at": task.authorization_expires_at.isoformat(),
                 "max_expires_at": (task.started_at + timedelta(hours=2)).isoformat(),
-                "evidence": task.evidence,
+                "evidence": {
+                    **task.evidence,
+                    "source_catalog": source_catalog(session, task),
+                },
             },
             "task_token": _task_token(task),
         }

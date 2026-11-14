@@ -73,9 +73,16 @@ def test_claim_binds_plugin_methods_and_retry_keeps_old_version(
     assert first.status_code == 200, first.text
     assert first.json()["task"]["evidence"]["methods"] == methods
     assert {
-        k: v for k, v in first.json()["task"]["evidence"].items() if k != "methods"
+        k: v
+        for k, v in first.json()["task"]["evidence"].items()
+        if k not in {"methods", "source_catalog"}
     } == frozen_business
+    assert any(
+        row["category"] == "reporting" and row["source_count"] > 0
+        for row in first.json()["task"]["evidence"]["source_catalog"]
+    )
     task = session.get(DSHReviewTask, task.id)
+    assert "source_catalog" not in task.evidence
     task.authorization_expires_at = datetime.now(UTC) - timedelta(seconds=1)
     session.flush()
     changed = plugin_methods()

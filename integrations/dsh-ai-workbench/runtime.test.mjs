@@ -45,7 +45,7 @@ test('native DSH session has only structured result tool and a tenant/task direc
     const tools = new Map(), skills = new Map()
     const ctx = { get: () => ({ currentSelection: () => ({ provider: 'test', model: 'test' }) }), agentPresets: { mount: async () => {} }, agents: { create: async input => {
       options = input
-      const agent = { followup: message => { prompt = message }, whenIdle: async () => { await assert.rejects(registered.execute({ summary: 'premature', proposals: [] }), /Load the main/); await tools.get('skill').execute({ name: skillName('ai-delivery-review') }); await tools.get('skill').execute({ name: skillName('scale') }); assert.equal((await tools.get('tkada_search_knowledge').execute({ query: '补贴' })).items[0].id, 'knowledge-1'); assert.equal((await tools.get('tkada_read_knowledge').execute({ knowledge_id: 'knowledge-1' })).body, 'policy text'); await registered.execute({ summary: 'insufficient evidence', proposals: [] }) } }
+      const agent = { followup: message => { prompt = message }, whenIdle: async () => { await assert.rejects(registered.execute({ summary: 'premature', proposals: [] }), /Load the main/); await tools.get('skill').execute({ name: skillName('ai-delivery-review') }); await tools.get('skill').execute({ name: skillName('scale') }); assert.equal((await tools.get('tkada_search_knowledge').execute({ query: '补贴' })).items[0].id, 'knowledge-1'); assert.equal((await tools.get('tkada_read_knowledge').execute({ knowledge_id: 'knowledge-1' })).body, 'policy text'); assert.equal((await registered.execute({ summary: 'uncorrected draft', proposals: [] })).status, 'verification_required'); assert.equal(completions.length, 0); await registered.execute({ summary: 'insufficient evidence', proposals: [] }) } }
       await input.setup({ inject: async (names, callback) => { assert.deepEqual(names, ['tools', 'skills']); return callback({ skills: { register: s => skills.set(s.name, s), get: async name => skills.get(name) }, tools: { restrict: value => { allowed = value.allow }, guard: value => { guard = value }, register: value => { tools.set(value.name, value); if (value.name === COMPLETE_TOOL) registered = value } } }) } }, agent)
       return { agent, dispose: async () => { disposed = true } }
     } } }
@@ -115,7 +115,7 @@ test('heartbeat updates the in-memory token without leaking it to the Agent', as
       return { agent: { followup: message => { prompt = message }, whenIdle: async () => {
         await heartbeat()
         await tools.get('skill').execute({ name: skillName('ai-delivery-review') })
-        await tools.get(COMPLETE_TOOL).execute({ summary: 'done', proposals: [] })
+        await tools.get(COMPLETE_TOOL).execute({ summary: 'draft', proposals: [] }); await tools.get(COMPLETE_TOOL).execute({ summary: 'done', proposals: [] })
       } }, dispose: async () => {} }
     } } }
     await runClaim(ctx, { stateRoot: directory, modelSelection: { provider: 'fixture', model: 'fixture' } }, claim,

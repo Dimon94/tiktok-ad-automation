@@ -52,7 +52,7 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
   if (!methods?.main || !methods.references) throw new Error('Task has no bound plugin methods')
   const catalog = [methods.main, ...methods.references].map(r => ({ name: skillName(r.key), description: r.description, version: r.version, sha256: r.sha256 }))
   const { methods: _archivedMethods, ...businessEvidence } = task.evidence
-  let completed = false
+  let completed = false, verificationRequested = false
   const controller = new AbortController()
   const expires = new Date(task.max_expires_at || task.expires_at).getTime() - Date.now()
   if (!(expires > 1000)) throw new Error('Review authorization expired')
@@ -86,12 +86,23 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
           // 不能把局部工具名传入该接口，否则原生宿主在 setup 时拒绝启动。
           taskCtx.tools.restrict({ allow: [] })
           taskCtx.tools.guard(execution => allowed.includes(execution.name) ? undefined : 'Only task-scoped evidence, analysis, notes, skills and review completion are permitted')
-          taskCtx.tools.register({ name: COMPLETE_TOOL, description: 'Submit a final evidence-grounded review. No scripts or platform operations. Use an empty proposal list when evidence is insufficient.',
+          taskCtx.tools.register({ name: COMPLETE_TOOL, description: 'Stage a draft on the first call and receive a mandatory verification checklist. Correct the draft using evidence, then call again to submit a final evidence-grounded review. No scripts or platform operations. Use an empty proposal list when evidence is insufficient.',
             parameters: { type: 'object', properties: { summary: { type: 'string' }, proposals: { type: 'array', maxItems: 20, items: { type: 'object', properties: { kind: { enum: ['strategy', 'rule'] }, operation: { enum: ['create', 'update'] }, target_id: { type: 'string' }, after: { type: 'object' }, rationale: { type: 'string' }, problem: { type: 'string' }, expected_effect: { type: 'string' }, validation: { type: 'string' }, evidence_ids: { type: 'array', items: { type: 'string' } } }, required: ['kind', 'operation', 'after'], additionalProperties: false } }, recommendations: { type: 'array', maxItems: 20, items: { type: 'object', properties: { problem: { type: 'string' }, suggestion: { type: 'string' }, evidence_ids: { type: 'array', items: { type: 'string' } }, validation: { type: 'string' }, capability_request: { type: 'string' } }, required: ['problem', 'suggestion'], additionalProperties: false } }, experience_candidates: { type: 'array', maxItems: 10, items: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' }, applicability: { type: 'string' }, evidence_ids: { type: 'array', minItems: 1, items: { type: 'string' } }, validation: { type: 'string' } }, required: ['title', 'body', 'applicability', 'evidence_ids', 'validation'], additionalProperties: false } } }, required: ['summary', 'proposals'], additionalProperties: false },
             output: { schema: { type: 'object', additionalProperties: true }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
             async execute(result) {
               if (controller.signal.aborted) throw new Error('Review cancelled or expired')
               if (!usedMethods.has(MAIN_KEY)) throw new Error('Load the main review skill before completing')
+              // 首稿先核对口径和证据类别；尚不写入领域结果或触发建议。
+              if (!verificationRequested) {
+                verificationRequested = true
+                return { status: 'verification_required', persisted: false, checks: [
+                  'Recheck every count and percentage against analysis coverage. Use available_accounts_percent/excluded_accounts_percent. For example 35 of 50 is 70%, never 85%.',
+                  'Do not pool distinct currency/timezone/window/attribution partitions. A shortfall to break-even 1.0 differs from a shortfall to target_roas. State revenue minus spend as an observed platform amount, not business net profit or causal loss.',
+                  'Before claiming data is absent inspect source_catalog and query/read relevant categories, especially BOTH business and data_pack_business, attribution and operation sources. An empty optimizer summary does not mean all account business sources are empty.',
+                  'A zero eligible threshold result does not prove many objects passed that threshold. Disabled rules and missing execution history do not prove avoidable loss or missed control opportunities.',
+                  'Correct contradictions between summary and recommendations, cite only delivered evidence, and explicitly separate observed facts, hypotheses and verification steps. Resubmit the corrected result with this tool.',
+                ], source_catalog: task.evidence.source_catalog || [] }
+              }
               const response = await runtime.complete(claim, { ...result, method_usage: [...usedMethods].sort() })
               completed = true
               return response

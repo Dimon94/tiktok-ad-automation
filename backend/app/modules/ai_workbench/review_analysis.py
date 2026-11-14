@@ -244,6 +244,24 @@ def analyze_for_task(
     coverage["excluded_accounts"] = (
         coverage["requested_accounts"] - coverage["available_accounts"]
     )
+    coverage["available_accounts_percent"] = (
+        str(
+            Decimal(coverage["available_accounts"])
+            * 100
+            / coverage["requested_accounts"]
+        )
+        if coverage["requested_accounts"]
+        else None
+    )
+    coverage["excluded_accounts_percent"] = (
+        str(
+            Decimal(coverage["excluded_accounts"])
+            * 100
+            / coverage["requested_accounts"]
+        )
+        if coverage["requested_accounts"]
+        else None
+    )
     totals = []
     for key in sorted(groups):
         group = groups[key]

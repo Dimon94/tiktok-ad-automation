@@ -235,3 +235,21 @@ def source_payloads(session, task, category):
         .execution_options(yield_per=1)
     ):
         yield row.payload
+
+
+def source_catalog(session, task):
+    """只提供类别计数，提醒 Agent 空的摘要不等于账户来源不存在。"""
+    from sqlalchemy import text
+
+    rows = session.execute(
+        text("""SELECT category, count(*) AS source_count,
+            count(DISTINCT advertiser_id) AS account_count,
+            sum(CASE WHEN jsonb_typeof(payload->'rows')='array'
+                THEN jsonb_array_length(payload->'rows')
+                WHEN jsonb_typeof(payload)='array' THEN jsonb_array_length(payload)
+                ELSE 0 END) AS row_count
+            FROM ai_review_source WHERE task_id=:task AND tenant_id=:tenant
+                AND optimizer_id=:optimizer GROUP BY category ORDER BY category"""),
+        {"task": task.id, "tenant": task.tenant_id, "optimizer": task.optimizer_id},
+    ).mappings()
+    return [dict(row) for row in rows]

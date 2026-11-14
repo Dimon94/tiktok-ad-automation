@@ -532,3 +532,43 @@ def test_repair_due_filter_prevents_fresh_tasks_starving_lost_dispatch(
     assert repair_preparation(session, now=datetime.now(UTC), limit=1) == 1
     assert first.evidence["preparation"]["generation"] == 0
     assert second.evidence["preparation"]["generation"] == 1
+
+
+def test_catalog_exposes_account_business_and_coverage_percentages(session, context):
+    from app.modules.ai_workbench.review_store import source_catalog
+
+    task = create_task(session, context, 50)
+    for i, aid in enumerate(task.evidence["optimizer"]["advertiser_ids"]):
+        archive_source(
+            session,
+            task=task,
+            category="reporting",
+            payload=report(aid, mature="AVAILABLE" if i < 15 else "STALE"),
+            captured_at=datetime.now(UTC),
+        )
+    archive_source(
+        session,
+        task=task,
+        category="business",
+        payload={"rows": []},
+        captured_at=datetime.now(UTC),
+    )
+    archive_source(
+        session,
+        task=task,
+        category="data_pack_business",
+        payload={
+            "advertiser_id": "acc-1",
+            "rows": [{"id": "settlement-a"}, {"id": "settlement-b"}],
+        },
+        captured_at=datetime.now(UTC),
+    )
+    catalog = {row["category"]: row for row in source_catalog(session, task)}
+    assert catalog["business"]["row_count"] == 0
+    assert catalog["data_pack_business"]["row_count"] == 2
+    assert catalog["data_pack_business"]["account_count"] == 1
+    result = analyze_for_task(
+        session, task=task, dimension="campaign", maturity_horizon="d0"
+    )
+    assert result["coverage"]["available_accounts_percent"] == "30"
+    assert result["coverage"]["excluded_accounts_percent"] == "70"

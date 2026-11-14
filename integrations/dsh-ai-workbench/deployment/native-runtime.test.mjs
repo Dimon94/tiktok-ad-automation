@@ -181,7 +181,7 @@ test('claimed review mounts task skills in a real Agent and completes through mo
       // 只替换模型 HTTP 运输层，真实宿主解析流、执行 Skill 和结果工具。
       const call = modelCalls === 1
         ? { name: 'skill', arguments: JSON.stringify({ name: 'ai-delivery-review' }) }
-        : modelCalls === 3 ? { name: 'tkada_complete_review', arguments: JSON.stringify({ summary: 'fixture review complete', proposals: [] }) } : null
+        : (modelCalls === 3 || modelCalls === 4) ? { name: 'tkada_complete_review', arguments: JSON.stringify({ summary: 'fixture review complete', proposals: [] }) } : null
       response.writeHead(200, { 'content-type': 'text/event-stream' })
       // 第二轮故意只返回文本，覆盖同会话提醒后补交结构化结果。
       const delta = call ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${modelCalls}`, type: 'function', function: call }] } : { role: 'assistant', content: 'Complete.' }
@@ -221,7 +221,7 @@ test('claimed review mounts task skills in a real Agent and completes through mo
     child.stderr.on('data', chunk => { output += chunk })
     for (let attempt = 0; attempt < 250 && !completion && child.exitCode === null; attempt++) await delay(100)
     await delay(100)
-    assert.ok(modelCalls >= 3, `Claimed task did not reach real model/tools (claimed=${claimed}, calls=${modelCalls}, exit=${child.exitCode}): ${output}`)
+    assert.ok(modelCalls >= 4, `Claimed task did not reach real model/tools (claimed=${claimed}, calls=${modelCalls}, exit=${child.exitCode}): ${output}`)
     assert.equal(completion?.summary, 'fixture review complete', output)
     assert.deepEqual(completion.method_usage, ['ai-delivery-review'])
     assert.notEqual(completion.failed, true)

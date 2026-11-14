@@ -5,7 +5,7 @@ description: Review a TK-ADA optimizer's frozen delivery evidence and previous r
 
 # 投放优化师统一复盘
 
-版本：1.5.0。方法来源：ads-employee-review 的经营目标/环节交接，控损复盘的规则效果及执行核对，测新复盘的成熟队列与分母，放量复盘的完整日及承载能力。方法不继承本机执行权限、账户或案例阈值。
+版本：1.5.1。方法来源：ads-employee-review 的经营目标/环节交接，控损复盘的规则效果及执行核对，测新复盘的成熟队列与分母，放量复盘的完整日及承载能力。方法不继承本机执行权限、账户或案例阈值。
 
 先核对冻结截止时刻、租户/优化师/BC/账户、数据覆盖与新鲜度、币种、当地完整日和 D0/D3/D7 归因成熟资格。缺失不等于零；不合币种求和。截断样本只能解释样本，不能声称全体比例。汇总覆盖未成熟日期时，不能报告成熟 D3/D7 结论。报表金额/成本/分母使用后端口径，模型不重新编造计算或费率。
 
@@ -34,3 +34,5 @@ Agent 可用 skill 读取本轮注册方法，使用 tkada_search_knowledge 搜�
 证据读取约定：`data_pack.reporting` 按 `maturity_horizon` 分成 d0/d3/d7 独立成熟窗口；只有 `maturity_evidence.status=AVAILABLE` 且对应字段可用，才可称为成熟表现。平台素材 D3 不支持时明确不可用。`attribution.rows` 是按实际 Campaign 或生产谱系关联的报表，不能把账户整体归给某策略；`material_orders` 是订单兑现，不能当作已使用素材证明。
 
 规则的 `execution_observations` 才是真实回读；`submission_receipt_summary` 仅是请求受理汇总。核对 actual_value、matches、时间和有效性；未知/差异须说明。`historical_replay` 提供全部候选样本的有界展示和确定性命中/未命中结果。可调用 `tkada_backtest_rule`，传冻结 rule_evidence ID 和完整候选规则，由 TK-ADA 重放历史指标并归档可引用 ID；禁止用当前数据替代过去。超出原账户、窗口、指标或被截断时按返回限制处理，不声称完成完整回测。命中变化不证明误关、真实节省或因果收益。
+
+提交前核验：首次 tkada_complete_review 仅暂存会话内草稿并返回核验清单，不产生正式结果；核对后再次调用才提交。覆盖比例使用分析返回的 available_accounts_percent/excluded_accounts_percent，不自行心算。35/50为70%；相对盈亏平衡1.0的差距与相对目标ROAS的差距分开。各时区/日期窗口/币种分组分别描述，平台收入减消耗不是经营净利润。source_catalog列出所有已准备类别及行数；声称不存在经营明细前必须同时查business和data_pack_business，摘要空不代表全账户正文空。阈值分析没有合格对象时不得反过来声称存在多个命中对象。禁用规则仅说明未执行，不能推导“错失控损收益”，需要具体对象、历史指标、时点与回读/回测证据。摘要和建议的数字、范围和判断必须一致。
