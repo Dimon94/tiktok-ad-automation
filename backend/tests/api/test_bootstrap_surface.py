@@ -8,7 +8,7 @@ from app.models import User
 
 
 def test_legacy_telemetry_configuration_does_not_capture_requests(monkeypatch):
-    import importlib
+    import runpy
     from unittest.mock import Mock
 
     import sentry_sdk
@@ -21,9 +21,11 @@ def test_legacy_telemetry_configuration_does_not_capture_requests(monkeypatch):
         patch.setattr(settings, "SENTRY_DSN", HttpUrl("https://public/1"))
         patch.setattr(settings, "FASTAPI_ENV", None)
         patch.setattr(sentry_sdk, "init", initialize)
-        importlib.reload(app.main)
+        original_app = app.main.app
+        probe = runpy.run_path(app.main.__file__)
+        assert probe["app"] is not original_app
+        assert app.main.app is original_app
         initialize.assert_not_called()
-    importlib.reload(app.main)
 
 
 @pytest.fixture
