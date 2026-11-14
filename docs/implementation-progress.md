@@ -5439,3 +5439,11 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 实际新增 ShareUpdateExclusive 统计锁与普通业务 DML 兼容；多个大型发布及 VACUUM/ANALYZE 可能互相等待，20 秒 lock_timeout 仍通过现有可恢复重试处理。未验收多租户同时 40k，未部署。
 - 327 个旧失败逐项回放得到 318 passed、1 skipped、3 failed、5 setup errors。已覆盖的旧广告总量 cap 用例按现行规格重写；专用端口 real-seed 单列待远程 CI。回放发现的 V2 10k 容量、IMAGE 冻结夹具、全进程历史 RSS 三组问题已修复，独立串联 7 passed /99.28 秒；实际活动窗口 0.188 秒、候选查询 0.106 秒、10 个活动组合，独立 profile 的 34,558,290 字节输入耗时 2.168 秒，RSS 674,119,680 字节，保留 18 秒/800 MiB。两轴审查第1轮均 PASS。
 - 旧失败回放另定位目录候选在两轮之间重复扫描未获选的 22.5k 运行；保留 31k 访问上限继续修复，完整远程 CI 尚未通过。
+
+
+### 2026-11-14：候选扫描成本修复与推送前闭环
+
+- 30k 运行 /90k outbox 原失败读回为 52,512 次运行访问：未获选目录候选被下一轮重复发现。仅在一次派发调用内保留未获选 peer；mode/phase 或目录 turn/account/scan 政策变化即失效，领取仍调用原短锁资格 owner，保留租户、来源、授权代次、阶段、租约与 SKIP LOCKED 复验。
+- 原成本文件 8 passed /42.35 秒，实际运行访问 30,012、outbox 访问 2，原 31,000/<100 上限保持；owner 范围 81 passed /32.34 秒，包含 turn/account/scan 三种缓存失效回归。Standards/Spec 第1轮均 PASS；同调用内外部同时改变 owner/source/frozen revision 的组合 race 未独立重跑，依赖原领取复验。
+- 327 旧失败回放中唯一 skip 为 Linux prefork hard-kill 用例，在 macOS 按原平台条件跳过，等待远程 Linux CI；三个 call 失败与五个 setup 错误均由后续 7 项夹具及候选成本文件的通过结果覆盖。未以该回放替代完整 modules。
+- 两树交付相同公共修复；最终 Ruff/ty 通过。保留原性能门槛、全部 CI 收集及各 PR 独立业务范围。远程新 head 全量 CI 仍待结果；未合并、未部署。

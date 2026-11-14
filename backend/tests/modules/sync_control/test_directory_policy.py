@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 from sqlmodel import select
 
 from app.modules.sync_control.directory_candidates import (
@@ -109,3 +110,53 @@ def test_excluded_account_is_filtered_before_head_limit(session, sync_seed):
         excluded_run_ids=set(),
     )
     assert found is not None and found[1].id == other.id
+
+
+@pytest.mark.parametrize("changed", ["turn", "account", "scan"])
+def test_changed_completion_policy_rediscoveries_unselected_peer(
+    session, sync_seed, redis_client, changed
+):
+    from app.modules.sync_control.directory_demand import directory_endpoint
+    from app.modules.sync_control.directory_dispatch import _discover_endpoint
+    from tests.modules.sync_control.test_directory_global_age import _head
+
+    now = datetime.now(UTC)
+    oldest = _directory(session, sync_seed, created_at=now - timedelta(days=7))
+    newer = _directory(
+        session, sync_seed, advertiser="acc-2", created_at=now - timedelta(days=1)
+    )
+    oldest.workload = newer.workload = "background"
+    old_head, new_head = _head(session, oldest), _head(session, newer)
+    old_head.last_dispatched_at = now - timedelta(hours=1)
+    new_head.last_dispatched_at = now - timedelta(hours=2)
+    session.flush()
+    args = {
+        "tenant_id": sync_seed.tenant_id,
+        "endpoint": directory_endpoint(oldest),
+        "now": now + timedelta(seconds=1),
+        "independent_only": False,
+        "excluded": set(),
+    }
+    policy = {"turn": 0.0 if changed == "turn" else 1.0}
+    discovered = _discover_endpoint(session, redis_client, policy=policy, **args)
+    assert [run.id for _, run in discovered.candidates] == [
+        newer.id if changed == "turn" else oldest.id
+    ]
+    # 另一个派发者改变完成机会后，不能把旧发现结果当成仍获优先的证明。
+    if changed == "turn":
+        policy["turn"] = 1.0
+    elif changed == "account":
+        policy["account:acc-1"] = 1.0
+    else:
+        save_scan(
+            policy,
+            DiscoveryCursor.start(args["now"])._replace(
+                at=oldest.created_at, scope_id=old_head.scope_id
+            ),
+        )
+    refreshed = _discover_endpoint(
+        session, redis_client, policy=policy, previous=discovered, **args
+    )
+    assert [run.id for _, run in refreshed.candidates] == [
+        oldest.id if changed == "turn" else newer.id
+    ]
