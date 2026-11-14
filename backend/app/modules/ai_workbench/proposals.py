@@ -31,7 +31,6 @@ from app.modules.ai_workbench.models import (
 from app.modules.ai_workbench.reviews import (
     DSHReviewTask,
     authorize,
-    frozen_evidence_ids,
     load_optimizer,
 )
 from app.modules.automation_rules.models import AutomationRule
@@ -86,7 +85,9 @@ class AIProposal(SQLModel, table=True):
             name="fk_ai_proposal_optimizer",
         ),
         CheckConstraint("kind IN ('strategy','rule')", name="ck_ai_proposal_kind"),
-        CheckConstraint("operation IN ('create','update')", name="ck_ai_proposal_operation"),
+        CheckConstraint(
+            "operation IN ('create','update')", name="ck_ai_proposal_operation"
+        ),
         CheckConstraint(
             "status IN ('PENDING','ACCEPTED','REJECTED','STALE')",
             name="ck_ai_proposal_status",
@@ -340,7 +341,9 @@ def create_proposal(
     optimizer, version = load_optimizer(session, context, optimizer_id)
     if review_task.optimizer_version != version.number:
         raise DomainError("ai_proposal_stale", "review task optimizer version is stale")
-    frozen_ids = frozen_evidence_ids(review_task.evidence)
+    from app.modules.ai_workbench.review_store import delivered_evidence_ids
+
+    frozen_ids = delivered_evidence_ids(session, review_task)
     if any(str(item) not in frozen_ids for item in change.evidence_ids):
         raise DomainError(
             "ai_evidence_not_found",

@@ -52,8 +52,8 @@ test('native DSH session has only structured result tool and a tenant/task direc
     const completions = []
     await runClaim(ctx, { stateRoot: directory }, claim, { searchKnowledge: async () => ({ items: [{ id: 'knowledge-1' }] }), readKnowledge: async () => ({ id: 'knowledge-1', body: 'policy text' }), complete: async (identity, result) => { completions.push({ identity, result }); return { status: 'COMPLETE' } } }, { SessionId: value => value, createUserMessage: value => value, renderSkillContent: s => s.content, scopeOf: () => "task-scope" })
     assert.deepEqual(allowed, [])
-    assert.deepEqual([...tools.keys()].sort(), ["tkada_query_evidence", "tkada_read_evidence", "skill", "tkada_search_knowledge", "tkada_read_knowledge", "tkada_backtest_rule", COMPLETE_TOOL].sort())
-    assert.equal(guard({ name: 'exec' }), 'Only task skills, scoped knowledge and structured review completion are permitted')
+    assert.deepEqual([...tools.keys()].sort(), ["tkada_analyze_evidence", "tkada_write_note", "tkada_list_notes", "tkada_query_evidence", "tkada_read_evidence", "skill", "tkada_search_knowledge", "tkada_read_knowledge", "tkada_backtest_rule", COMPLETE_TOOL].sort())
+    assert.equal(guard({ name: 'exec' }), 'Only task-scoped evidence, analysis, notes, skills and review completion are permitted')
     assert.ok(options.meta.cwd.includes('tenant-a/optimizer-a/task-1/fence-1'))
     assert.ok(!JSON.stringify(prompt).includes('short-token'))
     assert.equal(completions.length, 1)
@@ -77,4 +77,65 @@ test('session setup failure reports a terminal failed review instead of waiting 
     assert.deepEqual(results[0].proposals, [])
     assert.ok(!results[0].summary.includes('fixture setup failure'))
   } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('analysis RPCs never use service credentials and safe errors let an Agent correct arguments', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-analysis-rpc-'))
+  try {
+    const calls = []
+    const runtime = createRuntime({ url: 'https://tkada.example', tokenFile: join(directory, 'never-read'), stateRoot: directory }, async (url, options) => {
+      calls.push({ url, options })
+      return { ok: !url.endsWith('/evidence/analyze'), status: 422, json: async () => ({ code: 'ai_evidence_not_found', message: 'sensitive upstream detail', api_key: 'private' }) }
+    })
+    const claim = { task: { id: 'task-1' }, task_token: 'task-only' }
+    await assert.rejects(runtime.analyzeEvidence(claim, {}), error => {
+      assert.match(error.message, /422 ai_evidence_not_found/)
+      assert.doesNotMatch(error.message, /sensitive|api_key|private|task-only/)
+      return true
+    })
+    await runtime.writeNote(claim, { key: 'findings', body: 'checkpoint' })
+    await runtime.listNotes(claim, {})
+    assert.ok(calls[1].url.endsWith('/task-1/notes'))
+    assert.ok(calls[2].url.endsWith('/task-1/notes/list'))
+    assert.ok(calls.every(call => call.options.headers.authorization === 'Bearer task-only'))
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('heartbeat updates the in-memory token without leaking it to the Agent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-renew-test-'))
+  const originalInterval = globalThis.setInterval
+  let heartbeat, prompt
+  try {
+    globalThis.setInterval = callback => { heartbeat = callback; return { fixture: true } }
+    const claim = { task: { id: 'task', tenant_id: 'tenant', optimizer_id: 'optimizer', fence: 'fence', expires_at: new Date(Date.now()+30000).toISOString(), max_expires_at: new Date(Date.now()+7200000).toISOString(), evidence: { methods: await loadMethods() } }, task_token: 'old-private-token' }
+    let completion
+    const tools = new Map(), skills = new Map()
+    const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async input => {
+      await input.setup({ inject: async (_names, callback) => callback({ skills: { register: s => skills.set(s.name, s), get: async name => skills.get(name) }, tools: { register: t => tools.set(t.name, t), restrict() {}, guard() {} } }) })
+      return { agent: { followup: message => { prompt = message }, whenIdle: async () => {
+        await heartbeat()
+        await tools.get('skill').execute({ name: skillName('ai-delivery-review') })
+        await tools.get(COMPLETE_TOOL).execute({ summary: 'done', proposals: [] })
+      } }, dispose: async () => {} }
+    } } }
+    await runClaim(ctx, { stateRoot: directory, modelSelection: { provider: 'fixture', model: 'fixture' } }, claim,
+      { heartbeat: async () => ({ task_token: 'renewed-private-token', expires_at: new Date(Date.now()+300000).toISOString() }), complete: async (identity) => { completion = identity.task_token; return { status: 'COMPLETE' } } },
+      { SessionId: x => x, createUserMessage: x => x, renderSkillContent: s => s.content, scopeOf: () => 'task' })
+    assert.equal(completion, 'renewed-private-token')
+    assert.doesNotMatch(JSON.stringify(prompt), /private-token/)
+  } finally { globalThis.setInterval = originalInterval; await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native validation errors expose only bounded locations, types and numeric constraints', async () => {
+  const runtime = createRuntime({ url: 'https://tkada.example', tokenFile: '/never-read', stateRoot: '/private' }, async () => ({ ok: false, status: 422, json: async () => ({ detail: [
+    { loc: ['body', 'offset'], type: 'less_than_equal', msg: 'sensitive validation message', input: 'private-value', ctx: { le: 100000, dangerous: 'private' } },
+    { loc: ['body', 'secret-private-field'], type: 'extra_forbidden', input: 'secret-private-body' },
+  ] }) }))
+  await assert.rejects(runtime.analyzeEvidence({ task: { id: 'task' }, task_token: 'private-task-token' }, { offset: 100001 }), error => {
+    assert.match(error.message, /offset/)
+    assert.match(error.message, /less_than_equal/)
+    assert.match(error.message, /100000/)
+    assert.doesNotMatch(error.message, /private|sensitive|dangerous|secret/)
+    return true
+  })
 })

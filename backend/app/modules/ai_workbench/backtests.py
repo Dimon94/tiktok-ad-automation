@@ -8,7 +8,6 @@ from fastapi import HTTPException
 from sqlmodel import select
 
 from app.core.errors import DomainError
-from app.modules.ai_workbench.input_budget import MAX_INPUT_BYTES
 from app.modules.ai_workbench.knowledge_refs import sanitize_public
 from app.modules.ai_workbench.rule_history import rule_snapshot_report
 from app.modules.automation_rules.models import AutomationRuleEvidence
@@ -22,15 +21,20 @@ def backtest_for_task(
     candidate = RuleDefinition.model_validate(candidate_definition).model_dump(
         mode="json"
     )
-    from app.modules.ai_workbench.reviews import frozen_evidence_ids
+    from app.modules.ai_workbench.review_store import (
+        ReviewArtifact,
+        archive_artifact,
+        delivered_evidence_ids,
+        scoped,
+        source_payloads,
+    )
 
-    if str(evidence_id) not in frozen_evidence_ids(task.evidence):
+    if str(evidence_id) not in delivered_evidence_ids(session, task):
         raise HTTPException(404, "Read frozen rule evidence before backtesting")
     rule_sources = [
         row
-        for source in task.evidence_store.values()
-        if source["category"] == "rule_evidence"
-        for row in source["payload"]
+        for payload in source_payloads(session, task, "rule_evidence")
+        for row in payload
     ]
     frozen = next(
         (row for row in rule_sources if row["id"] == str(evidence_id)),
@@ -43,12 +47,13 @@ def backtest_for_task(
             [str(evidence_id), candidate], sort_keys=True, separators=(",", ":")
         ).encode()
     ).hexdigest()
-    previous = task.evidence.get("rule_backtests", [])
-    cached = next((row for row in previous if row["request_digest"] == digest), None)
+    cached = session.exec(
+        scoped(ReviewArtifact, task).where(
+            ReviewArtifact.kind == "rule_backtest", ReviewArtifact.key == digest
+        )
+    ).first()
     if cached:
-        return cached
-    if len(previous) >= 10:
-        raise DomainError("ai_backtest_budget", "每轮最多十次历史候选规则回测")
+        return cached.payload
     source = session.exec(
         select(AutomationRuleEvidence).where(
             AutomationRuleEvidence.id == evidence_id,
@@ -75,12 +80,11 @@ def backtest_for_task(
             "interpretation": "Historical hit differences only. Does not establish actual avoided losses, false pauses, causal lift or future results.",
         }
     )
-    evidence = {**task.evidence, "rule_backtests": [*previous, result]}
-    if (
-        len(json.dumps(evidence, ensure_ascii=False, separators=(",", ":")).encode())
-        > MAX_INPUT_BYTES
-    ):
-        raise DomainError("ai_review_input_too_large", "历史回测归档超过复盘容量")
-    task.evidence = evidence
-    session.flush()
-    return result
+    return archive_artifact(
+        session,
+        task=task,
+        kind="rule_backtest",
+        key=digest,
+        payload=result,
+        identity=UUID(result["id"]),
+    )

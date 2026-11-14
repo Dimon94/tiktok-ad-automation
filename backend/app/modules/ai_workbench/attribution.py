@@ -163,10 +163,18 @@ def resolve_mappings(session: Session, *, context, optimizer_id, version, cutoff
 
 
 def build_attribution_pack(
-    session: Session, *, context, optimizer_id, version, cutoff, account_windows
+    session: Session,
+    *,
+    context,
+    optimizer_id,
+    version,
+    cutoff,
+    account_windows,
+    observed_cutoff=None,
 ):
     from app.modules.ai_workbench.review_maturity import maturity_evidence
 
+    observed_cutoff = observed_cutoff or cutoff
     mapping = resolve_mappings(
         session,
         context=context,
@@ -210,7 +218,8 @@ def build_attribution_pack(
                         bc_id=version.bc_id,
                         filters=filters,
                         limit=50,
-                        cutoff=cutoff,
+                        freeze_all=True,
+                        cutoff=observed_cutoff,
                     )
             except HTTPException as error:
                 if error.status_code != 409:
@@ -256,7 +265,7 @@ def build_attribution_pack(
                         horizon=horizon,
                         window=window,
                         report=report,
-                        cutoff=cutoff,
+                        cutoff=observed_cutoff,
                     ),
                 }
             )

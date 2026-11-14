@@ -406,6 +406,7 @@ def list_reviews(
                 "created_at": task.created_at,
                 "finished_at": task.finished_at,
                 "optimizer_version": task.optimizer_version,
+                "preparation": task.evidence.get("preparation"),
                 "result": task.result,
             }
             for task in tasks
@@ -480,6 +481,7 @@ def get_review(
         "id": task.id,
         "status": task.status,
         "result": task.result,
+        "preparation": task.evidence.get("preparation"),
         "error_message": task.result.get("summary")
         if task.status == "FAILED"
         else None,

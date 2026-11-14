@@ -511,6 +511,7 @@ def freeze_review_page(
     filters: ReportingFilter,
     limit: int = 50,
     freeze_limit: int | None = None,
+    freeze_all: bool = False,
     cutoff: datetime | None = None,
 ) -> dict:
     """领域消费者复用相同报表构建/物化口径，并复制正文到长寿命冻结任务。
@@ -535,7 +536,9 @@ def freeze_review_page(
         }
     frozen_rows = [row.model_dump(mode="json") for row in page.items]
     # 复盘私有存储可有界保存更多页，仍复用同一快照和游标，禁止重查当前版本。
-    while freeze_limit and page.next_cursor and len(frozen_rows) < freeze_limit:
+    while page.next_cursor and (
+        freeze_all or (freeze_limit and len(frozen_rows) < freeze_limit)
+    ):
         page = _read_page(
             session,
             context=context,
@@ -543,7 +546,7 @@ def freeze_review_page(
             filters=filters,
             snapshot=snapshot,
             cursor=page.next_cursor,
-            limit=min(100, freeze_limit - len(frozen_rows)),
+            limit=100 if freeze_all else min(100, freeze_limit - len(frozen_rows)),
         )
         frozen_rows.extend(row.model_dump(mode="json") for row in page.items)
     return {

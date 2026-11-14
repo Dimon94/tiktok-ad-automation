@@ -212,7 +212,27 @@ def freeze_history(
                     missing=len(rules) > 50,
                 )
         source = task_map[p.review_task_id]
-        baseline = _observations(source.evidence.get("data_pack", {}))
+        if source.evidence.get("reading_contract") == "on-demand-v2":
+            from app.modules.ai_workbench.review_store import ReviewSource, scoped
+
+            account_ids = {row["advertiser_id"] for row in current}
+            baseline_reports = (
+                session.exec(
+                    scoped(ReviewSource, source).where(
+                        ReviewSource.category == "reporting",
+                        ReviewSource.dimension == "account",
+                        ReviewSource.maturity_horizon == "d0",
+                        col(ReviewSource.advertiser_id).in_(account_ids),
+                    )
+                ).all()
+                if account_ids
+                else []
+            )
+            baseline = _observations(
+                {"reporting": [r.payload for r in baseline_reports]}
+            )
+        else:
+            baseline = _observations(source.evidence.get("data_pack", {}))
         feedback.append(
             {
                 "id": str(p.id),

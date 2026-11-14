@@ -273,12 +273,16 @@ def referenced_evidence_ids(
     if tenant_id is not None:
         review_query = review_query.where(DSHReviewTask.tenant_id == tenant_id)
         proposal_query = proposal_query.where(AIProposal.tenant_id == tenant_id)
+    from app.modules.ai_workbench.review_store import (
+        delivered_evidence_ids,
+        source_payloads,
+    )
+
     for task in session.exec(review_query).all():
-        for value in frozen_evidence_ids(task.evidence) | {
+        for value in delivered_evidence_ids(session, task) | {
             str(row["id"])
-            for source in task.evidence_store.values()
-            if source["category"] == "rule_evidence"
-            for row in source["payload"]
+            for payload in source_payloads(session, task, "rule_evidence")
+            for row in payload
         }:
             try:
                 result.add(UUID(value))

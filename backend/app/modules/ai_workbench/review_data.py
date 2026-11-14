@@ -17,7 +17,6 @@ from app.modules.reporting.filters import authorized_grants
 from app.modules.reporting.schemas import ReportingFilter
 
 WINDOW_DAYS = 7
-MAX_ACCOUNTS = 10
 MAX_ROWS = 50
 
 
@@ -57,6 +56,8 @@ def build_data_pack(
     context: TenantContext,
     version: AIOptimizerVersion,
     cutoff: datetime | None = None,
+    observed_cutoff: datetime | None = None,
+    advertiser_ids: tuple[str, ...] | None = None,
 ) -> dict:
     from app.modules.business.models import (
         BusinessDay,
@@ -67,19 +68,25 @@ def build_data_pack(
     from app.modules.reporting.queries import freeze_review_page
 
     cutoff = cutoff or datetime.now(UTC)
+    observed_cutoff = observed_cutoff or cutoff
+    selected = (
+        tuple(version.advertiser_ids) if advertiser_ids is None else advertiser_ids
+    )
+    if not set(selected).issubset(set(version.advertiser_ids)):
+        raise HTTPException(403, "account_outside_review_scope")
     grants = authorized_grants(
         session,
         context=context,
         bc_id=version.bc_id,
-        advertiser_ids=tuple(version.advertiser_ids),
+        advertiser_ids=selected,
     )
     allowed = {g.advertiser_id for g in grants}
-    ids = sorted(allowed & set(version.advertiser_ids))
+    ids = sorted(allowed & set(selected))
     accounts = []
     reports = []
     business = []
     events = []
-    for advertiser_id in ids[:MAX_ACCOUNTS]:
+    for advertiser_id in ids:
         account = session.get(AdvertiserAccount, (context.tenant_id, advertiser_id))
         window = account_window(account.timezone if account else "", cutoff)
         window.update(
@@ -106,8 +113,8 @@ def build_data_pack(
                             bc_id=version.bc_id,
                             filters=filters,
                             limit=MAX_ROWS,
-                            freeze_limit=5000,
-                            cutoff=cutoff,
+                            freeze_all=True,
+                            cutoff=observed_cutoff,
                         )
                 except HTTPException as error:
                     if error.status_code != 409:
@@ -119,6 +126,8 @@ def build_data_pack(
                     }
                 reports.append(
                     {
+                        "captured_at": observed_cutoff.isoformat(),
+                        "requested_at": cutoff.isoformat(),
                         "dimension": dimension,
                         "advertiser_id": advertiser_id,
                         "window": {**window, **mature_window},
@@ -131,7 +140,7 @@ def build_data_pack(
                             horizon=horizon,
                             window={**mature_window, "timezone": window["timezone"]},
                             report=report,
-                            cutoff=cutoff,
+                            cutoff=observed_cutoff,
                         ),
                         **report,
                     }
@@ -202,8 +211,8 @@ def build_data_pack(
             "cutoff": cutoff,
             "window_days": WINDOW_DAYS,
             "accounts": accounts,
-            "accounts_truncated": len(ids) > MAX_ACCOUNTS,
-            "excluded_accounts": sorted(set(version.advertiser_ids) - allowed),
+            "accounts_truncated": False,
+            "excluded_accounts": sorted(set(selected) - allowed),
             "reporting": reports,
             "business": business,
             "operation_events": events,
@@ -214,8 +223,8 @@ def build_data_pack(
                 "material_production_strategy_to_report_object",
             ],
             "limits": {
-                "accounts": MAX_ACCOUNTS,
-                "rows_per_dimension_per_horizon": 5000,
+                "accounts": len(selected),
+                "rows_per_dimension_per_horizon": None,
                 "maturity_horizons": 3,
                 "days_per_horizon": WINDOW_DAYS,
             },

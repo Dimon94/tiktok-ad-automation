@@ -1,8 +1,9 @@
 from uuid import uuid4
 
 from app.modules.ai_workbench import service
-from app.modules.ai_workbench.reviews import create_review_task, frozen_evidence_ids
+from app.modules.ai_workbench.reviews import frozen_evidence_ids
 from app.modules.ai_workbench.schemas import OptimizerCreate
+from tests.modules.ai_workbench.review_helpers import create_prepared_review_task
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -16,7 +17,7 @@ def test_business_task_does_not_load_skill_files(session, context):
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     assert "methods" not in task.evidence
@@ -60,7 +61,7 @@ def test_claim_binds_plugin_methods_and_retry_keeps_old_version(
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     machine = {"Authorization": "Bearer " + settings.AI_DSH_SERVICE_TOKEN}

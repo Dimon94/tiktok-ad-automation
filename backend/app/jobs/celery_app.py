@@ -106,6 +106,7 @@ celery_app.conf.update(
         "automation.cleanup": {"queue": "control"},
         "automation.scan_summaries": {"queue": "control"},
         "automation.send_summary": {"queue": "control"},
+        "ai_workbench.prepare_review": {"queue": "ads-reporting"},
         "ai_workbench.dispatch_occurrence": {"queue": "builds"},
         "ai_workbench.dispatch_due_plans": {"queue": "control"},
     },

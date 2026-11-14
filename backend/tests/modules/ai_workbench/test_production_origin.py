@@ -5,6 +5,10 @@ import pytest
 from app.core.errors import DomainError
 from app.modules.ai_workbench.production_origin import validate_production_origin
 from app.modules.materials.push_schemas import ProductionOrigin
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    source_store,
+)
 
 
 def seed_order(session, context):
@@ -84,7 +88,7 @@ def test_material_origin_mapping_is_exact_and_ambiguous_producer_excluded(
 
     from app.modules.accounts.models import BCAccountAccess
     from app.modules.ai_workbench.attribution import resolve_mappings
-    from app.modules.ai_workbench.reviews import create_review_task, load_optimizer
+    from app.modules.ai_workbench.reviews import load_optimizer
     from app.modules.materials.models import AccountMaterial
     from app.modules.materials.push_models import (
         MaterialPushBatch,
@@ -159,13 +163,13 @@ def test_material_origin_mapping_is_exact_and_ambiguous_producer_excluded(
     )
     assert mapped["rows"][0]["version_id"] == "creative-one"
     assert mapped["rows"][0]["remote_ids"] == ["actual-video"]
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     assert (
         next(
             r["payload"]
-            for r in task.evidence_store.values()
+            for r in source_store(session, task).values()
             if r["category"] == "material_orders"
         )["rows"][0]["job_id"]
         == "job-one"
@@ -173,7 +177,7 @@ def test_material_origin_mapping_is_exact_and_ambiguous_producer_excluded(
     assert (
         next(
             r["payload"]
-            for r in task.evidence_store.values()
+            for r in source_store(session, task).values()
             if r["category"] == "attribution"
         )["rows"][0]["version_id"]
         == "creative-one"
@@ -205,7 +209,7 @@ def test_material_origin_mapping_is_exact_and_ambiguous_producer_excluded(
     assert (
         next(
             r["payload"]
-            for r in task.evidence_store.values()
+            for r in source_store(session, task).values()
             if r["category"] == "attribution"
         )["rows"][0]["version_id"]
         == "creative-one"

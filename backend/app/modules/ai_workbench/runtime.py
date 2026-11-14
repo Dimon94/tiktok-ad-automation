@@ -2,7 +2,8 @@
 
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
@@ -241,6 +242,7 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
                 "optimizer_id": str(task.optimizer_id),
                 "fence": task.fence,
                 "expires_at": task.authorization_expires_at.isoformat(),
+                "max_expires_at": (task.started_at + timedelta(hours=2)).isoformat(),
                 "evidence": task.evidence,
             },
             "task_token": _task_token(task),
@@ -283,7 +285,9 @@ def complete(
         for item in [*body.recommendations, *body.experience_candidates]
         for e in item.evidence_ids
     }
-    if not cited.issubset(reviews.frozen_evidence_ids(task.evidence)):
+    from app.modules.ai_workbench.review_store import delivered_evidence_ids
+
+    if not cited.issubset(delivered_evidence_ids(session, task)):
         raise DomainError("ai_evidence_not_found", "建议或经验引用了任务范围外的证据")
     if body.failed and (body.proposals or body.experience_candidates):
         raise DomainError("ai_proposal_invalid", "失败复盘不能发布提案")
@@ -367,11 +371,29 @@ def schedule_reviews(session: Session, *, now: datetime, limit: int = 100) -> in
 
 @router.post("/{task_id}/heartbeat")
 def heartbeat(
-    task_id: UUID, task: reviews.DSHReviewTask = Depends(task_identity)
+    task_id: UUID,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
 ) -> dict:
     if task.id != task_id or task.status != "RUNNING":
         raise DomainError("ai_task_fence_conflict", "复盘任务已停止")
-    return {"active": True, "expires_at": task.authorization_expires_at}
+    _read_task_scope(task, session)
+    from app.modules.ai_workbench.review_authorization import heartbeat_expiry
+
+    # 当前授权/版本仍有效才允许续签；fence 不变，取消或重启立刻使旧令牌失效。
+    task.authorization_expires_at = heartbeat_expiry(
+        started_at=task.started_at or datetime.now(UTC), now=datetime.now(UTC)
+    )
+    session.add(task)
+    # 必须在任务行锁内固定响应；commit 后 ORM 过期重读可能看到恢复轮的新 fence，
+    # 不能把新轮令牌泄给恰好等待旧轮心跳的会话。
+    response = {
+        "active": True,
+        "expires_at": task.authorization_expires_at,
+        "task_token": _task_token(task),
+    }
+    session.commit()
+    return response
 
 
 class KnowledgeSearch(BaseModel):
@@ -467,16 +489,21 @@ def backtest_rule(
 class EvidenceQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: str = Field(
-        pattern=r"^(reporting|plans|build_occurrences|rule_evidence|attribution|material_orders|history|business|operation_logs|data_pack_business|data_pack_operation_events|knowledge_refs)$"
+        pattern=r"^(reporting|plans|build_occurrences|rule_evidence|attribution|material_orders|history|business|operation_logs|data_pack_business|data_pack_operation_events|knowledge_refs|preparation)$"
     )
-    offset: int = Field(default=0, ge=0, le=10000)
+    offset: int = Field(default=0, ge=0)
+    advertiser_id: str | None = Field(default=None, max_length=100)
+    dimension: str | None = Field(
+        default=None, pattern="^(account|campaign|drama|material)$"
+    )
+    maturity_horizon: str | None = Field(default=None, pattern="^d(0|3|7)$")
 
 
 class EvidenceRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evidence_id: UUID
-    offset: int = Field(default=0, ge=0, le=100000)
-    limit: int = Field(default=1, ge=1, le=10)
+    offset: int = Field(default=0, ge=0, le=1000000000)
+    limit: int = Field(default=10, ge=1, le=100)
 
 
 @router.post("/{task_id}/evidence/query")
@@ -491,7 +518,7 @@ def query_evidence(
     if task.id != task_id:
         raise HTTPException(403, "Task scope mismatch")
     _read_task_scope(task, session)
-    return query_for_task(task=task, category=body.category, offset=body.offset)
+    return query_for_task(session, task=task, **body.model_dump())
 
 
 @router.post("/{task_id}/evidence/read")
@@ -509,3 +536,83 @@ def read_evidence(
     result = read_for_task(session, task=task, **body.model_dump())
     session.commit()
     return result
+
+
+class EvidenceAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dimension: str = Field(
+        default="account", pattern="^(account|campaign|drama|material)$"
+    )
+    maturity_horizon: str = Field(default="d0", pattern="^d(0|3|7)$")
+    advertiser_id: str | None = Field(default=None, max_length=100)
+    sort_by: str = Field(
+        default="spend",
+        pattern="^(spend|revenue_d0|revenue_d3|revenue_d7|profit|roas)$",
+    )
+    descending: bool = True
+    min_spend: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_spend: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_roas: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    offset: int = Field(default=0, ge=0, le=100000)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/{task_id}/evidence/analyze")
+def analyze_evidence(
+    task_id: UUID,
+    body: EvidenceAnalysis,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_analysis import analyze_for_task
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    result = analyze_for_task(session, task=task, **body.model_dump())
+    session.commit()
+    return result
+
+
+class ReviewNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=100)
+    body: str = Field(max_length=16000)
+
+
+class ReviewNotePage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    offset: int = Field(default=0, ge=0, le=100000)
+    limit: int = Field(default=10, ge=1, le=100)
+
+
+@router.post("/{task_id}/notes")
+def write_review_note(
+    task_id: UUID,
+    body: ReviewNote,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_reading import write_note
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    result = write_note(session, task=task, **body.model_dump())
+    session.commit()
+    return result
+
+
+@router.post("/{task_id}/notes/list")
+def list_review_notes(
+    task_id: UUID,
+    body: ReviewNotePage,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_reading import list_notes
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    return list_notes(session, task=task, **body.model_dump())

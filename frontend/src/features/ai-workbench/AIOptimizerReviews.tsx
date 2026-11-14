@@ -26,6 +26,7 @@ type ReviewTask = {
   id: string
   status: string
   error?: unknown
+  preparation?: { total_accounts?: number; completed_accounts?: number; failed_accounts?: number }
   error_code?: string
   error_message?: string
   result?: { summary?: string; [key: string]: unknown }
@@ -102,7 +103,7 @@ export function AIOptimizerReviews({ tenantId, optimizerId }: Props) {
   useEffect(() => {
     if (
       !task ||
-      !["PENDING", "QUEUED", "RUNNING", "CREATED"].includes(task.status)
+      !["PREPARING", "PENDING", "QUEUED", "RUNNING", "CREATED"].includes(task.status)
     )
       return
     const controller = new AbortController()
@@ -239,7 +240,7 @@ export function AIOptimizerReviews({ tenantId, optimizerId }: Props) {
             runtimeReady === false ||
             !!busy ||
             (!!task &&
-              ["PENDING", "QUEUED", "RUNNING", "CREATED"].includes(task.status))
+              ["PREPARING", "PENDING", "QUEUED", "RUNNING", "CREATED"].includes(task.status))
           }
           onClick={() => void review()}
         >
@@ -274,6 +275,12 @@ export function AIOptimizerReviews({ tenantId, optimizerId }: Props) {
         {task && (
           <div role="status" className="text-sm">
             复盘任务 {task.id} · {task.status}
+            {task.preparation && (
+              <p>
+                账户数据准备 {task.preparation.completed_accounts ?? 0} / {task.preparation.total_accounts ?? 0}
+                {!!task.preparation.failed_accounts && `，${task.preparation.failed_accounts} 个账户准备失败，复盘将注明缺口`}
+              </p>
+            )}
             {task.error_message && <p>{task.error_message}</p>}
             {task.error_code && <p>{task.error_code}</p>}
             {task.result?.summary && <p>{task.result.summary}</p>}
@@ -286,7 +293,7 @@ export function AIOptimizerReviews({ tenantId, optimizerId }: Props) {
               >
                 刷新复盘状态
               </Button>
-              {["PENDING", "QUEUED", "RUNNING"].includes(task.status) && (
+              {["PREPARING", "PENDING", "QUEUED", "RUNNING"].includes(task.status) && (
                 <Button
                   size="sm"
                   variant="outline"

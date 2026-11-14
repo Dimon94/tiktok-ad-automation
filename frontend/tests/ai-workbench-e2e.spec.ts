@@ -1195,3 +1195,19 @@ test("发起复盘等待时给出反馈，失败可见且重试后显示任务",
   await expect(page.getByTestId("ai-review-view")).toContainText("review-created")
   await expect(page.getByRole("alert")).toHaveCount(0)
 })
+
+test("后台准备复盘持续轮询，准备期间不能重复发起且可以取消", async ({ page }) => {
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers**`, (route) => route.fulfill({ json: { items: [], next_cursor: null, total: 0 } }))
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals`, (route) => route.fulfill({ json: [] }))
+  let polls = 0
+  const task = { id: 'preparing-review', status: 'PREPARING', preparation: { total_accounts: 50, completed_accounts: 23, failed_accounts: 1 }, result: {} }
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews`, (route) => route.fulfill({ json: { runtime_ready: true, items: [task] } }))
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews/preparing-review`, (route) => { polls++; return route.fulfill({ json: task }) })
+  await page.goto(`/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`)
+  await expect(page.getByTestId('ai-review-view')).toContainText('PREPARING')
+  await expect(page.getByTestId('ai-review-view')).toContainText('账户数据准备 23 / 50')
+  await expect(page.getByTestId('ai-review-view')).toContainText('1 个账户准备失败')
+  await expect(page.getByRole('button', { name: '发起复盘', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '取消复盘', exact: true })).toBeVisible()
+  await expect.poll(() => polls).toBeGreaterThan(0)
+})

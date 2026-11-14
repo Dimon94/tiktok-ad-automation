@@ -10,8 +10,18 @@ from sqlmodel import select
 from app.core.config import settings
 from app.modules.ai_workbench import reviews, service
 from app.modules.ai_workbench.review_reading import read_for_task
+from app.modules.ai_workbench.review_store import (
+    ReviewReceipt,
+    ReviewSource,
+    delivered_evidence_ids,
+    scoped,
+)
 from app.modules.ai_workbench.schemas import OptimizerCreate
 from app.modules.reporting.publish import AccountMeta, publish_ad_day
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    source_index,
+)
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -56,7 +66,7 @@ def reading(session, context, monkeypatch):
 
     publish("10")
     monkeypatch.setattr(reviews, "_now", lambda: cutoff)
-    task = reviews.create_review_task(
+    task = create_prepared_review_task(
         session,
         context=context,
         optimizer_id=optimizer.id,
@@ -77,10 +87,10 @@ def claim_task(client):
     return body, {"Authorization": "Bearer " + body["task_token"]}
 
 
-def campaign_source(task):
+def campaign_source(session, task):
     return next(
         row
-        for row in task.evidence["evidence_index"]
+        for row in source_index(session, task)
         if row["category"] == "reporting"
         and row["dimension"] == "campaign"
         and row["maturity_horizon"] == "d0"
@@ -89,6 +99,7 @@ def campaign_source(task):
 
 def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
     client,
+    session,
     reading,
 ):
     task, publish, cutoff = reading
@@ -96,19 +107,15 @@ def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
     initial = claim["task"]["evidence"]
     assert "evidence_store" not in claim["task"]
     assert "attribution" not in initial and "rule_evidence" not in initial
-    assert all("rows" not in row for row in initial["data_pack"]["reporting"])
-    assert {row["maturity_horizon"] for row in initial["data_pack"]["reporting"]} == {
-        "d0",
-        "d3",
-        "d7",
-    }
+    assert "reporting" not in initial["data_pack"]
+    assert "evidence_index" not in initial
     path = f"/api/integrations/ai-workbench/reviews/{task.id}"
-    source = campaign_source(task)
+    source = campaign_source(session, task)
     query = client.post(
         path + "/evidence/query", headers=headers, json={"category": "reporting"}
     ).json()
     assert len(query["items"]) == 10 and query["next_offset"] == 10
-    assert source["id"] not in reviews.frozen_evidence_ids(task.evidence)
+    assert source["id"] not in delivered_evidence_ids(session, task)
     result = {
         "summary": "检查明细",
         "proposals": [],
@@ -134,7 +141,7 @@ def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
     assert page["metadata"]["rows_truncated"] is False
     assert page["metadata"]["maturity_evidence"]["horizon"] == "d0"
     assert page["rows"][0]["metric_buckets"][0]["values"]["spend"] == "10"
-    assert page["id"] in reviews.frozen_evidence_ids(task.evidence)
+    assert page["id"] in delivered_evidence_ids(session, task)
     publish("99", cutoff + timedelta(seconds=1))
     repeated = client.post(
         path + "/evidence/read",
@@ -149,7 +156,8 @@ def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
     ).json()
     assert len(last["rows"]) == 1 and last["next_offset"] is None
     assert last["rows"][0]["metric_buckets"][0]["values"]["spend"] == "10"
-    assert len(task.evidence["read_receipts"]) == 2
+    assert len(session.exec(scoped(ReviewReceipt, task)).all()) == 2
+    assert "read_receipts" not in task.evidence
     result["recommendations"][0]["evidence_ids"] = [page["id"]]
     assert (
         client.post(path + "/complete", headers=headers, json=result).status_code == 200
@@ -195,15 +203,15 @@ def test_foreign_ids_invalid_pages_and_tampered_sources_are_rejected(
         ).status_code
         == 404
     )
-    source = campaign_source(task)
-    for args in ({"offset": -1}, {"offset": 100}, {"limit": 11}):
+    source = campaign_source(session, task)
+    for args in ({"offset": -1}, {"offset": 100}, {"limit": 101}):
         assert (
             client.post(
                 path, headers=headers, json={"evidence_id": source["id"], **args}
             ).status_code
             == 422
         )
-    other = reviews.create_review_task(
+    other = create_prepared_review_task(
         session,
         context=context,
         optimizer_id=task.optimizer_id,
@@ -212,15 +220,28 @@ def test_foreign_ids_invalid_pages_and_tampered_sources_are_rejected(
     # 报表快照 ID 绑定具体任务；同投手的另一个任务也不能借用。
     with pytest.raises(HTTPException):
         read_for_task(session, task=other, evidence_id=UUID(source["id"]))
-    task.evidence_store = {
-        **task.evidence_store,
-        source["id"]: {
-            **task.evidence_store[source["id"]],
-            "digest": "invalid",
-        },
-    }
+    # 不可变数据库阻止更新；摘要核验同时防止不合法导入的新来源。
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError), session.begin_nested():
+        stored = session.get(ReviewSource, (task.id, UUID(source["id"])))
+        stored.digest = "invalid"
+        session.flush()
+    broken = ReviewSource(
+        task_id=task.id,
+        id=uuid4(),
+        tenant_id=task.tenant_id,
+        optimizer_id=task.optimizer_id,
+        category="plans",
+        digest="invalid",
+        payload=[],
+        source_metadata={},
+        captured_at=datetime.now(UTC),
+    )
+    session.add(broken)
+    session.flush()
     with pytest.raises(DomainError, match="冻结证据"):
-        read_for_task(session, task=task, evidence_id=UUID(source["id"]))
+        read_for_task(session, task=task, evidence_id=broken.id)
 
 
 @pytest.mark.parametrize("change", ["revoke", "optimizer_version"])
@@ -252,7 +273,7 @@ def test_revoked_account_or_changed_optimizer_blocks_task_tools(
     path = f"/api/integrations/ai-workbench/reviews/{task.id}"
     for endpoint, body in (
         ("query", {"category": "reporting"}),
-        ("read", {"evidence_id": campaign_source(task)["id"]}),
+        ("read", {"evidence_id": campaign_source(session, task)["id"]}),
     ):
         assert (
             client.post(
@@ -277,7 +298,7 @@ def test_tenant_token_and_frozen_account_scope_cannot_be_expanded(
         context=other_context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    other = reviews.create_review_task(
+    other = create_prepared_review_task(
         session,
         context=other_context,
         optimizer_id=other_optimizer.id,
@@ -286,7 +307,7 @@ def test_tenant_token_and_frozen_account_scope_cannot_be_expanded(
     _, headers = claim_task(client)
     assert all(
         row["advertiser_id"] == "acc-1"
-        for row in task.evidence["evidence_index"]
+        for row in source_index(session, task)
         if row["category"] == "reporting"
     )
     base = "/api/integrations/ai-workbench/reviews"
@@ -302,7 +323,7 @@ def test_tenant_token_and_frozen_account_scope_cannot_be_expanded(
         client.post(
             f"{base}/{task.id}/evidence/read",
             headers=headers,
-            json={"evidence_id": campaign_source(other)["id"]},
+            json={"evidence_id": campaign_source(session, other)["id"]},
         ).status_code
         == 404
     )
@@ -314,7 +335,7 @@ def test_tenant_token_and_frozen_account_scope_cannot_be_expanded(
         ).status_code
         == 422
     )
-    source = campaign_source(task)
+    source = campaign_source(session, task)
     unread_proposal = {
         "summary": "未读证据不得用于提案",
         "proposals": [
@@ -334,13 +355,15 @@ def test_tenant_token_and_frozen_account_scope_cannot_be_expanded(
 
 
 def test_read_page_preserves_frozen_d7_maturity_and_exact_window(
-    session, context, reading
+    session, context, reading, monkeypatch
 ):
-    from tests.modules.ai_workbench.test_review_maturity import _publish
+    from tests.modules.ai_workbench.test_review_maturity import CUTOFF, _publish
 
     task, _, cutoff = reading
+    cutoff = CUTOFF
+    monkeypatch.setattr(reviews, "_now", lambda: cutoff)
     _publish(session, context, observed=cutoff)
-    task = reviews.create_review_task(
+    task = create_prepared_review_task(
         session,
         context=context,
         optimizer_id=task.optimizer_id,
@@ -348,7 +371,7 @@ def test_read_page_preserves_frozen_d7_maturity_and_exact_window(
     )
     source = next(
         row
-        for row in task.evidence["evidence_index"]
+        for row in source_index(session, task)
         if row["category"] == "reporting"
         and row["dimension"] == "campaign"
         and row["maturity_horizon"] == "d7"
@@ -358,6 +381,12 @@ def test_read_page_preserves_frozen_d7_maturity_and_exact_window(
     assert (
         mature["status"] == "AVAILABLE" and mature["observed_after_maturity_days"] == 7
     )
-    assert page["metadata"]["filters"]["start_date"] == "2026-10-30"
-    assert page["metadata"]["filters"]["end_date"] == "2026-11-05"
+    assert (
+        page["metadata"]["filters"]["start_date"]
+        == (cutoff.date() - timedelta(days=14)).isoformat()
+    )
+    assert (
+        page["metadata"]["filters"]["end_date"]
+        == (cutoff.date() - timedelta(days=8)).isoformat()
+    )
     assert page["rows"][0]["metric_buckets"][0]["values"]["revenue_d7"] == "49"

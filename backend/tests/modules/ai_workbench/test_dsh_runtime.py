@@ -1,8 +1,12 @@
 """DSH machine identity, scoped leases and structured completion regression."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from sqlmodel import select
 
 from app.core.config import settings
+from app.modules.ai_workbench.reviews import DSHReviewTask
+from tests.modules.ai_workbench.review_helpers import prepare_task
 
 from .test_optimizer import api_headers, create_body, seed_optimizer_dependencies
 from .test_review_methods import plugin_methods
@@ -27,6 +31,8 @@ def test_runtime_claim_complete_and_reject_old_fence(
         json={"request_id": str(uuid4())},
     )
     assert task.status_code == 201
+    assert task.json()["task"]["status"] == "PREPARING"
+    prepare_task(session, session.get(DSHReviewTask, UUID(task.json()["task"]["id"])))
     machine = {"Authorization": "Bearer " + settings.AI_DSH_SERVICE_TOKEN}
     assert (
         client.post("/api/integrations/ai-workbench/reviews/claim").status_code == 401
@@ -86,6 +92,14 @@ def test_runtime_recovery_changes_fence_and_cancel_revokes_token(
         base + "/reviews",
         headers=api_headers(context, session=session),
         json={"request_id": str(uuid4())},
+    )
+    prepare_task(
+        session,
+        session.exec(
+            select(DSHReviewTask).where(
+                DSHReviewTask.optimizer_id == UUID(optimizer["id"])
+            )
+        ).one(),
     )
     claim = client.post(
         "/api/integrations/ai-workbench/reviews/claim",
