@@ -347,6 +347,7 @@ def _complete_chain(pages: list[AdDirectoryPage]) -> list[AdDirectoryPage]:
 _PUBLISH_BATCH_SIZE = 500
 # 单次实体SQL有界，完整目录仍在调用方的同一个原子事务里。
 _ENTITY_WRITE_BATCH_SIZE = 5000
+_MATERIAL_WRITE_BATCH_SIZE = 2000
 
 
 def _batches[T](items: list[T]):
@@ -586,16 +587,69 @@ def _publish_staged_materials(session, run, staged, *, statement_timeout_ms=None
             text("SELECT set_config('statement_timeout',:timeout,true)"),
             {"timeout": f"{statement_timeout_ms}ms"},
         )
-    # 每个完整运行仅一次canonical集合写；非空INSERT/UPDATE触发器保留历史候选，
-    # 不能直接以incoming替代历史候选，否则会把正确的完整素材关系覆盖为部分观察。
-    connection.execute(
-        text(
-            _material_upsert_sql(
-                "ad_material_reference", f"SELECT {_MATERIAL_COLUMNS} FROM {staged}"
-            )
-        )
+    group_columns = "ad_remote_id,platform_material_id,material_type"
+    group_key = f"({group_columns})"
+    large = (
+        connection.execute(
+            text(f"SELECT count(DISTINCT {group_key}) FROM {staged}")
+        ).scalar_one()
+        > _MATERIAL_WRITE_BATCH_SIZE
     )
-    # 只延长这一条原子集合写及其触发器；后续查询恢复原预算。
+    after = None
+    while True:
+        parameters = {}
+        predicate = ""
+        if large:
+            lower = ""
+            parameters = {"limit": _MATERIAL_WRITE_BATCH_SIZE}
+            if after is not None:
+                parameters.update(
+                    after_ad=after[0], after_video=after[1], after_type=after[2]
+                )
+                lower = f"WHERE {group_key}>(:after_ad,:after_video,:after_type)"
+            end = connection.execute(
+                text(f"""
+                SELECT {group_columns} FROM (
+                    SELECT DISTINCT {group_columns} FROM {staged} {lower}
+                    ORDER BY {group_columns} LIMIT :limit
+                ) batch ORDER BY ad_remote_id DESC,platform_material_id DESC,
+                    material_type DESC LIMIT 1
+            """),
+                parameters,
+            ).one_or_none()
+            if end is None:
+                break
+            parameters.update(end_ad=end[0], end_video=end[1], end_type=end[2])
+            predicate = f"WHERE {group_key}<=(:end_ad,:end_video,:end_type)"
+            if after is not None:
+                predicate += f" AND {group_key}>(:after_ad,:after_video,:after_type)"
+        # 全集先在TEMP完成去重；同一使用的全部候选必须同批，避免原样重发时
+        # 暂时从歧义变为精确、再恢复歧义，错误地更换未改变身份的证据版本。
+        # canonical按逻辑使用组分段，仍共享原事务和发布版本。
+        # 触发器继续读取全部历史候选，保留完整关系、同版本歧义和精确身份优先级。
+        connection.execute(
+            text(
+                _material_upsert_sql(
+                    "ad_material_reference",
+                    f"SELECT {_MATERIAL_COLUMNS} FROM {staged} {predicate}",
+                )
+            ),
+            parameters,
+        )
+        if not large:
+            break
+        # 冷库中的成员/证据表会在一次发布中增长数万行。每段真实统计并重规划，
+        # 避免逐VID刷新和外键检查沿用空表SeqScan；小目录不更新共享表统计。
+        connection.execute(
+            text("""
+            ANALYZE ad_material_reference,current_ad_material,
+                material_ad_member_current,material_account_member_current,
+                report_evidence_version
+        """)
+        )
+        connection.execute(text("DISCARD PLANS"))
+        after = end
+    # 只延长素材集合写及其触发器；后续查询恢复原预算。
     # 失败时事务已中止，不在finally执行SET覆盖原错误，交给原savepoint/事务回滚。
     if previous_timeout is not None:
         connection.execute(
@@ -870,6 +924,10 @@ def _publish_staged_entities(session, run, staged):
             ),
             parameters,
         )
+        # 大目录首次增长和重复更新都需要真实统计，避免后续精确身份/父链查询
+        # 沿用空表计划。普通不足一段的小发布不触碰共享表统计。
+        if after is not None or len(keys) == _ENTITY_WRITE_BATCH_SIZE:
+            connection.execute(text("ANALYZE ad_object"))
         # 使用已经读出的本段键，避免范围谓词仍被规划为每段扫描整张宽TEMP。
         # 必须是UPSERT之后的独立SQL：READ COMMITTED下等待并发赢家提交后，
         # 这里的新快照才能读到其真实父身份/版本，不能合并进同语句CTE。
