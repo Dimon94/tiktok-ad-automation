@@ -572,3 +572,30 @@ def test_catalog_exposes_account_business_and_coverage_percentages(session, cont
     )
     assert result["coverage"]["available_accounts_percent"] == "30"
     assert result["coverage"]["excluded_accounts_percent"] == "70"
+
+
+def test_catalog_does_not_mislabel_nested_business_as_empty(session, context):
+    from app.modules.ai_workbench.review_store import source_catalog
+
+    task = create_task(session, context)
+    payloads = {
+        "business": {"runs": [{"id": "run"}], "publications": [{"id": "published"}]},
+        "history": {"reviews": [{"id": "review"}], "proposals": []},
+        "operation_logs": {
+            "coverage": {"complete": True},
+            "exports": [{"id": "export"}],
+        },
+    }
+    for category, payload in payloads.items():
+        archive_source(
+            session,
+            task=task,
+            category=category,
+            payload=payload,
+            captured_at=datetime.now(UTC),
+        )
+    catalog = {row["category"]: row for row in source_catalog(session, task)}
+    for category in payloads:
+        assert catalog[category]["source_count"] == 1
+        assert catalog[category]["row_count"] is None
+        assert catalog[category]["row_count_status"] == "UNKNOWN_READ_SOURCE"

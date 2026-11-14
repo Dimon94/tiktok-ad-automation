@@ -244,12 +244,23 @@ def source_catalog(session, task):
     rows = session.execute(
         text("""SELECT category, count(*) AS source_count,
             count(DISTINCT advertiser_id) AS account_count,
+            CASE WHEN bool_and(COALESCE(jsonb_typeof(payload->'rows')='array', false)
+                OR jsonb_typeof(payload)='array') THEN
             sum(CASE WHEN jsonb_typeof(payload->'rows')='array'
                 THEN jsonb_array_length(payload->'rows')
                 WHEN jsonb_typeof(payload)='array' THEN jsonb_array_length(payload)
-                ELSE 0 END) AS row_count
+                ELSE 0 END) ELSE NULL END AS row_count
             FROM ai_review_source WHERE task_id=:task AND tenant_id=:tenant
                 AND optimizer_id=:optimizer GROUP BY category ORDER BY category"""),
         {"task": task.id, "tenant": task.tenant_id, "optimizer": task.optimizer_id},
     ).mappings()
-    return [dict(row) for row in rows]
+    # runs/publications、reviews/proposals 等字典结构不冒充空列表。
+    return [
+        {
+            **dict(row),
+            "row_count_status": "KNOWN"
+            if row["row_count"] is not None
+            else "UNKNOWN_READ_SOURCE",
+        }
+        for row in rows
+    ]
