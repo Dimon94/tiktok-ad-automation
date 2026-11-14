@@ -12,6 +12,7 @@ from app.modules.automation_rules.inputs import AccountInfo, Inputs
 from app.modules.automation_rules.models import AutomationRule, AutomationRuleRun
 from tests.modules.ai_workbench.review_helpers import (
     create_prepared_review_task,
+    minimal_report,
     source_index,
     source_store,
 )
@@ -155,6 +156,7 @@ def test_agent_can_replay_frozen_nonhits_cite_result_and_cannot_read_foreign_his
         path + "/complete",
         headers=headers,
         json={
+            "report": minimal_report(),
             "summary": "回测新增命中一个对象，不能推定节省",
             "proposals": [],
             "recommendations": [

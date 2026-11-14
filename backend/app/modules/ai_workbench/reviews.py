@@ -283,7 +283,8 @@ def frozen_configuration(session, *, optimizer, version, context):
                 "bc_id": version.bc_id,
                 "advertiser_ids": list(version.advertiser_ids),
                 "optimization_mode": version.optimization_mode,
-                "authorization_limits": version.authorization_limits,
+                # 历史细粒度授权已退出领域发布判定，不能继续送给模型造成
+                # rule=false 被误读成“禁止提出人工候选”；能力以 catalog 为准。
                 "strategy_binding_id": str(version.strategy_binding_id),
             },
         }

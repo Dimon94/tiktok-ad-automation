@@ -166,6 +166,9 @@ def list_proposals(
     context: TenantContext,
     optimizer_id: UUID,
     status: str | None = None,
+    review_task_id: UUID | None = None,
+    offset: int = 0,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     authorize(session, context)
     query = (
@@ -174,11 +177,17 @@ def list_proposals(
             AIProposal.tenant_id == context.tenant_id,
             AIProposal.optimizer_id == optimizer_id,
         )
-        .order_by(col(AIProposal.created_at).desc())
+        .order_by(col(AIProposal.created_at).desc(), col(AIProposal.id).desc())
     )
-    if status is not None:
+    if status == "PROCESSED":
+        query = query.where(AIProposal.status != "PENDING")
+    elif status is not None:
         query = query.where(AIProposal.status == status)
-    return [_public(row) for row in session.exec(query).all()]
+    if review_task_id is not None:
+        query = query.where(AIProposal.review_task_id == review_task_id)
+    return [
+        _public(row) for row in session.exec(query.offset(offset).limit(limit)).all()
+    ]
 
 
 def _within_authorization(

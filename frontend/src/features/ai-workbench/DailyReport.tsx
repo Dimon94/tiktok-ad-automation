@@ -109,7 +109,7 @@ export function DailyReport({
           </div>
           <Card>
             <CardHeader>
-              <CardTitle>剧单排与回读</CardTitle>
+              <CardTitle>剧单排期与回读</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {(report.schedule_rows ?? []).map((row) => (
@@ -134,7 +134,7 @@ export function DailyReport({
                 </div>
               ))}
               {!report.schedule_rows?.length && (
-                <p className="text-sm text-muted-foreground">暂无剧单排。</p>
+                <p className="text-sm text-muted-foreground">暂无剧单排期。</p>
               )}
             </CardContent>
           </Card>

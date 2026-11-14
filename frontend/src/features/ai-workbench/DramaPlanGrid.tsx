@@ -1,4 +1,6 @@
-import { useMemo, useRef, useState } from "react"
+import { Worksheet } from "@/components/worksheet/Worksheet"
+import { clipboardRows } from "@/components/worksheet/clipboard"
+import { useMemo, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -52,33 +54,6 @@ export function emptyPlanRow(date: string, optimizerId: string): DramaPlanRow {
   }
 }
 
-function parseTsv(value: string): string[][] {
-  const rows: string[][] = []
-  let row: string[] = []
-  let cell = ""
-  let quoted = false
-  const source = value.replace(/\r\n?/g, "\n")
-  for (let i = 0; i < source.length; i += 1) {
-    const char = source[i]
-    if (char === '"' && (quoted || !cell)) {
-      if (quoted && source[i + 1] === '"') {
-        cell += '"'
-        i += 1
-      } else quoted = !quoted
-    } else if (!quoted && (char === "\t" || char === "\n")) {
-      row.push(cell)
-      cell = ""
-      if (char === "\n") {
-        rows.push(row)
-        row = []
-      }
-    } else cell += char
-  }
-  if (quoted) throw new Error("粘贴内容的引号未闭合")
-  if (cell || row.length || !source.endsWith("\n")) rows.push([...row, cell])
-  return rows
-}
-
 export function applyPlanPaste(
   rows: DramaPlanRow[],
   startRow: number,
@@ -87,7 +62,9 @@ export function applyPlanPaste(
   date: string,
   optimizerId: string,
 ): DramaPlanRow[] {
-  const incoming = parseTsv(value)
+  const incoming = clipboardRows(value)
+  if (incoming.length + startRow > 1000)
+    throw new Error("一次最多填写 1000 部剧")
   if (incoming.some((line) => line.length + startColumn > planColumns.length))
     throw new Error("粘贴区域超出计划列")
   if (
@@ -146,7 +123,6 @@ export function DramaPlanGrid({
   }>({ key: "", items: [] })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const refs = useRef<Record<string, HTMLInputElement | null>>({})
   const resetKey = `${businessDate}:${optimizerId}`
   const history = historyState.key === resetKey ? historyState.items : []
   const rows = initial
@@ -163,7 +139,7 @@ export function DramaPlanGrid({
   return (
     <Card data-testid="drama-plan-grid">
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle>每日剧单</CardTitle>
+        <CardTitle>剧单排期</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-sm text-muted-foreground" htmlFor="plan-date">
             日期
@@ -184,6 +160,15 @@ export function DramaPlanGrid({
             disabled={disabled || saving || !history.length}
           >
             撤销
+          </Button>
+          <Button
+            variant="outline"
+            disabled={disabled || saving || rows.length >= 1000}
+            onClick={() =>
+              update([...rows, emptyPlanRow(businessDate, optimizerId)])
+            }
+          >
+            添加行
           </Button>
           {onSave && (
             <Button
@@ -213,104 +198,66 @@ export function DramaPlanGrid({
             {error}
           </p>
         )}
-        <table className="w-full text-sm" data-testid="drama-plan-table">
-          <thead>
-            <tr>
-              <th className="p-2 text-left">#</th>
-              {planColumns.map((column) => (
-                <th className="p-2 text-left" key={column.key}>
-                  {column.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, rowIndex) => (
-              <tr key={row.id ?? rowIndex}>
-                <td className="p-2 text-muted-foreground">
-                  {rowIndex + 1}
-                  {row.read_only ? "（只读）" : ""}
-                </td>
-                {planColumns.map((column, columnIndex) => {
-                  const key = column.key
-                  const refKey = `${rowIndex}:${columnIndex}`
-                  return (
-                    <td className="p-1" key={key}>
-                      <Input
-                        ref={(element) => {
-                          refs.current[refKey] = element
-                        }}
-                        disabled={disabled || saving || row.read_only}
-                        aria-label={`${rowIndex + 1} 行 ${column.label}`}
-                        data-testid={`plan-cell-${rowIndex}-${columnIndex}`}
-                        value={
-                          key === "order_materials"
-                            ? row[key]
-                              ? "是"
-                              : "否"
-                            : row[key]
-                        }
-                        onChange={(event) => {
-                          const next = rows.map((item) => ({ ...item }))
-                          next[rowIndex] = {
-                            ...next[rowIndex],
-                            [key]:
-                              key === "order_materials"
-                                ? /^(是|1|true)$/i.test(event.target.value)
-                                : event.target.value,
-                          }
-                          update(next)
-                        }}
-                        onPaste={(event) => {
-                          const text = event.clipboardData.getData("text/plain")
-                          if (!text.includes("\t") && !text.includes("\n"))
-                            return
-                          event.preventDefault()
-                          try {
-                            update(
-                              applyPlanPaste(
-                                rows,
-                                rowIndex,
-                                columnIndex,
-                                text,
-                                businessDate,
-                                optimizerId,
-                              ),
-                            )
-                            setError(null)
-                          } catch (reason) {
-                            setError(
-                              reason instanceof Error
-                                ? reason.message
-                                : "粘贴失败",
-                            )
-                          }
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key !== "Tab" && event.key !== "Enter")
-                            return
-                          event.preventDefault()
-                          const direction = event.shiftKey ? -1 : 1
-                          const flatIndex =
-                            event.key === "Enter"
-                              ? (rowIndex + direction) * planColumns.length +
-                                columnIndex
-                              : rowIndex * planColumns.length +
-                                columnIndex +
-                                direction
-                          if (flatIndex < 0) return
-                          refs.current[
-                            `${Math.floor(flatIndex / planColumns.length)}:${flatIndex % planColumns.length}`
-                          ]?.focus()
-                        }}
-                      />
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Worksheet
+          testId="drama-plan-table"
+          className="max-h-[60vh]"
+          columns={planColumns.map((column, index) => ({
+            ...column,
+            width: [120, 220, 200, 180, 300, 180, 100][index] + "px",
+          }))}
+          rowCount={rows.length}
+          disabled={disabled || saving}
+          readOnly={(row) => rows[row].read_only === true}
+          cellTestId={(row, column) => `plan-cell-${row}-${column}`}
+          value={(row, column) => {
+            const key = planColumns[column].key
+            return key === "order_materials"
+              ? rows[row][key]
+                ? "是"
+                : "否"
+              : rows[row][key]
+          }}
+          onChange={(row, column, value) => {
+            const key = planColumns[column].key
+            update(
+              rows.map((item, index) =>
+                index === row
+                  ? {
+                      ...item,
+                      [key]:
+                        key === "order_materials"
+                          ? /^(是|1|true)$/i.test(value)
+                          : value,
+                    }
+                  : item,
+              ),
+            )
+          }}
+          onPaste={(row, column, value) => {
+            try {
+              update(
+                applyPlanPaste(
+                  rows,
+                  row,
+                  column,
+                  value,
+                  businessDate,
+                  optimizerId,
+                ),
+              )
+              setError(null)
+            } catch (reason) {
+              setError(errorMessage(reason))
+            }
+          }}
+          onUndo={undo}
+          onAddRow={() =>
+            update([...rows, emptyPlanRow(businessDate, optimizerId)])
+          }
+        />
+        <p className="mt-3 text-xs text-muted-foreground">
+          Tab 切换 · Enter 向下 · Ctrl / ⌘ Z 撤销 · 剧目 ID 保留前导零
+        </p>
         <p className="mt-3 text-xs text-muted-foreground">
           素材只在执行时按剧目和版权方连接匹配；此处不选择素材。
         </p>

@@ -3,7 +3,10 @@ from uuid import uuid4
 from app.modules.ai_workbench import service
 from app.modules.ai_workbench.reviews import frozen_evidence_ids
 from app.modules.ai_workbench.schemas import OptimizerCreate
-from tests.modules.ai_workbench.review_helpers import create_prepared_review_task
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    minimal_report,
+)
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -96,6 +99,7 @@ def test_claim_binds_plugin_methods_and_retry_keeps_old_version(
     assert retry.json()["task"]["evidence"]["methods"] == methods
     assert retry.json()["task"]["fence"] != first.json()["task"]["fence"]
     body = {
+        "report": minimal_report(),
         "summary": "loaded frozen review skill",
         "proposals": [],
         "method_usage": ["ai-delivery-review", "scale"],

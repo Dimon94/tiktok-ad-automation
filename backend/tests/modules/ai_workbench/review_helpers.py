@@ -5,6 +5,21 @@ from app.modules.ai_workbench.review_preparation import prepare_step
 from app.modules.ai_workbench.review_store import ReviewSource, scoped
 
 
+def minimal_report():
+    """非展示专项用例也通过正式结构化结果合同，避免被格式错误提前拦截。"""
+    return {
+        "headline": "继续观察",
+        "verdict": "本轮不调整规则。",
+        "sections": [
+            {"title": "证据限制", "body": "观察窗口不足。", "evidence_ids": []}
+        ],
+        "rule_decision": {
+            "status": "INSUFFICIENT_EVIDENCE",
+            "reason": "需要完整观察窗口。",
+        },
+    }
+
+
 def prepare_task(session, task):
     for _ in range(4 * (len(task.evidence["optimizer"]["advertiser_ids"]) + 1)):
         if task.status != "PREPARING":

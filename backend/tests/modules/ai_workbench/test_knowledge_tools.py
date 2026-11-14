@@ -6,7 +6,10 @@ from app.modules.ai_workbench.knowledge import KnowledgeInput, create_version
 from app.modules.ai_workbench.reviews import create_review_task
 from app.modules.ai_workbench.schemas import OptimizerCreate
 from app.modules.tenants.models import TenantMembership
-from tests.modules.ai_workbench.review_helpers import create_prepared_review_task
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    minimal_report,
+)
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -92,6 +95,7 @@ def test_agent_search_read_frozen_policy_and_scoped_citation(
         base + "/complete",
         headers=headers,
         json={
+            "report": minimal_report(),
             "summary": "按已读取政策分析",
             "proposals": [],
             "recommendations": [

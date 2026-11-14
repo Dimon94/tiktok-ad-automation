@@ -1,6 +1,7 @@
 """HTTP contracts for tenant AI optimizer configuration."""
 
 from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -328,13 +329,20 @@ def get_proposals(
     optimizer_id: UUID,
     session: SessionDep,
     user: CurrentUser,
-    status: str | None = Query(default=None),
+    status: Literal["PENDING", "ACCEPTED", "REJECTED", "STALE", "PROCESSED"]
+    | None = Query(default=None),
+    review_task_id: UUID | None = Query(default=None),
+    offset: int = Query(default=0, ge=0, le=1000000),
+    limit: int = Query(default=100, ge=1, le=100),
 ) -> list[dict]:
     return proposals.list_proposals(
         session,
         context=_context(user, tenant_id),
         optimizer_id=optimizer_id,
         status=status,
+        review_task_id=review_task_id,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -381,37 +389,30 @@ def reject_proposal(
 
 @router.get("/ai-optimizers/{optimizer_id}/reviews")
 def list_reviews(
-    tenant_id: UUID, optimizer_id: UUID, session: SessionDep, user: CurrentUser
+    tenant_id: UUID,
+    optimizer_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+    offset: int = Query(default=0, ge=0, le=1000000),
+    limit: int = Query(default=10, ge=1, le=100),
+    status: Literal[
+        "PREPARING", "PENDING", "RUNNING", "COMPLETE", "FAILED", "CANCELLED"
+    ]
+    | None = Query(default=None),
 ) -> dict:
-    from app.core.config import settings
+    from app.modules.ai_workbench.review_queries import list_review_page
 
     service.get_optimizer(
         session, context=_context(user, tenant_id), optimizer_id=optimizer_id
     )
-    tasks = session.exec(
-        select(reviews.DSHReviewTask)
-        .where(
-            reviews.DSHReviewTask.tenant_id == tenant_id,
-            reviews.DSHReviewTask.optimizer_id == optimizer_id,
-        )
-        .order_by(reviews.DSHReviewTask.created_at.desc())
-        .limit(50)
-    ).all()
-    return {
-        "runtime_ready": bool(settings.AI_DSH_SERVICE_TOKEN),
-        "items": [
-            {
-                "id": task.id,
-                "status": task.status,
-                "created_at": task.created_at,
-                "finished_at": task.finished_at,
-                "optimizer_version": task.optimizer_version,
-                "preparation": task.evidence.get("preparation"),
-                "result": task.result,
-            }
-            for task in tasks
-        ],
-    }
+    return list_review_page(
+        session,
+        tenant_id=tenant_id,
+        optimizer_id=optimizer_id,
+        offset=offset,
+        limit=limit,
+        status=status,
+    )
 
 
 class ReviewControlRequest(BaseModel):
@@ -481,6 +482,18 @@ def get_review(
         "id": task.id,
         "status": task.status,
         "result": task.result,
+        "created_at": task.created_at,
+        "finished_at": task.finished_at,
+        "optimizer_version": task.optimizer_version,
+        "review_context": {
+            "optimization_mode": task.evidence.get("optimizer", {}).get(
+                "optimization_mode", "MANUAL"
+            ),
+            "proposal_submission_allowed": True,
+            "publication": "AUTHORIZED_AUTO"
+            if task.evidence.get("optimizer", {}).get("optimization_mode") == "AUTO"
+            else "HUMAN_CONFIRMATION",
+        },
         "preparation": task.evidence.get("preparation"),
         "error_message": task.result.get("summary")
         if task.status == "FAILED"

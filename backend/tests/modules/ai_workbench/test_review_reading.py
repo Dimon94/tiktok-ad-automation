@@ -20,6 +20,7 @@ from app.modules.ai_workbench.schemas import OptimizerCreate
 from app.modules.reporting.publish import AccountMeta, publish_ad_day
 from tests.modules.ai_workbench.review_helpers import (
     create_prepared_review_task,
+    minimal_report,
     source_index,
 )
 from tests.modules.ai_workbench.test_optimizer import (
@@ -117,6 +118,7 @@ def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
     assert len(query["items"]) == 10 and query["next_offset"] == 10
     assert source["id"] not in delivered_evidence_ids(session, task)
     result = {
+        "report": minimal_report(),
         "summary": "检查明细",
         "proposals": [],
         "recommendations": [
@@ -337,11 +339,16 @@ def test_tenant_token_and_frozen_account_scope_cannot_be_expanded(
     )
     source = campaign_source(session, task)
     unread_proposal = {
+        "report": minimal_report(),
         "summary": "未读证据不得用于提案",
         "proposals": [
             {
                 "kind": "strategy",
                 "after": {"config": task.evidence["strategy"]["config"]},
+                "rationale": "核验未读取证据不可提交",
+                "problem": "引用缺口",
+                "expected_effect": "保持原配置",
+                "validation": "校验已读凭证",
                 "evidence_ids": [source["id"]],
             }
         ],

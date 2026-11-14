@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session as SASession
 from sqlmodel import Session, select
@@ -25,6 +25,7 @@ from app.modules.ai_workbench.knowledge_refs import sanitize_public
 from app.modules.ai_workbench.methods import MethodBundle
 from app.modules.ai_workbench.models import AIOptimizer, AIOptimizerVersion
 from app.modules.ai_workbench.proposals import ProposalInput
+from app.modules.ai_workbench.review_report import ReviewReport
 from app.modules.automation_rules.schemas import RuleDefinition
 
 SERVICE_AUDIENCE = "tkada-ai-review"
@@ -54,7 +55,8 @@ class ExperienceCandidate(BaseModel):
 
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    summary: str = Field(min_length=1, max_length=20000)
+    summary: str = Field(min_length=1, max_length=1000)
+    report: ReviewReport | None = None
     proposals: list[ProposalInput] = Field(default_factory=list, max_length=20)
     recommendations: list[Recommendation] = Field(default_factory=list, max_length=20)
     experience_candidates: list[ExperienceCandidate] = Field(
@@ -62,6 +64,32 @@ class ReviewResult(BaseModel):
     )
     method_usage: list[str] = Field(default_factory=list, max_length=6)
     failed: bool = False
+
+    @model_validator(mode="after")
+    def structured_success(self):
+        if not self.failed:
+            if self.report is None:
+                raise ValueError("成功复盘必须提供结构化 report 和规则处置原因")
+            rule_proposals = [p for p in self.proposals if p.kind == "rule"]
+            if (self.report.rule_decision.status == "PROPOSED") != bool(rule_proposals):
+                raise ValueError("规则处置 PROPOSED 必须与实际规则提案一致")
+            for proposal in self.proposals:
+                if (
+                    not all(
+                        value.strip()
+                        for value in (
+                            proposal.rationale,
+                            proposal.problem,
+                            proposal.expected_effect,
+                            proposal.validation,
+                        )
+                    )
+                    or not proposal.evidence_ids
+                ):
+                    raise ValueError(
+                        "可执行提案须提供原因、问题、预期、验证条件和已读证据"
+                    )
+        return self
 
 
 def _credentials(value: HTTPAuthorizationCredentials | None) -> str:
@@ -290,6 +318,10 @@ def complete(
         for item in [*body.recommendations, *body.experience_candidates]
         for e in item.evidence_ids
     }
+    if body.report is not None:
+        cited.update(
+            str(e) for section in body.report.sections for e in section.evidence_ids
+        )
     from app.modules.ai_workbench.review_store import delivered_evidence_ids
 
     if not cited.issubset(delivered_evidence_ids(session, task)):

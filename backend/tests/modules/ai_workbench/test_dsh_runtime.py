@@ -6,7 +6,7 @@ from sqlmodel import select
 
 from app.core.config import settings
 from app.modules.ai_workbench.reviews import DSHReviewTask
-from tests.modules.ai_workbench.review_helpers import prepare_task
+from tests.modules.ai_workbench.review_helpers import minimal_report, prepare_task
 
 from .test_optimizer import api_headers, create_body, seed_optimizer_dependencies
 from .test_review_methods import plugin_methods
@@ -55,7 +55,13 @@ def test_runtime_claim_complete_and_reject_old_fence(
     )
     url = "/api/integrations/ai-workbench/reviews/" + claim["task"]["id"] + "/complete"
     result = client.post(
-        url, headers=token, json={"summary": "证据不足，本轮不调整", "proposals": []}
+        url,
+        headers=token,
+        json={
+            "report": minimal_report(),
+            "summary": "证据不足，本轮不调整",
+            "proposals": [],
+        },
     )
     assert result.status_code == 200, result.text
     assert result.json()["status"] == "COMPLETE"
@@ -63,13 +69,19 @@ def test_runtime_claim_complete_and_reject_old_fence(
         client.post(
             url,
             headers=token,
-            json={"summary": "证据不足，本轮不调整", "proposals": []},
+            json={
+                "report": minimal_report(),
+                "summary": "证据不足，本轮不调整",
+                "proposals": [],
+            },
         ).status_code
         == 200
     )
     assert (
         client.post(
-            url, headers=token, json={"summary": "冲突结果", "proposals": []}
+            url,
+            headers=token,
+            json={"report": minimal_report(), "summary": "冲突结果", "proposals": []},
         ).status_code
         == 409
     )
@@ -115,7 +127,7 @@ def test_runtime_recovery_changes_fence_and_cancel_revokes_token(
     response = client.post(
         "/api/integrations/ai-workbench/reviews/" + claim["task"]["id"] + "/complete",
         headers={"Authorization": "Bearer " + claim["task_token"]},
-        json={"summary": "旧任务", "proposals": []},
+        json={"report": minimal_report(), "summary": "旧任务", "proposals": []},
     )
     assert response.status_code == 409
 

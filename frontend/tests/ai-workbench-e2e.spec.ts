@@ -330,7 +330,7 @@ test("双租户双投手切换保留 AUTO/MANUAL、下单路径和回读边界",
     `/tenants/${tenantA}/ai-workbench?optimizer_id=${optimizerAManual}&view=review`,
   )
   await expect(page.getByTestId("ai-review-view")).toContainText("复盘建议")
-  await page.getByRole("button", { name: "接受" }).click()
+  await page.getByRole("button", { name: "接受并发布" }).click()
   await expect.poll(() => proposalRequests.length).toBe(1)
   expect(proposalRequests[0]).toContain(
     `/proposals/${optimizerAManual}-proposal/accept`,
@@ -554,18 +554,21 @@ test("提案展示前后值与授权证据，决定错误可见，复盘可触�
     },
   )
   let reviews = 0
-  await page.route(`**/ai-optimizers/${optimizer}/reviews`, async (route) => {
-    expect(route.request().headers().authorization).toBe(
-      "Bearer ai-workbench-test-token",
-    )
-    if (route.request().method() === "GET")
-      return route.fulfill({ json: { runtime_ready: true, items: [] } })
-    expect(route.request().postDataJSON().request_id).toBeTruthy()
-    reviews += 1
-    return route.fulfill({
-      json: { task: { id: "review-1", status: "QUEUED" }, proposals: [] },
-    })
-  })
+  await page.route(
+    `**/ai-optimizers/${optimizer}/reviews{,?**}`,
+    async (route) => {
+      expect(route.request().headers().authorization).toBe(
+        "Bearer ai-workbench-test-token",
+      )
+      if (route.request().method() === "GET")
+        return route.fulfill({ json: { runtime_ready: true, items: [] } })
+      expect(route.request().postDataJSON().request_id).toBeTruthy()
+      reviews += 1
+      return route.fulfill({
+        json: { task: { id: "review-1", status: "QUEUED" }, proposals: [] },
+      })
+    },
+  )
   await page.route(`**/ai-optimizers/${optimizer}/reviews/review-1`, (route) =>
     route.fulfill({ json: { id: "review-1", status: "COMPLETE" } }),
   )
@@ -573,16 +576,14 @@ test("提案展示前后值与授权证据，决定错误可见，复盘可触�
     `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
   )
   await expect(page.getByTestId("ai-review-view")).toContainText("frozen-123")
-  await expect(page.getByTestId("ai-review-view")).toContainText(
-    '"budget": 120',
-  )
+  await expect(page.getByTestId("ai-review-view")).toContainText("120")
   await expect(page.getByTestId("ai-review-view")).toContainText(
     "授权与影响范围",
   )
-  await page.getByRole("button", { name: "接受", exact: true }).click()
+  await page.getByRole("button", { name: "接受并发布", exact: true }).click()
   await expect(page.getByRole("alert")).toContainText("版本已变更")
   await page.getByRole("button", { name: "发起复盘" }).click()
-  await expect(page.getByRole("status")).toContainText("COMPLETE")
+  await expect(page.getByTestId("review-detail")).toContainText("已完成")
   expect(reviews).toBe(1)
 })
 
@@ -628,7 +629,7 @@ test("切换投手丢弃旧提案和编辑草稿，已暂停投手仍可管理",
     "旧投手建议",
   )
   await expect(
-    page.getByRole("button", { name: "接受", exact: true }),
+    page.getByRole("button", { name: "接受并发布", exact: true }),
   ).toHaveCount(0)
   await page.getByTestId("ai-nav-overview").click()
   await expect(page.getByRole("button", { name: "恢复投手" })).toBeVisible()
@@ -708,12 +709,35 @@ test("排期保存保留行 ID、冻结行只读，输入不中断，TSV 和日�
     )
   })
   await expect(input).toHaveValue("新剧")
+  await expect(page.getByTestId("plan-cell-1-5")).toHaveValue("0013")
+  await expect(input).toHaveCSS("border-radius", "0px")
   await page.getByRole("button", { name: "撤销" }).click()
   await expect(input).toHaveValue("New drama")
   await input.press("Tab")
   await expect(page.getByTestId("plan-cell-1-2")).toBeFocused()
   await input.press("Enter")
   await expect(page.getByTestId("plan-cell-2-1")).toBeFocused()
+  await page.getByRole("button", { name: "添加行", exact: true }).click()
+  await expect(
+    page.getByTestId("drama-plan-table").locator("tbody tr"),
+  ).toHaveCount(11)
+  await page.getByTestId("plan-cell-10-1").fill("临时行")
+  await page.getByTestId("plan-cell-10-1").press("ControlOrMeta+z")
+  await expect(page.getByTestId("plan-cell-10-1")).toHaveValue("")
+  const { mkdir } = await import("node:fs/promises")
+  await mkdir("../.runtime/ai-review-product-20261114", { recursive: true })
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true)
+    await page.screenshot({
+      path: `../.runtime/ai-review-product-20261114/schedule-${width}.png`,
+      fullPage: true,
+    })
+  }
   await page.getByRole("button", { name: "保存剧单" }).click()
   await expect.poll(() => saved.length).toBe(1)
   const rows = saved[0].rows as Array<Record<string, unknown>>
@@ -762,6 +786,8 @@ test("复盘历史支持失败重试、取消排队任务和服务未配置提�
       return route.fulfill({
         json: {
           runtime_ready: true,
+          active_task:
+            status === "PENDING" ? { id: "historical-task", status } : null,
           items: [
             {
               id: "historical-task",
@@ -776,17 +802,25 @@ test("复盘历史支持失败重试、取消排队任务和服务未配置提�
       actions.push(path.split("/").at(-1)!)
       status = path.endsWith("/retry") ? "PENDING" : "CANCELLED"
     }
-    return route.fulfill({ json: { id: "historical-task", status } })
+    return route.fulfill({
+      json: {
+        id: "historical-task",
+        status,
+        result: { summary: "上次服务暂时不可用" },
+      },
+    })
   })
   await page.goto(
     `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
   )
-  await expect(page.getByRole("status")).toContainText("上次服务暂时不可用")
+  await expect(page.getByTestId("review-detail")).toContainText(
+    "上次服务暂时不可用",
+  )
   await page.getByRole("button", { name: "重试复盘", exact: true }).click()
   await page.getByRole("button", { name: "取消复盘", exact: true }).click()
-  await expect(page.getByRole("status")).toContainText("CANCELLED")
+  await expect(page.getByTestId("review-detail")).toContainText("已取消")
   expect(actions).toEqual(["retry", "cancel"])
-  await page.route(`**/ai-optimizers/${optimizer}/reviews`, (route) =>
+  await page.route(`**/ai-optimizers/${optimizer}/reviews{,?**}`, (route) =>
     route.fulfill({ json: { runtime_ready: false, items: [] } }),
   )
   await page.reload()
@@ -1103,7 +1137,7 @@ test("工作台业务用语和数值易读，搭建与规则证据范围明确",
   await expect(page.getByTestId("ai-optimizer-list")).not.toContainText(
     "MANUAL",
   )
-  await expect(page.getByTestId("ai-nav-schedule")).toHaveText("剧单排")
+  await expect(page.getByTestId("ai-nav-schedule")).toHaveText("剧单排期")
   await page.getByTestId("ai-nav-execution").click()
   await expect(
     page.getByRole("heading", { name: "剧单搭建执行记录" }),
@@ -1126,13 +1160,37 @@ test("工作台业务用语和数值易读，搭建与规则证据范围明确",
   ).toHaveCount(0)
 })
 
-test("知识库独立导航、搜索与详情，待确认合并到复盘并更新数量", async ({ page }) => {
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers`, (route) => route.fulfill({ json: [] }))
+test("知识库独立导航、搜索与详情，待确认合并到复盘并更新数量", async ({
+  page,
+}) => {
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers`, (route) =>
+    route.fulfill({ json: [] }),
+  )
   const body = "这是政策正文，仅详情展示。"
-  await page.route(`**/api/tenants/${tenant}/ai-knowledge`, (route) => route.fulfill({ json: [
-    { id: "knowledge-1", title: "新剧补贴", body, scope: "PUBLIC", version: 1, status: "CONFIRMED", source: "政策原文", source_verified: false },
-    { id: "knowledge-2", title: "短剧变现", body: "变现链路正文", scope: "PUBLIC", version: 2, status: "CONFIRMED" },
-  ] }))
+  await page.route(`**/api/tenants/${tenant}/ai-knowledge`, (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: "knowledge-1",
+          title: "新剧补贴",
+          body,
+          scope: "PUBLIC",
+          version: 1,
+          status: "CONFIRMED",
+          source: "政策原文",
+          source_verified: false,
+        },
+        {
+          id: "knowledge-2",
+          title: "短剧变现",
+          body: "变现链路正文",
+          scope: "PUBLIC",
+          version: 2,
+          status: "CONFIRMED",
+        },
+      ],
+    }),
+  )
   // 知识库无需先创建或选择投手。
   await page.goto(`/tenants/${tenant}/ai-workbench?view=knowledge`)
   const library = page.getByTestId("ai-knowledge-view")
@@ -1150,64 +1208,579 @@ test("知识库独立导航、搜索与详情，待确认合并到复盘并更�
   await page.getByLabel("搜索知识").fill("不存在")
   await expect(library).toContainText("没有匹配的知识")
 
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews`, (route) => route.fulfill({ json: { runtime_ready: false, items: [] } }))
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals`, (route) => route.fulfill({ json: [
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews{,?**}`,
+    (route) => route.fulfill({ json: { runtime_ready: false, items: [] } }),
+  )
+  const proposals = [
     { id: "proposal-1", title: "待确认调整", status: "PENDING" },
     { id: "proposal-2", title: "已处理调整", status: "ACCEPTED" },
-  ] }))
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals/proposal-1/accept`, (route) => route.fulfill({ json: { id: "proposal-1", title: "待确认调整", status: "ACCEPTED" } }))
-  await page.goto(`/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`)
+  ]
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals{,?**}`,
+    (route) => {
+      const status = new URL(route.request().url()).searchParams.get("status")
+      return route.fulfill({
+        json: proposals.filter((item) =>
+          status === "PENDING"
+            ? item.status === "PENDING"
+            : status === "PROCESSED"
+              ? item.status !== "PENDING"
+              : true,
+        ),
+      })
+    },
+  )
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals/proposal-1/accept`,
+    (route) => {
+      proposals[0].status = "ACCEPTED"
+      return route.fulfill({ json: proposals[0] })
+    },
+  )
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
   const reviews = page.getByTestId("ai-review-view")
   await expect(reviews).not.toContainText("新剧补贴")
-  await page.getByRole("tab", { name: "待确认（1）" }).click()
+  await page.getByRole("tab", { name: "待确认", exact: true }).click()
   await expect(reviews).toContainText("待确认调整")
   await expect(reviews).not.toContainText("已处理调整")
-  await page.getByRole("button", { name: "接受", exact: true }).click()
-  await expect(page.getByRole("tab", { name: "待确认（0）" })).toBeVisible()
-  await expect(reviews).toContainText("暂无待确认建议")
+  await page.getByRole("button", { name: "接受并发布", exact: true }).click()
+  await expect(
+    page.getByRole("tab", { name: "待确认", exact: true }),
+  ).toBeVisible()
+  await expect(reviews).toContainText("暂无待确认变更")
   await page.getByRole("tab", { name: "已处理", exact: true }).click()
   await expect(reviews).toContainText("已处理调整")
   await expect(reviews).toContainText("待确认调整")
 })
 
 test("发起复盘等待时给出反馈，失败可见且重试后显示任务", async ({ page }) => {
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers**`, (route) => route.fulfill({ json: { items: [], next_cursor: null, total: 0 } }))
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals`, (route) => route.fulfill({ json: [] }))
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers**`, (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null, total: 0 } }),
+  )
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals{,?**}`,
+    (route) => route.fulfill({ json: [] }),
+  )
   let release = () => {}
-  const gate = new Promise<void>((resolve) => { release = resolve })
-  let attempts = 0
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews`, async (route) => {
-    if (route.request().method() === "GET") return route.fulfill({ json: { runtime_ready: true, items: [] } })
-    attempts += 1
-    if (attempts === 1) {
-      await gate
-      return route.fulfill({ status: 422, json: { code: "ai_review_input_too_large", message: "复盘证据超过单轮容量，暂未创建任务。" } })
-    }
-    return route.fulfill({ json: { task: { id: "review-created", status: "PENDING" }, proposals: [] } })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
   })
-  await page.goto(`/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`)
+  let attempts = 0
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews{,?**}`,
+    async (route) => {
+      if (route.request().method() === "GET")
+        return route.fulfill({ json: { runtime_ready: true, items: [] } })
+      attempts += 1
+      if (attempts === 1) {
+        await gate
+        return route.fulfill({
+          status: 422,
+          json: {
+            code: "ai_review_input_too_large",
+            message: "复盘证据超过单轮容量，暂未创建任务。",
+          },
+        })
+      }
+      return route.fulfill({
+        json: {
+          task: { id: "review-created", status: "PENDING" },
+          proposals: [],
+        },
+      })
+    },
+  )
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
   await page.getByRole("button", { name: "发起复盘", exact: true }).click()
-  await expect(page.getByRole("button", { name: "正在准备复盘证据…" })).toBeDisabled()
-  await expect(page.getByTestId("ai-review-view")).toContainText("创建复盘任务，请稍候")
+  await expect(
+    page.getByRole("button", { name: "正在准备复盘证据…" }),
+  ).toBeDisabled()
+  await expect(page.getByTestId("ai-review-view")).toContainText(
+    "创建复盘任务，请稍候",
+  )
   release()
-  await expect(page.getByRole("alert")).toContainText("发起复盘失败：复盘证据超过单轮容量")
+  await expect(page.getByRole("alert")).toContainText(
+    "发起复盘失败：复盘证据超过单轮容量",
+  )
   await page.getByRole("button", { name: "发起复盘", exact: true }).click()
-  await expect(page.getByTestId("ai-review-view")).toContainText("review-created")
+  await expect(page.getByTestId("ai-review-view")).toContainText(
+    "review-created",
+  )
   await expect(page.getByRole("alert")).toHaveCount(0)
 })
 
-test("后台准备复盘持续轮询，准备期间不能重复发起且可以取消", async ({ page }) => {
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers**`, (route) => route.fulfill({ json: { items: [], next_cursor: null, total: 0 } }))
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals`, (route) => route.fulfill({ json: [] }))
+test("后台准备复盘持续轮询，准备期间不能重复发起且可以取消", async ({
+  page,
+}) => {
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers**`, (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null, total: 0 } }),
+  )
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/proposals{,?**}`,
+    (route) => route.fulfill({ json: [] }),
+  )
   let polls = 0
-  const task = { id: 'preparing-review', status: 'PREPARING', preparation: { total_accounts: 50, completed_accounts: 23, failed_accounts: 1 }, result: {} }
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews`, (route) => route.fulfill({ json: { runtime_ready: true, items: [task] } }))
-  await page.route(`**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews/preparing-review`, (route) => { polls++; return route.fulfill({ json: task }) })
-  await page.goto(`/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`)
-  await expect(page.getByTestId('ai-review-view')).toContainText('PREPARING')
-  await expect(page.getByTestId('ai-review-view')).toContainText('账户数据准备 23 / 50')
-  await expect(page.getByTestId('ai-review-view')).toContainText('1 个账户准备失败')
-  await expect(page.getByRole('button', { name: '发起复盘', exact: true })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '取消复盘', exact: true })).toBeVisible()
+  const task = {
+    id: "preparing-review",
+    status: "PREPARING",
+    preparation: {
+      total_accounts: 50,
+      completed_accounts: 23,
+      failed_accounts: 1,
+    },
+    result: {},
+  }
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews{,?**}`,
+    (route) =>
+      route.fulfill({
+        json: {
+          runtime_ready: true,
+          items: [task],
+          active_task: task,
+          total: 1,
+          has_more: false,
+        },
+      }),
+  )
+  await page.route(
+    `**/api/tenants/${tenant}/ai-optimizers/${optimizer}/reviews/preparing-review`,
+    (route) => {
+      polls++
+      return route.fulfill({ json: task })
+    },
+  )
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
+  await expect(page.getByTestId("ai-review-view")).toContainText("准备中")
+  await expect(page.getByTestId("ai-review-view")).toContainText(
+    "账户数据准备 23 / 50",
+  )
+  await expect(page.getByTestId("ai-review-view")).toContainText(
+    "1 个账户准备失败",
+  )
+  await expect(
+    page.getByRole("button", { name: "发起复盘", exact: true }),
+  ).toBeDisabled()
+  await expect(
+    page.getByRole("button", { name: "取消复盘", exact: true }),
+  ).toBeVisible()
   await expect.poll(() => polls).toBeGreaterThan(0)
+})
+
+// transport 边界仅模拟服务数据；分页、详情加载、确认动作与渲染均运行真实页面。
+test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面窄屏可读", async ({
+  page,
+}) => {
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers?**`, (route) =>
+    route.fulfill({ json: { items: [configuredOptimizer()] } }),
+  )
+  const reads: string[] = []
+  const history = Array.from({ length: 100 }, (_, index) => ({
+    id: `review-${index}`,
+    status: "COMPLETE",
+    created_at: "2026-11-14T06:00:00Z",
+    headline: `第 ${index + 1} 轮短结论`,
+    proposal_count: 0,
+    recommendation_count: 1,
+  }))
+  await page.route(`**/ai-optimizers/${optimizer}/reviews**`, (route) => {
+    const url = new URL(route.request().url())
+    reads.push(url.pathname + url.search)
+    if (url.pathname.endsWith("/reviews")) {
+      const offset = Number(url.searchParams.get("offset"))
+      expect(url.searchParams.get("limit")).toBe("10")
+      return route.fulfill({
+        json: {
+          items: history.slice(offset, offset + 10),
+          offset,
+          limit: 10,
+          total: 100,
+          has_more: offset + 10 < 100,
+          runtime_ready: true,
+          active_task: null,
+        },
+      })
+    }
+    const id = url.pathname.split("/").at(-1)!
+    return route.fulfill({
+      json: {
+        ...history.find((item) => item.id === id),
+        optimizer_version: 3,
+        result:
+          id === "review-11"
+            ? {
+                summary:
+                  "历史第一段\n\n历史第二段\n保留换行 <img src=x onerror=alert(1)>",
+                recommendations: [],
+              }
+            : {
+                summary: "消耗稳定，仍缺少完整日验证。",
+                proposals: [],
+                report: {
+                  headline: "按完整日评估利润",
+                  verdict: "本轮继续观察。",
+                  sections: [
+                    {
+                      title: "账户时区分组",
+                      body: "比较两个账户时区的完整日。",
+                      evidence_ids: ["ev-complete-day"],
+                      table: {
+                        columns: ["时区", "利润", "ROAS"],
+                        rows: [
+                          ["UTC+8", "120", "1.3"],
+                          ["UTC+0", "90", "1.2"],
+                        ],
+                      },
+                    },
+                  ],
+                  rule_decision: {
+                    status: "INSUFFICIENT_EVIDENCE",
+                    reason: "尚缺规则执行后的完整日证据，本轮不调整阈值。",
+                  },
+                },
+                recommendations: [
+                  {
+                    problem: "素材覆盖不足",
+                    suggestion: "补齐两个账户的素材。",
+                    validation: "观察完整日利润与消耗。",
+                    evidence_ids: ["ev-materials"],
+                  },
+                ],
+              },
+      },
+    })
+  })
+  await page.route(`**/ai-optimizers/${optimizer}/proposals?**`, (route) =>
+    route.fulfill({ json: [] }),
+  )
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
+  await expect(
+    page.getByTestId("review-history").locator("tbody tr"),
+  ).toHaveCount(10)
+  await expect(page.getByTestId("review-report")).toContainText(
+    "尚缺规则执行后的完整日证据",
+  )
+  await expect(page.getByRole("region", { name: "普通建议" })).toContainText(
+    "观察完整日利润与消耗",
+  )
+  await expect(
+    page.getByTestId("review-report").getByRole("table"),
+  ).toContainText("UTC+8")
+  await expect(page.getByRole("button", { name: "接受并发布" })).toHaveCount(0)
+  await page.getByRole("button", { name: "历史下一页" }).click()
+  await expect(page.getByTestId("review-history")).toContainText(
+    "第 11 轮短结论",
+  )
+  await page
+    .getByRole("button", { name: "查看复盘 review-10", exact: true })
+    .click()
+  await expect
+    .poll(() => reads.some((path) => path.endsWith("/reviews/review-10")))
+    .toBe(true)
+  expect(
+    reads
+      .filter((path) => /\/reviews\/review-/.test(path))
+      .every((path) => path.endsWith("review-0") || path.endsWith("review-10")),
+  ).toBe(true)
+  await page
+    .getByRole("button", { name: "查看复盘 review-11", exact: true })
+    .click()
+  await expect(
+    page
+      .getByTestId("review-report")
+      .locator("p")
+      .filter({ hasText: "历史第一段" }),
+  ).toHaveText("历史第一段")
+  await expect(page.getByTestId("review-report").locator("img")).toHaveCount(0)
+  await page
+    .getByRole("button", { name: "查看复盘 review-10", exact: true })
+    .click()
+  await expect(page.getByTestId("review-report")).toContainText("账户时区分组")
+  const { mkdir } = await import("node:fs/promises")
+  await mkdir("../.runtime/ai-review-product-20261114", { recursive: true })
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true)
+    await page.screenshot({
+      path: `../.runtime/ai-review-product-20261114/review-${width}.png`,
+      fullPage: true,
+    })
+  }
+})
+
+test("跨轮变更分页、字段差异、人工发布回读及带原因拒绝，失败重试保留请求号", async ({
+  page,
+}) => {
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers?**`, (route) =>
+    route.fulfill({ json: { items: [configuredOptimizer()] } }),
+  )
+  const proposals = Array.from({ length: 12 }, (_, index) => ({
+    id: `proposal-${index}`,
+    title: `规则调整 ${index}`,
+    kind: "rule",
+    status: "PENDING",
+    review_task_id: `round-${index}`,
+    problem: "低效消耗偏高",
+    rationale: "连续三日低效占比升高",
+    expected_effect: "降低低效消耗",
+    validation: "完整日利润不下降",
+    before: { thresholds: { spend: 20 } },
+    after: { thresholds: { spend: 30 } },
+    authorization: { advertiser_ids: ["acc-1"] },
+    base_rule_version: 2,
+    base_optimizer_version: 1,
+    published_version_id: "",
+    decision_reason: "",
+  }))
+  const decisions: Array<{ path: string; body: Record<string, string> }> = []
+  const reads: string[] = []
+  await page.route(`**/ai-optimizers/${optimizer}/reviews**`, (route) => {
+    const url = new URL(route.request().url())
+    reads.push(url.pathname)
+    if (url.pathname.endsWith("/reviews"))
+      return route.fulfill({
+        json: {
+          items: [],
+          total: 0,
+          has_more: false,
+          active_task: null,
+          runtime_ready: true,
+        },
+      })
+    return route.fulfill({
+      json: {
+        id: url.pathname.split("/").at(-1),
+        status: "COMPLETE",
+        result: { summary: "来源轮次报告", recommendations: [] },
+      },
+    })
+  })
+  let firstAccept = true
+  await page.route(`**/ai-optimizers/${optimizer}/proposals**`, (route) => {
+    const request = route.request(),
+      url = new URL(request.url())
+    if (request.method() === "POST") {
+      const body = request.postDataJSON()
+      decisions.push({ path: url.pathname, body })
+      if (url.pathname.endsWith("/accept") && firstAccept) {
+        firstAccept = false
+        return route.fulfill({
+          status: 503,
+          json: { detail: "发布暂时不可用，请重试" },
+        })
+      }
+      const item = proposals.find((item) =>
+        url.pathname.includes(`/${item.id}/`),
+      )!
+      item.status = url.pathname.endsWith("/accept") ? "ACCEPTED" : "REJECTED"
+      item.published_version_id =
+        item.status === "ACCEPTED" ? "rule-version-3" : ""
+      item.decision_reason = body.reason || ""
+      return route.fulfill({ json: item })
+    }
+    const status = url.searchParams.get("status"),
+      round = url.searchParams.get("review_task_id"),
+      offset = Number(url.searchParams.get("offset"))
+    expect(url.searchParams.get("limit")).toBe("11")
+    const selected = proposals.filter(
+      (item) =>
+        (status === "PENDING"
+          ? item.status === "PENDING"
+          : status === "PROCESSED"
+            ? item.status !== "PENDING"
+            : true) &&
+        (!round || item.review_task_id === round),
+    )
+    return route.fulfill({ json: selected.slice(offset, offset + 11) })
+  })
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
+  await expect(page.getByTestId("proposal-proposal-0")).toBeVisible()
+  expect(decisions).toHaveLength(0)
+  await page.getByRole("button", { name: "变更下一页" }).click()
+  await expect(page.getByTestId("proposal-proposal-10")).toBeVisible()
+  await expect(page.getByTestId("proposal-proposal-0")).toHaveCount(0)
+  await page.getByRole("button", { name: "变更上一页" }).click()
+  const proposal = page.getByTestId("proposal-proposal-0")
+  await expect(proposal.getByRole("table")).toContainText("thresholds.spend")
+  await expect(proposal.getByRole("table")).toContainText("20")
+  await expect(proposal.getByRole("table")).toContainText("30")
+  await proposal.getByRole("button", { name: "来源复盘：round-0" }).click()
+  await expect
+    .poll(() => reads.some((path) => path.endsWith("/reviews/round-0")))
+    .toBe(true)
+  await proposal.getByRole("button", { name: "接受并发布" }).click()
+  await expect(page.getByRole("alert")).toContainText("发布暂时不可用")
+  await proposal.getByRole("button", { name: "接受并发布" }).click()
+  await expect(proposal).toContainText("已发布版本 rule-version-3")
+  expect(decisions[0].body.request_id).toBe(decisions[1].body.request_id)
+  const rejected = page.getByTestId("proposal-proposal-1")
+  await rejected
+    .getByLabel("拒绝原因（选填）")
+    .fill("阈值变化需要更多完整日证据")
+  await rejected.getByRole("button", { name: "拒绝", exact: true }).click()
+  await expect(rejected).toContainText("已拒绝，未发布")
+  expect(decisions[2].body.reason).toBe("阈值变化需要更多完整日证据")
+  await page.getByRole("tab", { name: "已处理", exact: true }).click()
+  await expect(page.getByTestId("proposal-proposal-0")).toBeVisible()
+  await expect(page.getByTestId("proposal-proposal-2")).toHaveCount(0)
+})
+
+test("查看历史仍轮询活动任务，切换投手阻断旧活动和详情迟到响应", async ({
+  page,
+}) => {
+  const second = "33333333-3333-4333-8333-333333333333"
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers?**`, (route) =>
+    route.fulfill({
+      json: {
+        items: [configuredOptimizer(), configuredOptimizer(second, "投手 B")],
+      },
+    }),
+  )
+  const active = {
+    id: "active-review",
+    status: "PREPARING",
+    preparation: { completed_accounts: 1, total_accounts: 3 },
+  }
+  let polls = 0
+  let release: (() => void) | undefined
+  await page.route(`**/ai-optimizers/${optimizer}/reviews**`, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith("/reviews"))
+      return route.fulfill({
+        json: {
+          items: [
+            { id: "old-review", status: "COMPLETE", headline: "旧复盘结论" },
+          ],
+          total: 1,
+          has_more: false,
+          runtime_ready: true,
+          active_task: active,
+        },
+      })
+    if (url.pathname.endsWith("/active-review")) {
+      polls++
+      return route.fulfill({ json: active })
+    }
+    await new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return route
+      .fulfill({
+        json: {
+          id: "old-review",
+          status: "COMPLETE",
+          result: { summary: "旧投手迟到报告" },
+        },
+      })
+      .catch(() => {})
+  })
+  await page.route(`**/ai-optimizers/${second}/reviews**`, (route) =>
+    route.fulfill({
+      json: {
+        items: [],
+        total: 0,
+        has_more: false,
+        runtime_ready: true,
+        active_task: null,
+      },
+    }),
+  )
+  await page.route("**/ai-optimizers/*/proposals?**", (route) =>
+    route.fulfill({ json: [] }),
+  )
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
+  await expect(page.getByTestId("review-detail")).toContainText("old-review")
+  await expect(
+    page.getByRole("button", { name: "发起复盘", exact: true }),
+  ).toBeDisabled()
+  await expect.poll(() => polls).toBeGreaterThanOrEqual(2)
+  await page.getByTestId("ai-optimizer-select").selectOption(second)
+  await expect(page.getByTestId("active-review")).toHaveCount(0)
+  release?.()
+  await expect(page.getByTestId("ai-review-view")).not.toContainText(
+    "旧投手迟到报告",
+  )
+  await expect(
+    page.getByRole("button", { name: "发起复盘", exact: true }),
+  ).toBeEnabled()
+})
+
+test("搭建工作表复用排期单元格：批量粘贴、文本 ID、键盘移动、添加与撤销", async ({
+  page,
+}) => {
+  const { buildsBoundary, pickInputs, T, BC } = await import(
+    "./utils/buildsBoundary"
+  )
+  await buildsBoundary(page, { linkKind: "jiashu" })
+  await page.goto(`/tenants/${T}/builds/new?bc_id=${BC}`)
+  await pickInputs(page)
+  await page
+    .getByRole("button", { name: "填写更多剧目信息", exact: true })
+    .click()
+  const dialog = page.getByRole("dialog", { name: "填写更多剧目信息" })
+  const first = dialog.getByLabel("第 1 行 剧目名称", { exact: true })
+  await first.evaluate((element) => {
+    const data = new DataTransfer()
+    data.setData(
+      "text/plain",
+      '剧目甲\t素材甲\t\t"000125"\t\n剧目乙\t素材乙\t\t000126\t',
+    )
+    element.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true }),
+    )
+  })
+  await expect(
+    dialog.getByLabel("第 1 行 剧目 ID", { exact: true }),
+  ).toHaveValue("000125")
+  await expect(first).toHaveCSS("border-radius", "0px")
+  await first.press("Tab")
+  await expect(
+    dialog.getByLabel("第 1 行 素材标识", { exact: true }),
+  ).toBeFocused()
+  await first.press("Enter")
+  await expect(
+    dialog.getByLabel("第 2 行 剧目名称", { exact: true }),
+  ).toBeFocused()
+  await dialog.getByRole("button", { name: "添加行", exact: true }).click()
+  await expect(dialog.locator("tbody tr")).toHaveCount(11)
+  await dialog.getByLabel("第 11 行 剧目名称", { exact: true }).fill("临时剧")
+  await dialog
+    .getByLabel("第 11 行 剧目名称", { exact: true })
+    .press("ControlOrMeta+z")
+  await expect(
+    dialog.getByLabel("第 11 行 剧目名称", { exact: true }),
+  ).toHaveValue("")
+  const { mkdir } = await import("node:fs/promises")
+  await mkdir("../.runtime/ai-review-product-20261114", { recursive: true })
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 })
+    await expect(
+      dialog.getByRole("button", { name: "确认并更新剧目" }),
+    ).toBeInViewport()
+    await page.screenshot({
+      path: `../.runtime/ai-review-product-20261114/build-worksheet-${width}.png`,
+      fullPage: true,
+    })
+  }
+  await dialog.getByRole("button", { name: "确认并更新剧目" }).click()
+  await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(
+    "剧目甲\n剧目乙",
+  )
 })

@@ -13,6 +13,8 @@ import { prepareRuntime } from './start.mjs'
 
 const packageRoot = process.env.DSH_TEST_PACKAGE_ROOT
 
+const report = { headline: '继续观察', verdict: '本轮不调整规则', sections: [{ title: '证据覆盖', body: '成熟窗口不足', evidence_ids: [], table: { columns: ['窗口', '结论'], rows: [['D7', '证据不足']] } }], rule_decision: { status: 'INSUFFICIENT_EVIDENCE', reason: '缺成熟证据与回测' } }
+
 test('deployment selects the shipped official web profile and keeps port boundaries explicit', async () => {
   const packageJson = JSON.parse(await readFile(join(resolve(packageRoot || dirname(dirname(fileURLToPath(import.meta.url)))), 'package.json'), 'utf8'))
   assert.equal(packageJson.dependencies['@deepseek-ai/dsh'], '0.2.2-rc.1')
@@ -181,7 +183,7 @@ test('claimed review mounts task skills in a real Agent and completes through mo
       // 只替换模型 HTTP 运输层，真实宿主解析流、执行 Skill 和结果工具。
       const call = modelCalls === 1
         ? { name: 'skill', arguments: JSON.stringify({ name: 'ai-delivery-review' }) }
-        : (modelCalls === 3 || modelCalls === 4) ? { name: 'tkada_complete_review', arguments: JSON.stringify({ summary: 'fixture review complete', proposals: [] }) } : null
+        : (modelCalls === 3 || modelCalls === 4) ? { name: 'tkada_complete_review', arguments: JSON.stringify({ report, summary: 'fixture review complete', proposals: [] }) } : null
       response.writeHead(200, { 'content-type': 'text/event-stream' })
       // 第二轮故意只返回文本，覆盖同会话提醒后补交结构化结果。
       const delta = call ? { role: 'assistant', tool_calls: [{ index: 0, id: `call-${modelCalls}`, type: 'function', function: call }] } : { role: 'assistant', content: 'Complete.' }
@@ -223,6 +225,7 @@ test('claimed review mounts task skills in a real Agent and completes through mo
     await delay(100)
     assert.ok(modelCalls >= 4, `Claimed task did not reach real model/tools (claimed=${claimed}, calls=${modelCalls}, exit=${child.exitCode}): ${output}`)
     assert.equal(completion?.summary, 'fixture review complete', output)
+    assert.deepEqual(completion.report, report)
     assert.deepEqual(completion.method_usage, ['ai-delivery-review'])
     assert.notEqual(completion.failed, true)
   } finally {

@@ -135,9 +135,9 @@ export function AIOptimizerConfig({
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>唯一绑定与剧单排</CardTitle>
+          <CardTitle>唯一绑定与剧单排期</CardTitle>
           <CardDescription>
-            一个投手只绑定一个策略版本；剧单排不选择素材。
+            一个投手只绑定一个策略版本；剧单排期不选择素材。
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 text-sm">
