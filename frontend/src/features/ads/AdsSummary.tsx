@@ -5,6 +5,9 @@ import { formatMetric } from "./metricCatalog"
 
 type SummaryBucket = {
   currency: string
+  level?: string
+  source_kind?: string
+  contract_revision?: string
   values?: Record<string, string | null>
   availability?: Record<string, string>
 }
@@ -79,7 +82,7 @@ export function AdsSummary({ summary, catalog }: AdsSummaryProps) {
                           def.unit,
                         )
                         const prefix =
-                          buckets.length > 1 ? `${bucket.currency} ` : ""
+                          buckets.length > 1 ? `${bucket.currency} ${bucket.level ?? ""} ${bucket.source_kind ?? ""} ${bucket.contract_revision ?? ""} ` : ""
                         const suffix = availability === "PARTIAL" ? " 部分" : ""
                         return `${prefix}${formatted}${suffix}`
                       })

@@ -66,6 +66,7 @@ from app.modules.reporting.preferences import (
 )
 from app.modules.reporting.query_reuse import QueryCancellation
 from app.modules.reporting.schemas import (
+    AdContributionScope,
     AdMaterialSelectionRequest,
     AdsQueryPage,
     ExportCreate,
@@ -130,6 +131,7 @@ def _filters(
     sort_by: str,
     sort_direction: Literal["asc", "desc"],
     include_empty: bool,
+    ad_contribution_ids: str | None = None,
 ) -> ReportingFilter:
     return ReportingFilter(
         dimension=dimension,
@@ -137,6 +139,9 @@ def _filters(
         end_date=end_date,
         advertiser_ids=(advertiser_id,) if advertiser_id else (),
         ids=_tuple(ids),
+        contribution=AdContributionScope(kind="ad", ids=_tuple(ad_contribution_ids))
+        if ad_contribution_ids
+        else None,
         query=query,
         ad_types=_tuple(ad_types),
         operation_statuses=_tuple(operation_statuses),
@@ -179,6 +184,7 @@ async def query_ads_route(
     end_date: date | None = None,
     advertiser_id: str | None = Query(default=None, max_length=128),
     ids: CSV = None,
+    ad_contribution_ids: CSV = None,
     query: CSV = None,
     ad_types: CSV = None,
     operation_statuses: CSV = None,
@@ -209,6 +215,7 @@ async def query_ads_route(
         end_date=end_date or today,
         advertiser_id=advertiser_id,
         ids=ids,
+        ad_contribution_ids=ad_contribution_ids,
         query=query,
         ad_types=ad_types,
         operation_statuses=operation_statuses,

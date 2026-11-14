@@ -32,7 +32,6 @@ from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
 from app.modules.reporting.metric_catalog import DERIVED_RATIOS, NATIVE_CONTRACT
 from app.modules.reporting.models import AccountBalanceObservation
 from app.modules.reporting.read_models.models import AdEntityRead as AdObject
-from app.modules.reporting.read_models.models import AdgroupReportDay
 from app.modules.reporting.read_models.models import (
     CampaignNameCurrent as CampaignNameProjection,
 )
@@ -48,19 +47,17 @@ from app.modules.reporting.schemas import (
 from app.modules.reporting.store_models import (
     METRIC_COLUMNS,
     AccountReconciliationDay,
-    AdReportDay,
-    CampaignReportDay,
     ReportSyncState,
 )
 
 
-def bucket_key(vector: MetricVector) -> tuple[str]:
+def bucket_key(vector: MetricVector) -> tuple[Any, ...]:
     # 所选日期已按各账户本地日解释，同币种跨时区仍可合计，标记 MIXED。
-    return (vector.currency,)
+    return (vector.currency, vector.level, vector.source_kind, vector.contract_revision)
 
 
 def metric_vector(
-    values: Mapping[str, Decimal | None] | RowMapping,
+    values: Mapping[str, Any] | RowMapping,
     *,
     currency: str,
     timezone: str,
@@ -82,6 +79,7 @@ def metric_vector(
         else "AVAILABLE"
         for name, value in resolved.items()
     }
+    reasons: dict[str, str] = {}
     for name, numerator, denominator, scale in DERIVED_RATIOS:
         a, b = resolved.get(numerator), resolved.get(denominator)
         # 收益可部分合计，分母必须完整；旧观测提示与数值缺项分别传递。
@@ -90,6 +88,14 @@ def metric_vector(
             if a is not None and b and denominator not in missing_denominators
             else None
         )
+        if resolved[name] is None:
+            reasons[name] = (
+                "MISSING_DENOMINATOR"
+                if b is None or denominator in missing_denominators
+                else "ZERO_DENOMINATOR"
+                if b == 0
+                else "MISSING_NUMERATOR"
+            )
         # 派生比率由合计重算，状态跟随分子、分母中较差的一个。
         states[name] = (
             "UNSUPPORTED"
@@ -106,6 +112,16 @@ def metric_vector(
         attribution="default",
         values=resolved,
         availability=cast(dict[str, Availability], states),
+        reasons=reasons
+        | (
+            dict.fromkeys(resolved, "CONTRACT_MISMATCH")
+            if values.get("contract_revision")
+            not in (None, NATIVE_CONTRACT, "LEGACY_UNKNOWN")
+            else {}
+        ),
+        level=values.get("level"),
+        source_kind=values.get("source_kind"),
+        contract_revision=values.get("contract_revision"),
     )
 
 
@@ -128,7 +144,7 @@ def aggregate_metrics(
     """
     if not vectors or len({v.currency for v in vectors}) != 1:
         raise ValueError("incompatible currencies or empty metrics")
-    values: dict[str, Decimal | None] = {}
+    values: dict[str, Any] = {}
     unsupported: set[str] = set()
     partial_names: set[str] = set()
     missing_names: set[str] = set()
@@ -151,6 +167,13 @@ def aggregate_metrics(
             incomplete or len(present) < len(vectors) or "PARTIAL" in states
         ):
             partial_names.add(name)
+    if len({bucket_key(v) for v in vectors}) != 1:
+        raise ValueError("incompatible source contracts")
+    values.update(
+        level=vectors[0].level,
+        source_kind=vectors[0].source_kind,
+        contract_revision=vectors[0].contract_revision,
+    )
     zones = {v.timezone for v in vectors}
     return metric_vector(
         values,
@@ -172,8 +195,8 @@ def merge_metric_buckets(
     某币种桶只要有一个覆盖不完整的成员参与，桶内已有值的列都标 PARTIAL：
     SQL 只合计了已同步的日期，数字本身看起来完整，但并不是全量。
     """
-    buckets: dict[tuple[str], list[MetricVector]] = defaultdict(list)
-    incomplete: dict[tuple[str], bool] = defaultdict(bool)
+    buckets: dict[tuple[Any, ...], list[MetricVector]] = defaultdict(list)
+    incomplete: dict[tuple[Any, ...], bool] = defaultdict(bool)
     for vectors, member_incomplete in members:
         for vector in vectors:
             key = bucket_key(vector)
@@ -183,7 +206,7 @@ def merge_metric_buckets(
         aggregate_metrics(
             values, incomplete=incomplete[key], strict_denominators=strict_denominators
         )
-        for key, values in sorted(buckets.items())
+        for key, values in sorted(buckets.items(), key=lambda item: str(item[0]))
     )
 
 
@@ -656,38 +679,54 @@ def materialize_rows(
             )
             .mappings()
         ]
-    parent_model = (
-        CampaignReportDay if kind in {"campaign", "account"} else AdgroupReportDay
-    )
-    model = (
-        aliased(
-            parent_model,
-            text(
-                f"SELECT * FROM {'campaign' if kind == 'account' else kind}_selected_day"
-            )
-            .columns(*cast(Any, parent_model).__table__.columns)
-            .subquery(),
-            adapt_on_names=True,
-        )
+    # 页补全复用成员/阈值/summary 的同一个 SQL 事实聚合，不再另造来源选择。
+    from app.modules.reporting.row_set import _facts_cte
+
+    table = (
+        f"{'campaign' if kind == 'account' else kind}_selected_day"
         if query_kind(filters.dimension) in PARENT_KINDS
-        else CampaignReportDay
-        if kind == "account"
-        else AdReportDay
+        else "ad_report_day"
     )
-    group_cols = ["advertiser_id"] + ([] if kind == "account" else [f"{kind}_id"])
-    grouped_facts = _aggregate(
-        session,
-        model=model,
-        group_cols=group_cols,
-        tenant_id=tenant_id,
-        advertisers=advertisers,
-        start=filters.start_date,
-        end=filters.end_date,
-        ids=None if kind == "account" else member_ids,
-        identities=None
-        if kind == "account"
-        else {identity for pairs in identities.values() for identity in pairs},
+    id_column = None if kind == "account" else f"{kind}_id"
+    rows_sql = _facts_cte(
+        table,
+        id_column,
+        contribution=filters.contribution is not None,
+        selected_ids=True,
     )
+    grouped_facts = []
+    for item in (
+        session.connection()
+        .execute(
+            text(f"WITH {rows_sql} SELECT * FROM facts WHERE rid=ANY(:ids)"),
+            {
+                "tenant": tenant_id,
+                "advs": advertisers,
+                "start": filters.start_date,
+                "end": filters.end_date,
+                "ids": member_ids,
+                "contribution_ids": list(filters.contribution.ids)
+                if filters.contribution
+                else [],
+            },
+        )
+        .mappings()
+    ):
+        grouped_facts.append(
+            dict(item)
+            | {
+                "advertiser_id": item["adv"],
+                **({id_column: item["rid"]} if id_column else {}),
+                "zone_min": item["tz"],
+                "zone_max": item["tz"],
+                **{
+                    name.removeprefix("f_"): value
+                    for name, value in item.items()
+                    if name.startswith("f_")
+                },
+                **{f"{name}_has_null": item[f"{name}_hn"] for name in METRIC_COLUMNS},
+            }
+        )
     facts = defaultdict(list)
     for fact in grouped_facts:
         adv = fact["advertiser_id"]
@@ -798,11 +837,7 @@ def materialize_rows(
             # 用户裁定：完整覆盖的无事实对象才为零；缺覆盖不能填零。
             empty_cache[adv] = {
                 name: Decimal(0)
-                if complete
-                and not (
-                    query_kind(filters.dimension) in PARENT_KINDS
-                    and name.startswith("revenue")
-                )
+                if complete and query_kind(filters.dimension) not in PARENT_KINDS
                 else None
                 for name in METRIC_COLUMNS
             }
@@ -898,6 +933,47 @@ def materialize_rows(
                     "display": _drama_status_display(row.display, statuses, providers)
                 }
             )
+        coordinates = sorted(
+            {
+                f"{v.level} / {v.source_kind} / {v.contract_revision} / {v.currency}"
+                for v in row.metric_buckets
+            }
+        )
+        row = row.model_copy(
+            update={
+                "display": dict(row.display)
+                | {
+                    "report_source": next(
+                        iter({v.source_kind for v in row.metric_buckets})
+                    )
+                    if len({v.source_kind for v in row.metric_buckets}) == 1
+                    else "MIXED",
+                    "report_coordinates": "；".join(coordinates),
+                    **{
+                        f"report_bucket_{i}": f"{v.level} / {v.source_kind} / {v.contract_revision}"
+                        for i, v in enumerate(row.metric_buckets)
+                    },
+                    "report_metric_reasons": "；".join(
+                        sorted(
+                            {
+                                reason
+                                for v in row.metric_buckets
+                                for reason in v.reasons.values()
+                            }
+                        )
+                    ),
+                    "report_scope": "仅所选广告贡献；整对象收益不适用（NOT_COMPARABLE）"
+                    if filters.contribution
+                    else "匹配对象的全部数据",
+                    "report_scope_reason": "AD_SUBSET_PARENT_NOT_APPLICABLE"
+                    if filters.contribution
+                    else "WHOLE_OBJECT",
+                    "report_local_days": f"{filters.start_date} — {filters.end_date}",
+                    "report_window": "D0 点击后24h；total成熟截止未知",
+                    "report_semantics": "UNCONFIRMED · 自然＋付费口径待确认 · 非结算",
+                }
+            }
+        )
         if filters.dimension in {"campaign", "adgroup", "ad"}:
             row = report_provenance(session, row, tenant_id=tenant_id, filters=filters)
         result.append(row)
@@ -1154,6 +1230,18 @@ def report_provenance(
     session: Session, row: ReportRow, *, tenant_id: UUID, filters: ReportingFilter
 ) -> ReportRow:
     """只读取当前页对象的证据；数值/筛选由共同 SQL selected view 决定。"""
+    if filters.contribution:
+        return row.model_copy(
+            update={
+                "display": dict(row.display)
+                | {
+                    "report_source": "PLATFORM_DIRECT",
+                    "report_scope_reason": "AD_SUBSET_PARENT_NOT_APPLICABLE",
+                    "report_local_days": f"{filters.start_date} — {filters.end_date}",
+                    "report_scope": "仅所选广告贡献；整对象收益不适用（NOT_COMPARABLE）",
+                }
+            }
+        )
     ref = row.refs[0]
     level = ref.kind
     # 两个固定已知表，不接受用户提供 SQL 标识符。
@@ -1230,7 +1318,7 @@ def report_provenance(
             advertiser_id=ref.advertiser_id,
             level=cast(Any, level),
             stat_date=r["stat_date"],
-            contract_revision=revision,
+            contract_revision=r["active_contract"] or "LEGACY_UNKNOWN",
             publication_version=r["publication_version"],
             observed_at=r["observed_at"],
             published_at=r["last_success_at"],
@@ -1317,13 +1405,14 @@ def report_provenance(
         [f"刷新概览 {refresh_status}", *layer_lines]
     )
     display.update(
-        report_source=source,
+        report_source=display["report_source"],
         report_local_days=f"{filters.start_date} — {filters.end_date}",
         report_window="D0 点击后24h；total成熟截止未知",
         report_semantics="UNCONFIRMED · 自然＋付费口径待确认 · 非结算",
         report_observed_at=" / ".join(str(r["observed_at"]) for r in records)
         or "LEGACY_UNKNOWN",
     )
+    display["platform_roas_observations"] = json.dumps(daily, ensure_ascii=False)
     for key in ("platform_roas_total", "platform_roas_d0"):
         field = (
             daily[0]["fields"].get(key, {})
@@ -1336,11 +1425,65 @@ def report_provenance(
             if PLATFORM_RATIOS[key] not in LEVELS[f"{level}_day"].metrics
             else field.get("status", "NON_ADDITIVE" if daily else "LEGACY_UNKNOWN")
         )
+
+    def selected_provenance(vector: MetricVector) -> dict[str, MetricProvenance]:
+        selected = (
+            [
+                r
+                for r in records
+                if (r["active_contract"] or "LEGACY_UNKNOWN")
+                == vector.contract_revision
+            ]
+            if vector.source_kind == "PLATFORM_DIRECT"
+            else []
+        )
+        selected_stamps = (
+            tuple(
+                stamp
+                for stamp in stamps
+                if stamp.contract_revision == vector.contract_revision
+            )
+            if vector.source_kind == "PLATFORM_DIRECT"
+            else ()
+        )
+        result = {}
+        for name, original in provenance.items():
+            counts: dict[str, int] = {}
+            ratio = next((r for r in DERIVED_RATIOS if r[0] == name), None)
+            for record in selected:
+                for field in ratio[1:3] if ratio else (name,):
+                    state = (
+                        record["evidence"]["fields"]
+                        .get(field, {})
+                        .get("status", "ABSENT")
+                        if record["evidence"]
+                        else "NO_RETURNED_ROW"
+                    )
+                    counts[state] = counts.get(state, 0) + 1
+            result[name] = original.model_copy(
+                update={
+                    "source_kind": vector.source_kind or original.source_kind,
+                    "contract_revision": vector.contract_revision
+                    or original.contract_revision,
+                    "buckets": selected_stamps,
+                    "field_state_counts": counts,
+                    "reason": vector.reasons.get(name)
+                    or (
+                        "LEGACY_UNKNOWN"
+                        if vector.contract_revision == "LEGACY_UNKNOWN"
+                        else "PARTIAL_FIELDS"
+                        if vector.availability[name] == "PARTIAL"
+                        else original.reason
+                    ),
+                }
+            )
+        return result
+
     return row.model_copy(
         update={
             "display": display,
             "metric_buckets": tuple(
-                v.model_copy(update={"provenance": provenance})
+                v.model_copy(update={"provenance": selected_provenance(v)})
                 for v in row.metric_buckets
             ),
         }

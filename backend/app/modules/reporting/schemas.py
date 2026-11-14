@@ -57,6 +57,14 @@ def _finite(value: Decimal | None) -> Decimal | None:
     return value
 
 
+class AdContributionScope(BaseModel):
+    """广告贡献子集独立于当前维度 ids；不把对象搜索暗改成子集。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["ad"]
+    ids: tuple[str, ...] = Field(min_length=1)
+
+
 class ReportingFilter(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -65,6 +73,7 @@ class ReportingFilter(BaseModel):
     end_date: date
     advertiser_ids: tuple[str, ...] = ()
     ids: tuple[str, ...] = ()
+    contribution: AdContributionScope | None = None
     query: str | None = None
     ad_types: tuple[str, ...] = ()
     operation_statuses: tuple[str, ...] = ()
@@ -114,6 +123,13 @@ class ReportingFilter(BaseModel):
 
     @model_validator(mode="after")
     def validate_ranges(self) -> ReportingFilter:
+        if self.contribution and self.dimension not in {
+            "campaign",
+            "adgroup",
+            "account",
+            "drama",
+        }:
+            raise ValueError("ad contribution requires a parent reporting dimension")
         if self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
         if (
@@ -162,10 +178,14 @@ class MetricVector(BaseModel):
     currency: str
     timezone: str
     attribution: str
+    level: Literal["campaign", "adgroup", "ad"] | None = None
+    source_kind: Literal["PLATFORM_DIRECT", "CHILD_DERIVED"] | None = None
+    contract_revision: str | None = None
     # A 当前没有 optimization_goal 坐标；None 是唯一可发布值。
     optimization_goal: str | None = None
     values: dict[str, Decimal | None] = Field(default_factory=dict)
     availability: dict[str, Availability] = Field(default_factory=dict)
+    reasons: dict[str, str] = Field(default_factory=dict)
     provenance: dict[str, MetricProvenance] = Field(default_factory=dict)
 
     @model_validator(mode="after")

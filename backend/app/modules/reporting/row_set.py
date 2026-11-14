@@ -29,6 +29,7 @@ from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.filters import CONFIG_SORT_FIELDS, NAME_SORT_FIELDS
 from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
+from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
 from app.modules.reporting.schemas import ReportingFilter
 from app.modules.reporting.store_models import METRIC_COLUMNS
 
@@ -206,13 +207,31 @@ def _metric_sums(alias: str) -> str:
     )
 
 
+def fact_coordinates(table: str) -> tuple[str, str, str]:
+    """同一选择计划的来源坐标；derived 永远不追认为直接观测。"""
+    level = (
+        "adgroup"
+        if table.startswith("adgroup")
+        else "ad"
+        if table.startswith("ad_")
+        else "campaign"
+    )
+    parent = table.endswith("_selected_day")
+    direct = "s.last_success_at IS NOT NULL" if parent else "TRUE"
+    source = f"CASE WHEN {direct} THEN 'PLATFORM_DIRECT' ELSE 'CHILD_DERIVED' END"
+    revision = f"CASE WHEN {direct} THEN COALESCE(s.active_contract,'LEGACY_UNKNOWN') ELSE 'LEGACY_UNKNOWN' END"
+    return level, source, revision
+
+
 def _facts_cte(
     table: str,
     id_column: str | None,
     *,
     extra_group: Sequence[str] = (),
+    selected_ids: bool = False,
     include_metadata: bool = True,
     period_scan: bool = False,
+    contribution: bool = False,
 ) -> str:
     meta = ", ".join(
         (
@@ -232,7 +251,19 @@ def _facts_cte(
     adv = identity("t.advertiser_id")
     rid = identity(f"t.{id_column}" if id_column else "t.advertiser_id")
     currency = identity("t.currency")
-    group = ", ".join([adv, rid, *(identity(f"t.{c}") for c in extra_group), currency])
+    level, source_kind, revision = fact_coordinates(
+        "ad_report_day" if contribution else table
+    )
+    group = ", ".join(
+        [
+            adv,
+            rid,
+            *(identity(f"t.{c}") for c in extra_group),
+            currency,
+            source_kind,
+            revision,
+        ]
+    )
     extra_select = "".join(f", {identity(f't.{c}')} AS {c}" for c in extra_group)
     metric_sums = _metric_sums("t")
     if table in {
@@ -249,8 +280,22 @@ def _facts_cte(
         )
     predicate = """t.tenant_id = :tenant AND t.advertiser_id = ANY(:advs)
           AND t.stat_date BETWEEN :start AND :end"""
-    source = f"{table} t"
-    if period_scan and table.endswith("_metric_day"):
+    source = f"{'ad_report_day' if contribution else table} t"
+    state_join = f""" LEFT JOIN report_sync_state s ON s.tenant_id=t.tenant_id
+        AND s.advertiser_id=t.advertiser_id AND s.stat_date=t.stat_date
+        AND s.report_kind='{level}_day'"""
+    # 当前目录只能解释这一修订；未知直接合同留在独立桶，绝不回退子级。
+    if selected_ids:
+        predicate += f" AND {rid}=ANY(:ids)"
+    if contribution:
+        metric_sums = _metric_sums("t")
+        predicate += " AND t.ad_id=ANY(:contribution_ids)"
+    for name in METRIC_COLUMNS:
+        metric_sums = metric_sums.replace(
+            f"sum(t.{name})",
+            f"sum(CASE WHEN ({revision}) IN ('{NATIVE_CONTRACT}','LEGACY_UNKNOWN') THEN t.{name} END)",
+        )
+    if not contribution and period_scan and table.endswith("_metric_day"):
         source = f"""(
             SELECT * FROM {table}
             WHERE tenant_id=:tenant AND stat_date BETWEEN :start AND :end OFFSET 0
@@ -258,9 +303,10 @@ def _facts_cte(
     return f"""facts AS (
         SELECT {adv} AS adv, {rid} AS rid{extra_select}, {currency} AS currency,
             CASE WHEN min(t.timezone) = max(t.timezone) THEN min(t.timezone) ELSE 'MIXED' END AS tz,
+            '{level}'::text AS level, {source_kind} AS source_kind, {revision} AS contract_revision,
             {meta}
             {metric_sums}
-        FROM {source} WHERE {predicate}
+        FROM {source}{state_join} WHERE {predicate}
         GROUP BY {group}
     )"""
 
@@ -422,20 +468,24 @@ def _dir_hits(filters: ReportingFilter, params: _Params, kind: str) -> str | Non
 
 
 def _member_buckets(
-    members: str, *, unsupported: frozenset[str], campaign: bool = False
+    members: str,
+    *,
+    unsupported: frozenset[str],
+    campaign: bool = False,
+    level: str = "campaign",
 ) -> str:
     """成员级指标桶：有事实取事实合计，否则按覆盖填 0 或空（用户裁定）。"""
     values = ", ".join(
         f"NULL::numeric AS {m}, false AS {m}_hn"
         if m in unsupported
         else (
-            f"CASE WHEN f.adv IS NULL THEN {'NULL::numeric' if campaign and m.startswith('revenue') else 'CASE WHEN c.complete THEN 0::numeric END'} ELSE f.{m} END AS {m}, "
+            f"CASE WHEN f.adv IS NULL THEN {'NULL::numeric' if campaign else 'CASE WHEN c.complete THEN 0::numeric END'} ELSE f.{m} END AS {m}, "
             f"COALESCE(f.{m}_hn, false) AS {m}_hn"
         )
         for m in METRIC_COLUMNS
     )
     return f"""mb AS (
-        SELECT m.row_key, m.adv, COALESCE(f.currency, a.currency) AS currency,
+        SELECT m.row_key, m.adv, COALESCE(f.level,'{level}') AS level, COALESCE(f.source_kind,'CHILD_DERIVED') AS source_kind, COALESCE(f.contract_revision,'LEGACY_UNKNOWN') AS contract_revision, COALESCE(f.currency, a.currency) AS currency,
             COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, {values}
         FROM {members} m
         JOIN acc a ON a.adv = m.adv
@@ -470,10 +520,11 @@ def _material_member_buckets() -> str:
     )"""
 
 
-def _row_buckets() -> str:
+def _row_buckets(*, scoped: bool = False) -> str:
+    coordinates = ", level, source_kind, contract_revision" if scoped else ""
     return f"""rb AS (
-        SELECT row_key, currency, {", ".join(f"sum({m}) AS {m}, bool_or({m}_hn OR {m} IS NULL) AS {m}_hn" for m in METRIC_COLUMNS)}
-        FROM mb GROUP BY row_key, currency
+        SELECT row_key, currency{coordinates}, {", ".join(f"sum({m}) AS {m}, bool_or({m}_hn OR {m} IS NULL) AS {m}_hn" for m in METRIC_COLUMNS)}
+        FROM mb GROUP BY row_key, currency{coordinates}
     ),
     rv AS (
         -- 只有单一币种桶的行有排序值；多口径行与无值行统一排在末尾。
@@ -560,6 +611,7 @@ def _metric_dimension_rows(
         f"{dim}_id",
         include_metadata=False,
         period_scan=period_scan,
+        contribution=filters.contribution is not None,
     )
     values = ", ".join(f"f.{m}, f.{m}_hn" for m in METRIC_COLUMNS)
     return ",\n".join(
@@ -568,7 +620,7 @@ def _metric_dimension_rows(
             fact,
             f"""mb AS (
             SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.currency,f.tz,
-                NOT c.complete AS incomplete,{values}
+                NOT c.complete AS incomplete,f.level,f.source_kind,f.contract_revision,{values}
             FROM facts f JOIN acc a ON a.adv=f.adv JOIN cov c ON c.adv=f.adv
         )""",
             f"""base AS (
@@ -599,6 +651,7 @@ def _drama_metric_rows(params: _Params, bc_id: str) -> tuple[str, str]:
                 "campaign_id",
                 include_metadata=False,
                 period_scan=len(params.values["advs"]) >= 1000,
+                contribution="contribution_ids" in params.values,
             ),
             _proj_cte(),
             f"""members AS (
@@ -769,6 +822,7 @@ def _dimension_rows(
         table,
         id_column,
         include_metadata=account_projection if dim == "account" else True,
+        contribution=filters.contribution is not None,
     )
     # 非递归 CTE 只能引用前面的 CTE：列出无数据对象时身份依赖完整目录，
     # 默认时目录按身份读取，身份需先算出。
@@ -850,7 +904,10 @@ def _dimension_rows(
         )""")
     ctes.append(
         _member_buckets(
-            "members", unsupported=frozenset(), campaign=query_kind(dim) in PARENT_KINDS
+            "members",
+            unsupported=frozenset(),
+            campaign=query_kind(dim) in PARENT_KINDS,
+            level="ad" if filters.contribution else kind,
         )
     )
     return ",\n".join(
@@ -924,6 +981,8 @@ def _ctes(
     params.add("advs", sorted(advertisers))
     params.add("start", filters.start_date)
     params.add("end", filters.end_date)
+    if filters.contribution:
+        params.add("contribution_ids", list(filters.contribution.ids))
     params.add("ndays", (filters.end_date - filters.start_date).days + 1)
     # fr会被排序、汇总、coverage多次引用并物化；只冻结真正需要的列，
     # 否则未筛选/排序的名称与展示关联也会被强制计算到全部候选。
@@ -951,7 +1010,7 @@ def _ctes(
         metric = _metric_bounds(filters, params)
         if metric:
             conditions.append(metric)
-        buckets = f",\n{_row_buckets()}"
+        buckets = f",\n{_row_buckets(scoped=True)}"
         filtered = f"fr AS (SELECT {projection} FROM {base} r WHERE {' AND '.join(conditions) or 'TRUE'})"
     version = (
         "r.account_membership_version_id"
@@ -973,7 +1032,11 @@ def _ctes(
 
 
 def _summary_select(
-    unsupported: frozenset[str], *, individual: bool = False, all_rows: bool = False
+    unsupported: frozenset[str],
+    *,
+    individual: bool = False,
+    all_rows: bool = False,
+    scoped: bool = False,
 ) -> str:
     """汇总只算最终行：值为全部成员合计，部分合计规则同 merge_metric_buckets。"""
     columns = ", ".join(
@@ -990,11 +1053,12 @@ def _summary_select(
         if individual
         else "bool_or(mb.incomplete) OVER (PARTITION BY mb.row_key)"
     )
+    coordinates = ", x.level, x.source_kind, x.contract_revision" if scoped else ""
     source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
-    return f"""SELECT x.currency,
+    return f"""SELECT x.currency{coordinates},
             CASE WHEN count(DISTINCT x.tz) = 1 THEN min(x.tz) ELSE 'MIXED' END AS tz, {columns}
         FROM (SELECT mb.*, {incomplete} AS row_incomplete FROM {source}) x
-        GROUP BY x.currency ORDER BY x.currency"""
+        GROUP BY x.currency{coordinates} ORDER BY x.currency{coordinates}"""
 
 
 def ordered_members(
@@ -1076,6 +1140,7 @@ def insert_snapshot_rows(
         unsupported,
         individual=filters.dimension not in {"drama", "material"},
         all_rows=all_rows,
+        scoped=filters.dimension != "material",
     )
     bad_source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
     statement = f"""{ctes},

@@ -5424,3 +5424,29 @@ JB28 source/contract/scope buckets, subset handling, aggregate provenance, UI,
 performance and exhaustive formal coverage remain incomplete. Do not accept
 JB28, start JB29, release this WIP, or mark M4a complete. Details and AC matrix:
 `docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`.
+
+### 2026-11-14 JB28 source/scope continuation checkpoint — not accepted
+
+Exact start854b86ec8800b39f9ccbfe26223f400f4b18c9f9, same authorized M4a tree,
+Sol/high sole writer, no child agent or branch/checkout changes. Real PG failure
+40direct+20derived=60 fixed by source/level/contract/currency SQL buckets; page
+hydration now reuses the same facts builder. Canonical explicit Ad contribution
+scope preserves5 spend without parent40, ids remains whole-object. Unknown direct
+contracts NULL/CONTRACT_MISMATCH; platform.801 vs local.8 and multiday NON_ADDITIVE
+retain daily Decimal observations. UI has scope/bucket/partial/reason explanations.
+
+Final six reporting suites120 passed/37.48s; official/demo builds/tsc/Ruff/diff
+passed. Four new concrete source assertion probes + three inherited denominator
+probes restored bytes and reran green. Small synthetic real PG EXPLAIN and
+first39.214ms/cursor13.887ms recorded. Mypy410 unchanged normalized diagnostics
+against inherited final log, not all green. No dependency reinstall/FLUSHDB or
+real platform requests. Original untracked.venv/node_modules symlinks preserved.
+
+Context boundary checkpoint, **JB28 still incomplete and JB29 blocked**: full
+aggregate provenance/counts/windows/watermarks and empty-bucket coordinates,
+all-entry/consumer audit, five-view/subset/partial browser demonstration,
+representative scale plan, outstanding source probes and generated R2/R5/R6/R8
+model remain. Full superseding17-AC matrix and exact next steps are in
+`docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`. Do not freeze current
+payload as accepted JB29 input; no snapshot freeze/CSV or following-ticket work.
+No Linear writes, main merge, push/PR/deploy or production migration.

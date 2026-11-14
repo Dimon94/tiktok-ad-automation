@@ -40,7 +40,7 @@ const STICKY_SELECT = `sticky left-0 z-20 w-10 min-w-10 max-w-10 ${STICKY_BG}`
 const STICKY_NAME = `sticky left-10 z-20 min-w-64 max-w-80 whitespace-normal shadow-[inset_-1px_0_0_var(--border)] ${STICKY_BG}`
 const HEAD = "sticky top-0 z-10 bg-background text-foreground"
 
-const PARTIAL_TEXT = "部分账户数据未同步完整"
+const PARTIAL_TEXT = "部分合计：有成员或日期缺项，已知收益使用完整同范围花费计算"
 
 type ConfigColumn = {
   key: string
@@ -160,6 +160,7 @@ function MetricValue({
               className="inline-flex text-amber-500"
             >
               <CircleAlert className="size-3" aria-hidden="true" />
+              <span>部分</span>
             </span>
           </TooltipTrigger>
           <TooltipContent>{PARTIAL_TEXT}</TooltipContent>
@@ -214,11 +215,11 @@ function MetricCell({
             const metric = metricOf(row, column.key, index)
             return (
               <MetricValue
-                key={`${bucket.currency}-${bucket.timezone}`}
+                key={`${bucket.currency}-${bucket.timezone}-${index}`}
                 value={metric.value}
                 availability={metric.availability}
                 column={column}
-                currency={metric.currency}
+                currency={`${metric.currency} ${row.display?.[`report_bucket_${index}`] ?? ""}`}
               />
             )
           })}
@@ -468,6 +469,9 @@ export function AdsTable({
                               {row.display.report_source} · {dimension} ·
                               账户本地日 {row.display.report_local_days}
                             </p>
+                            <p>{row.display.report_coordinates}</p>
+                            <p>{row.display.report_scope}</p>
+                            <p>{row.display.report_metric_reasons}</p>
                             <p>{row.display.report_window}</p>
                             <p>{row.display.report_semantics}</p>
                             <p>观测 {row.display.report_observed_at}</p>
@@ -481,6 +485,9 @@ export function AdsTable({
                                 row.display.platform_roas_d0_reason}
                             </p>
                             <p>表内 ROAS：本地同范围收益 / 花费</p>
+                            {row.display.platform_roas_observations && (
+                              <details><summary>逐日平台观察</summary><pre className="max-w-sm overflow-auto whitespace-pre-wrap">{row.display.platform_roas_observations}</pre></details>
+                            )}
                           </div>
                         )}
                     </TableCell>

@@ -72,3 +72,14 @@ external byte backup in finally, checks byte equality, and reruns green. Serial
 execution only. See `docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`.
 These three probes do not cover subset handling, mixed source/contract buckets,
 parent/child addition, platform ratios, permission, or frozen snapshots.
+
+## JB28 source/scope sensitivity continuation
+
+`python3 .agents/skills/formal-verify-reporting-data/scripts/scope_probes.py`
+serially mutates actual query code and requires concrete assertion failures for
+ignoring the explicit Ad contribution filter, merging source/contract buckets,
+interpreting unknown direct contracts, and exposing a first-day platform ratio
+as a multiday observation. Each external backup is restored in `finally` and
+byte equality checked before the green rerun. These are source sensitivity
+checks, not a new formal model. R2/R5/R6/R8 exhaustive/generated scope and Decimal
+model coverage remains required; the six denominator examples do not satisfy it.

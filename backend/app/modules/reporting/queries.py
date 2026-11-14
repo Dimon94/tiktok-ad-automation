@@ -97,11 +97,18 @@ def _summary(
     unsupported = frozenset()
     buckets = []
     for bucket in totals.buckets:
-        values = {
+        values: dict[str, Any] = {
             name: Decimal(bucket[name]) if bucket.get(name) is not None else None
             for name in METRIC_COLUMNS
             if name not in unsupported
         }
+        values.update(
+            {
+                key: bucket[key]
+                for key in ("level", "source_kind", "contract_revision")
+                if key in bucket
+            }
+        )
         vector = metric_vector(
             values,
             currency=bucket["currency"],
