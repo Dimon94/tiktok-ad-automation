@@ -520,7 +520,8 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                         "local_day": str(f["stat_date"]),
                         "observed_at": (
                             (f.get("evidence") or {}).get("publication") or {}
-                        ).get("observed_at", f["fact_observed_at"].isoformat()),
+                        ).get("observed_at")
+                        or f["fetched_at"].isoformat(),
                         "sync_job_id": str(f["fact_sync_job_id"]),
                         "source_info": f["source_info"],
                         "source_status": f["source_status"],
@@ -652,7 +653,24 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                     "status": "NOT_COMPARABLE",
                     "reason": "ADGROUP_RESIDUAL_NOT_PARENT_CONTROL",
                     "scope": "ADGROUP_RESIDUAL",
-                    "metric_buckets": [],
+                    # 保留原广告组有符号量及坐标；比率不是可加差额，不能重算。
+                    "metric_buckets": [
+                        v.model_copy(
+                            update={
+                                "values": {
+                                    m: value
+                                    for m, value in v.values.items()
+                                    if m in METRIC_COLUMNS
+                                },
+                                "availability": {
+                                    m: state
+                                    for m, state in v.availability.items()
+                                    if m in METRIC_COLUMNS
+                                },
+                            }
+                        ).model_dump(mode="json")
+                        for v in report.metric_buckets
+                    ],
                     "coverage": report.coverage,
                     "observations": [
                         {

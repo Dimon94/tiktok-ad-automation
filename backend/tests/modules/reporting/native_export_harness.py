@@ -245,7 +245,10 @@ def complete(base_url, seed, factory, pending):
                             assert (
                                 json.loads(csvrow["observations"]) == d["observations"]
                             )
-                            if d["status"] == "NOT_COMPARABLE":
+                            if (
+                                d["status"] == "NOT_COMPARABLE"
+                                and d["scope"] != "ADGROUP_RESIDUAL"
+                            ):
                                 assert csvrow["消耗"] == ""
                         if any(i["row_kind"] == "COMPOSITE" for _, i in expected):
                             assert {r["row_kind"] for r in rows} == {

@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 import {
   type AdMaterialPublic,
+  type EntityRef,
   AdsReportingService,
   type MaterialUsePublic,
   type ReportRow,
@@ -24,6 +25,7 @@ import {
 import { useTenantScope } from "@/features/tenants/TenantScope"
 import { type ColumnDef, formatMetric } from "../metricCatalog"
 import { SortableHead } from "../SortableHead"
+import type { LinkedTarget } from "./useLinkedRows"
 import { useVideoPreview, VideoPreviewPlayer } from "./MaterialVideoPreview"
 
 const STATUS: Record<string, string> = {
@@ -40,12 +42,22 @@ function statusText(status: string | null | undefined) {
 export function MaterialsTab({
   materials,
   row,
+  onOpenDirectory,
+  onOpenLinked,
 }: {
   row: ReportRow
   materials: MaterialUsePublic[]
+  onOpenDirectory: (ref: EntityRef) => void
+  onOpenLinked: (target: LinkedTarget) => void
 }) {
-  if (row.material_instances?.length)
-    return <MaterialInstanceEvidence row={row} />
+  if (row.material_instances?.length || row.reconciliation_rows?.length)
+    return (
+      <MaterialInstanceEvidence
+        row={row}
+        onOpenDirectory={onOpenDirectory}
+        onOpenLinked={onOpenLinked}
+      />
+    )
   if (!materials.length)
     return (
       <p className="text-sm text-muted-foreground">
@@ -514,7 +526,15 @@ export function CreativeEvidence({ row }: { row: ReportRow }) {
 }
 
 /** 所有展开内容直接来自当前查询的冻结载荷，不触发实时详情读取。 */
-function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
+function MaterialInstanceEvidence({
+  row,
+  onOpenDirectory,
+  onOpenLinked,
+}: {
+  row: ReportRow
+  onOpenDirectory: (ref: EntityRef) => void
+  onOpenLinked: (target: LinkedTarget) => void
+}) {
   const [page, setPage] = useState(0)
   const instances = row.material_instances ?? []
   const shown = instances.slice(page * 10, (page + 1) * 10)
@@ -549,13 +569,37 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
             {instance.key.parent_ad_id} · 使用位置{" "}
             {instance.key.ad_material_id ?? "未知"}
           </p>
-          <p>creative：{instance.creative_ids.join("、")}</p>
+          <div className="flex flex-wrap gap-2">
+            <InstanceNavigation
+              identity={instance.key}
+              kind="ad"
+              remoteId={instance.key.parent_ad_id}
+              onOpen={(ref) =>
+                onOpenLinked({
+                  dimension: "ad",
+                  id: ref.remote_id,
+                  advertiserId: ref.advertiser_id,
+                  name: ref.remote_id,
+                })
+              }
+            />
+            {instance.creative_ids.map((id) => (
+              <InstanceNavigation
+                key={id}
+                identity={instance.key}
+                kind="creative"
+                remoteId={id}
+                onOpen={onOpenDirectory}
+              />
+            ))}
+          </div>
           {instance.metric_buckets.map((bucket) => (
             <p key={`${bucket.currency}:${bucket.timezone}`}>
               {bucket.currency} · {bucket.timezone} · 消耗{" "}
               {bucket.values?.spend ?? "未知"} · 收入{" "}
               {bucket.values?.revenue_total ?? "未知"} · ROAS{" "}
-              {bucket.values?.roas_total ?? "未知"}（{bucket.availability?.roas_total}）
+              {bucket.values?.roas_total ?? "未知"}（
+              {bucket.availability?.roas_total}）
             </p>
           ))}
           <p className="text-muted-foreground">
@@ -613,12 +657,26 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
           <p className="text-muted-foreground">
             FULL_PARENT_AD 完整父广告范围；不计入素材合计。
           </p>
+          <InstanceNavigation
+            identity={control.key}
+            kind="ad"
+            remoteId={control.key.parent_ad_id}
+            onOpen={(ref) =>
+              onOpenLinked({
+                dimension: "ad",
+                id: ref.remote_id,
+                advertiserId: ref.advertiser_id,
+                name: ref.remote_id,
+              })
+            }
+          />
           {control.metric_buckets.map((bucket) => (
             <p key={`${bucket.currency}:${bucket.timezone}`}>
               {bucket.currency} · {bucket.timezone} · 消耗{" "}
               {bucket.values?.spend ?? "未知"} · 收入{" "}
               {bucket.values?.revenue_total ?? "未知"} · ROAS{" "}
-              {bucket.values?.roas_total ?? "未知"}（{bucket.availability?.roas_total}）
+              {bucket.values?.roas_total ?? "未知"}（
+              {bucket.availability?.roas_total}）
             </p>
           ))}
           <details>
@@ -630,13 +688,56 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
         </section>
       ))}
       {(row.reconciliation_rows ?? []).map((difference, index) => (
-        <section key={String(difference.evidence_digest ?? index)} className="rounded-md border p-3 text-sm">
-          <p>父级对账：{String(difference.status)} · {String(difference.reason)}</p>
-          <p className="text-xs text-muted-foreground">差额不计入素材合计；Native Growth 口径未确认时不计算收益差额。</p>
-          <p>{String(difference.currency ?? "")} · {String(difference.timezone ?? "")} · 消耗差额 {String((difference.metric_buckets as { values?: Record<string, string | null> }[] | undefined)?.[0]?.values?.spend ?? "未知")} · 收益差额：口径未确认</p>
+        <section
+          key={String(difference.evidence_digest ?? index)}
+          className="rounded-md border p-3 text-sm"
+        >
+          <p>
+            父级对账：{String(difference.status)} · {String(difference.reason)}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            差额不计入素材合计；Native Growth 口径未确认时不计算收益差额。
+          </p>
+          {difference.scope === "ADGROUP_RESIDUAL" && (
+            <p>广告组有符号残差；不等于父广告对账，不计入素材合计。</p>
+          )}
+          <p>
+            {String(
+              difference.currency ??
+                (
+                  difference.metric_buckets as
+                    | { currency?: string }[]
+                    | undefined
+                )?.[0]?.currency ??
+                "",
+            )}{" "}
+            ·{" "}
+            {String(
+              difference.timezone ??
+                (
+                  difference.metric_buckets as
+                    | { timezone?: string }[]
+                    | undefined
+                )?.[0]?.timezone ??
+                "",
+            )}{" "}
+            · 消耗差额{" "}
+            {String(
+              (
+                difference.metric_buckets as
+                  | { values?: Record<string, string | null> }[]
+                  | undefined
+              )?.[0]?.values?.spend ?? "未知",
+            )}{" "}
+            · 收益差额：口径未确认
+          </p>
           <details>
-            <summary className="cursor-pointer">查看差额、逐字段原因与来源</summary>
-            <pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(difference, null, 2)}</pre>
+            <summary className="cursor-pointer">
+              查看差额、逐字段原因与来源
+            </summary>
+            <pre className="whitespace-pre-wrap break-all text-xs">
+              {JSON.stringify(difference, null, 2)}
+            </pre>
           </details>
         </section>
       ))}
@@ -645,5 +746,91 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
         <p className="break-all text-xs">{row.evidence_digest}</p>
       </details>
     </div>
+  )
+}
+
+/** 当前目录仅控制导航可用性；不会重写冻结身份、证据或金额。 */
+function InstanceNavigation({
+  identity,
+  kind,
+  remoteId,
+  onOpen,
+}: {
+  identity: Record<string, string | null>
+  kind: "ad" | "creative"
+  remoteId: string | null | undefined
+  onOpen: (ref: EntityRef) => void
+}) {
+  const { tenantId, bc } = useTenantScope()
+  const availableScope = Boolean(
+    tenantId &&
+      bc?.bc_id &&
+      identity.advertiser_id &&
+      remoteId &&
+      identity.connection_id,
+  )
+  const ref: EntityRef = {
+    tenant_id: tenantId ?? "",
+    advertiser_id: identity.advertiser_id ?? "",
+    kind,
+    remote_id: remoteId ?? "",
+  }
+  const query = useQuery({
+    queryKey: [
+      "tenant",
+      tenantId,
+      "ads",
+      "detail",
+      bc?.bc_id,
+      "directory",
+      ref,
+    ],
+    enabled: availableScope,
+    retry: false,
+    staleTime: 15_000,
+    queryFn: async ({ signal }) =>
+      (
+        await AdsReportingService.adDetail({
+          path: { tenant_id: tenantId!, kind, remote_id: remoteId! },
+          query: { bc_id: bc!.bc_id, advertiser_id: ref.advertiser_id },
+          signal,
+        })
+      ).data,
+  })
+  const label = kind === "ad" ? "父广告" : "creative"
+  if (!remoteId)
+    return (
+      <p className="text-xs text-muted-foreground">
+        {label}不可导航：缺少 ID。
+      </p>
+    )
+  if (!availableScope)
+    return (
+      <p className="text-xs text-muted-foreground">
+        {label} {remoteId} 不可导航：身份来源或账户范围未确认。
+      </p>
+    )
+  if (query.isPending)
+    return (
+      <p className="text-xs text-muted-foreground">
+        正在核对 {label} {remoteId} 的当前目录…
+      </p>
+    )
+  if (
+    query.isError ||
+    !query.data ||
+    query.data.statuses?.operation === "DELETE"
+  )
+    return (
+      <p className="text-xs text-muted-foreground">
+        {label} {remoteId}{" "}
+        不可导航：当前目录未同步、已删除或无读取权限；冻结记录保留。
+      </p>
+    )
+  return (
+    <Button size="sm" variant="outline" onClick={() => onOpen(ref)}>
+      查看{kind === "creative" ? " " : ""}
+      {label} · {remoteId}
+    </Button>
   )
 }

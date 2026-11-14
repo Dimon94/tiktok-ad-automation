@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 from decimal import Decimal
 
 from app.modules.reporting.exports import (
@@ -280,7 +281,24 @@ def test_material_workspace_sdk_worker_csv(
             s, seed, adv="acc-1", ad="ad1", video="vid1", ad_material="mid1", post="cr1"
         )
         from app.modules.ads.creative_models import AdCreative
+        from app.modules.ads.models import AdObject
 
+        parent_object = s.get(AdObject, (seed.tenant_id, "acc-1", "ad", "ad1"))
+        # 已同步的creative可导航；cr2只有事实/身份，保留未同步原因。
+        s.add(
+            AdObject(
+                **(
+                    parent_object.model_dump()
+                    | {
+                        "kind": "creative",
+                        "remote_id": "cr1",
+                        "parent_kind": "ad",
+                        "parent_remote_id": "ad1",
+                        "name": "Creative cr1",
+                    }
+                )
+            )
+        )
         original = s.get(AdCreative, (seed.tenant_id, "acc-1", "cr1")).model_dump()
         for c, status, kind, vid in [
             ("cr2", "RESOLVED", "VIDEO", "vid1"),
@@ -766,3 +784,114 @@ def test_bc_connection_collision_is_explained(session, sync_seed):
         i.row_kind == "UNMAPPED_CREATIVE"
         and i.identity_reason == "SOURCE_SCOPE_MISMATCH"
     )
+
+
+def test_stale_deleted_creative_preserves_projected_observation(session, sync_seed):
+    from sqlalchemy import text
+
+    from app.modules.reporting.queries import query_ads as production_query
+    from tests.modules.reporting.query_helpers import finish_projections
+
+    publish(session, sync_seed, "acc-1", [material_row("gone", "40")])
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid1",
+        post="gone",
+    )
+    finish_projections(session)
+    original = session.execute(
+        text(
+            "SELECT evidence FROM creative_report_day WHERE tenant_id=:t AND creative_id='gone'"
+        ),
+        {"t": sync_seed.tenant_id},
+    ).scalar_one()
+    session.execute(
+        text(
+            "DELETE FROM creative_report_day WHERE tenant_id=:t AND creative_id='gone'"
+        ),
+        {"t": sync_seed.tenant_id},
+    )
+    # 不推进异步投影：真实删除后旧投影窗口必须仍能解释原有观测。
+    page = production_query(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=ReportingFilter(
+            dimension="material",
+            start_date=D,
+            end_date=D,
+            advertiser_ids=("acc-1",),
+            ids=("vid1",),
+        ),
+    )
+    instance = page.items[0].material_instances[0]
+    assert instance.metric_buckets[0].values["spend"] == 40
+    assert (
+        instance.observations[0]["observed_at"]
+        == original["publication"]["observed_at"]
+    )
+    assert page.coverage["projection"]["pending_bucket_count"] > 0
+
+
+def test_adgroup_residual_csv_retains_signed_coordinates(session, sync_seed):
+    from sqlalchemy import text
+
+    publish(session, sync_seed, "acc-1", [material_row("cr1", "10")])
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid1",
+        post="cr1",
+    )
+    session.execute(
+        text("UPDATE ad_report_day SET spend=3 WHERE tenant_id=:t"),
+        {"t": sync_seed.tenant_id},
+    )
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=ReportingFilter(
+            dimension="material", start_date=D, end_date=D, advertiser_ids=("acc-1",)
+        ),
+    )
+    public = create_export(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        snapshot_id=page.snapshot.snapshot_id,
+        idempotency_key="residual-columns",
+    )
+    export = session.get(ReportExport, public.id)
+    generate_export(session, export)
+    rows = list(
+        csv.DictReader(
+            io.StringIO(
+                download_export(
+                    session,
+                    context=sync_seed.context,
+                    bc_id="bc-a",
+                    export_id=export.id,
+                ).decode("utf-8-sig")
+            )
+        )
+    )
+    residual = next(
+        r
+        for r in rows
+        if json.loads(r["row_coverage"]).get("scope") == "ADGROUP_RESIDUAL"
+    )
+    assert (residual["消耗"], residual["currency"], residual["timezone"]) == (
+        "-7",
+        "USD",
+        "Asia/Hong_Kong",
+    )
+    assert json.loads(residual["row_coverage"])["status"] == "NOT_COMPARABLE"
+    assert sum(Decimal(v["values"]["spend"]) for v in page.summary["buckets"]) == 10

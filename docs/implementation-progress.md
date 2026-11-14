@@ -5598,3 +5598,5 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - JB38产品候选提交 `e400e45e86be7acacfb3464ab8a5531b7279c425`；formal扩展以此为sync_commit，64组合与四类破坏模型、五个实际源码拒错/外部finally恢复/cmp以及各轮15项GREEN。最终三次真实队列重复投递浏览器纵切1 passed /13.11s；Ruff/py_compile/diff check通过。formal独立提交于其后。
 
 - M4b JB38 root阶段接受：候选ff62f283，独立export_lifecycle+tracer21 passed（含真实完整CSV和导出故障/权限/到期），64有限组合通过；五票阶段均接受。下一整M4b fresh Standards/Spec R1，审查前不合main/关闭票。无push/deploy。
+
+- M4b整体：fresh Standards/Spec R1均PASS，P0/P1=0；root直接修复JB41旧投影时间、JB42残差CSV坐标、JB43实例导航。数据回归2绿与两项源码RED/cmp/GREEN；真实浏览器导航/原Worker完整CSV1绿，相关14项沿用有效结果；TS/build/Ruff通过。验收见2026-11-14-native-m4b-acceptance.md。准备本地main集成/直接票关闭，无push/deploy/生产迁移。

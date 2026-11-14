@@ -172,6 +172,7 @@ export function AdsDetailSheet({
             }
             onAdMaterialAction={onAdMaterialAction}
             onOpenLinked={onOpenLinked}
+            onOpenDirectory={onOpenDirectory}
           />
         ) : (
           target && (
@@ -238,6 +239,7 @@ function DetailBody({
   onAction,
   onAdMaterialAction,
   onOpenLinked,
+  onOpenDirectory,
 }: {
   row: ReportRow
   dimension: AdsDimension
@@ -248,6 +250,7 @@ function DetailBody({
   onAction: (action: ManagementAction) => void
   onAdMaterialAction: AdsDetailSheetProps["onAdMaterialAction"]
   onOpenLinked: (target: LinkedTarget) => void
+  onOpenDirectory: (ref: EntityRef) => void
 }) {
   const { tenantId, bc } = useTenantScope()
   const bcId = bc?.bc_id
@@ -383,6 +386,8 @@ function DetailBody({
             ) : (
               <MaterialsTab
                 row={row}
+                onOpenDirectory={onOpenDirectory}
+                onOpenLinked={onOpenLinked}
                 materials={(row.material_uses ?? []).map((use) => ({
                   use_ref: use,
                   name: row.display?.material_name ?? "",
