@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import inspect, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import select
 
@@ -9,6 +10,7 @@ from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.accounts.models import AdvertiserAccount, TenantBC, TikTokConnection
 from app.modules.ads.directory import (
     append_campaign_name_projection,
+    append_campaign_name_projections,
     list_objects,
     locate,
 )
@@ -212,6 +214,62 @@ def test_name_audit_separates_raw_revision_from_normalized_grouping(
         ("嘉书", "新剧", "VALID"),
     ]
     assert all(row.campaign_ref == ref for row in rows)
+
+
+def test_batch_names_publish_one_account_snapshot_and_roll_back_atomically(
+    session, directory_seed
+):
+    tenant = directory_seed.context.tenant_id
+    refs = tuple(
+        EntityRef(tenant, "account-a", "campaign", f"batch-{i}") for i in range(2)
+    )
+    session.execute(
+        insert(AdObject).values(
+            [
+                AdObject(
+                    tenant_id=tenant,
+                    advertiser_id=ref.advertiser_id,
+                    kind=ref.kind,
+                    remote_id=ref.remote_id,
+                    name="嘉书-剧名-备注",
+                    ad_type="REGULAR",
+                    observed_at=datetime.now(UTC),
+                    published_version=1,
+                ).model_dump()
+                for ref in refs
+            ]
+        )
+    )
+
+    def snapshots():
+        return tuple(
+            session.execute(text(sql), {"tenant": tenant}).scalar_one()
+            for sql in (
+                "SELECT count(*) FROM account_membership_version WHERE tenant_id=:tenant",
+                "SELECT count(*) FROM report_evidence_version WHERE tenant_id=:tenant AND kind='name_scope'",
+                "SELECT count(*) FROM campaign_name_projection WHERE tenant_id=:tenant",
+            )
+        )
+
+    before = snapshots()
+    savepoint = session.begin_nested()
+    campaigns = tuple((ref, "嘉书-剧名-备注") for ref in reversed(refs))
+    rows = append_campaign_name_projections(
+        session, campaigns=campaigns, parser_revision=1
+    )
+    # 同批名称一次发布完整账户证据，不能为每个系列生成中间快照。
+    assert snapshots() == (before[0] + 1, before[1] + 1, before[2] + 2)
+    assert tuple(row.campaign_ref for row in rows) == tuple(reversed(refs))
+    assert all(inspect(row).persistent and row.name_revision == 1 for row in rows)
+    replay = append_campaign_name_projections(
+        session, campaigns=campaigns, parser_revision=1
+    )
+    assert all(
+        actual is expected for actual, expected in zip(replay, rows, strict=True)
+    )
+    assert snapshots() == (before[0] + 1, before[1] + 1, before[2] + 2)
+    savepoint.rollback()
+    assert snapshots() == before
 
 
 def test_material_null_identity_is_deduplicated_and_distinct_ad_uses_survive(
