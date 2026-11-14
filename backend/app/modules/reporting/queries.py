@@ -121,6 +121,23 @@ def _summary(
                 if strict_denominators and bucket.get(f"{name}_missing")
             },
         )
+        if bucket.get("observations"):
+            from app.modules.reporting.dimension_query import vector_provenance
+
+            observations = [
+                r for group in bucket["observations"] if group for r in group
+            ]
+            scope = hashlib.sha256(
+                json.dumps(
+                    sorted(
+                        {
+                            (r["advertiser_id"], r["remote_id"], r["local_day"])
+                            for r in observations
+                        }
+                    )
+                ).encode()
+            ).hexdigest()
+            vector = vector_provenance(vector, observations, scope)
         buckets.append(vector.model_dump(mode="json"))
     return {
         "row_count": totals.total,

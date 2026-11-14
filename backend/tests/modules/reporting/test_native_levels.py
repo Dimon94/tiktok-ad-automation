@@ -46,6 +46,7 @@ def test_two_page_adgroup_worker_and_query(
     )
 
     deferred = set()
+    extend_campaign = False
 
     def transport(_pool, _method, url, **kwargs):
         args = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
@@ -94,12 +95,14 @@ def test_two_page_adgroup_worker_and_query(
                         "stat_time_day": str(D),
                     },
                     "metrics": {
-                        f"{level}_name": f"{level.title()} {page}",
+                        f"{level}_name": f"{level.title()} {1 if level == 'campaign' else page}",
                         "campaign_id": f"campaign{page}",
                         "adgroup_id": f"adgroup{page}",
-                        "spend": "50",
-                        "native_growth_total_ad_impression_value": "-"
+                        "spend": ("5" if page == 1 else "45")
                         if level == "ad"
+                        else "50",
+                        "native_growth_total_ad_impression_value": "-"
+                        if level == "ad" or (level == "campaign" and page == 2)
                         else "40",
                         "native_growth_ad_revenue_value_d0": "-"
                         if level == "ad"
@@ -116,6 +119,25 @@ def test_two_page_adgroup_worker_and_query(
                 "total_number": 2,
             },
         }
+        if extend_campaign and level == "campaign":
+            payload["page_info"]["total_number"] = 52
+            payload["page_info"]["page_size"] = 51
+            if page == 1:
+                payload["list"].extend(
+                    {
+                        "dimensions": {
+                            "campaign_id": f"campaign{i}",
+                            "stat_time_day": str(D),
+                        },
+                        "metrics": {
+                            "campaign_name": f"Paging {i}",
+                            "spend": "1",
+                            "native_growth_total_ad_impression_value": "-",
+                            "native_growth_ad_revenue_value_d0": "-",
+                        },
+                    }
+                    for i in range(3, 53)
+                )
         return HTTPResponse(
             body=json.dumps(
                 {"code": 0, "data": payload, "request_id": "synthetic-jb25"}
@@ -429,6 +451,50 @@ def test_two_page_adgroup_worker_and_query(
                 live_campaign_workspace,
             )
 
+            # 同一SDK transport/Worker链路追加足够跨真实页面的事实，不造浏览器响应。
+            extend_campaign = True
+            expanded_id = enqueue_job(
+                s,
+                tenant_id=seed.tenant_id,
+                bc_id=TEST_BC,
+                actor_id=seed.actor_id,
+                frozen_route=original.frozen_route,
+                kind="campaign_day",
+                tier="manual",
+                advertiser_ids=["acc-1"],
+                start=D,
+                end=D,
+            )
+            s.commit()
+            expanded = next(
+                j
+                for j in claim_jobs(
+                    s, now=datetime.now(UTC) + timedelta(seconds=2), limit=4
+                )
+                if j.id == expanded_id
+            )
+            expanded_token = expanded.claim_token
+            s.commit()
+            assert (
+                run_job_step(
+                    database_engine=engine,
+                    redis_client=redis_client,
+                    job_id=expanded_id,
+                    claim_token=expanded_token,
+                )
+                == "COMPLETE"
+            )
+            s.expire_all()
+            expanded_state = s.get(
+                ReportSyncState, (seed.tenant_id, "acc-1", "campaign_day", D)
+            )
+            assert expanded_state.row_count == 52
+            assert (
+                expanded_state.publication_version
+                == before["campaign_day"]["publication_version"] + 1
+            )
+            # 后续只恢复Adgroup，隔离断言对照刚刚有意发布的新Campaign水位。
+            before["campaign_day"] = expanded_state.model_dump()
             live_campaign_workspace(
                 seed,
                 factory,
@@ -437,6 +503,7 @@ def test_two_page_adgroup_worker_and_query(
                 name="Adgroup 1",
                 attempt_status="STALE",
                 refresh_status="PARTIAL",
+                scope_demo=True,
             )
             retry = next(
                 j

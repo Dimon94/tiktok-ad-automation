@@ -29,7 +29,11 @@ from app.modules.reporting import query_diagnostics
 from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants, compile_filter
 from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
-from app.modules.reporting.metric_catalog import DERIVED_RATIOS, NATIVE_CONTRACT
+from app.modules.reporting.metric_catalog import (
+    DERIVED_RATIOS,
+    NATIVE_CONTRACT,
+    semantics_for,
+)
 from app.modules.reporting.models import AccountBalanceObservation
 from app.modules.reporting.read_models.models import AdEntityRead as AdObject
 from app.modules.reporting.read_models.models import (
@@ -974,8 +978,7 @@ def materialize_rows(
                 }
             }
         )
-        if filters.dimension in {"campaign", "adgroup", "ad"}:
-            row = report_provenance(session, row, tenant_id=tenant_id, filters=filters)
+        row = report_provenance(session, row, tenant_id=tenant_id, filters=filters)
         result.append(row)
     return tuple(result)
 
@@ -1226,265 +1229,297 @@ def _drama_status_display(
     }
 
 
-def report_provenance(
-    session: Session, row: ReportRow, *, tenant_id: UUID, filters: ReportingFilter
-) -> ReportRow:
-    """只读取当前页对象的证据；数值/筛选由共同 SQL selected view 决定。"""
-    if filters.contribution:
-        return row.model_copy(
-            update={
-                "display": dict(row.display)
-                | {
-                    "report_source": "PLATFORM_DIRECT",
-                    "report_scope_reason": "AD_SUBSET_PARENT_NOT_APPLICABLE",
-                    "report_local_days": f"{filters.start_date} — {filters.end_date}",
-                    "report_scope": "仅所选广告贡献；整对象收益不适用（NOT_COMPARABLE）",
-                }
-            }
-        )
-    ref = row.refs[0]
-    level = ref.kind
-    # 两个固定已知表，不接受用户提供 SQL 标识符。
-    source_table = (
-        "parent_report_day" if f"{level}_day" in PARENT_KINDS else "ad_report_day"
-    )
-    identity = (
-        f"p.level='{level}' AND p.remote_id=:rid"
-        if f"{level}_day" in PARENT_KINDS
-        else "p.ad_id=:rid"
-    )
-    records = (
-        session.connection()
-        .execute(
-            text(f"""
-        SELECT s.stat_date,s.observed_at,s.publication_version,s.last_success_at,s.status,s.active_contract,p.evidence
-        FROM report_sync_state s LEFT JOIN {source_table} p
-          ON p.tenant_id=s.tenant_id AND p.advertiser_id=s.advertiser_id
-          AND p.stat_date=s.stat_date AND {identity}
-        WHERE s.tenant_id=:tenant AND s.advertiser_id=:adv
-          AND s.report_kind=:kind AND s.last_success_at IS NOT NULL
-          AND s.stat_date BETWEEN :start AND :end ORDER BY s.stat_date
-    """),
-            {
-                "tenant": tenant_id,
-                "adv": ref.advertiser_id,
-                "rid": ref.remote_id,
-                "kind": f"{level}_day",
-                "start": filters.start_date,
-                "end": filters.end_date,
-            },
-        )
-        .mappings()
-        .all()
-    )
-    daily: list[dict[str, Any]] = [
-        {
-            "local_day": str(r["stat_date"]),
-            "observed_at": r["observed_at"].isoformat() if r["observed_at"] else None,
-            "publication_version": r["publication_version"],
-            "fields": r["evidence"]["fields"] if r["evidence"] else {},
-            "reason": None
-            if r["evidence"]
-            else "LEGACY_UNKNOWN"
-            if level == "ad"
-            else "NO_RETURNED_ROW",
-        }
-        for r in records
-    ]
-    source = "PLATFORM_DIRECT" if records or level == "ad" else "CHILD_DERIVED"
-    revision = (
-        records[0]["active_contract"]
-        if records and records[0]["active_contract"]
-        else NATIVE_CONTRACT
-        if any(r["evidence"] for r in records)
-        else "LEGACY_UNKNOWN"
-    )
-    if level == "ad" and not any(r["evidence"] for r in records):
-        revision = "LEGACY_UNKNOWN"
-    scope = sha256(
-        json.dumps(
-            [
-                str(tenant_id),
-                ref.advertiser_id,
-                level,
-                ref.remote_id,
-                str(filters.start_date),
-                str(filters.end_date),
-            ]
-        ).encode()
-    ).hexdigest()
+def vector_provenance(
+    vector: MetricVector, selected: list[dict[str, Any]], scope: str
+) -> MetricVector:
+    """行和 SQL 汇总共用证据解释；不在 Python 决定成员或合计金额。"""
     stamps = tuple(
         BucketStamp(
-            advertiser_id=ref.advertiser_id,
-            level=cast(Any, level),
-            stat_date=r["stat_date"],
-            contract_revision=r["active_contract"] or "LEGACY_UNKNOWN",
-            publication_version=r["publication_version"],
-            observed_at=r["observed_at"],
-            published_at=r["last_success_at"],
-            last_attempt_status=r["status"],
+            advertiser_id=r["advertiser_id"],
+            level=r["level"],
+            stat_date=r["local_day"],
+            contract_revision=r["contract_revision"],
+            publication_version=r["publication"].get("publication_version", 0),
+            observed_at=r["publication"].get("observed_at"),
+            published_at=r["publication"].get("last_success_at"),
+            last_attempt_status=r["publication"].get("status", "PENDING"),
         )
-        for r in records
+        for r in selected
     )
     provenance = {}
-    for name in row.metric_buckets[0].values if row.metric_buckets else ():
-        counts: dict[str, int] = {}
+    for name in vector.values:
         ratio = next((r for r in DERIVED_RATIOS if r[0] == name), None)
-        source_fields = (ratio[1], ratio[2]) if ratio else (name,)
-        for observation in daily:
-            for source_field in source_fields:
-                field_state = (
-                    observation["fields"]
-                    .get(source_field, {})
-                    .get("status", "LEGACY_UNKNOWN")
+        counts: dict[str, int] = {}
+        for r in selected:
+            for field in ratio[1:3] if ratio else (name,):
+                state = r["fields"].get(field, {}).get("status") or (
+                    "NO_RETURNED_ROW"
+                    if not r["fact"]
+                    else "VALUE"
+                    if r["fact"].get(field) is not None
+                    else "ABSENT"
                 )
-                counts[field_state] = counts.get(field_state, 0) + 1
-        reason = (
-            "NO_RETURNED_ROW"
-            if records
-            and not any(r["evidence"] for r in records)
-            and f"{level}_day" in PARENT_KINDS
-            else "LEGACY_UNKNOWN"
-            if revision == "LEGACY_UNKNOWN"
+                counts[state] = counts.get(state, 0) + 1
+        values = [r["fact"].get(name) for r in selected]
+        known = sum(v is not None for v in values)
+        missing = len(values) - known
+        reason = vector.reasons.get(name) or (
+            "PARTIAL_FIELDS"
+            if vector.availability[name] == "PARTIAL"
+            else "NO_RETURNED_ROW"
+            if not any(r.get("returned", bool(r["fact"])) for r in selected)
+            else "MISSING_FIELD"
+            if vector.values[name] is None
             else None
         )
         provenance[name] = MetricProvenance(
-            level=cast(Any, level),
-            source_kind=cast(Any, source),
-            contract_revision=revision,
+            level=cast(Any, vector.level),
+            source_kind=cast(Any, vector.source_kind),
+            contract_revision=cast(str, vector.contract_revision),
             scope_digest=scope,
             buckets=stamps,
             field_state_counts=counts,
             reason=reason,
-            formula="SAME_SCOPE_REVENUE / SAME_SCOPE_SPEND"
-            if name.startswith("roas_")
+            formula=f"SUM({ratio[1]}) / COMPLETE_SUM({ratio[2]})" if ratio else None,
+            known_count=known
+            if not ratio
+            else sum(r["fact"].get(ratio[1]) is not None for r in selected),
+            missing_count=missing
+            if not ratio
+            else sum(r["fact"].get(ratio[1]) is None for r in selected),
+            denominator_known_count=sum(
+                r["fact"].get(ratio[2]) is not None for r in selected
+            )
+            if ratio
             else None,
+            denominator_missing_count=sum(
+                r["fact"].get(ratio[2]) is None for r in selected
+            )
+            if ratio
+            else None,
+            local_ranges=tuple(
+                sorted(
+                    {
+                        f"{r['advertiser_id']} {r['local_day']} {r['timezone']}"
+                        for r in selected
+                    }
+                )
+            ),
+            metric_contract=semantics_for(name, NATIVE_CONTRACT)
+            if vector.contract_revision == NATIVE_CONTRACT
+            else None,
+            observations=tuple(
+                {k: v for k, v in r.items() if k != "fact"} for r in selected
+            ),
         )
-    display = dict(row.display)
-    from app.modules.reporting.levels import DAY_KINDS, LEVELS
+    return vector.model_copy(update={"provenance": provenance})
+
+
+def report_provenance(
+    session: Session, row: ReportRow, *, tenant_id: UUID, filters: ReportingFilter
+) -> ReportRow:
+    """仅对本页冻结成员取逐日证据；金额和成员仍由共同 SQL 选择计划负责。"""
     from app.modules.reporting.metrics import PLATFORM_RATIOS
 
-    layer_states = session.exec(
-        select(ReportSyncState).where(
-            ReportSyncState.tenant_id == tenant_id,
-            ReportSyncState.advertiser_id == ref.advertiser_id,
-            ReportSyncState.stat_date >= filters.start_date,
-            ReportSyncState.stat_date <= filters.end_date,
-            col(ReportSyncState.report_kind).in_(DAY_KINDS),
-        )
-    ).all()
-    indexed = {(r.report_kind, r.stat_date): r for r in layer_states}
-    layer_lines = []
-    for kind in DAY_KINDS:
-        day = filters.start_date
-        while day <= filters.end_date:
-            state = indexed.get((kind, day))
-            layer_lines.append(
-                f"{kind} {day}: {state.status if state else 'MISSING'}; "
-                f"成功 {state.last_success_at if state else None}; "
-                f"尝试 {state.updated_at if state else None}; "
-                f"观测 {state.observed_at if state else None}; "
-                f"版本 {state.publication_version if state else 0}; "
-                f"合同 {state.active_contract if state else None}; "
-                f"原因 {state.error_code if state else None}"
+    row = row.model_copy(
+        update={
+            "metric_buckets": tuple(
+                v.model_copy(
+                    update={
+                        "level": v.level
+                        or (
+                            "campaign"
+                            if filters.dimension in {"account", "drama"}
+                            else filters.dimension
+                        ),
+                        "source_kind": v.source_kind or "CHILD_DERIVED",
+                        "contract_revision": v.contract_revision or "LEGACY_UNKNOWN",
+                    }
+                )
+                for v in row.metric_buckets
             )
-            day += timedelta(days=1)
-    expected_buckets = len(DAY_KINDS) * (
-        (filters.end_date - filters.start_date).days + 1
+        }
     )
-    refresh_status = (
-        "COMPLETE"
-        if len(indexed) == expected_buckets
-        and all(r.status == "COMPLETE" for r in layer_states)
-        else "PARTIAL"
-        if any(r.last_success_at is not None for r in layer_states)
-        else "MISSING"
+    records: list[dict[str, Any]] = []
+    refs = sorted({(r.advertiser_id, r.kind, r.remote_id) for r in row.refs})
+    if filters.dimension == "account":
+        # 账户行身份不是 Campaign refs；贡献集合由同一 selected view 与目录补空确定。
+        adv = str(row.display["advertiser_id"])
+        refs = [
+            (adv, "campaign", rid)
+            for rid in session.connection()
+            .execute(
+                text("""
+            SELECT DISTINCT campaign_id FROM campaign_selected_day
+            WHERE tenant_id=:tenant AND advertiser_id=:adv AND stat_date BETWEEN :start AND :end
+            UNION SELECT remote_id FROM ad_object WHERE tenant_id=:tenant AND advertiser_id=:adv AND kind='campaign'
+        """),
+                {
+                    "tenant": tenant_id,
+                    "adv": adv,
+                    "start": filters.start_date,
+                    "end": filters.end_date,
+                },
+            )
+            .scalars()
+        ]
+    for kind in sorted({k for _, k, _ in refs}):
+        pairs = [(adv, rid) for adv, k, rid in refs if k == kind]
+        level = "ad" if filters.contribution else kind
+        table = f"{level}_selected_day" if level != "ad" else "ad_report_day"
+        identity = f"p.{level}_id=w.rid"
+        params: dict[str, Any] = {
+            "tenant": tenant_id,
+            "advs": [a for a, _ in pairs],
+            "ids": [r for _, r in pairs],
+            "start": filters.start_date,
+            "end": filters.end_date,
+        }
+        if filters.contribution:
+            identity = f"p.{kind}_id=w.rid AND p.ad_id=ANY(:subset)"
+            params["subset"] = list(filters.contribution.ids)
+        result = (
+            session.connection()
+            .execute(
+                text(f"""
+            SELECT w.adv,w.rid,d.day::date AS day, to_jsonb(p) AS fact,
+                   account.timezone AS account_timezone, account.currency AS account_currency,
+                   to_jsonb(s) AS publication, raw.evidence
+            FROM unnest(CAST(:advs AS text[]),CAST(:ids AS text[])) w(adv,rid)
+            JOIN advertiser_account account ON account.tenant_id=:tenant AND account.advertiser_id=w.adv
+            CROSS JOIN generate_series(CAST(:start AS date),CAST(:end AS date),interval '1 day') d(day)
+            LEFT JOIN {table} p ON p.tenant_id=:tenant AND p.advertiser_id=w.adv
+                 AND p.stat_date=d.day::date AND {identity}
+            LEFT JOIN report_sync_state s ON s.tenant_id=:tenant AND s.advertiser_id=w.adv
+                 AND s.stat_date=d.day::date AND s.report_kind=CASE
+                   WHEN '{level}'='ad' THEN 'ad_day'
+                   WHEN EXISTS (SELECT 1 FROM report_sync_state own WHERE own.tenant_id=:tenant
+                     AND own.advertiser_id=w.adv AND own.stat_date=d.day::date
+                     AND own.report_kind='{level}_day' AND own.last_success_at IS NOT NULL)
+                   THEN '{level}_day' ELSE 'ad_day' END
+            LEFT JOIN parent_report_day raw ON raw.tenant_id=:tenant AND raw.advertiser_id=w.adv
+                 AND raw.stat_date=d.day::date AND raw.level='{level}' AND raw.remote_id=w.rid
+            ORDER BY w.adv,w.rid,d.day
+        """),
+                params,
+            )
+            .mappings()
+        )
+        for r in result:
+            adv, rid = r["adv"], r["rid"]
+            fact, state = r["fact"] or {}, r["publication"] or {}
+            evidence = (r["evidence"] if level != "ad" else fact.get("evidence")) or {}
+            direct = level == "ad" or (
+                state.get("report_kind") == f"{level}_day"
+                and state.get("last_success_at")
+            )
+            revision = (
+                (state.get("active_contract") or "LEGACY_UNKNOWN")
+                if direct
+                else "LEGACY_UNKNOWN"
+            )
+            # 行证据与发布合同冲突必须保留为不可解释坐标，不能以当前合同追认。
+            if (
+                direct
+                and revision == NATIVE_CONTRACT
+                and evidence.get("contract_revision") not in (None, revision)
+            ):
+                revision = "CONTRACT_MISMATCH"
+            records.append(
+                {
+                    "advertiser_id": adv,
+                    "remote_id": fact.get("ad_id", rid),
+                    "level": level,
+                    "source_kind": "PLATFORM_DIRECT" if direct else "CHILD_DERIVED",
+                    "contract_revision": revision,
+                    "local_day": str(r["day"]),
+                    "timezone": fact.get("timezone")
+                    or (state.get("publication_coordinates") or {}).get(
+                        "timezone", "UNKNOWN"
+                    ),
+                    "currency": fact.get("currency")
+                    or (state.get("publication_coordinates") or {}).get(
+                        "currency", "UNKNOWN"
+                    ),
+                    "fact": fact,
+                    "fields": evidence.get("fields", {}),
+                    "publication": state,
+                }
+            )
+
+    display = dict(row.display)
+    observations = [{k: v for k, v in r.items() if k != "fact"} for r in records]
+    display["platform_roas_observations"] = json.dumps(observations, ensure_ascii=False)
+    display["report_observed_at"] = " / ".join(
+        sorted({str(r["publication"].get("observed_at")) for r in records})
     )
-    display["report_refresh_status"] = refresh_status
-    display["report_layer_status"] = "\n".join(
-        [f"刷新概览 {refresh_status}", *layer_lines]
-    )
-    display.update(
-        report_source=display["report_source"],
-        report_local_days=f"{filters.start_date} — {filters.end_date}",
-        report_window="D0 点击后24h；total成熟截止未知",
-        report_semantics="UNCONFIRMED · 自然＋付费口径待确认 · 非结算",
-        report_observed_at=" / ".join(str(r["observed_at"]) for r in records)
-        or "LEGACY_UNKNOWN",
-    )
-    display["platform_roas_observations"] = json.dumps(daily, ensure_ascii=False)
-    for key in ("platform_roas_total", "platform_roas_d0"):
+    # 聚合或多日只有原观察，没有一个可加或可平均的平台比率。
+    for key in PLATFORM_RATIOS:
         field = (
-            daily[0]["fields"].get(key, {})
-            if len(daily) == 1 and filters.start_date == filters.end_date
+            records[0]["fields"].get(key, {})
+            if len(records) == 1 and records[0]["contract_revision"] == NATIVE_CONTRACT
             else {}
         )
         display[key] = field.get("value")
-        display[key + "_reason"] = (
-            "NOT_REQUESTED"
-            if PLATFORM_RATIOS[key] not in LEVELS[f"{level}_day"].metrics
-            else field.get("status", "NON_ADDITIVE" if daily else "LEGACY_UNKNOWN")
+        display[key + "_reason"] = field.get(
+            "status", "NON_ADDITIVE" if len(records) > 1 else "NO_RETURNED_ROW"
         )
+    from app.modules.reporting.levels import DAY_KINDS
 
-    def selected_provenance(vector: MetricVector) -> dict[str, MetricProvenance]:
-        selected = (
-            [
-                r
-                for r in records
-                if (r["active_contract"] or "LEGACY_UNKNOWN")
-                == vector.contract_revision
-            ]
-            if vector.source_kind == "PLATFORM_DIRECT"
-            else []
+    advs = sorted({a for a, _, _ in refs})
+    states = session.exec(
+        select(ReportSyncState).where(
+            ReportSyncState.tenant_id == tenant_id,
+            col(ReportSyncState.advertiser_id).in_(advs),
+            col(ReportSyncState.report_kind).in_(DAY_KINDS),
+            ReportSyncState.stat_date >= filters.start_date,
+            ReportSyncState.stat_date <= filters.end_date,
         )
-        selected_stamps = (
-            tuple(
-                stamp
-                for stamp in stamps
-                if stamp.contract_revision == vector.contract_revision
-            )
-            if vector.source_kind == "PLATFORM_DIRECT"
-            else ()
-        )
-        result = {}
-        for name, original in provenance.items():
-            counts: dict[str, int] = {}
-            ratio = next((r for r in DERIVED_RATIOS if r[0] == name), None)
-            for record in selected:
-                for field in ratio[1:3] if ratio else (name,):
-                    state = (
-                        record["evidence"]["fields"]
-                        .get(field, {})
-                        .get("status", "ABSENT")
-                        if record["evidence"]
-                        else "NO_RETURNED_ROW"
-                    )
-                    counts[state] = counts.get(state, 0) + 1
-            result[name] = original.model_copy(
-                update={
-                    "source_kind": vector.source_kind or original.source_kind,
-                    "contract_revision": vector.contract_revision
-                    or original.contract_revision,
-                    "buckets": selected_stamps,
-                    "field_state_counts": counts,
-                    "reason": vector.reasons.get(name)
-                    or (
-                        "LEGACY_UNKNOWN"
-                        if vector.contract_revision == "LEGACY_UNKNOWN"
-                        else "PARTIAL_FIELDS"
-                        if vector.availability[name] == "PARTIAL"
-                        else original.reason
-                    ),
-                }
-            )
-        return result
-
-    return row.model_copy(
-        update={
-            "display": display,
-            "metric_buckets": tuple(
-                v.model_copy(update={"provenance": selected_provenance(v)})
-                for v in row.metric_buckets
-            ),
-        }
+    ).all()
+    complete = len(states) == len(advs) * len(DAY_KINDS) * (
+        (filters.end_date - filters.start_date).days + 1
+    ) and all(s.status == "COMPLETE" for s in states)
+    display["report_refresh_status"] = (
+        "COMPLETE"
+        if complete
+        else "PARTIAL"
+        if any(s.last_success_at for s in states)
+        else "MISSING"
     )
+    display["report_layer_status"] = (
+        f"刷新概览 {display['report_refresh_status']}\n"
+        + "\n".join(
+            f"{s.advertiser_id} {s.report_kind} {s.stat_date}: {s.status}; 成功 {s.last_success_at}; 观测 {s.observed_at}; 版本 {s.publication_version}; 合同 {s.active_contract}; 原因 {s.error_code}"
+            for s in states
+        )
+    )
+
+    vectors = []
+    for vector in row.metric_buckets:
+        selected = [
+            r
+            for r in records
+            if (r["level"], r["source_kind"], r["contract_revision"], r["currency"])
+            == (
+                vector.level,
+                vector.source_kind,
+                vector.contract_revision,
+                vector.currency,
+            )
+        ]
+        scope = sha256(
+            json.dumps(
+                [
+                    refs,
+                    filters.model_dump(
+                        mode="json", exclude={"sort_by", "sort_direction"}
+                    ),
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        vectors.append(vector_provenance(vector, selected, scope))
+    display["report_metric_reasons"] = "；".join(
+        sorted({p.reason for v in vectors for p in v.provenance.values() if p.reason})
+    )
+    return row.model_copy(update={"display": display, "metric_buckets": tuple(vectors)})

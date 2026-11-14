@@ -193,6 +193,22 @@ export type Action_Output = {
 };
 
 /**
+ * AdContributionScope
+ *
+ * 广告贡献子集独立于当前维度 ids；不把对象搜索暗改成子集。
+ */
+export type AdContributionScope = {
+    /**
+     * Kind
+     */
+    kind: 'ad';
+    /**
+     * Ids
+     */
+    ids: Array<string>;
+};
+
+/**
  * AdDetailPublic
  */
 export type AdDetailPublic = {
@@ -4686,6 +4702,48 @@ export type InputLine = {
 };
 
 /**
+ * LevelSyncStatus
+ */
+export type LevelSyncStatus = {
+    /**
+     * Level
+     */
+    level: 'campaign' | 'adgroup' | 'ad';
+    /**
+     * Stat Date
+     */
+    stat_date: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Last Success At
+     */
+    last_success_at?: string | null;
+    /**
+     * Last Attempt At
+     */
+    last_attempt_at?: string | null;
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Publication Version
+     */
+    publication_version?: number;
+    /**
+     * Contract Revision
+     */
+    contract_revision?: string | null;
+    /**
+     * Reason
+     */
+    reason?: string | null;
+};
+
+/**
  * LinkConfigField
  */
 export type LinkConfigField = {
@@ -5778,6 +5836,33 @@ export type MetricProvenance = {
      * Formula
      */
     formula: string | null;
+    /**
+     * Known Count
+     */
+    known_count?: number;
+    /**
+     * Missing Count
+     */
+    missing_count?: number;
+    /**
+     * Denominator Known Count
+     */
+    denominator_known_count?: number | null;
+    /**
+     * Denominator Missing Count
+     */
+    denominator_missing_count?: number | null;
+    /**
+     * Local Ranges
+     */
+    local_ranges?: Array<string>;
+    /**
+     * Observations
+     */
+    observations?: Array<{
+        [key: string]: unknown;
+    }>;
+    metric_contract?: MetricContract | null;
 };
 
 /**
@@ -5797,6 +5882,18 @@ export type MetricVector = {
      */
     attribution: string;
     /**
+     * Level
+     */
+    level?: 'campaign' | 'adgroup' | 'ad' | null;
+    /**
+     * Source Kind
+     */
+    source_kind?: 'PLATFORM_DIRECT' | 'CHILD_DERIVED' | null;
+    /**
+     * Contract Revision
+     */
+    contract_revision?: string | null;
+    /**
      * Optimization Goal
      */
     optimization_goal?: string | null;
@@ -5811,6 +5908,12 @@ export type MetricVector = {
      */
     availability?: {
         [key: string]: 'AVAILABLE' | 'PARTIAL' | 'MISSING' | 'UNAVAILABLE' | 'UNSUPPORTED' | 'FAILED';
+    };
+    /**
+     * Reasons
+     */
+    reasons?: {
+        [key: string]: string;
     };
     /**
      * Provenance
@@ -8745,6 +8848,7 @@ export type ReportingFilter_Input = {
      * Ids
      */
     ids?: Array<string>;
+    contribution?: AdContributionScope | null;
     /**
      * Query
      */
@@ -8839,6 +8943,7 @@ export type ReportingFilter_Output = {
      * Ids
      */
     ids?: Array<string>;
+    contribution?: AdContributionScope | null;
     /**
      * Query
      */
@@ -10603,19 +10708,10 @@ export type SubmitRequest = {
 /**
  * SyncAccountStatus
  */
-export type LevelSyncStatus = {
-    level: 'campaign' | 'adgroup' | 'ad';
-    stat_date: string;
-    status: string;
-    last_success_at?: string | null;
-    last_attempt_at?: string | null;
-    observed_at?: string | null;
-    publication_version?: number;
-    contract_revision?: string | null;
-    reason?: string | null;
-};
-
 export type SyncAccountStatus = {
+    /**
+     * Levels
+     */
     levels?: Array<LevelSyncStatus>;
     /**
      * Advertiser Id
@@ -15550,6 +15646,10 @@ export type adsReportingQueryAdsData = {
          * Ids
          */
         ids?: string | null;
+        /**
+         * Ad Contribution Ids
+         */
+        ad_contribution_ids?: string | null;
         /**
          * Query
          */

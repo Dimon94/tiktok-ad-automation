@@ -463,7 +463,7 @@ export function AdsWorkspace() {
     accountName?: string,
   ) => {
     setScopeLabels({ accountName, parent })
-    applyScope({ dimension, advertiser_ids: [advertiserId], ids: [parent.id] })
+    applyScope({ dimension, contribution: null, advertiser_ids: [advertiserId], ids: [parent.id] })
   }
   const clearScopeAccount = () => {
     setScopeLabels({})
@@ -857,6 +857,7 @@ export function AdsWorkspace() {
               setApplied((current) => ({
                 ...current,
                 dimension,
+                contribution: ["ad", "material"].includes(dimension) ? null : current.contribution,
                 page: 1,
                 cursor: undefined,
                 snapshot_id: undefined,
@@ -864,6 +865,7 @@ export function AdsWorkspace() {
               setSearch((current) => ({
                 ...current,
                 dimension,
+                contribution: ["ad", "material"].includes(dimension) ? null : current.contribution,
                 page: 1,
                 cursor: undefined,
                 snapshot_id: undefined,

@@ -220,6 +220,7 @@ def test_unknown_direct_contract_is_not_interpreted(session, sync_seed):
         assert vector.values["revenue_total"] is None
         assert vector.reasons["revenue_total"] == "CONTRACT_MISMATCH"
         assert vector.contract_revision == "uninterpretable-v0"
+    assert page.items[0].display["platform_roas_total"] is None
     assert query(session, sync_seed, min_d0_roas=Decimal("0")).items == ()
 
 
@@ -333,3 +334,195 @@ def test_selected_plan_and_pagination_evidence(session, sync_seed):
             {"first_ms": first_ms, "page_ms": page_ms, "plans": plans}, default=str
         )
     )
+
+
+def test_aggregate_provenance_has_counts_and_original_observations(session, sync_seed):
+    publish(session, sync_seed, ("10", "90"), ("20", "-"))
+    for dimension in ("account", "drama"):
+        page = query(session, sync_seed, dimension)
+        for row in page.items:
+            vector = row.metric_buckets[0]
+            p = vector.provenance["roas_total"]
+            assert len(p.buckets) >= 1
+            assert p.denominator_missing_count == 0
+            assert p.denominator_known_count == len(p.buckets)
+            assert p.known_count + p.missing_count == len(p.buckets)
+            assert p.local_ranges
+            assert p.observations
+        assert page.items[0].display["platform_roas_total"] is None
+        summary = MetricVector.model_validate(page.summary["buckets"][0])
+        assert summary.provenance["roas_total"].denominator_known_count == 2
+        assert summary.provenance["revenue_total"].known_count == 1
+        assert summary.provenance["revenue_total"].missing_count == 1
+
+
+def test_complete_empty_retains_direct_coordinates(session, sync_seed):
+    from app.modules.ads.models import AdObject
+
+    session.add(
+        AdObject(
+            tenant_id=sync_seed.tenant_id,
+            advertiser_id="acc-1",
+            kind="campaign",
+            remote_id="empty",
+            name="Empty",
+            ad_type="NATIVE_SERIES",
+            observed_at=datetime.now(UTC),
+            published_version=1,
+        )
+    )
+    session.commit()
+    publish_campaign_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "America/Los_Angeles")},
+        start=D,
+        end=D,
+        requested_at=datetime.now(UTC),
+        route=FrozenTikTokRoute(**_route(sync_seed)),
+        rows=[],
+    )
+    for dimension in ("campaign", "account", "drama"):
+        page = query(session, sync_seed, dimension, include_empty=True)
+        assert page.items
+        for row in page.items:
+            vector = row.metric_buckets[0]
+            assert vector.level == "campaign"
+            assert vector.source_kind == "PLATFORM_DIRECT"
+            assert vector.timezone == "America/Los_Angeles"
+            assert vector.contract_revision == "native-growth-day-v1"
+            assert vector.values["spend"] is None
+            assert vector.provenance["spend"].buckets
+            assert vector.provenance["spend"].reason == "NO_RETURNED_ROW"
+
+
+def test_row_contract_conflict_never_uses_current_publication_contract(
+    session, sync_seed
+):
+    from app.modules.reporting.store_models import ParentReportDay
+
+    publish(session, sync_seed, ("50",), ("40",))
+    row = session.get(
+        ParentReportDay, (sync_seed.tenant_id, "acc-1", "campaign", "c0", D)
+    )
+    row.evidence = dict(row.evidence) | {"contract_revision": "unregistered-row-v0"}
+    session.add(row)
+    session.commit()
+    page = query(session, sync_seed)
+    v = page.items[0].metric_buckets[0]
+    assert v.values["spend"] is None
+    assert v.contract_revision == "CONTRACT_MISMATCH"
+    assert v.provenance["revenue_total"].reason == "CONTRACT_MISMATCH"
+
+
+def test_representative_selected_plan(session, sync_seed):
+    """2,000 synthetic Campaigns: bounded query shape evidence, not production capacity."""
+    import json
+    from time import perf_counter
+
+    from sqlalchemy import text
+
+    from app.modules.reporting.row_set import _ctes, _summary_select
+
+    publish(session, sync_seed, ("50",) * 2000, ("40",) * 2000)
+    filters = ReportingFilter(
+        dimension="campaign",
+        start_date=D,
+        end_date=D,
+        advertiser_ids=("acc-1",),
+        min_d0_roas=Decimal(".7"),
+        sort_by="roas_d0",
+        sort_direction="desc",
+    )
+    ctes, params = _ctes(
+        filters, tenant_id=sync_seed.tenant_id, advertisers=("acc-1",), bc_id="bc-a"
+    )
+    plans = {}
+    for name, sql in (
+        ("members", f"{ctes} SELECT * FROM ordered ORDER BY seq LIMIT 25"),
+        (
+            "summary",
+            f"{ctes} {_summary_select(frozenset(), scoped=True, individual=True)}",
+        ),
+    ):
+        plans[name] = (
+            session.connection()
+            .execute(text(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}"), params)
+            .scalar_one()[0]
+        )
+    started = perf_counter()
+    first = query_ads(
+        session, context=sync_seed.context, bc_id="bc-a", filters=filters, limit=25
+    )
+    first_ms = (perf_counter() - started) * 1000
+    started = perf_counter()
+    second = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=filters,
+        limit=25,
+        snapshot_id=first.snapshot.snapshot_id,
+        cursor=first.next_cursor,
+    )
+    next_ms = (perf_counter() - started) * 1000
+    assert len(first.items) == len(second.items) == 25
+    assert not {r.row_key for r in first.items} & {r.row_key for r in second.items}
+    assert MetricVector.model_validate(first.summary["buckets"][0]).values[
+        "revenue_total"
+    ] == Decimal("80000")
+    assert all(
+        r.metric_buckets[0].values["roas_total"] == Decimal(".8")
+        for r in first.items + second.items
+    )
+    print(  # noqa: T201 - synthetic PG plan evidence
+        "JB28_REPRESENTATIVE "
+        + json.dumps(
+            {
+                "campaigns": 2000,
+                "days": 1,
+                "first_ms": first_ms,
+                "next_ms": next_ms,
+                "plans": plans,
+            },
+            default=str,
+        )
+    )  # noqa: T201
+
+
+def test_historical_empty_does_not_borrow_current_account_coordinates(
+    session, sync_seed
+):
+    from app.modules.ads.models import AdObject
+    from app.modules.reporting.store_models import ReportSyncState
+
+    session.add(
+        AdObject(
+            tenant_id=sync_seed.tenant_id,
+            advertiser_id="acc-1",
+            kind="campaign",
+            remote_id="empty",
+            name="Empty",
+            ad_type="NATIVE_SERIES",
+            observed_at=datetime.now(UTC),
+            published_version=1,
+        )
+    )
+    session.commit()
+    publish(session, sync_seed, (), ())
+    state = session.get(
+        ReportSyncState, (sync_seed.tenant_id, "acc-1", "campaign_day", D)
+    )
+    state.publication_coordinates = None
+    session.add(state)
+    session.commit()
+    page = query(session, sync_seed, include_empty=True)
+    for v in (
+        page.items[0].metric_buckets[0],
+        MetricVector.model_validate(page.summary["buckets"][0]),
+    ):
+        assert v.currency == v.timezone == "UNKNOWN"
+        assert v.values["spend"] is None
+        assert v.source_kind == "PLATFORM_DIRECT"
+        assert v.provenance["spend"].reason == "NO_RETURNED_ROW"

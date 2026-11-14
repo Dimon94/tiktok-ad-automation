@@ -462,7 +462,7 @@ export function AdsTable({
                         onDrill={onDrill}
                         onFilterParent={onFilterParent}
                       />
-                      {["campaign", "adgroup", "ad"].includes(dimension) &&
+                      {["campaign", "adgroup", "ad", "account", "drama"].includes(dimension) &&
                         row.display?.report_source && (
                           <div className="mt-2 space-y-1 text-[10px] text-muted-foreground">
                             <p>
@@ -471,7 +471,7 @@ export function AdsTable({
                             </p>
                             <p>{row.display.report_coordinates}</p>
                             <p>{row.display.report_scope}</p>
-                            <p>{row.display.report_metric_reasons}</p>
+                            <p>{row.display.report_metric_reasons}{row.display.report_metric_reasons?.includes("CONTRACT_MISMATCH") ? " · 合同不兼容，请刷新" : ""}</p>
                             <p>{row.display.report_window}</p>
                             <p>{row.display.report_semantics}</p>
                             <p>观测 {row.display.report_observed_at}</p>

@@ -420,7 +420,15 @@ def publish_ad_day(
                 .all()
             )
             payloads[(advertiser, day)] = _payload_digest(
-                [(r.ad_id, r.evidence, r.currency, r.timezone) for r in payload]
+                [
+                    (
+                        "",
+                        _publication_coordinates("ad", accounts[advertiser], day),
+                        None,
+                        None,
+                    ),
+                    *[(r.ad_id, r.evidence, r.currency, r.timezone) for r in payload],
+                ]
             )
         buckets = _publication_buckets(
             session,
@@ -478,6 +486,9 @@ def publish_ad_day(
             state = cast(
                 ReportSyncState,
                 session.get(ReportSyncState, (tenant_id, advertiser, "ad_day", day)),
+            )
+            state.publication_coordinates = _publication_coordinates(
+                "ad", accounts[advertiser], day
             )
             state.active_contract = NATIVE_CONTRACT
             state.publication_digest = payloads[(advertiser, day)]
@@ -841,6 +852,22 @@ def _refresh_reconciliation_sums(session, tenant_id, buckets):
             )
 
 
+def _publication_coordinates(
+    level: str, meta: AccountMeta, day: date
+) -> dict[str, Any]:
+    """空发布没有事实行，仍须保存当时实际请求的坐标，不能事后借账户现值。"""
+    return {
+        "level": level,
+        "source_kind": "PLATFORM_DIRECT",
+        "contract_revision": NATIVE_CONTRACT,
+        "currency": meta.currency,
+        "timezone": meta.timezone,
+        "local_day": day.isoformat(),
+        "scope": "ACCOUNT_LOCAL_DAY",
+        "window": "DAILY_NATIVE_CLICK_HOURS_TOTAL_UNKNOWN",
+    }
+
+
 def publish_parent_day(
     session: Session,
     *,
@@ -930,9 +957,17 @@ def publish_parent_day(
     payloads = {
         (advertiser, day): _payload_digest(
             [
-                (fact.remote_id, fact.evidence, fact.currency, fact.timezone)
-                for fact in staged
-                if fact.advertiser_id == advertiser and fact.stat_date == day
+                (
+                    "",
+                    _publication_coordinates(level, accounts[advertiser], day),
+                    None,
+                    None,
+                ),
+                *[
+                    (fact.remote_id, fact.evidence, fact.currency, fact.timezone)
+                    for fact in staged
+                    if fact.advertiser_id == advertiser and fact.stat_date == day
+                ],
             ]
         )
         for advertiser, day in buckets
@@ -970,6 +1005,9 @@ def publish_parent_day(
         state = cast(
             ReportSyncState,
             session.get(ReportSyncState, (tenant_id, advertiser, kind, day)),
+        )
+        state.publication_coordinates = _publication_coordinates(
+            level, accounts[advertiser], day
         )
         state.active_contract = NATIVE_CONTRACT
         state.publication_digest = payloads[(advertiser, day)]

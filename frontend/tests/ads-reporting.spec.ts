@@ -817,7 +817,7 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
   await page.getByRole("button", { name: "应用筛选", exact: true }).click()
   const row = page.getByRole("row").filter({
     has: page.getByRole("button", { name: process.env.NATIVE_NAME || "Campaign 1", exact: true }),
-  })
+  }).first()
   await expect(row).toBeVisible()
   await expect(row).toContainText("PLATFORM_DIRECT")
   if (process.env.NATIVE_REFRESH_STATUS) {
@@ -829,10 +829,50 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
   await expect(row).toContainText("0.801234567890123456789")
   await expect(row.locator('[data-metric="revenue_total"]')).toContainText("40")
   await expect(row.locator('[data-metric="revenue_d0"]')).toContainText("30")
+  if (process.env.JB28_SCOPE_DEMO) {
+    for (const label of ["账户", "剧", "系列", "广告组", "广告"]) {
+      await page.getByRole("tab", { name: label, exact: true }).click()
+      const rows = page.locator("tbody tr").filter({ hasText: "PLATFORM_DIRECT" })
+      await expect(rows.first()).toBeVisible()
+      await expect(rows.first()).toContainText("匹配对象的全部数据")
+      await expect(rows.first()).toContainText("点击后24h")
+      if (label === "系列") {
+        await expect(rows).toHaveCount(50)
+        await expect(rows.nth(0)).toContainText("campaign1")
+        await expect(rows.nth(1)).toContainText("campaign2")
+        const firstIds = await rows.allTextContents()
+        await page.getByRole("button", { name: "下一页", exact: true }).click()
+        await expect(rows).toHaveCount(2)
+        const nextIds = await rows.allTextContents()
+        expect(nextIds.every((value) => !firstIds.includes(value))).toBeTruthy()
+        await page.getByRole("button", { name: "上一页", exact: true }).click()
+        await expect(rows).toHaveCount(50)
+      }
+      if (label === "账户") {
+        await expect(rows.first().locator('[data-metric="revenue_total"]')).toContainText("40")
+        await expect(rows.first()).toContainText("部分")
+        await expect(rows.first()).toContainText("NON_ADDITIVE")
+        await rows.first().getByText("逐日平台观察", { exact: true }).click()
+        await expect(rows.first().locator("pre")).toContainText("0.801234567890123456789")
+      }
+    }
+    await page.getByRole("tab", { name: "系列", exact: true }).click()
+    await page.getByLabel("广告贡献子集 ID", { exact: true }).fill("ad1")
+    await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+    const subset = page.locator("tbody tr").filter({ hasText: "仅所选广告贡献" }).first()
+    await expect(subset).toBeVisible()
+    await expect(subset.locator('[data-metric="spend"]')).toContainText("5")
+    await expect(subset.locator('[data-metric="revenue_total"]')).toContainText("—")
+    await expect(subset.locator('[data-metric="roas_total"]')).toContainText("—")
+    await page.getByRole("tab", { name: "广告", exact: true }).click()
+    await expect(page.locator("tbody tr").filter({ hasText: "匹配对象的全部数据" }).first()).toBeVisible()
+    await page.getByRole("tab", { name: "系列", exact: true }).click()
+    await expect(page.getByLabel("广告贡献子集 ID", { exact: true })).toHaveValue("")
+  }
   if (process.env.NATIVE_LEVEL === "adgroup") {
     for (const [label, name, revenue] of [["系列", "Campaign 1", "40"], ["广告", "Ad 1", "—"]]) {
       await page.getByRole("tab", { name: label, exact: true }).click()
-      const item = page.getByRole("row").filter({ has: page.getByRole("button", { name, exact: true }) })
+      const item = page.getByRole("row").filter({ has: page.getByRole("button", { name, exact: true }) }).first()
       await expect(item).toBeVisible()
       await expect(item.locator('[data-metric="revenue_total"]')).toContainText(revenue)
     }

@@ -7,7 +7,7 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -170,6 +170,13 @@ class MetricProvenance(BaseModel):
     field_state_counts: dict[str, int]
     reason: str | None
     formula: str | None
+    known_count: int = 0
+    missing_count: int = 0
+    denominator_known_count: int | None = None
+    denominator_missing_count: int | None = None
+    local_ranges: tuple[str, ...] = ()
+    observations: tuple[dict[str, Any], ...] = ()
+    metric_contract: MetricContract | None = None
 
 
 class MetricVector(BaseModel):

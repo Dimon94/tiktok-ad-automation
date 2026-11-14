@@ -42,7 +42,7 @@ def state_sql(kind: str) -> str:
     if kind not in PARENT_KINDS:
         raise ValueError(kind)
     return f"""SELECT s.tenant_id,s.advertiser_id,'{kind}' AS report_kind,s.stat_date,
-    s.status,s.row_count,s.last_success_at,s.observed_at,s.publication_version,s.active_contract,s.publication_digest,s.error_code,s.updated_at
+    s.status,s.row_count,s.last_success_at,s.observed_at,s.publication_version,s.active_contract,s.publication_digest,s.publication_coordinates,s.error_code,s.updated_at
     FROM report_sync_state s WHERE
     (s.report_kind='{kind}' AND s.last_success_at IS NOT NULL)
     OR (s.report_kind='ad_day' AND NOT EXISTS (

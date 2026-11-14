@@ -219,7 +219,8 @@ def fact_coordinates(table: str) -> tuple[str, str, str]:
     parent = table.endswith("_selected_day")
     direct = "s.last_success_at IS NOT NULL" if parent else "TRUE"
     source = f"CASE WHEN {direct} THEN 'PLATFORM_DIRECT' ELSE 'CHILD_DERIVED' END"
-    revision = f"CASE WHEN {direct} THEN COALESCE(s.active_contract,'LEGACY_UNKNOWN') ELSE 'LEGACY_UNKNOWN' END"
+    row_revision = "row_evidence.evidence->>'contract_revision'"
+    revision = f"CASE WHEN {direct} THEN CASE WHEN s.active_contract='{NATIVE_CONTRACT}' AND {row_revision} IS NOT NULL AND {row_revision} IS DISTINCT FROM s.active_contract THEN 'CONTRACT_MISMATCH' ELSE COALESCE(s.active_contract,'LEGACY_UNKNOWN') END ELSE 'LEGACY_UNKNOWN' END"
     return level, source, revision
 
 
@@ -281,9 +282,51 @@ def _facts_cte(
     predicate = """t.tenant_id = :tenant AND t.advertiser_id = ANY(:advs)
           AND t.stat_date BETWEEN :start AND :end"""
     source = f"{'ad_report_day' if contribution else table} t"
+    if (
+        table.endswith("_selected_day") or table in {"ad_report_day", "ad_metric_day"}
+    ) and not contribution:
+        # 已发布空桶对目录对象仍有直接权威；补 NULL 对象日，而非恢复旧派生值或补零。
+        wanted = " AND obj.remote_id=ANY(:ids)" if selected_ids and id_column else ""
+        wanted_adv = (
+            " AND obj.advertiser_id=ANY(:ids)" if selected_ids and not id_column else ""
+        )
+        source = f"""(
+            SELECT * FROM {table}
+            UNION ALL
+            SELECT empty.* FROM ad_object obj
+            JOIN advertiser_account account ON account.tenant_id=obj.tenant_id
+                AND account.advertiser_id=obj.advertiser_id
+            JOIN report_sync_state pub ON pub.tenant_id=obj.tenant_id
+                AND pub.advertiser_id=obj.advertiser_id AND pub.report_kind='{level}_day'
+                AND pub.last_success_at IS NOT NULL AND pub.active_contract IS NOT NULL
+                AND pub.stat_date BETWEEN :start AND :end
+            CROSS JOIN LATERAL jsonb_populate_record(NULL::{table},jsonb_build_object(
+                'tenant_id',obj.tenant_id,'advertiser_id',obj.advertiser_id,
+                '{level}_id',obj.remote_id,'stat_date',pub.stat_date,
+                'currency',COALESCE(pub.publication_coordinates->>'currency','UNKNOWN'),
+                'timezone',COALESCE(pub.publication_coordinates->>'timezone','UNKNOWN'))) empty
+            WHERE obj.tenant_id=:tenant AND obj.advertiser_id=ANY(:advs)
+                AND obj.kind='{level}' {wanted} {wanted_adv}
+                AND NOT EXISTS (SELECT 1 FROM {table} present
+                    WHERE present.tenant_id=obj.tenant_id AND present.advertiser_id=obj.advertiser_id
+                    AND present.{level}_id=obj.remote_id AND present.stat_date=pub.stat_date)
+        ) t"""
     state_join = f""" LEFT JOIN report_sync_state s ON s.tenant_id=t.tenant_id
         AND s.advertiser_id=t.advertiser_id AND s.stat_date=t.stat_date
         AND s.report_kind='{level}_day'"""
+    evidence_table = (
+        "parent_report_day"
+        if table.endswith("_selected_day") and not contribution
+        else "ad_report_day"
+    )
+    evidence_identity = (
+        f"row_evidence.level='{level}' AND row_evidence.remote_id=t.{level}_id"
+        if evidence_table == "parent_report_day"
+        else "row_evidence.ad_id=t.ad_id"
+    )
+    state_join += f""" LEFT JOIN {evidence_table} row_evidence ON
+        row_evidence.tenant_id=t.tenant_id AND row_evidence.advertiser_id=t.advertiser_id
+        AND row_evidence.stat_date=t.stat_date AND {evidence_identity}"""
     # 当前目录只能解释这一修订；未知直接合同留在独立桶，绝不回退子级。
     if selected_ids:
         predicate += f" AND {rid}=ANY(:ids)"
@@ -300,11 +343,20 @@ def _facts_cte(
             SELECT * FROM {table}
             WHERE tenant_id=:tenant AND stat_date BETWEEN :start AND :end OFFSET 0
         ) t"""
+    observation = f"""jsonb_agg(jsonb_build_object(
+        'advertiser_id',t.advertiser_id,'remote_id',t.{level}_id,'level','{level}',
+        'source_kind',{source_kind},'contract_revision',{revision},
+        'local_day',t.stat_date,'timezone',t.timezone,'currency',t.currency,
+        'fact',jsonb_build_object({",".join(f"'{m}',t.{m}" for m in METRIC_COLUMNS)}),
+        'returned',row_evidence.advertiser_id IS NOT NULL,
+        'fields',COALESCE(row_evidence.evidence->'fields','{{}}'::jsonb),
+        'publication',COALESCE(to_jsonb(s),'{{}}'::jsonb))) AS observations,"""
     return f"""facts AS (
         SELECT {adv} AS adv, {rid} AS rid{extra_select}, {currency} AS currency,
             CASE WHEN min(t.timezone) = max(t.timezone) THEN min(t.timezone) ELSE 'MIXED' END AS tz,
             '{level}'::text AS level, {source_kind} AS source_kind, {revision} AS contract_revision,
             {meta}
+            {observation}
             {metric_sums}
         FROM {source}{state_join} WHERE {predicate}
         GROUP BY {group}
@@ -486,7 +538,7 @@ def _member_buckets(
     )
     return f"""mb AS (
         SELECT m.row_key, m.adv, COALESCE(f.level,'{level}') AS level, COALESCE(f.source_kind,'CHILD_DERIVED') AS source_kind, COALESCE(f.contract_revision,'LEGACY_UNKNOWN') AS contract_revision, COALESCE(f.currency, a.currency) AS currency,
-            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, {values}
+            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, f.observations, {values}
         FROM {members} m
         JOIN acc a ON a.adv = m.adv
         JOIN cov c ON c.adv = m.adv
@@ -620,7 +672,7 @@ def _metric_dimension_rows(
             fact,
             f"""mb AS (
             SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.currency,f.tz,
-                NOT c.complete AS incomplete,f.level,f.source_kind,f.contract_revision,{values}
+                NOT c.complete AS incomplete,f.level,f.source_kind,f.contract_revision,f.observations,{values}
             FROM facts f JOIN acc a ON a.adv=f.adv JOIN cov c ON c.adv=f.adv
         )""",
             f"""base AS (
@@ -1054,8 +1106,9 @@ def _summary_select(
         else "bool_or(mb.incomplete) OVER (PARTITION BY mb.row_key)"
     )
     coordinates = ", x.level, x.source_kind, x.contract_revision" if scoped else ""
+    evidence = ", jsonb_agg(x.observations) AS observations" if scoped else ""
     source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
-    return f"""SELECT x.currency{coordinates},
+    return f"""SELECT x.currency{coordinates}{evidence},
             CASE WHEN count(DISTINCT x.tz) = 1 THEN min(x.tz) ELSE 'MIXED' END AS tz, {columns}
         FROM (SELECT mb.*, {incomplete} AS row_incomplete FROM {source}) x
         GROUP BY x.currency{coordinates} ORDER BY x.currency{coordinates}"""

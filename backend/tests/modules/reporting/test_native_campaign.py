@@ -372,6 +372,7 @@ def live_campaign_workspace(
     name="Campaign 1",
     attempt_status="COMPLETE",
     refresh_status="",
+    scope_demo=False,
 ):
     """真实 FastAPI/Vite/浏览器；唯一平台替身在 urllib3 transport。"""
     import os
@@ -539,6 +540,7 @@ def live_campaign_workspace(
                 "API_PROXY_TARGET": f"http://127.0.0.1:{port}",
                 "NATIVE_CAMPAIGN_TENANT": str(seed.tenant_id),
                 "NATIVE_LEVEL": level,
+                "JB28_SCOPE_DEMO": "1" if scope_demo else "",
                 "NATIVE_LABEL": label,
                 "NATIVE_NAME": name,
                 "NATIVE_REFRESH_STATUS": refresh_status,

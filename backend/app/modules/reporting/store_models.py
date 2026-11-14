@@ -254,6 +254,9 @@ class ReportSyncState(SQLModel, table=True):
     publication_version: int = Field(default=0, sa_type=BigInteger)
     active_contract: str | None = Field(default=None, max_length=128)
     publication_digest: str | None = Field(default=None, max_length=64)
+    publication_coordinates: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB)
+    )
     error_code: str | None = Field(default=None, max_length=128)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=AwareDateTime
