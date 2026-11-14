@@ -114,3 +114,50 @@ inherited only when the actual mutation target and regression still match.
 Report surviving mutations as reachability/test gaps first; replay any genuine
 counterexample against real PG and report the product owner, never weaken the
 property or change product code here.
+
+## JB29 R9 frozen query observations
+
+sync_commit: `8f986018f3dc389aeebaf8002a82e86e1d1ff947` (product candidate checked).
+Outcome: **updated** for R9; R4/R10 and R7 remain **in sync**. Their publishers,
+level registry and physical selected-day authority views did not change from
+47359643. JB28 vector arithmetic and metric definitions are unchanged; selected
+observations now reach the same formatter from the SQL snapshot projection.
+Actual source/field-state/scope/denominator expectations were rerun through that
+path. Read [JB29 evidence](../../../docs/validation/2026-11-14-jb29-native-growth-snapshot.md)
+for the AC matrix, actual failures/fixes and inherited boundaries.
+
+Run from the product root, serially in the guarded dedicated environment:
+
+```bash
+python3 .agents/skills/formal-verify-reporting-data/scripts/snapshot.py
+python3 .agents/skills/formal-verify-reporting-data/scripts/snapshot.py --broken-read
+python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py python -m pytest backend/tests/modules/reporting/test_native_snapshot.py -q
+python3 .agents/skills/formal-verify-reporting-data/scripts/snapshot_probes.py
+```
+
+The normal model must pass; `--broken-read` must exit with AssertionError.
+Source probes require an exclusive writer and no concurrent fixture suite. They
+accept business value assertions or an expected HTTP rejection not raised;
+SQL/import failures are not valid RED. They restore a repository-external backup
+in finally, invoke cmp and require the same regression GREEN. Optional arguments
+select names: page-live, detail-live, evidence, ad-only, legacy, scope, revoked.
+
+R9's finite abstraction enumerates 128 combinations: three independent binary
+layer publication coordinates before/after a query, plus an evidence-only change.
+Both page and detail must equal the captured query observation after publication.
+Each publication coordinate denotes one committed observation, not a common
+platform timestamp. Maps to row_set.insert_snapshot_rows, RR _build_snapshot /
+freeze_results, _read_page / frozen_row and get_ad_detail. New queries can select
+the latest coordinates without rewriting the previous result. The model assumes
+atomic committed publication and an immutable captured tuple; actual atomicity,
+SQL selection, current permissions, expiry and contract compatibility are bound
+by PG tests/probes rather than proved by this arithmetic abstraction.
+
+The real two-connection PG race commits a new publication between SQL snapshot
+INSERT and formatting: old row/summary stay 10/20, next query sees 100/200. The
+source probes additionally reject live page/detail recomputation, missing digest,
+Ad-only dependency, legacy reinterpretation, scope drift and revoked access.
+No new product defect is left open from these checks; the empty-Account level
+and layer-overview regressions found during verification were product bugs and
+were fixed in the candidate. This does not prove unbounded concurrency, liveness,
+SDK behavior, arbitrary production scale or CSV consistency; CSV remains JB30.

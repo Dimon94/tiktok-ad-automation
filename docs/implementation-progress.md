@@ -5496,3 +5496,8 @@ Ruff、主/演示build含tsc、diff通过；窄mypy仅继承1条旧注解问题�
 [JB29 validation](validation/2026-11-14-jb29-native-growth-snapshot.md)。formal owner扩展R9且单独同步提交。
 候选待root独立review，不标Done，不宣称M4a完成。无tracker/main/推送/PR/部署/生产迁移/真实平台写；
 原未跟踪.venv/node_modules软链保留。
+
+JB29 产品候选提交：`8f986018f3dc389aeebaf8002a82e86e1d1ff947`。
+形式维护按该精确产品头更新R9，原48/57与新增128正常通过，破坏模式拒绝，完整snapshot PG 8项通过。
+迁移实测保留旧快照成员/总数及direct金额，拒绝旧合同；真实两连接在SQL选择与格式化之间发布新观测，
+旧行/summary保持10/20、新查询100/200。最终源码探针与skill同步单列提交，产品字节不再修改。

@@ -132,7 +132,8 @@ publication path while the browser retains an old result; no business service or
 browser response is mocked.
 
 - `python -m pytest backend/tests/modules/reporting/test_native_snapshot.py -q`:
-  six cases (three dimensions plus details/rejection, evidence-only, other layers).
+  eight cases (three dimensions, details/rejection, evidence-only, other layers,
+  additive legacy upgrade and two-connection RR publication race).
 - `python -m pytest backend/tests/modules/reporting/test_native_scope_roas.py backend/tests/modules/reporting/test_dimension_query.py backend/tests/modules/reporting/test_query_reuse.py backend/tests/modules/reporting/test_cleanup_batches.py -q`:
   source/scope, empty/NULL/ratio contracts, actual lease/transaction cancellation,
   and bounded cleanup; final run recorded below.
@@ -208,3 +209,12 @@ it does not relabel former static or mock evidence as a new live seam. External
 TikTok semantics, production migration/rollback/capacity and final MMF CSV remain
 unverified/not performed. Root independent review and JB30 are outstanding;
 there is no known intentionally deferred JB29 product AC in this candidate.
+
+
+Product candidate: `8f986018f3dc389aeebaf8002a82e86e1d1ff947`.
+The maintained R9 skill was followed from this head: normal 48/57/128 models
+passed, broken snapshot live-read produced the expected AssertionError, and the
+complete current snapshot PG suite passed **8 cases in 6.00s**. The controlled
+RR race independently passed **1 case in 0.79s** after committing its fixture
+publications. Final source-probe restoration/commit is recorded in the skill
+maintenance commit; no product byte changes accompany it.
