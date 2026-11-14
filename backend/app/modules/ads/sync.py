@@ -589,12 +589,12 @@ def _publish_staged_materials(session, run, staged, *, statement_timeout_ms=None
         )
     group_columns = "ad_remote_id,platform_material_id,material_type"
     group_key = f"({group_columns})"
-    large = (
-        connection.execute(
-            text(f"SELECT count(DISTINCT {group_key}) FROM {staged}")
-        ).scalar_one()
-        > _MATERIAL_WRITE_BATCH_SIZE
-    )
+    group_count = connection.execute(
+        text(f"SELECT count(DISTINCT {group_key}) FROM {staged}")
+    ).scalar_one()
+    large = group_count > _MATERIAL_WRITE_BATCH_SIZE
+    published_groups = 0
+    next_statistics_at = _MATERIAL_WRITE_BATCH_SIZE
     after = None
     while True:
         parameters = {}
@@ -638,24 +638,29 @@ def _publish_staged_materials(session, run, staged, *, statement_timeout_ms=None
         )
         if not large:
             break
-        # 冷库中的成员/证据表会在一次发布中增长数万行。每段真实统计并重规划，
+        # 冷库中的成员/证据表会在一次发布中增长数万行。按增长量更新真实统计，
         # 避免逐VID刷新和外键检查沿用空表SeqScan；只统计查询键，
         # 不反复解压/比较证据JSON等宽值。小目录不更新共享表统计。
-        connection.execute(
-            text("""
-            ANALYZE ad_material_reference
-                    (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
-                     ad_material_id,material_type),
-                current_ad_material
-                    (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
-                     ad_material_id,material_type),
-                material_ad_member_current
-                    (tenant_id,advertiser_id,ad_remote_id,platform_material_id,material_type),
-                material_account_member_current
-                    (tenant_id,advertiser_id,platform_material_id),
-                report_evidence_version (id,tenant_id,advertiser_id)
-        """)
-        )
+        published_groups = min(group_count, published_groups + _MATERIAL_WRITE_BATCH_SIZE)
+        # 首段、翻倍及末段更新真实键统计，避免每2k行反复扫描整张不断增长的表。
+        # 规划信息最多落后一倍；末段仍留下本次完整发布的统计。
+        if published_groups >= next_statistics_at or published_groups == group_count:
+            connection.execute(
+                text("""
+                ANALYZE ad_material_reference
+                        (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+                         ad_material_id,material_type),
+                    current_ad_material
+                        (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+                         ad_material_id,material_type),
+                    material_ad_member_current
+                        (tenant_id,advertiser_id,ad_remote_id,platform_material_id,material_type),
+                    material_account_member_current
+                        (tenant_id,advertiser_id,platform_material_id),
+                    report_evidence_version (id,tenant_id,advertiser_id)
+            """)
+            )
+            next_statistics_at *= 2
         connection.execute(text("DISCARD PLANS"))
         after = end
     # 只延长素材集合写及其触发器；后续查询恢复原预算。
