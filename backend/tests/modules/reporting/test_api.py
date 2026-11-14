@@ -168,8 +168,32 @@ def test_reporting_write_routes_are_viewer_denied_and_operator_gated(
 
 
 @pytest.mark.filterwarnings("ignore:transaction already deassociated from connection")
-def test_engine_api_cursor_and_selection_cross_request(report_case, client):
+def test_engine_api_cursor_and_selection_cross_request(
+    report_case, client, monkeypatch, redis_client
+):
     """The production Engine path commits the snapshot before the next request."""
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from uuid import uuid4
+
+    from redis import Redis
+
+    from app.modules.reporting import page_cache
+    from app.modules.reporting.page_cache_tasks import plan_due
+
+    monkeypatch.setattr(page_cache, "PREFIX", "test:report-api:" + uuid4().hex)
+    monkeypatch.setattr(
+        page_cache, "client", lambda: Redis.from_url(os.environ["TEST_REDIS_URL"])
+    )
+    registered = Event()
+    original_watch = page_cache.watch
+
+    def watch(*args, **kwargs):
+        original_watch(*args, **kwargs)
+        registered.set()
+
+    monkeypatch.setattr(page_cache, "watch", watch)
     from app.api.deps import get_current_user, get_db
 
     # 与 client 使用同一应用实例；其他用例会 reload app.main 生成新对象。
@@ -196,7 +220,20 @@ def test_engine_api_cursor_and_selection_cross_request(report_case, client):
             "end_date": "2026-09-30",
             "limit": "1",
         }
-        first = client.get(path, params=params)
+        # 首屏由报表 Worker 构建；用真实规划/构建函数消费本次 HTTP 登记的任务。
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            response = pool.submit(client.get, path, params=params)
+            assert registered.wait(5)
+            assert (
+                plan_due(
+                    redis_client,
+                    lambda key, token: page_cache.refresh_page(
+                        redis_client, key, token
+                    ),
+                )
+                == 1
+            )
+            first = response.result(timeout=5)
         assert first.status_code == 200, first.text
         payload = first.json()
         assert payload["next_cursor"]
@@ -220,6 +257,9 @@ def test_engine_api_cursor_and_selection_cross_request(report_case, client):
         assert selected.status_code == 200, selected.text
         assert selected.json()["refs"]
     finally:
+        keys = list(redis_client.scan_iter(page_cache.PREFIX + "*"))
+        if keys:
+            redis_client.delete(*keys)
         if old_db is not None:
             app.dependency_overrides[get_db] = old_db
         if old_user is None:

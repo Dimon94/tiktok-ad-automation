@@ -247,9 +247,10 @@ def test_all_layers_enable_target_assets_and_no_row_locks_during_official_wire(
     )
     group = next(b for u, b in calls if "/adgroup/" in u)
     assert "budget" not in group and group["roas_bid"] == 1.08
-    assert "targeting_optimization_mode" not in group
+    assert group["targeting_optimization_mode"] == "AUTOMATIC"
     assert group["targeting_spec"] == {
         "location_ids": ["fixture-location"],
+        "spc_audience_age": "OVER_EIGHTEEN",
     }
     ads = [b for u, b in calls if "/ad/create/" in u]
     assert ads[0]["creative_list"] == ads[1]["creative_list"]

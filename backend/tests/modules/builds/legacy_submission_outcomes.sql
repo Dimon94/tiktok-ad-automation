@@ -12,7 +12,7 @@ SELECT g.id group_id,g.unit_id,
  count(m.material_id)>0 AND coalesce(bool_and(ms.status='SUCCEEDED'),false) AND count(m.material_id)=count(ms.id) ready,
  coalesce(bool_or(ms.status='FAILED'),false) failed
 FROM planned_group g
-LEFT JOIN preview_group_material m ON m.tenant_id=g.tenant_id AND m.preview_id=g.preview_id AND m.drama_id=g.drama_id AND m.group_no=g.group_no
+LEFT JOIN frozen_group_material m ON m.tenant_id=g.tenant_id AND m.preview_id=g.preview_id AND m.drama_id=g.drama_id AND m.group_no=g.group_no
 LEFT JOIN execution_step ms ON ms.tenant_id=g.tenant_id AND ms.submission_id=:submission AND ms.unit_id=g.unit_id AND ms.kind='MATERIAL' AND ms.material_id=m.material_id
 WHERE g.tenant_id=:tenant AND g.preview_id=:preview AND (CAST(:unit AS uuid) IS NULL OR g.unit_id=CAST(:unit AS uuid))
 GROUP BY g.id,g.unit_id

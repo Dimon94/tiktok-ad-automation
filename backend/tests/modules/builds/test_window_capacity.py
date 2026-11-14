@@ -19,11 +19,15 @@ from app.modules.builds.execution_models import (
 from app.modules.builds.preview_models import (
     BuildPreview,
     BuildUnit,
+    PreviewAdCreativeUnit,
+    PreviewContract,
+    PreviewCreativeUnit,
+    PreviewCreativeUnitItem,
     PreviewDrama,
     PreviewDramaGroup,
-    PreviewGroupMaterial,
+    PreviewGroupCreativeUnit,
 )
-from app.modules.builds.routes import load_preview_route
+from app.modules.builds.routes import load_preview_route, save_preview_route
 from app.modules.materials.cover_candidates import candidate_query
 from app.modules.materials.cover_models import MaterialCoverJob
 from app.modules.materials.models import AccountMaterial
@@ -73,14 +77,25 @@ def test_ten_thousand_units_only_dispatch_active_window(executable, monkeypatch)
         ).one()
         db.add(PreviewDrama(**{**drama.model_dump(), "preview_id": preview_id}))
         db.flush()
-        for model in (PreviewDramaGroup, PreviewGroupMaterial):
+        # 与真实 V2 预览一致：冻结单元、图片/视频成员和分组/广告映射，
+        # 不再向已退休的 legacy material 表补写数据。
+        for model in (
+            PreviewContract,
+            PreviewCreativeUnit,
+            PreviewCreativeUnitItem,
+            PreviewDramaGroup,
+            PreviewGroupCreativeUnit,
+            PreviewAdCreativeUnit,
+        ):
             originals = db.exec(
                 select(model).where(model.preview_id == unit.preview_id)
             ).all()
+            assert originals
             db.execute(
                 insert(model),
                 [{**item.model_dump(), "preview_id": preview_id} for item in originals],
             )
+        save_preview_route(db, context=context, preview_id=preview_id, route=route)
         original_submission = db.get(Submission, submitted.submission_id)
         db.add(
             Submission(

@@ -367,6 +367,7 @@ def test_unknown_campaign_remote_effect_is_recovered_without_create_or_database_
     from sqlmodel import Session, select
 
     from app.core.config import settings
+    from app.integrations.tiktok.platform_quotas import sdk_endpoint
     from app.jobs.admission import admission_keys
     from app.modules.builds.execution_models import ExecutionStep, StepEvidence
 
@@ -383,7 +384,7 @@ def test_unknown_campaign_remote_effect_is_recovered_without_create_or_database_
             assert step.lease_token and step.status == "UNKNOWN"
             keys = admission_keys(
                 settings.TIKTOK_APP_ID,
-                "build.get_campaigns",
+                sdk_endpoint("build.get_campaigns"),
                 env.context.tenant_id,
                 body["advertiser_id"],
             )

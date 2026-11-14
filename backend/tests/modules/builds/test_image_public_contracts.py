@@ -602,7 +602,9 @@ def test_selected_retry_migration_preserves_old_preparation(monkeypatch):
     from app.modules.builds.carousel_music_models import MusicPreparationRun
     from tests.migration_database import historical_database
     from tests.modules.builds.test_drafts import create_intent
-    from tests.modules.builds.test_image_composition_migration import scaffold
+    from tests.modules.builds.test_image_composition_migration import (
+        historical_scaffold,
+    )
     from tests.modules.conftest import create_context
 
     with historical_database(monkeypatch, "0057_carousel_copy_integrity") as (
@@ -611,7 +613,9 @@ def test_selected_retry_migration_preserves_old_preparation(monkeypatch):
     ):
         with Session(engine) as session, session.begin():
             context = create_context(session)
-            draft, _ = scaffold(session, context, create_intent(session, context))
+            draft, _ = historical_scaffold(
+                session, context, create_intent(session, context)
+            )
             identity = uuid4()
             table = Table("music_preparation_run", MetaData(), autoload_with=engine)
             session.execute(

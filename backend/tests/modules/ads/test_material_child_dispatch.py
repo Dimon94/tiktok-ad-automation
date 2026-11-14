@@ -88,8 +88,24 @@ def test_child_keeps_source_age_within_canonical_due_order(
     for row in (earlier, younger, legacy):
         register_directory_run(session, row, new_execution=True)
     assert child.created_at == source.created_at
-    # 创意不再是独立保底子队列；统一类按头年龄，子范围仍继承原请求年龄。
-    for expected in (legacy, earlier, child, younger):
+    from app.modules.sync_control.directory_dispatch import _candidate
+    from tests.modules.sync_control.test_directory_global_age import _head
+
+    # 子范围的规范欠账年龄仍继承源请求，不以子页创建时间重置。
+    assert _head(session, child).oldest_pending_at == source.created_at
+    assert (
+        _candidate(
+            session,
+            tenant_id=source.tenant_id,
+            work_class="directory",
+            now=datetime.now(UTC) + timedelta(seconds=1),
+            independent_only=False,
+            discover_only=True,
+        )[1].id
+        == legacy.id
+    )
+    # 物理接口先轮转，接口内才按规范年龄；ad/get 的旧创意仍先于子页。
+    for expected in (legacy, younger, earlier, child):
         before = {row.id for row in _sent(session)}
         assert (
             job_tasks._dispatch_directories(

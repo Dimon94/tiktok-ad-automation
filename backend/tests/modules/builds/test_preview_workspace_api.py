@@ -136,13 +136,13 @@ def test_legacy_preview_summary_falls_back_to_group_materials_for_ad_allocations
 ):
     original_digest = previews._digest_units
 
-    def digest_without_ad_allocations(db, row):
+    def digest_without_ad_allocations(db, row, scope):
         # Historical previews lacked these rows; construct that snapshot before
         # freezing so the immutability guard remains active throughout the test.
         db.execute(
             delete(PreviewAdMaterial).where(PreviewAdMaterial.preview_id == row.id)
         )
-        return original_digest(db, row)
+        return original_digest(db, row, scope)
 
     monkeypatch.setattr(previews, "_digest_units", digest_without_ad_allocations)
     preview = previews.generate_preview(

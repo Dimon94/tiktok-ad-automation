@@ -145,7 +145,17 @@ def test_expansion_index_fresh_roundtrip_matches_model(monkeypatch):
         command.upgrade(config, "0013_dispatch_expansion_index")
         assert indexes()[INDEX] == actual
         command.upgrade(config, "head")
-        assert indexes()[INDEX] == actual
+        current = indexes()[INDEX]
+        assert current["column_names"] == actual["column_names"]
+        predicate = current["dialect_options"]["postgresql_where"]
+        # 今日待投递集合排除已替代和退役消息；0013 的往返定义仍在上面核对。
+        for clause in (
+            "published_at IS NULL",
+            "superseded_at IS NULL",
+            "retired_at IS NULL",
+            "builds.expand_submission",
+        ):
+            assert clause in predicate
         with db.connect() as connection:
             assert (
                 connection.execute(

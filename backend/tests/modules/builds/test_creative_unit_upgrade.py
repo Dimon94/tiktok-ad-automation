@@ -178,9 +178,11 @@ def test_real_old_schema_upgrade_and_mixed_history_drain(monkeypatch):
         SubmissionUnit,
     )
     from app.modules.builds.preview_models import BuildUnit, PreviewDrama
-    from tests.migration_database import historical_database
+    from tests.migration_database import historical_database, insert_historical_row
     from tests.modules.builds.test_drafts import create_intent
-    from tests.modules.builds.test_image_composition_migration import scaffold
+    from tests.modules.builds.test_image_composition_migration import (
+        historical_scaffold,
+    )
     from tests.modules.conftest import create_context
 
     probe = release_probe()
@@ -191,7 +193,7 @@ def test_real_old_schema_upgrade_and_mixed_history_drain(monkeypatch):
         with Session(engine) as db:
             context = create_context(db)
             intent = create_intent(db, context)
-            draft, drama = scaffold(db, context, intent)
+            draft, drama = historical_scaffold(db, context, intent)
             draft.media_kind = "VIDEO"
             old = preview(db, context, draft.id, intent)
             scope = {
@@ -199,7 +201,8 @@ def test_real_old_schema_upgrade_and_mixed_history_drain(monkeypatch):
                 "preview_id": old.id,
                 "bc_id": old.bc_id,
             }
-            db.add(
+            insert_historical_row(
+                db,
                 PreviewDrama(
                     **scope,
                     drama_id=drama.drama_id,
@@ -207,7 +210,7 @@ def test_real_old_schema_upgrade_and_mixed_history_drain(monkeypatch):
                     title=drama.title,
                     url="https://example.invalid",
                     protected_base="synthetic",
-                )
+                ),
             )
             db.flush()
             unit = BuildUnit(

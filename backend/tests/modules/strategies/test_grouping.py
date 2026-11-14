@@ -23,15 +23,12 @@ def test_structure_replay_is_stable_for_sorted_materials_and_copies():
             "creative_count": 3,
         }
     )
-    files = [
-        SimpleNamespace(material_id=UUID(int=i + 1), file_name=f"Drama-{i:02}.mp4")
-        for i in reversed(range(23))
-    ]
+    files = [SimpleNamespace(unit_id=UUID(int=i + 1)) for i in reversed(range(23))]
 
     first = plan_structure(files, config=config, pool=seed_copies(), seed=51)
     second = plan_structure(files, config=config, pool=seed_copies(), seed=51)
 
     assert first == second
-    assert [len(group.material_ids) for group in first] == [10, 10, 3]
+    assert [len(group.unit_ids) for group in first] == [10, 10, 3]
     assert [len(group.ads) for group in first] == [1, 1, 1]
     assert all(len(group.ads[0].copies) == 3 for group in first)

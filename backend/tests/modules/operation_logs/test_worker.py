@@ -26,7 +26,14 @@ from tests.modules.sync_control.test_archive import ObjectTransport
 
 
 @pytest.fixture
-def log_seed(committed_sync_seed):
+def log_seed(committed_sync_seed, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    # 加密归档复用持久主密钥合同；测试也提供独立有效密钥，不绕过加密。
+    monkeypatch.setattr(
+        "app.core.config.settings.CONNECTION_ENCRYPTION_KEY",
+        Fernet.generate_key().decode(),
+    )
     seed, factory = committed_sync_seed
     try:
         yield seed, factory

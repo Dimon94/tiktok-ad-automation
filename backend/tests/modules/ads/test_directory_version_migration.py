@@ -20,15 +20,20 @@ def test_publish_sequence_starts_above_all_legacy_versions(monkeypatch):
     ):
         with Session(engine) as session, session.begin():
             seed = sync_seed.__wrapped__(session)
-            session.add(
-                AdMaterialReference(
-                    tenant_id=seed.tenant_id,
-                    advertiser_id="acc-1",
-                    ad_remote_id="ad",
-                    platform_material_id="vid",
-                    material_type="VIDEO",
-                    published_version=800,
-                )
+            reference = AdMaterialReference(
+                tenant_id=seed.tenant_id,
+                advertiser_id="acc-1",
+                ad_remote_id="ad",
+                platform_material_id="vid",
+                material_type="VIDEO",
+                published_version=800,
+            )
+            # 0033 的必填创意数组尚无服务端默认值，显式保留旧结构。
+            references = Table(
+                "ad_material_reference", MetaData(), autoload_with=session.connection()
+            )
+            session.execute(
+                references.insert().values(**reference.model_dump(), creative_ids=[])
             )
             session.add(
                 AdObject(
