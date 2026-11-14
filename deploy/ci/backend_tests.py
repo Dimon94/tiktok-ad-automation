@@ -5,6 +5,7 @@
 - 端到端验收（tests/acceptance）是多分钟级批量搭建，对数据库负载敏感，不与普通用例
   共用同一个测试数据库实例：设置 ACCEPTANCE_DATABASE_URL（独立实例）时两类同时运行，
   否则先跑完普通用例再单独跑验收。
+- --serial-file 将指定容量文件放到并行组结束后逐文件独立进程执行，保留所有收集和原性能门槛。
 - --fast 只跑快速层（排除 slow 标记，含全部验收），供日常检查；发布门禁跑全部。
 - 官方 MCP 通道退役中，mcp 标记的用例始终不运行。
 - 每组内保持文件路径排序（已知部分夹具依赖收集顺序）。
@@ -76,6 +77,15 @@ def split_exclusive(nodeids):
     regular = [n for n in nodeids if not n.startswith(EXCLUSIVE_PREFIX)]
     exclusive = [n for n in nodeids if n.startswith(EXCLUSIVE_PREFIX)]
     return regular, exclusive
+
+
+def split_serial(nodeids, files):
+    """明确指定的容量测量文件独占 CPU/数据库；不减少收集或改变原门槛。"""
+    files = set(files)
+    return (
+        [n for n in nodeids if n.split("::", 1)[0] not in files],
+        [n for n in nodeids if n.split("::", 1)[0] in files],
+    )
 
 
 def with_database(url, name):
@@ -211,6 +221,7 @@ def main():
         default=int(os.environ.get("CHECK_ACCEPTANCE_SHARDS", "2")),
         help="验收独占阶段的并行组数",
     )
+    parser.add_argument("--serial-file", action="append", default=[], help="普通组结束后串行运行的容量测量文件")
     parser.add_argument("--fast", action="store_true", help="只跑快速层，排除 slow 标记")
     parser.add_argument("--isolate-files", action="store_true", help="测试文件之间恢复独立的 head 测试库")
     parser.add_argument("--work", type=Path, required=True)
@@ -230,13 +241,15 @@ def main():
     if not nodeids:
         print("后端：没有需要运行的测试")
         return 0
-    regular, exclusive = split_exclusive(nodeids)
+    parallel, serial = split_serial(nodeids, args.serial_file)
+    regular, exclusive = split_exclusive(parallel)
     shards = max(1, args.shards)
     regular_groups = partition(regular, durations, shards) if regular else []
     exclusive_groups = partition(exclusive, durations, args.exclusive_shards) if exclusive else []
     print(
         f"后端：{len(nodeids)} 项；普通 {len(regular)} 项分 {len(regular_groups)} 组并行，"
-        f"验收 {len(exclusive)} 项随后分 {len(exclusive_groups)} 组独占运行",
+        f"验收 {len(exclusive)} 项随后分 {len(exclusive_groups)} 组独占运行；"
+        f"容量 {len(serial)} 项最后串行运行",
         flush=True,
     )
     started = time.monotonic()
@@ -269,6 +282,17 @@ def main():
         outcomes.update(more)
         measured.update(more_measured)
         process_errors.extend(errors)
+    # 所有并行进程都已退出；每个容量文件使用新进程，避免历史RSS峰值跨文件继承。
+    for serial_index, path in enumerate(sorted({n.split("::", 1)[0] for n in serial})):
+        selected = [n for n in serial if n.split("::", 1)[0] == path]
+        more, more_measured, errors = wait_groups(
+            start_groups(partition(selected, durations, 1), shards + args.exclusive_shards + serial_index,
+                         "容量串行", args, base_env),
+            "容量串行", args, started,
+        )
+        outcomes.update(more)
+        measured.update(more_measured)
+        process_errors.extend(errors)
     failed = sorted(n for n, o in outcomes.items() if o == "failed")
     missing = sorted(set(nodeids) - set(outcomes))
     if missing:
@@ -291,7 +315,7 @@ def main():
         with (args.work / "rerun.log").open("w") as log:
             rerun_process = subprocess.run(
                 pytest_command(rerun_args, args.fast),
-                env=shard_env(base_env, shards + args.exclusive_shards, name, results),
+                env=shard_env(base_env, shards + args.exclusive_shards + len({n.split("::", 1)[0] for n in serial}), name, results),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 check=False,
