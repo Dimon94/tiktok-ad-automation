@@ -376,6 +376,7 @@ def _run(
             rows=rows,
             campaign_ids=tuple(job.campaign_ids),
             requested_at=observed_at,
+            route=FrozenTikTokRoute.model_validate(job.frozen_route),
         )
     if job.kind in PARENT_KINDS:
         if job.campaign_ids:

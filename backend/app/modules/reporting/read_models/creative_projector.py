@@ -41,7 +41,7 @@ def _insert_sql() -> str:
         WHERE tenant_id=:tenant AND advertiser_id=:advertiser AND stat_date=:bucket
     ), mapped AS (
         SELECT f.*,m.ad_remote_id,m.ad_material_id,m.material_type,m.platform_material_id,
-            m.name,m.assets,m.identity_status
+            m.name,m.assets,m.identity_status,m.evidence AS identity_evidence
         FROM facts f LEFT JOIN ad_creative m
           ON m.tenant_id=f.tenant_id AND m.advertiser_id=f.advertiser_id AND m.creative_id=f.creative_id
     ), ads AS (
@@ -61,7 +61,7 @@ def _insert_sql() -> str:
     INSERT INTO creative_material_entity_day (
         tenant_id,advertiser_id,stat_date,currency,timezone,fetched_at,source_revision,
         fact_key,row_key,creative_id,ad_remote_id,ad_material_id,campaign_id,adgroup_id,
-        material_type,platform_material_id,material_name,assets,attribution_status,source_status,source_info,
+        material_type,platform_material_id,material_name,assets,attribution_status,source_status,source_info,evidence,
         {columns},{partial}
     )
     SELECT f.tenant_id,f.advertiser_id,f.stat_date,f.currency,f.timezone,f.fetched_at,:revision,
@@ -77,13 +77,13 @@ def _insert_sql() -> str:
         CASE WHEN f.identity_status IN ('RESOLVED','COMPOSITE') THEN 'RESOLVED' ELSE 'UNMAPPED' END,
         CASE WHEN NOT :ready THEN 'STALE' WHEN f.identity_status NOT IN ('RESOLVED','COMPOSITE')
             OR f.identity_status IS NULL OR {unknown} THEN 'PARTIAL' ELSE 'COMPLETE' END,
-        CAST(:source_info AS jsonb),{fact_values},{fact_nulls}
+        CAST(:source_info AS jsonb) || jsonb_build_object('identity_status',f.identity_status,'identity_evidence',COALESCE(f.identity_evidence,'{{}}'::jsonb)),f.evidence,{fact_values},{fact_nulls}
     FROM mapped f
     UNION ALL
     SELECT :tenant,:advertiser,CAST(:bucket AS date),r.currency,r.timezone,clock_timestamp(),:revision,
         'difference:'||r.adgroup_id,jsonb_build_array('unattributed',:advertiser,r.adgroup_id)::text,
         NULL,NULL,NULL,r.campaign_id,r.adgroup_id,'RECONCILIATION',NULL,'未归属到素材／对账差额','[]'::jsonb,
-        'RESIDUAL',CASE WHEN :ready THEN 'PARTIAL' ELSE 'STALE' END,CAST(:source_info AS jsonb),
+        'RESIDUAL',CASE WHEN :ready THEN 'PARTIAL' ELSE 'STALE' END,CAST(:source_info AS jsonb),NULL::jsonb,
         {residual_values},{residual_nulls}
     FROM residual r WHERE {nonzero_or_unknown}
     """

@@ -991,4 +991,10 @@ test("素材实例与独立父控制 @material-instance-live", async ({ page }) 
     process.env.JB34_CAPTURE!,
     JSON.stringify({ export_id: (await exported.json()).id, page: payload }),
   )
+  await page.getByRole("textbox", { name: "搜索广告", exact: true }).fill("carousel")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  await page.getByRole("button", { name: "轮播创意 carousel", exact: true }).first().click()
+  await page.getByRole("tab", { name: "素材", exact: true }).last().click()
+  await expect(page.getByTestId("material-instance-result")).toContainText("轮播组合")
+  await expect(page.getByTestId("material-instance-result")).toContainText("特殊行不计入普通实例合计")
 })

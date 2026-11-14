@@ -519,7 +519,11 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
   const shown = instances.slice(page * 10, (page + 1) * 10)
   return (
     <div className="space-y-3" data-testid="material-instance-result">
-      <p className="text-sm">投放实例 · {instances.length} 条</p>
+      <p className="text-sm">
+        投放实例 · {instances.filter((i) => i.row_kind === "INSTANCE").length}{" "}
+        条；特殊行 · {instances.filter((i) => i.row_kind !== "INSTANCE").length}{" "}
+        条
+      </p>
       <p className="text-xs text-muted-foreground">
         creative
         收益支持、D0窗口、自然与付费组成及成熟截止尚未确认；缺失值保持未知。
@@ -530,7 +534,14 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
           className="rounded-md border p-3 text-sm space-y-2"
         >
           <h3 className="font-medium">
-            素材投放实例 · {instance.key.platform_material_id}
+            {instance.row_kind === "COMPOSITE"
+              ? "轮播组合"
+              : instance.row_kind === "UNMAPPED_CREATIVE"
+                ? "未映射创意"
+                : "素材投放实例"}{" "}
+            ·{" "}
+            {instance.key.platform_material_id ??
+              instance.creative_ids.join("、")}
           </h3>
           <p>
             账户 {instance.key.advertiser_id} · 父广告{" "}
@@ -547,7 +558,10 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
           ))}
           <p className="text-muted-foreground">
             覆盖：{String(instance.coverage.status ?? "未知")}
-            ；字段证据：历史未知
+            ；字段证据：{JSON.stringify(instance.field_state_counts ?? {})}
+            {instance.identity_reason &&
+              `；身份原因：${instance.identity_reason}`}
+            {instance.row_kind !== "INSTANCE" && "；特殊行不计入普通实例合计"}
           </p>
           <details>
             <summary className="cursor-pointer">查看来源与冻结身份</summary>

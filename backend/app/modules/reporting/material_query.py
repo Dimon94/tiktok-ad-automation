@@ -3,6 +3,7 @@
 import json
 from collections import defaultdict
 from hashlib import sha256
+from typing import Any
 
 from sqlalchemy import text
 from sqlmodel import select
@@ -352,7 +353,7 @@ def materialize_material_rows(
 
 
 def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
-    """首切仅发布精确单creative实例；复杂身份仍保留原行覆盖，交由后票扩展。"""
+    """按直接事实唯一键冻结归属、特殊身份和逐字段证据；父控制独立。"""
     from app.core.context import TenantContext
     from app.modules.reporting.dimension_query import materialize_rows
     from app.modules.reporting.filters import authorized_grants
@@ -377,7 +378,7 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
         connections[grant.advertiser_id].add(str(grant.connection_id))
     grouped = defaultdict(list)
     for f in facts:
-        if f["attribution_status"] == "RESOLVED" and f["creative_id"]:
+        if f["creative_id"]:
             grouped[
                 (
                     f["row_key"],
@@ -386,6 +387,11 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                     f["ad_material_id"],
                     f["material_type"],
                     f["platform_material_id"],
+                    f["creative_id"]
+                    if f["attribution_status"] != "RESOLVED"
+                    or f["material_type"] == "CAROUSEL"
+                    or not f["platform_material_id"]
+                    else None,
                 )
             ].append(f)
 
@@ -397,19 +403,62 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
     result = []
     for report in reports:
         instances, controls = [], {}
-        for (row_key, adv, parent, mid, kind, vid), items in sorted(
+        for (row_key, adv, parent, mid, kind, vid, special), items in sorted(
             grouped.items(), key=lambda pair: str(pair[0])
         ):
-            if (
-                row_key != report.row_key
-                or len({f["creative_id"] for f in items}) != 1
-                or len(connections[adv]) != 1
-            ):
+            if row_key != report.row_key:
                 continue
+            # 同事实的引用、版本和连接不是新金额；以原始经济事实主键去重。
+            items = list(
+                {
+                    (f["advertiser_id"], f["creative_id"], f["stat_date"]): f
+                    for f in items
+                }.values()
+            )
+            source_connections = {
+                f["evidence"].get("source_connection_id")
+                for f in items
+                if f.get("evidence") and f["evidence"].get("source_connection_id")
+            }
+            candidates = source_connections or connections[adv]
+            connection = (
+                next(iter(candidates))
+                if len(candidates) == 1 and candidates <= connections[adv]
+                else None
+            )
+            source_bcs = {
+                f["evidence"].get("source_bc_id")
+                for f in items
+                if f.get("evidence") and f["evidence"].get("source_bc_id")
+            }
+            source_mismatch = bool(source_bcs - {snapshot.bc_id})
+            if source_mismatch:
+                connection = None
+            identity_status = items[0]["source_info"].get("identity_status")
+            row_kind = (
+                "COMPOSITE"
+                if kind == "CAROUSEL" or json.loads(row_key)[0] == "carousel"
+                else "UNMAPPED_CREATIVE"
+                if special or not connection or not mid
+                else "INSTANCE"
+            )
+            reason = (
+                "SOURCE_SCOPE_MISMATCH"
+                if source_mismatch
+                else "CONNECTION_AMBIGUOUS"
+                if not connection
+                else "MISSING_AD_MATERIAL_ID"
+                if row_kind == "UNMAPPED_CREATIVE"
+                and not mid
+                and identity_status == "RESOLVED"
+                else (identity_status or "UNMAPPED")
+                if row_kind != "INSTANCE"
+                else None
+            )
             key = {
                 "tenant_id": str(snapshot.tenant_id),
                 "bc_id": snapshot.bc_id,
-                "connection_id": next(iter(connections[adv])),
+                "connection_id": connection,
                 "advertiser_id": adv,
                 "parent_ad_id": parent,
                 "platform_material_id": vid,
@@ -458,13 +507,43 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                             ]
                         ),
                         "local_day": str(f["stat_date"]),
-                        "observed_at": f["fact_observed_at"].isoformat(),
+                        "observed_at": (
+                            (f.get("evidence") or {}).get("publication") or {}
+                        ).get("observed_at", f["fact_observed_at"].isoformat()),
                         "sync_job_id": str(f["fact_sync_job_id"]),
                         "source_info": f["source_info"],
                         "source_status": f["source_status"],
+                        "field_states": (f.get("evidence") or {}).get(
+                            "field_states",
+                            dict.fromkeys(METRIC_COLUMNS, "LEGACY_UNKNOWN"),
+                        ),
+                        "values": {
+                            m: str(f[m]) if f[m] is not None else None
+                            for m in METRIC_COLUMNS
+                        },
+                        "publisher": (f.get("evidence") or {}).get("publication"),
+                        "evidence": f.get("evidence"),
+                        "identity": {
+                            "assets": f["assets"],
+                            "status": f["source_info"].get("identity_status"),
+                            "evidence": f["source_info"].get("identity_evidence"),
+                        },
                     }
                 )
-            payload = {
+            field_counts = {
+                m: {
+                    state: sum(
+                        o["field_states"].get(m, "LEGACY_UNKNOWN") == state
+                        for o in observations
+                    )
+                    for state in ("VALUE", "NULL", "DASH", "ABSENT", "LEGACY_UNKNOWN")
+                }
+                for m in METRIC_COLUMNS
+            }
+            payload: dict[str, Any] = {
+                "row_kind": row_kind,
+                "identity_reason": reason,
+                "field_state_counts": field_counts,
                 "key": key,
                 "creative_ids": tuple(sorted({f["creative_id"] for f in items})),
                 "fact_keys": tuple(sorted(o["fact_key"] for o in observations)),
@@ -472,7 +551,10 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                 "coverage": dict(report.coverage)
                 | {
                     "metric_semantics": "UNCONFIRMED",
-                    "field_evidence": "LEGACY_UNKNOWN",
+                    "field_evidence": "MIXED"
+                    if any(c["LEGACY_UNKNOWN"] for c in field_counts.values())
+                    else "OBSERVED",
+                    "field_state_counts": field_counts,
                 },
                 "observations": observations,
             }
@@ -486,7 +568,7 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
             )
             instances.append(instance)
             parent_key = (adv, parent)
-            if parent_key not in controls:
+            if parent is not None and parent_key not in controls:
                 # 父控制只有父ID和完整日期范围，绝不继承素材子集筛选。
                 parent_filters = ReportingFilter(
                     dimension="ad",
@@ -552,9 +634,10 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
         payload = report.model_dump(mode="json") | {
             "coverage": dict(report.coverage)
             | {
-                "instance_count": len(instances),
+                "instance_count": sum(i.row_kind == "INSTANCE" for i in instances),
+                "special_row_count": sum(i.row_kind != "INSTANCE" for i in instances),
                 "creative_count": len({c for i in instances for c in i.creative_ids}),
-                "instance_scope": "EXACT_SINGLE_CREATIVE",
+                "instance_scope": "DIRECT_CREATIVE_FACTS",
                 "metric_semantics": "UNCONFIRMED",
             },
             "material_instances": [i.model_dump(mode="json") for i in instances],

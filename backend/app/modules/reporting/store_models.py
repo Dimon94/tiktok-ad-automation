@@ -151,6 +151,9 @@ class CreativeReportDay(_Fact, table=True):
     creative_id: str = Field(primary_key=True, max_length=128)
     campaign_id: str = Field(max_length=128)
     adgroup_id: str = Field(max_length=128)
+    evidence: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
     campaign_automation_type: str | None = Field(default=None, max_length=64)
 
 

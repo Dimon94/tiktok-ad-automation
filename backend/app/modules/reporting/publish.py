@@ -562,11 +562,16 @@ def publish_creative_day(
     rows,
     campaign_ids=(),
     requested_at=None,
+    route=None,
 ) -> int:
     """完整创意快照独立原子替换；失败/旧观察绝不改写广告总账。"""
     now = _database_now(session)
     observed = requested_at or now
+    from app.modules.reporting.metric_catalog import CREATIVE_OBSERVED_CONTRACT
+    from app.modules.reporting.metrics import creative_metric_evidence
+
     counts = {}
+    seen: dict[tuple[str, date, str], dict[str, Any]] = {}
 
     def records():
         for row in rows:
@@ -581,6 +586,14 @@ def publish_creative_day(
                 )
             if campaign_ids and campaign not in campaign_ids:
                 raise DomainError("report_row_invalid", "创意分批包含范围外系列")
+            identity = (advertiser, day, str(creative))
+            if identity in seen:
+                if seen[identity] != row:
+                    raise DomainError(
+                        "report_row_invalid", "同一创意事实的重复页数值冲突"
+                    )
+                continue
+            seen[identity] = row
             meta = accounts[advertiser]
             yield dict(
                 tenant_id=tenant_id,
@@ -594,6 +607,28 @@ def publish_creative_day(
                 timezone=meta.timezone,
                 fetched_at=now,
                 sync_job_id=job_id,
+                evidence=creative_metric_evidence(metrics)
+                | {
+                    "source_bc_id": route.bc_id if route else None,
+                    "source_connection_id": str(route.connection_id) if route else None,
+                    "publication": {
+                        "publication_id": str(job_id),
+                        "observed_at": observed.isoformat(),
+                        "publication_version": 0,
+                        "active_contract": CREATIVE_OBSERVED_CONTRACT,
+                        "publication_digest": hashlib.sha256(
+                            json.dumps(row, sort_keys=True).encode()
+                        ).hexdigest(),
+                        "scope": {
+                            "tenant_id": str(tenant_id),
+                            "advertiser_id": advertiser,
+                            "start_date": str(start),
+                            "end_date": str(end),
+                            "campaign_ids": sorted(campaign_ids),
+                            "kind": "CAMPAIGNS" if campaign_ids else "ACCOUNT_DAY",
+                        },
+                    },
+                },
                 **basic_metric_values(metrics),
             )
             counts[advertiser, day] = counts.get((advertiser, day), 0) + 1
@@ -632,6 +667,23 @@ def publish_creative_day(
             observed_at=observed,
             job_id=job_id,
         )
+    if not campaign_ids:
+        for advertiser, day in buckets:
+            state = session.get(
+                ReportSyncState, (tenant_id, advertiser, "creative_day", day)
+            )
+            session.connection().execute(
+                text(
+                    "UPDATE creative_report_day SET evidence=jsonb_set(evidence,'{publication,publication_version}',to_jsonb(CAST(:v AS bigint))) WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d AND sync_job_id=:j"
+                ),
+                {
+                    "v": state.publication_version,
+                    "t": tenant_id,
+                    "a": advertiser,
+                    "d": day,
+                    "j": job_id,
+                },
+            )
     session.flush()
     if job_id is not None:
         # 创意事实提交后立即登记身份目录补读；身份请求走独立后台服务，

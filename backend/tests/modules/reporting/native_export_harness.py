@@ -135,22 +135,45 @@ def complete(base_url, seed, factory, pending):
                     assert download.status_code == 200, download.text
                     rows = list(csv.DictReader(io.StringIO(download.text)))
                     if material:
-                        assert [r["row_kind"] for r in rows] == [
-                            "INSTANCE",
-                            "PARENT_CONTROL",
+                        expected = [
+                            (r, i)
+                            for r in page["items"]
+                            for i in r["material_instances"]
                         ]
-                        assert [r["消耗"] for r in rows] == ["40", "100"]
-                        report = page["items"][0]
+                        material_rows = [
+                            r
+                            for r in rows
+                            if r["row_kind"]
+                            in {"INSTANCE", "COMPOSITE", "UNMAPPED_CREATIVE"}
+                        ]
+                        assert len(material_rows) == len(expected)
+                        for csvrow, (report, instance) in zip(
+                            material_rows, expected, strict=True
+                        ):
+                            assert csvrow["row_kind"] == instance["row_kind"]
+                            assert json.loads(csvrow["identity"]) == instance["key"]
+                            assert (
+                                json.loads(csvrow["field_state_counts"])
+                                == instance["field_state_counts"]
+                            )
+                            assert (
+                                json.loads(csvrow["observations"])
+                                == instance["observations"]
+                            )
+                            assert (
+                                csvrow["evidence_digest"] == instance["evidence_digest"]
+                            )
+                            assert csvrow["result_digest"] == report["evidence_digest"]
                         assert (
-                            rows[0]["evidence_digest"]
-                            == report["material_instances"][0]["evidence_digest"]
+                            sum(
+                                float(r["消耗"])
+                                for r in material_rows
+                                if r["row_kind"] == "INSTANCE"
+                            )
+                            == 40
                         )
-                        assert (
-                            rows[1]["evidence_digest"]
-                            == report["parent_controls"][0]["evidence_digest"]
-                        )
-                        assert json.loads(rows[0]["identity"])["parent_ad_id"] == "ad1"
-                        assert rows[0]["result_digest"] == report["evidence_digest"]
+                        parents = [r for r in rows if r["row_kind"] == "PARENT_CONTROL"]
+                        assert len(parents) == 1 and parents[0]["消耗"] == "100"
                     else:
                         expected = [
                             (r, v) for r in page["items"] for v in r["metric_buckets"]

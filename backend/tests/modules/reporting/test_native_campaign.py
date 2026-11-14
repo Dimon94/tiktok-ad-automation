@@ -374,6 +374,7 @@ def live_campaign_workspace(
     refresh_status="",
     scope_demo=False,
     snapshot_refresh=None,
+    material_extended=False,
 ):
     """真实 FastAPI/Vite/浏览器；唯一平台替身在 urllib3 transport。"""
     import json
@@ -635,6 +636,53 @@ def live_campaign_workspace(
         if level == "material":
             captured = json.loads(barrier.with_suffix(".json").read_text())
             pending_exports = [(captured["export_id"], captured["page"])]
+        if material_extended:
+            import httpx
+
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as http:
+                full = http.get(
+                    f"/api/tenants/{seed.tenant_id}/ads",
+                    params={
+                        "bc_id": TEST_BC,
+                        "dimension": "material",
+                        "advertiser_id": "acc-1",
+                        "start_date": str(D),
+                        "end_date": str(D),
+                        "force_refresh": True,
+                    },
+                )
+                assert full.status_code == 200, full.text
+                page = full.json()
+                all_instances = [
+                    i for r in page["items"] for i in r["material_instances"]
+                ]
+                assert {c for i in all_instances for c in i["creative_ids"]} == {
+                    "cr1",
+                    "cr2",
+                    "carousel",
+                    "conflict",
+                    "unmapped",
+                }
+                assert sorted(i["row_kind"] for i in all_instances) == [
+                    "COMPOSITE",
+                    "INSTANCE",
+                    "UNMAPPED_CREATIVE",
+                    "UNMAPPED_CREATIVE",
+                ]
+                exact = next(i for i in all_instances if i["row_kind"] == "INSTANCE")
+                assert exact["creative_ids"] == ["cr1", "cr2"]
+                assert exact["metric_buckets"][0]["values"]["spend"] == "40"
+                assert exact["field_state_counts"]["spend"]["VALUE"] == 2
+                export = http.post(
+                    f"/api/tenants/{seed.tenant_id}/report-exports",
+                    params={"bc_id": TEST_BC},
+                    json={
+                        "snapshot_id": page["snapshot"]["snapshot_id"],
+                        "idempotency_key": "jb35-full",
+                    },
+                )
+                assert export.status_code == 200, export.text
+                pending_exports.append((export.json()["id"], page))
         if pending_exports:
             from tests.modules.reporting.native_export_harness import complete
 

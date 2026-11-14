@@ -302,6 +302,8 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         "evidence_digest",
         "result_digest",
         "observations",
+        "field_state_counts",
+        "identity_reason",
         "row_coverage",
     ]
     if frozen:
@@ -372,6 +374,8 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                     "evidence_digest": raw.get("evidence_digest", ""),
                     "result_digest": raw.get("result_digest", ""),
                     "observations": raw.get("observations", []),
+                    "field_state_counts": raw.get("field_state_counts", {}),
+                    "identity_reason": raw.get("identity_reason"),
                     "row_coverage": coverage,
                 }
                 for field, cell in metadata.items():
@@ -467,7 +471,12 @@ def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, 
             yield row | {"row_kind": "SUMMARY"}
         for instance in instances:
             yield (
-                common | instance | {"row_key": row["row_key"], "row_kind": "INSTANCE"}
+                common
+                | instance
+                | {
+                    "row_key": row["row_key"],
+                    "row_kind": instance.get("row_kind", "INSTANCE"),
+                }
             )
         for control in row.get("parent_controls", []):
             identity = json.dumps(control["key"], sort_keys=True)

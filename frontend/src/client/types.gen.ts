@@ -5286,6 +5286,9 @@ export type MappingInput = {
  * MaterialInstanceResult
  */
 export type MaterialInstanceResult = {
+    row_kind?: 'INSTANCE' | 'COMPOSITE' | 'UNMAPPED_CREATIVE';
+    identity_reason?: string | null;
+    field_state_counts?: { [key: string]: { [state: string]: number } };
     /**
      * Key
      */

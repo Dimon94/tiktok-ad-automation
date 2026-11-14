@@ -125,3 +125,33 @@ def parse_local_hour(raw: object, timezone: str) -> datetime:
         return local.replace(tzinfo=ZoneInfo(timezone)).astimezone(UTC)
     except (ValueError, KeyError) as exc:
         raise DomainError("report_row_invalid", "报表小时维度无效") from exc
+
+
+def creative_metric_evidence(metrics: dict[str, Any]) -> dict[str, Any]:
+    """creative只记录实际请求与字段观察，不继承父Ad的口径确认。"""
+    from app.modules.reporting.metric_catalog import CREATIVE_OBSERVED_CONTRACT
+
+    states = {
+        key: "ABSENT"
+        if field not in metrics
+        else "NULL"
+        if metrics[field] is None
+        else "DASH"
+        if metrics[field] == "-"
+        else "VALUE"
+        for key, field in _BASIC.items()
+    }
+    return {
+        "contract_revision": CREATIVE_OBSERVED_CONTRACT,
+        "field_states": states,
+        "request": {
+            "report_type": "BASIC",
+            "service_type": "AUCTION",
+            "data_level": "AUCTION_AD",
+            "dimensions": ["ad_id", "stat_time_day"],
+            "metrics": list(AD_DAY_METRICS),
+        },
+        "traffic_scope": "UNCONFIRMED",
+        "d0_window": "UNCONFIRMED",
+        "total_maturity": "UNKNOWN",
+    }

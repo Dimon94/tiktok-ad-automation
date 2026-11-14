@@ -212,6 +212,9 @@ class MetricVector(BaseModel):
 class MaterialInstanceResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    row_kind: Literal["INSTANCE", "COMPOSITE", "UNMAPPED_CREATIVE"] = "INSTANCE"
+    identity_reason: str | None = None
+    field_state_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
     key: dict[str, str | None]
     creative_ids: tuple[str, ...]
     fact_keys: tuple[str, ...]

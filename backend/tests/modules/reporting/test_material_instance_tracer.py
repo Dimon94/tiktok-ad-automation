@@ -213,12 +213,31 @@ def test_material_workspace_sdk_worker_csv(
                 {
                     "code": 0,
                     "data": {
-                        "list": [row],
+                        "list": (
+                            [
+                                dict(
+                                    creative_row(c, amount, "4"),
+                                    dimensions={
+                                        "ad_id": c,
+                                        "stat_time_day": str(live_day),
+                                    },
+                                )
+                                for c, amount in [
+                                    ("cr1", "10"),
+                                    ("cr2", "30"),
+                                    ("carousel", "11"),
+                                    ("conflict", "13"),
+                                    ("unmapped", "17"),
+                                ]
+                            ]
+                            if creative
+                            else [row]
+                        ),
                         "page_info": {
                             "page": 1,
                             "page_size": 1000,
                             "total_page": 1,
-                            "total_number": 1,
+                            "total_number": 5 if creative else 1,
                         },
                     },
                 }
@@ -248,6 +267,37 @@ def test_material_workspace_sdk_worker_csv(
         use(
             s, seed, adv="acc-1", ad="ad1", video="vid1", ad_material="mid1", post="cr1"
         )
+        from app.modules.ads.creative_models import AdCreative
+
+        original = s.get(AdCreative, (seed.tenant_id, "acc-1", "cr1")).model_dump()
+        for c, status, kind, vid in [
+            ("cr2", "RESOLVED", "VIDEO", "vid1"),
+            ("carousel", "COMPOSITE", "CAROUSEL", None),
+            ("conflict", "CONFLICT", None, None),
+        ]:
+            s.add(
+                AdCreative(
+                    **(
+                        original
+                        | {
+                            "creative_id": c,
+                            "identity_status": status,
+                            "material_type": kind,
+                            "platform_material_id": vid,
+                            "assets": [
+                                {
+                                    "material_type": "IMAGE",
+                                    "platform_material_id": "image1",
+                                },
+                                {
+                                    "material_type": "IMAGE",
+                                    "platform_material_id": "image2",
+                                },
+                            ],
+                        }
+                    )
+                )
+            )
         for kind in ("ad_day", "creative_day"):
             enqueue_job(
                 s,
@@ -292,5 +342,373 @@ def test_material_workspace_sdk_worker_csv(
         finish_projections(s)
         s.commit()
     live_campaign_workspace(
-        seed, factory, level="material", label="素材", name="vid1.mp4"
+        seed,
+        factory,
+        level="material",
+        label="素材",
+        name="vid1.mp4",
+        material_extended=True,
+    )
+
+
+def test_multi_creative_five_states_and_special_identity(session, sync_seed):
+    """Spec: 10/null/dash/absent/legacy each once, no parent allocation."""
+    from sqlalchemy import text
+
+    rows = [material_row(f"c{i}", "10" if i == 0 else "-") for i in range(5)]
+    rows[1]["metrics"]["spend"] = None
+    del rows[3]["metrics"]["spend"]
+    rows[4]["metrics"]["spend"] = "7"
+    publish(session, sync_seed, "acc-1", [*rows, rows[0]])
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid1",
+        post="c0",
+    )
+    from app.modules.ads.creative_models import AdCreative
+
+    original = session.get(AdCreative, (sync_seed.tenant_id, "acc-1", "c0"))
+    for i in range(1, 5):
+        session.add(AdCreative(**(original.model_dump() | {"creative_id": f"c{i}"})))
+    session.flush()
+    session.execute(
+        text(
+            "UPDATE creative_report_day SET evidence=NULL WHERE tenant_id=:t AND creative_id='c4'"
+        ),
+        {"t": sync_seed.tenant_id},
+    )
+    # 模拟真实旧事实：有金额但没有publisher证据，不能事后补造。
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=ReportingFilter(
+            dimension="material", start_date=D, end_date=D, advertiser_ids=("acc-1",)
+        ),
+    )
+    instance = next(
+        i
+        for r in page.items
+        for i in r.material_instances
+        if i.key["platform_material_id"] == "vid1"
+    )
+    assert instance.creative_ids == ("c0", "c1", "c2", "c3", "c4")
+    assert len(instance.fact_keys) == 5
+    assert instance.metric_buckets[0].values["spend"] == Decimal("17")
+    assert instance.metric_buckets[0].availability["spend"] == "PARTIAL"
+    assert instance.field_state_counts["spend"] == {
+        "VALUE": 1,
+        "NULL": 1,
+        "DASH": 1,
+        "ABSENT": 1,
+        "LEGACY_UNKNOWN": 1,
+    }
+    assert [o["field_states"]["spend"] for o in instance.observations] == [
+        "VALUE",
+        "NULL",
+        "DASH",
+        "ABSENT",
+        "LEGACY_UNKNOWN",
+    ]
+    assert instance.observations[0]["publisher"]["scope"]["kind"] == "ACCOUNT_DAY"
+    assert instance.observations[4]["publisher"] is None
+    assert [o["values"]["spend"] for o in instance.observations] == [
+        "10",
+        None,
+        None,
+        None,
+        "7",
+    ]
+
+
+def test_special_buckets_and_known_mid_identity(session, sync_seed):
+    from app.modules.ads.creative_models import AdCreative
+    from tests.modules.reporting.query_helpers import finish_projections
+
+    publish(
+        session,
+        sync_seed,
+        "acc-1",
+        [
+            material_row(c, v)
+            for c, v in [
+                ("exact", "2"),
+                ("other", "8"),
+                ("carousel", "11"),
+                ("conflict", "13"),
+                ("missing", "17"),
+                ("midonly", "19"),
+            ]
+        ],
+    )
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid1",
+        post="exact",
+    )
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid2",
+        post="other",
+    )
+    template = session.get(
+        AdCreative, (sync_seed.tenant_id, "acc-1", "exact")
+    ).model_dump()
+    for creative, status, kind, vid, mid in [
+        ("carousel", "COMPOSITE", "CAROUSEL", None, "carousel-mid"),
+        ("conflict", "CONFLICT", None, None, None),
+        ("midonly", "UNRESOLVED", None, None, "historical-mid"),
+    ]:
+        session.add(
+            AdCreative(
+                **(
+                    template
+                    | {
+                        "creative_id": creative,
+                        "identity_status": status,
+                        "material_type": kind,
+                        "platform_material_id": vid,
+                        "ad_material_id": mid,
+                        "assets": [
+                            {
+                                "material_type": "IMAGE",
+                                "platform_material_id": "image1",
+                            },
+                            {
+                                "material_type": "IMAGE",
+                                "platform_material_id": "image2",
+                            },
+                        ],
+                        "evidence": {"reason": status, "candidates": ["a", "b"]},
+                    }
+                )
+            )
+        )
+    finish_projections(session)
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=ReportingFilter(
+            dimension="material", start_date=D, end_date=D, advertiser_ids=("acc-1",)
+        ),
+    )
+    instances = [i for r in page.items for i in r.material_instances]
+    ordinary = [i for i in instances if i.row_kind == "INSTANCE"]
+    assert {i.key["ad_material_id"] for i in ordinary} == {"mid1", "mid2"}
+    assert sum(i.metric_buckets[0].values["spend"] for i in ordinary) == Decimal("10")
+    special = {i.creative_ids[0]: i for i in instances if i.row_kind != "INSTANCE"}
+    assert {c: i.row_kind for c, i in special.items()} == {
+        "carousel": "COMPOSITE",
+        "conflict": "UNMAPPED_CREATIVE",
+        "missing": "UNMAPPED_CREATIVE",
+        "midonly": "UNMAPPED_CREATIVE",
+    }
+    assert special["conflict"].identity_reason == "CONFLICT"
+    assert special["midonly"].key["ad_material_id"] == "historical-mid"
+    assert (
+        special["carousel"].observations[0]["identity"]["assets"][1][
+            "platform_material_id"
+        ]
+        == "image2"
+    )
+    public = create_export(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        snapshot_id=page.snapshot.snapshot_id,
+        idempotency_key="special",
+    )
+    export = session.get(ReportExport, public.id)
+    generate_export(session, export)
+    rows = list(
+        csv.DictReader(
+            io.StringIO(
+                download_export(
+                    session,
+                    context=sync_seed.context,
+                    bc_id="bc-a",
+                    export_id=export.id,
+                ).decode()
+            )
+        )
+    )
+    assert sum(
+        Decimal(r["消耗"]) for r in rows if r["row_kind"] == "INSTANCE"
+    ) == Decimal("10")
+    assert len([r for r in rows if r["row_kind"] == "COMPOSITE"]) == 1
+    assert len([r for r in rows if r["row_kind"] == "UNMAPPED_CREATIVE"]) == 3
+
+
+def test_creative_target_preserves_own_observation(session, sync_seed):
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
+    from app.modules.reporting.publish import AccountMeta, publish_creative_day
+    from app.modules.reporting.store_models import CreativeReportDay, ReportSyncState
+    from tests.modules.reporting.test_jobs import _route
+
+    t0 = datetime.now(UTC) - timedelta(minutes=10)
+    t1 = t0 + timedelta(minutes=1)
+    args = dict(  # noqa: C408
+        tenant_id=sync_seed.tenant_id,
+        accounts={"acc-1": AccountMeta("USD", "UTC")},
+        start=D,
+        end=D,
+        route=FrozenTikTokRoute(**_route(sync_seed)),
+    )
+    rows = [material_row("c1", "10"), material_row("c2", "20")]
+    for row in rows:
+        row["metrics"]["advertiser_id"] = "acc-1"
+    rows[1]["metrics"]["campaign_id"] = "other-campaign"
+    publish_creative_day(session, **args, job_id=uuid4(), requested_at=t0, rows=rows)
+    session.flush()
+    state = session.get(
+        ReportSyncState, (sync_seed.tenant_id, "acc-1", "creative_day", D)
+    )
+    version = state.publication_version
+    old = session.get(
+        CreativeReportDay, (sync_seed.tenant_id, "acc-1", D, "c2")
+    ).evidence
+    row = material_row("c1", "30")
+    row["metrics"]["advertiser_id"] = "acc-1"
+    publish_creative_day(
+        session,
+        **args,
+        job_id=uuid4(),
+        requested_at=t1,
+        rows=[row],
+        campaign_ids=(row["metrics"]["campaign_id"],),
+    )
+    session.expire_all()
+    c1 = session.get(CreativeReportDay, (sync_seed.tenant_id, "acc-1", D, "c1"))
+    c2 = session.get(CreativeReportDay, (sync_seed.tenant_id, "acc-1", D, "c2"))
+    assert c1.evidence["publication"]["observed_at"] == t1.isoformat()
+    assert c1.evidence["publication"]["publication_version"] == 0
+    assert c1.evidence["publication"]["scope"]["kind"] == "CAMPAIGNS"
+    assert c2.evidence == old and c2.spend == Decimal("20")
+    state = session.get(
+        ReportSyncState, (sync_seed.tenant_id, "acc-1", "creative_day", D)
+    )
+    assert state.publication_version == version and state.observed_at == t0
+
+
+def test_bc_connection_collision_is_explained(session, sync_seed):
+    from datetime import UTC, datetime
+
+    from app.modules.accounts.connection_models import (
+        BCConnectionBinding,
+        ConnectionAuthorization,
+    )
+    from app.modules.accounts.models import (
+        BCAccountAccess,
+        TikTokConnection,
+    )
+    from app.modules.reporting.store_models import CreativeReportDay
+    from tests.modules.reporting.query_helpers import finish_projections
+
+    publish(session, sync_seed, "acc-1", [material_row("c1", "10")])
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid1",
+        post="c1",
+    )
+    second = TikTokConnection(
+        tenant_id=sync_seed.tenant_id,
+        status="ACTIVE",
+        kind="OFFICIAL_API",
+        authorization_revision=0,
+        adapter_contract_revision="official-api-v1",
+    )
+    session.add(second)
+    session.flush()
+    session.add(
+        ConnectionAuthorization(
+            tenant_id=sync_seed.tenant_id,
+            connection_id=second.id,
+            authorization_revision=0,
+            source="OFFLINE_TEST",
+            verified_at=datetime.now(UTC),
+            permission_summary={"read_authorized": True},
+        )
+    )
+    for bc in ("bc-a", "bc-b"):
+        binding = session.get(
+            BCConnectionBinding, (sync_seed.tenant_id, bc, sync_seed.connection.id)
+        )
+        grant = session.get(
+            BCAccountAccess, (sync_seed.tenant_id, bc, "acc-1", sync_seed.connection.id)
+        )
+        if grant is None:
+            grant = session.get(
+                BCAccountAccess,
+                (sync_seed.tenant_id, "bc-a", "acc-1", sync_seed.connection.id),
+            )
+            session.add(BCAccountAccess(**(grant.model_dump() | {"bc_id": bc})))
+        session.add(
+            BCConnectionBinding(**(binding.model_dump() | {"connection_id": second.id}))
+        )
+        session.add(
+            BCAccountAccess(
+                **(grant.model_dump() | {"connection_id": second.id, "bc_id": bc})
+            )
+        )
+    finish_projections(session)
+    filters = ReportingFilter(
+        dimension="material", start_date=D, end_date=D, advertiser_ids=("acc-1",)
+    )
+    for bc in ("bc-a", "bc-b"):
+        page = query_ads(session, context=sync_seed.context, bc_id=bc, filters=filters)
+        i = next(i for r in page.items for i in r.material_instances)
+        assert (
+            i.row_kind == "UNMAPPED_CREATIVE"
+            and i.identity_reason == "CONNECTION_AMBIGUOUS"
+        )
+        assert i.key["connection_id"] is None and i.key["bc_id"] == bc
+        assert i.metric_buckets[0].values["spend"] == Decimal("10")
+    fact = session.get(CreativeReportDay, (sync_seed.tenant_id, "acc-1", D, "c1"))
+    fact.evidence = fact.evidence | {
+        "source_connection_id": str(second.id),
+        "source_bc_id": "bc-a",
+    }
+    session.add(fact)
+    finish_projections(session)
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=filters,
+    )
+    i = next(i for r in page.items for i in r.material_instances)
+    assert i.row_kind == "INSTANCE" and i.key["connection_id"] == str(second.id)
+    assert len(i.fact_keys) == 1 and i.metric_buckets[0].values["spend"] == Decimal(
+        "10"
+    )
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-b",
+        filters=filters,
+    )
+    i = next(i for r in page.items for i in r.material_instances)
+    assert (
+        i.row_kind == "UNMAPPED_CREATIVE"
+        and i.identity_reason == "SOURCE_SCOPE_MISMATCH"
     )
