@@ -376,7 +376,8 @@ def test_retired_full_run_keeps_successor_demand_dispatchable(
     session.add(successor)
     session.flush()
     original_generation = old.claim_generation
-    assert dispatch(session, now) == 1
+    # 后继显式创建于旧任务一秒之后；调度观察点也应在后继创建之后。
+    assert dispatch(session, successor.created_at) == 1
     assert old.status == "STALE" and old.claim_generation == original_generation
     child = session.exec(
         select(SyncExecutionScope).where(
