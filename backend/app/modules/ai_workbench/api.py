@@ -6,7 +6,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
 
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
@@ -419,6 +419,41 @@ class ReviewControlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ReviewReanalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    authorization_ttl_seconds: int = Field(default=900, ge=30, le=900)
+
+
+@router.post(
+    "/ai-optimizers/{optimizer_id}/reviews/{task_id}/reanalyze", status_code=201
+)
+def reanalyze_review(
+    tenant_id: UUID,
+    optimizer_id: UUID,
+    task_id: UUID,
+    body: ReviewReanalysisRequest,
+    session: SessionDep,
+    user: CurrentUser,
+) -> dict:
+    from app.modules.ai_workbench.review_reanalysis import reanalyze_review_task
+
+    task = reanalyze_review_task(
+        session,
+        context=_context(user, tenant_id),
+        optimizer_id=optimizer_id,
+        source_task_id=task_id,
+        request_id=body.request_id,
+        authorization_ttl_seconds=body.authorization_ttl_seconds,
+    )
+    session.commit()
+    return {
+        "id": task.id,
+        "status": task.status,
+        "reanalysis": task.evidence["reanalysis"],
+    }
+
+
 @router.post("/ai-optimizers/{optimizer_id}/reviews/{task_id}/cancel")
 def cancel_review(
     tenant_id: UUID,
@@ -528,7 +563,6 @@ def material_options(tenant_id: UUID, session: SessionDep, user: CurrentUser) ->
 
 
 # 知识资产独立于优化师：公共版本跨租户复用，私有版本受成员权限约束。
-from pydantic import Field  # noqa: E402
 from sqlalchemy import or_  # noqa: E402
 from sqlmodel import col  # noqa: E402
 

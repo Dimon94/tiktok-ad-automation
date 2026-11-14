@@ -1,3 +1,4 @@
+import { verificationRuntime } from './verification.mjs'
 import { REVIEW_RESULT_PARAMETERS } from './result-contract.mjs'
 import { mountAnalysisTools, ANALYZE_EVIDENCE, WRITE_NOTE, LIST_NOTES } from './analysis.mjs'
 import { mountEvidenceTools, QUERY_EVIDENCE, READ_EVIDENCE } from './evidence.mjs'
@@ -53,6 +54,8 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
   if (!methods?.main || !methods.references) throw new Error('Task has no bound plugin methods')
   const catalog = [methods.main, ...methods.references].map(r => ({ name: skillName(r.key), description: r.description, version: r.version, sha256: r.sha256 }))
   const { methods: _archivedMethods, ...businessEvidence } = task.evidence
+  const verification = verificationRuntime(runtime)
+  const evidenceRuntime = verification.runtime
   let completed = false, verificationRequested = false
   const controller = new AbortController()
   const expires = new Date(task.max_expires_at || task.expires_at).getTime() - Date.now()
@@ -78,11 +81,11 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
         // 工厂新建的 Agent 不继承插件调用方的 inject 权限，必须在会话作用域声明依赖。
         await agentCtx.inject(['tools', 'skills'], taskCtx => {
           const usedMethods = mountTaskSkills(taskCtx, methods, { renderSkillContent, scopeOf })
-          mountEvidenceTools(taskCtx, claim, runtime, controller.signal)
-          mountAnalysisTools(taskCtx, claim, runtime, controller.signal)
-          mountKnowledgeTools(taskCtx, claim, runtime, controller.signal)
-          mountBacktestTool(taskCtx, claim, runtime, controller.signal)
-          mountDailyBacktestTool(taskCtx, claim, runtime, controller.signal)
+          mountEvidenceTools(taskCtx, claim, evidenceRuntime, controller.signal)
+          mountAnalysisTools(taskCtx, claim, evidenceRuntime, controller.signal)
+          mountKnowledgeTools(taskCtx, claim, evidenceRuntime, controller.signal)
+          mountBacktestTool(taskCtx, claim, evidenceRuntime, controller.signal)
+          mountDailyBacktestTool(taskCtx, claim, evidenceRuntime, controller.signal)
           const allowed = [ANALYZE_EVIDENCE, WRITE_NOTE, LIST_NOTES, QUERY_EVIDENCE, READ_EVIDENCE, SKILL_TOOL, SEARCH_KNOWLEDGE, READ_KNOWLEDGE, BACKTEST_RULE, DAILY_BACKTEST_RULE, COMPLETE_TOOL]
           // restrict 只过滤继承/全局工具；本任务局部注册始终可见。
           // 不能把局部工具名传入该接口，否则原生宿主在 setup 时拒绝启动。
@@ -97,7 +100,11 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
               // 首稿先核对口径和证据类别；尚不写入领域结果或触发建议。
               if (!verificationRequested) {
                 verificationRequested = true
-                return { status: 'verification_required', persisted: false, checks: [
+                return { status: 'verification_required', persisted: false, diagnostic_evidence: verification.diagnostics(), method_usage: [...usedMethods].sort(), checks: [
+                  'Include a concise context inventory: actually read Skills/knowledge versions, their uses and missing private SOP/business/history. Load business/material specialist methods when interpreting those facts. Metadata/search results alone are not read bodies.',
+                  'Use delivered prior_low_efficiency, prior_long_tail, kept_retrospective_loss and retained ROAS diagnostics with amounts, shares and denominators. Distinguish entire low-efficiency spend from loss. Candidate failures do not prove every stop-loss mechanism ineffective.',
+                  'Report paired IAA events per spend and revenue per 1000 events, including coverage. D0/D3/D7 use different windows and maturity: their unit values are not a same-cohort trend. If comparable time-series is absent, identify creative/traffic explanations as unverified hypotheses.',
+                  'Do not reject an evidence-backed proposal because assembling account IDs or tool arguments takes work; that is implementation, not business evidence.',
                   'Return a short summary plus structured report sections and tables. Explain rule_decision as PROPOSED only when actual rule proposals exist, otherwise NO_CHANGE or INSUFFICIENT_EVIDENCE with a concrete reason. MANUAL permits candidate submission; it requires human acceptance to publish, not extra authorization to propose.',
                   'Recheck every count and percentage against analysis coverage. Use available_accounts_percent/excluded_accounts_percent. For example 35 of 50 is 70%, never 85%.',
                   'Do not pool distinct currency/timezone/window/attribution partitions. A shortfall to break-even 1.0 differs from a shortfall to target_roas. State revenue minus spend as an observed platform amount, not business net profit or causal loss.',
