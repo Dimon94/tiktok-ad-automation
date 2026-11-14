@@ -192,10 +192,10 @@ def enqueue_report_requirements(
         ).all()
     }
     # 新父级需求必须在写 scope / outbox 之前核验当前权限，不能只相信冻结 BC。
-    from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
+    from app.modules.reporting.levels import LEVELS, PARENT_KINDS
 
-    contract = NATIVE_CONTRACT if kind == "campaign_day" else "report-v2"
-    if kind == "campaign_day":
+    contract = LEVELS[kind].contract if kind in LEVELS else "report-v2"
+    if kind in LEVELS:
         from app.core.context import TenantContext
         from app.modules.accounts.routing import verify_route
 
@@ -208,6 +208,8 @@ def enqueue_report_requirements(
                 advertiser_id=advertiser,
                 capability="read",
             )
+    if kind in PARENT_KINDS and campaign_ids:
+        raise DomainError("report_query_invalid", "父级日报仅允许完整账户日")
     query = {"campaign_ids": sorted(campaign_ids)}
     scope_values, classes = [], {}
     for advertiser in advertisers:

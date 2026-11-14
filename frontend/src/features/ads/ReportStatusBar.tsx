@@ -176,6 +176,14 @@ export function ReportStatusBar({
   const extras: { text: string; tone: Tone }[] = [
     { text: "查询日期按各账户本地日", tone: "ok" },
   ]
+  for (const [level, label] of [["campaign", "系列"], ["adgroup", "广告组"], ["ad", "广告"]]) {
+    const buckets = accounts.flatMap(account => account.levels ?? []).filter(bucket => bucket.level === level)
+    if (!buckets.length) continue
+    const complete = buckets.filter(bucket => bucket.status === "COMPLETE").length
+    const success = buckets.map(bucket => bucket.last_success_at).filter(Boolean).sort()[0]
+    const attempt = buckets.map(bucket => bucket.last_attempt_at).filter(Boolean).sort().slice(-1)[0]
+    extras.push({ text: `${label}：${complete}/${buckets.length} 账户日完整；成功 ${success ? new Date(success).toLocaleString("zh-CN") : "—"}；尝试 ${attempt ? new Date(attempt).toLocaleString("zh-CN") : "—"}`, tone: complete === buckets.length ? "ok" : "warn" })
+  }
   if (stale.length)
     extras.push({
       text: `${stale.length} 个账户数据超过 20 分钟`,

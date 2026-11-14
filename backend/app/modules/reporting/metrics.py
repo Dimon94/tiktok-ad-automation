@@ -43,9 +43,14 @@ PLATFORM_RATIOS = {
 def metric_evidence(metrics: dict[str, Any], *, level: str = "ad") -> dict[str, Any]:
     # 保存请求合同和逐字段状态，不保存响应行、令牌或客户素材。
     # 广告日报未请求平台比率，不能把它解释为平台漏返字段。
-    requested_ratios = PLATFORM_RATIOS if level == "campaign" else {}
+    from app.modules.reporting.levels import LEVELS
+
+    contract = LEVELS[f"{level}_day"]
+    requested_ratios = {
+        k: v for k, v in PLATFORM_RATIOS.items() if v in contract.metrics
+    }
     fields = _BASIC | requested_ratios
-    evidence = {}
+    evidence: dict[str, dict[str, Any]] = {}
     for key, field in fields.items():
         raw = metrics.get(field)
         value = parse_decimal(raw)
@@ -71,9 +76,9 @@ def metric_evidence(metrics: dict[str, Any], *, level: str = "ad") -> dict[str, 
         "request": {
             "report_type": "BASIC",
             "service_type": "AUCTION",
-            "data_level": "AUCTION_CAMPAIGN" if level == "campaign" else "AUCTION_AD",
+            "data_level": contract.data_level,
             "dimensions": [
-                "campaign_id" if level == "campaign" else "ad_id_v2",
+                contract.dimension,
                 "stat_time_day",
             ],
         },

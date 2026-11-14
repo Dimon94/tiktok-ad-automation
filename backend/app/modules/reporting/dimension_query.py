@@ -28,6 +28,7 @@ from app.modules.ads.models import AdObject as CanonicalAdObject
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants, compile_filter
+from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
 from app.modules.reporting.metric_catalog import DERIVED_RATIOS, NATIVE_CONTRACT
 from app.modules.reporting.models import AccountBalanceObservation
 from app.modules.reporting.read_models.models import AdEntityRead as AdObject
@@ -45,7 +46,6 @@ from app.modules.reporting.schemas import (
     ReportRow,
 )
 from app.modules.reporting.store_models import (
-    CAMPAIGN_STATE_SQL,
     METRIC_COLUMNS,
     AccountReconciliationDay,
     AdReportDay,
@@ -619,13 +619,13 @@ def materialize_rows(
             ReportSyncState.stat_date <= filters.end_date,
         )
     ).all()
-    if filters.dimension == "campaign":
+    if query_kind(filters.dimension) in PARENT_KINDS:
         states = [
             ReportSyncState.model_validate(r)
             for r in session.connection()
             .execute(
                 text(
-                    f"SELECT * FROM ({CAMPAIGN_STATE_SQL}) selected WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs) AND stat_date BETWEEN :start AND :end"
+                    f"SELECT * FROM ({state_sql(query_kind(filters.dimension))}) selected WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs) AND stat_date BETWEEN :start AND :end"
                 ),
                 {
                     "tenant": tenant_id,
@@ -636,19 +636,18 @@ def materialize_rows(
             )
             .mappings()
         ]
+    parent_model = CampaignReportDay if kind == "campaign" else AdgroupReportDay
     model = (
         aliased(
-            CampaignReportDay,
-            text("SELECT * FROM campaign_selected_day")
-            .columns(*cast(Any, CampaignReportDay).__table__.columns)
+            parent_model,
+            text(f"SELECT * FROM {kind}_selected_day")
+            .columns(*cast(Any, parent_model).__table__.columns)
             .subquery(),
             adapt_on_names=True,
         )
-        if filters.dimension == "campaign"
+        if query_kind(filters.dimension) in PARENT_KINDS
         else CampaignReportDay
         if kind == "account"
-        else AdgroupReportDay
-        if kind == "adgroup"
         else AdReportDay
     )
     group_cols = ["advertiser_id"] + ([] if kind == "account" else [f"{kind}_id"])
@@ -751,9 +750,7 @@ def materialize_rows(
     # 只遍历自身日期，避免N个账户各重扫整个页面的N×日期×报表种类状态。
     states_by_adv: dict[str, list[ReportSyncState]] = defaultdict(list)
     for state in states:
-        if state.report_kind == (
-            "campaign_day" if filters.dimension == "campaign" else "ad_day"
-        ):
+        if state.report_kind == (query_kind(filters.dimension)):
             states_by_adv[state.advertiser_id].append(state)
     # 覆盖状态只取决于账户集合与日期，同一账户集合复用计算结果。
     coverage_cache: dict[frozenset[str], dict[str, Any]] = {}
@@ -765,7 +762,7 @@ def materialize_rows(
                 [state for adv in cache_key for state in states_by_adv[adv]],
                 advertisers=cache_key,
                 filters=filters,
-                kind="campaign_day" if filters.dimension == "campaign" else "ad_day",
+                kind=query_kind(filters.dimension),
             )
         return dict(coverage_cache[cache_key])
 
@@ -778,7 +775,10 @@ def materialize_rows(
             empty_cache[adv] = {
                 name: Decimal(0)
                 if complete
-                and not (filters.dimension == "campaign" and name.startswith("revenue"))
+                and not (
+                    query_kind(filters.dimension) in PARENT_KINDS
+                    and name.startswith("revenue")
+                )
                 else None
                 for name in METRIC_COLUMNS
             }
@@ -873,7 +873,7 @@ def materialize_rows(
                     "display": _drama_status_display(row.display, statuses, providers)
                 }
             )
-        if filters.dimension in {"campaign", "ad"}:
+        if filters.dimension in {"campaign", "adgroup", "ad"}:
             row = report_provenance(session, row, tenant_id=tenant_id, filters=filters)
         result.append(row)
     return tuple(result)
@@ -1132,10 +1132,12 @@ def report_provenance(
     ref = row.refs[0]
     level = ref.kind
     # 两个固定已知表，不接受用户提供 SQL 标识符。
-    source_table = "parent_report_day" if level == "campaign" else "ad_report_day"
+    source_table = (
+        "parent_report_day" if f"{level}_day" in PARENT_KINDS else "ad_report_day"
+    )
     identity = (
-        "p.level='campaign' AND p.remote_id=:rid"
-        if level == "campaign"
+        f"p.level='{level}' AND p.remote_id=:rid"
+        if f"{level}_day" in PARENT_KINDS
         else "p.ad_id=:rid"
     )
     records = (
@@ -1184,6 +1186,8 @@ def report_provenance(
         if any(r["evidence"] for r in records)
         else "LEGACY_UNKNOWN"
     )
+    if level == "ad" and not any(r["evidence"] for r in records):
+        revision = "LEGACY_UNKNOWN"
     scope = sha256(
         json.dumps(
             [
@@ -1226,7 +1230,7 @@ def report_provenance(
             "NO_RETURNED_ROW"
             if records
             and not any(r["evidence"] for r in records)
-            and level == "campaign"
+            and f"{level}_day" in PARENT_KINDS
             else "LEGACY_UNKNOWN"
             if revision == "LEGACY_UNKNOWN"
             else None
@@ -1244,6 +1248,35 @@ def report_provenance(
             else None,
         )
     display = dict(row.display)
+    from app.modules.reporting.levels import DAY_KINDS, LEVELS
+    from app.modules.reporting.metrics import PLATFORM_RATIOS
+
+    layer_states = session.exec(
+        select(ReportSyncState).where(
+            ReportSyncState.tenant_id == tenant_id,
+            ReportSyncState.advertiser_id == ref.advertiser_id,
+            ReportSyncState.stat_date >= filters.start_date,
+            ReportSyncState.stat_date <= filters.end_date,
+            col(ReportSyncState.report_kind).in_(DAY_KINDS),
+        )
+    ).all()
+    indexed = {(r.report_kind, r.stat_date): r for r in layer_states}
+    layer_lines = []
+    for kind in DAY_KINDS:
+        day = filters.start_date
+        while day <= filters.end_date:
+            state = indexed.get((kind, day))
+            layer_lines.append(
+                f"{kind} {day}: {state.status if state else 'MISSING'}; "
+                f"成功 {state.last_success_at if state else None}; "
+                f"尝试 {state.updated_at if state else None}; "
+                f"观测 {state.observed_at if state else None}; "
+                f"版本 {state.publication_version if state else 0}; "
+                f"合同 {state.active_contract if state else None}; "
+                f"原因 {state.error_code if state else None}"
+            )
+            day += timedelta(days=1)
+    display["report_layer_status"] = "\n".join(layer_lines)
     display.update(
         report_source=source,
         report_local_days=f"{filters.start_date} — {filters.end_date}",
@@ -1259,8 +1292,10 @@ def report_provenance(
             else {}
         )
         display[key] = field.get("value")
-        display[key + "_reason"] = field.get(
-            "status", "NON_ADDITIVE" if daily else "LEGACY_UNKNOWN"
+        display[key + "_reason"] = (
+            "NOT_REQUESTED"
+            if PLATFORM_RATIOS[key] not in LEVELS[f"{level}_day"].metrics
+            else field.get("status", "NON_ADDITIVE" if daily else "LEGACY_UNKNOWN")
         )
     return row.model_copy(
         update={

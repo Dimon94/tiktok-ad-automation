@@ -5391,3 +5391,9 @@ Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接
 ### 2026-11-14 JB-25 root接手
 
 在feat/jb24-native-growth-m4a核对0cf93588并独立复跑29项后，修正请求证据与金额所有权：未请求平台ratio不记ABSENT，证据不重复money。新增真实PG回归，30 passed；两个错误探针红→字节恢复→绿。JB-25仅集成基线验收，后续JB-26继续，完整M4a及正式审查未完成；未推送/部署。
+
+## 2026-11-14 JB-26 三层 Native Growth 本地候选
+
+从7d987d8在共享集成树串行加厚Adgroup，新增统一日层级注册、原SDK/需求/Worker/PG发布、Adgroup selected view、三层独立状态HTTP与工作区；保留父级direct与旧广告派生writer隔离。真实刷新HTTP→三层各两页SDKtransport→Worker函数→PG/Redis→query/status HTTP→工作区各父级40/Ad dash通过；空发布/失败回滚、真实广告发布/重建/账户恢复及源码错误探针通过。R4/R10专属有限模型48状态通过，非全MMF形式验收。
+
+验证与未闭合项详见 `docs/validation/2026-11-14-jb26-native-growth-levels.md`。frontend build/Ruff/diff通过；严格mypy最终410条既有诊断未全绿（精确起点412，诊断集合无新增）；旧planner/health任务种类断言已独立起点源码/独立库复现，另外三层健康夹具的合同差异留root审定，未改旧断言。未自标Done、启动后票、改Linear、push/PR/合main/部署或操作真实广告。保留原软链。

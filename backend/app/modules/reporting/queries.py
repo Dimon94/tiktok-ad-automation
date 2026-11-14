@@ -28,6 +28,7 @@ from app.modules.reporting.dimension_query import (
     metric_vector,
 )
 from app.modules.reporting.filters import authorized_grants, compile_filter
+from app.modules.reporting.levels import query_kind
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     read_snapshot,
@@ -350,10 +351,7 @@ def _read_page(
         conditions = (
             []
             if filters.dimension == "account"
-            else [
-                ReportSyncState.report_kind
-                == ("campaign_day" if filters.dimension == "campaign" else "ad_day")
-            ]
+            else [ReportSyncState.report_kind == (query_kind(filters.dimension))]
         )
         observed = session.exec(
             select(

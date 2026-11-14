@@ -461,16 +461,17 @@ export function AdsTable({
                         onDrill={onDrill}
                         onFilterParent={onFilterParent}
                       />
-                      {dimension === "campaign" &&
+                      {["campaign", "adgroup", "ad"].includes(dimension) &&
                         row.display?.report_source && (
                           <div className="mt-2 space-y-1 text-[10px] text-muted-foreground">
                             <p>
-                              {row.display.report_source} · Campaign ·
+                              {row.display.report_source} · {dimension} ·
                               账户本地日 {row.display.report_local_days}
                             </p>
                             <p>{row.display.report_window}</p>
                             <p>{row.display.report_semantics}</p>
                             <p>观测 {row.display.report_observed_at}</p>
+                            <p className="whitespace-pre-line">{row.display.report_layer_status}</p>
                             <p>
                               平台 ROAS{" "}
                               {row.display.platform_roas_total ??

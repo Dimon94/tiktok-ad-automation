@@ -82,6 +82,10 @@ class ReportReader(Protocol):
     def campaign_day(
         self, *, advertiser_ids: tuple[str, ...], start: date, end: date, page: int
     ) -> RawReportPage: ...
+
+    def adgroup_day(
+        self, *, advertiser_ids: tuple[str, ...], start: date, end: date, page: int
+    ) -> RawReportPage: ...
     def account_day(
         self, *, advertiser_ids: tuple[str, ...], start: date, end: date, page: int
     ) -> RawReportPage: ...

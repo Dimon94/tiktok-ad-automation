@@ -16,7 +16,6 @@ from app.modules.reporting.metrics import (
     ACCOUNT_METRICS,
     AD_DAY_METRICS,
     CAMPAIGN_HOUR_METRICS,
-    CAMPAIGN_METRICS,
 )
 
 Send = Callable[[str, str | None, dict[str, Any]], dict]
@@ -159,17 +158,26 @@ class SdkReportReader(SdkChangeLogReader):
             filtering=[{**_STATUS_ALL, "field_name": "campaign_status"}],
         )
 
-    def campaign_day(self, *, advertiser_ids, start, end, page):
+    def campaign_day(self, **kwargs):
+        return self._level_day("campaign_day", **kwargs)
+
+    def adgroup_day(self, **kwargs):
+        return self._level_day("adgroup_day", **kwargs)
+
+    def _level_day(self, kind, *, advertiser_ids, start, end, page):
+        from app.modules.reporting.levels import LEVELS
+
+        contract = LEVELS[kind]
         _check_range(start, end, max_days=30)
         return self._basic(
             advertiser_ids=advertiser_ids,
-            data_level="AUCTION_CAMPAIGN",
-            dimensions=("campaign_id", "stat_time_day"),
-            metrics=CAMPAIGN_METRICS,
+            data_level=contract.data_level,
+            dimensions=(contract.dimension, "stat_time_day"),
+            metrics=contract.metrics,
             start=start,
             end=end,
             page=page,
-            filtering=[{**_STATUS_ALL, "field_name": "campaign_status"}],
+            filtering=[{**_STATUS_ALL, "field_name": f"{contract.level}_status"}],
         )
 
     def account_day(self, *, advertiser_ids, start, end, page):

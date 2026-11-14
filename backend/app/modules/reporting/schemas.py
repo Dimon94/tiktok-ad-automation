@@ -316,7 +316,20 @@ class SyncRefreshPublic(BaseModel):
     status: Literal["QUEUED", "SYNC_DISABLED", "API_BINDING_REQUIRED"]
 
 
+class LevelSyncStatus(BaseModel):
+    level: Literal["campaign", "adgroup", "ad"]
+    stat_date: date
+    status: str
+    last_success_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+    observed_at: datetime | None = None
+    publication_version: int = 0
+    contract_revision: str | None = None
+    reason: str | None = None
+
+
 class SyncAccountStatus(BaseModel):
+    levels: tuple[LevelSyncStatus, ...] = ()
     advertiser_id: str
     timezone: str
     local_today: date | None = None

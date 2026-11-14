@@ -15,6 +15,7 @@ from sqlmodel import Session, col, select
 from app.core.config import settings
 from app.core.context import TenantContext
 from app.jobs.admission import admission_policy
+from app.modules.reporting.levels import DAY_KINDS
 from app.modules.reporting.store_models import (
     ReportSyncJob,
 )
@@ -175,7 +176,7 @@ def _dispatch_due(
     endpoints: Sequence[str] = tuple(
         dict.fromkeys(
             report_endpoint(kind)
-            for kind in ("ad_day", "creative_day", "operation_log")
+            for kind in (*DAY_KINDS, "creative_day", "operation_log")
         )
     ) + tuple(
         report_endpoint("operation_log", {"operation_log": {"phase": phase}})

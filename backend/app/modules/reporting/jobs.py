@@ -33,7 +33,7 @@ from app.modules.reporting.directory_refresh import (
 from app.modules.reporting.lanes import (
     CLOSEOUT_PRIORITY,
 )
-from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
+from app.modules.reporting.levels import LEVELS, PARENT_KINDS
 from app.modules.reporting.store_models import ReportSyncJob, ReportSyncPage
 from app.modules.sync_control.executions import ExecutionLost, TransactionBoundaryReader
 
@@ -194,21 +194,22 @@ def enqueue_jobs(
     )
 
     if kind == "ad_day" and not campaign_ids:
-        enqueue_report_requirements(
-            session,
-            tenant_id=tenant_id,
-            bc_id=bc_id,
-            kind="campaign_day",
-            priority=PRIORITY[tier],
-            advertiser_groups=advertiser_groups,
-            start=start,
-            end=end,
-            frozen_route=frozen_route,
-            actor_id=actor_id,
-            due_at=due_at,
-            requested_at=requested_at,
-            execution_window_days=execution_window_days,
-        )
+        for parent_kind in PARENT_KINDS:
+            enqueue_report_requirements(
+                session,
+                tenant_id=tenant_id,
+                bc_id=bc_id,
+                kind=parent_kind,
+                priority=PRIORITY[tier],
+                advertiser_groups=advertiser_groups,
+                start=start,
+                end=end,
+                frozen_route=frozen_route,
+                actor_id=actor_id,
+                due_at=due_at,
+                requested_at=requested_at,
+                execution_window_days=execution_window_days,
+            )
     return ids
 
 
@@ -289,7 +290,7 @@ def _basic_scope(job):
         job.actor_id,
         job.frozen_route,
     )
-    contract = NATIVE_CONTRACT if job.kind == "campaign_day" else "report-v2"
+    contract = LEVELS[job.kind].contract if job.kind in LEVELS else "report-v2"
     return hashlib.sha256(
         f"{key}:{request_time(job).isoformat()}:{contract}".encode()
     ).hexdigest()
@@ -342,6 +343,7 @@ def _run(
             rows=rows,
             campaign_ids=tuple(job.campaign_ids),
             requested_at=observed_at,
+            route=FrozenTikTokRoute.model_validate(job.frozen_route),
         )
         # 完整报表与补目录 outbox 同事务提交，新投放对象不等全量历史扫描。
         refresh_report_directory(session, job)
@@ -374,14 +376,17 @@ def _run(
             campaign_ids=tuple(job.campaign_ids),
             requested_at=observed_at,
         )
-    if job.kind == "campaign_day":
+    if job.kind in PARENT_KINDS:
+        if job.campaign_ids:
+            raise DomainError("report_query_invalid", "父级日报仅允许完整账户日")
         rows = _read_all(
-            lambda p: reader.campaign_day(
+            lambda p: getattr(reader, job.kind)(
                 advertiser_ids=advertisers, start=s, end=e, page=p
             )
         )
-        return publish.publish_campaign_day(
+        return publish.publish_parent_day(
             session,
+            level=LEVELS[job.kind].level,
             tenant_id=t,
             job_id=j,
             accounts=accounts,

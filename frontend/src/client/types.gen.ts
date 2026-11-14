@@ -10603,7 +10603,20 @@ export type SubmitRequest = {
 /**
  * SyncAccountStatus
  */
+export type LevelSyncStatus = {
+    level: 'campaign' | 'adgroup' | 'ad';
+    stat_date: string;
+    status: string;
+    last_success_at?: string | null;
+    last_attempt_at?: string | null;
+    observed_at?: string | null;
+    publication_version?: number;
+    contract_revision?: string | null;
+    reason?: string | null;
+};
+
 export type SyncAccountStatus = {
+    levels?: Array<LevelSyncStatus>;
     /**
      * Advertiser Id
      */

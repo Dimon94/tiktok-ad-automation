@@ -363,7 +363,9 @@ def test_direct_authority_and_missing_states(session, sync_seed):
     assert [r.display["remote_id"] for r in bounded.items] == ["c2"]
 
 
-def live_campaign_workspace(seed, factory):
+def live_campaign_workspace(
+    seed, factory, *, level="campaign", label="系列", name="Campaign 1"
+):
     """真实 FastAPI/Vite/浏览器；唯一平台替身在 urllib3 transport。"""
     import os
     import socket
@@ -380,16 +382,17 @@ def live_campaign_workspace(seed, factory):
     from app.modules.accounts.connection_models import BCDefaultRoute
 
     with factory() as s:
-        s.add(
-            BCDefaultRoute(
-                tenant_id=seed.tenant_id,
-                bc_id=TEST_BC,
-                connection_id=seed.connection.id,
-                channel="OFFICIAL_API",
-                binding_revision=0,
-                revision=0,
+        if s.get(BCDefaultRoute, (seed.tenant_id, TEST_BC)) is None:
+            s.add(
+                BCDefaultRoute(
+                    tenant_id=seed.tenant_id,
+                    bc_id=TEST_BC,
+                    connection_id=seed.connection.id,
+                    channel="OFFICIAL_API",
+                    binding_revision=0,
+                    revision=0,
+                )
             )
-        )
         s.commit()
         user = s.get(User, seed.actor_id)
 
@@ -429,13 +432,28 @@ def live_campaign_workspace(seed, factory):
                 f"/api/tenants/{seed.tenant_id}/ads",
                 params={
                     "bc_id": TEST_BC,
-                    "dimension": "campaign",
+                    "dimension": level,
                     "start_date": str(D),
                     "end_date": str(D),
                     "advertiser_id": "acc-1",
                 },
             )
             assert response.status_code == 200, response.text
+            sync_response = client.get(
+                f"/api/tenants/{seed.tenant_id}/ad-sync-status",
+                params={"bc_id": TEST_BC, "start_date": str(D), "end_date": str(D)},
+            )
+            assert sync_response.status_code == 200, sync_response.text
+            layers = sync_response.json()["accounts"][0]["levels"]
+            assert {item["level"] for item in layers} == {"campaign", "adgroup", "ad"}
+            selected = next(item for item in layers if item["level"] == level)
+            assert selected["status"] == "COMPLETE"
+            assert selected["publication_version"] > 0
+            assert (
+                selected["last_success_at"]
+                and selected["last_attempt_at"]
+                and selected["observed_at"]
+            )
             first_ms = (time.perf_counter() - started) * 1000
             payload = response.json()
             started = time.perf_counter()
@@ -443,7 +461,7 @@ def live_campaign_workspace(seed, factory):
                 f"/api/tenants/{seed.tenant_id}/ads",
                 params={
                     "bc_id": TEST_BC,
-                    "dimension": "campaign",
+                    "dimension": level,
                     "start_date": str(D),
                     "end_date": str(D),
                     "advertiser_id": "acc-1",
@@ -454,7 +472,7 @@ def live_campaign_workspace(seed, factory):
                 f"/api/tenants/{seed.tenant_id}/ads",
                 params={
                     "bc_id": TEST_BC,
-                    "dimension": "campaign",
+                    "dimension": level,
                     "start_date": str(D),
                     "end_date": str(D),
                     "advertiser_id": "acc-1",
@@ -513,6 +531,9 @@ def live_campaign_workspace(seed, factory):
                 **os.environ,
                 "API_PROXY_TARGET": f"http://127.0.0.1:{port}",
                 "NATIVE_CAMPAIGN_TENANT": str(seed.tenant_id),
+                "NATIVE_LEVEL": level,
+                "NATIVE_LABEL": label,
+                "NATIVE_NAME": name,
                 "PLAYWRIGHT_PORT": "5206",
             },
             capture_output=True,

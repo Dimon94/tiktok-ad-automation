@@ -22,6 +22,7 @@ from app.modules.accounts.connection_models import BCConnectionBinding
 from app.modules.accounts.models import AdvertiserAccount, DiscoveryRun
 from app.modules.accounts.routing import freeze_route
 from app.modules.reporting.jobs import enqueue_job, enqueue_jobs
+from app.modules.reporting.levels import DAY_KINDS
 from app.modules.reporting.store_models import (
     AdSyncAccount,
     AdSyncBc,
@@ -595,6 +596,7 @@ def plan_hot(
     now: datetime,
     tier: str = "hot",
     include_creative: bool = True,
+    kind: str = "ad_day",
 ) -> int:
     count = 0
     for (start, end), advertisers in _group_by_window(
@@ -604,7 +606,7 @@ def plan_hot(
         count += len(
             enqueue_jobs(
                 session,
-                kind="ad_day",
+                kind=kind,
                 tier=tier,
                 advertiser_groups=batch_accounts(
                     session,
@@ -662,7 +664,7 @@ def plan_day_closeout(
           SELECT true AS found FROM creative_report_day f WHERE ad.found IS NULL
             AND f.tenant_id=:tenant AND f.advertiser_id=y.advertiser_id AND f.stat_date=y.day LIMIT 1
         ) mat ON true
-        CROSS JOIN (VALUES ('ad_day'),('creative_day')) k(kind)
+        CROSS JOIN unnest(CAST(:day_kinds AS text[])) k(kind)
         LEFT JOIN report_sync_state s ON s.tenant_id=:tenant
           AND s.advertiser_id=y.advertiser_id AND s.stat_date=y.day AND s.report_kind=k.kind
         WHERE (s.last_success_at IS NULL OR s.last_success_at<=y.midnight)
@@ -674,6 +676,7 @@ def plan_day_closeout(
                 "bc": plan.bc_id,
                 "now": now,
                 "all_accounts": accounts is None,
+                "day_kinds": [*DAY_KINDS, "creative_day"],
                 "accounts": list(accounts or []),
             },
         )
@@ -881,7 +884,7 @@ def plan_daily(session, plan, *, active_32d, now) -> int:
         session, plan, active_32d, daily_window(now)
     ).items():
         end = current - timedelta(days=1)  # 当前日由实时槽负责，冷档不重复拉它。
-        for kind in ("ad_day", "creative_day", "account_day"):
+        for kind in (*DAY_KINDS, "creative_day", "account_day"):
             windows = {}
             for advertiser in advertisers:
                 first = None

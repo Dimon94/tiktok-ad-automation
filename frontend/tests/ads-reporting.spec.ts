@@ -803,11 +803,11 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
     localStorage.setItem("access_token", "local-test-actor"),
   )
   await page.goto(
-    `/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads?bc_id=123456&dimension=campaign&start_date=2026-11-13&end_date=2026-11-13`,
+    `/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads?bc_id=123456&dimension=${process.env.NATIVE_LEVEL || "campaign"}&start_date=2026-11-13&end_date=2026-11-13`,
   )
   await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
   await page.getByRole("option", { name: /123456/ }).click()
-  await page.getByRole("tab", { name: "系列", exact: true }).click()
+  await page.getByRole("tab", { name: process.env.NATIVE_LABEL || "系列", exact: true }).click()
   await page
     .getByRole("textbox", { name: "开始日期", exact: true })
     .fill("2026-11-13")
@@ -816,7 +816,7 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
     .fill("2026-11-13")
   await page.getByRole("button", { name: "应用筛选", exact: true }).click()
   const row = page.getByRole("row").filter({
-    has: page.getByRole("button", { name: "Campaign 1", exact: true }),
+    has: page.getByRole("button", { name: process.env.NATIVE_NAME || "Campaign 1", exact: true }),
   })
   await expect(row).toBeVisible()
   await expect(row).toContainText("PLATFORM_DIRECT")
@@ -825,4 +825,13 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
   await expect(row).toContainText("0.801234567890123456789")
   await expect(row.locator('[data-metric="revenue_total"]')).toContainText("40")
   await expect(row.locator('[data-metric="revenue_d0"]')).toContainText("30")
+  if (process.env.NATIVE_LEVEL === "adgroup") {
+    for (const [label, name, revenue] of [["系列", "Campaign 1", "40"], ["广告", "Ad 1", "—"]]) {
+      await page.getByRole("tab", { name: label, exact: true }).click()
+      const item = page.getByRole("row").filter({ has: page.getByRole("button", { name, exact: true }) })
+      await expect(item).toBeVisible()
+      await expect(item.locator('[data-metric="revenue_total"]')).toContainText(revenue)
+    }
+  }
+
 })

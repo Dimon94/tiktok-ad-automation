@@ -294,6 +294,7 @@ def publish_ad_day(
     rows: Iterable[dict],
     campaign_ids: tuple[str, ...] = (),
     requested_at: datetime | None = None,
+    route: FrozenTikTokRoute | None = None,
 ) -> int:
     now = _database_now(session)
     counts: dict[tuple[str, date], int] = {}
@@ -322,7 +323,22 @@ def publish_ad_day(
                     "advertiser_id": advertiser,
                     "stat_date": day,
                     "ad_id": str(ad_id),
-                    "evidence": metric_evidence(metrics),
+                    "evidence": metric_evidence(metrics)
+                    | (
+                        {
+                            "source_connection_id": str(route.connection_id),
+                            "source_channel": route.channel,
+                            "source_bc_id": route.bc_id,
+                            "route_revision": str(route.binding_revision),
+                        }
+                        if route
+                        else {}
+                    )
+                    | {
+                        "response_row_digest": hashlib.sha256(
+                            json.dumps(row, sort_keys=True).encode()
+                        ).hexdigest()
+                    },
                     "campaign_id": str(campaign),
                     "adgroup_id": str(adgroup),
                     "campaign_automation_type": metrics.get("campaign_automation_type"),
@@ -392,6 +408,46 @@ def publish_ad_day(
             observed_at=requested_at,
             job_id=job_id,
         )
+    if not campaign_ids:
+        for advertiser, day in sorted(buckets):
+            state = cast(
+                ReportSyncState,
+                session.get(ReportSyncState, (tenant_id, advertiser, "ad_day", day)),
+            )
+            state.active_contract = NATIVE_CONTRACT
+            digests = (
+                session.connection()
+                .execute(
+                    text(
+                        "SELECT ad_id,evidence->>'response_row_digest' FROM ad_report_day "
+                        "WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d ORDER BY ad_id"
+                    ),
+                    {"t": tenant_id, "a": advertiser, "d": day},
+                )
+                .all()
+            )
+            state.publication_digest = hashlib.sha256(
+                json.dumps([tuple(r) for r in digests]).encode()
+            ).hexdigest()
+            session.add(state)
+            session.connection().execute(
+                text(
+                    "UPDATE ad_report_day SET evidence=evidence || CAST(:stamp AS jsonb) "
+                    "WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d"
+                ),
+                {
+                    "t": tenant_id,
+                    "a": advertiser,
+                    "d": day,
+                    "stamp": json.dumps(
+                        {
+                            "observed_at": requested_at.isoformat(),
+                            "publication_version": state.publication_version,
+                            "local_day": str(day),
+                        }
+                    ),
+                },
+            )
     with diagnostics.stage("publish_flush"):
         session.flush()
     _project_ad_buckets(session, tenant_id, buckets)
@@ -733,9 +789,10 @@ def _refresh_reconciliation_sums(session, tenant_id, buckets):
             )
 
 
-def publish_campaign_day(
+def publish_parent_day(
     session: Session,
     *,
+    level: str,
     tenant_id: UUID,
     job_id: UUID,
     accounts: dict[str, AccountMeta],
@@ -746,9 +803,14 @@ def publish_campaign_day(
     route: FrozenTikTokRoute,
 ) -> int:
     """同一 ReportingData 发布父级直接向量，绝不进入广告派生 writer。"""
+    from app.modules.reporting.levels import LEVELS
     from app.modules.reporting.metrics import metric_evidence
     from app.modules.reporting.store_models import ParentReportDay
 
+    contract = LEVELS[f"{level}_day"]
+    if not contract.parent:
+        raise ValueError(level)
+    kind = f"{level}_day"
     staged = []
     seen = set()
     counts: dict[tuple[str, date], int] = {}
@@ -757,11 +819,11 @@ def publish_campaign_day(
         adv = _account(row, accounts)
         dimensions, metrics = row.get("dimensions", {}), row.get("metrics", {})
         day = _in_range(parse_local_day(dimensions.get("stat_time_day")), start, end)
-        rid = dimensions.get("campaign_id")
+        rid = dimensions.get(contract.dimension)
         if not isinstance(rid, str) or not rid or (adv, rid, day) in seen:
             raise DomainError("report_row_invalid", "系列日报身份缺失或重复")
         seen.add((adv, rid, day))
-        evidence = metric_evidence(metrics, level="campaign")
+        evidence = metric_evidence(metrics, level=level)
         evidence.update(
             source_connection_id=str(route.connection_id),
             source_channel=route.channel,
@@ -789,9 +851,11 @@ def publish_campaign_day(
             ParentReportDay(
                 tenant_id=tenant_id,
                 advertiser_id=adv,
-                level="campaign",
+                level=level,
                 remote_id=rid,
-                object_name=metrics.get("campaign_name"),
+                object_name=metrics.get(f"{level}_name"),
+                campaign_id=metrics.get("campaign_id"),
+                campaign_name=metrics.get("campaign_name"),
                 stat_date=day,
                 currency=accounts[adv].currency,
                 timezone=accounts[adv].timezone,
@@ -806,7 +870,7 @@ def publish_campaign_day(
         session,
         tenant_id=tenant_id,
         accounts=accounts,
-        kind="campaign_day",
+        kind=kind,
         start=start,
         end=end,
         requested_at=requested_at,
@@ -816,7 +880,7 @@ def publish_campaign_day(
     session.exec(
         delete(ParentReportDay).where(
             col(ParentReportDay.tenant_id) == tenant_id,
-            col(ParentReportDay.level) == "campaign",
+            col(ParentReportDay.level) == level,
             _bucket_filter(ParentReportDay, buckets),
         )
     )
@@ -825,7 +889,7 @@ def publish_campaign_day(
     _set_state(
         session,
         tenant_id=tenant_id,
-        kind="campaign_day",
+        kind=kind,
         buckets=buckets,
         counts=counts,
         observed_at=requested_at,
@@ -835,7 +899,7 @@ def publish_campaign_day(
     for advertiser, day in sorted(buckets):
         state = cast(
             ReportSyncState,
-            session.get(ReportSyncState, (tenant_id, advertiser, "campaign_day", day)),
+            session.get(ReportSyncState, (tenant_id, advertiser, kind, day)),
         )
         state.active_contract = NATIVE_CONTRACT
         payload = sorted(
@@ -853,7 +917,7 @@ def publish_campaign_day(
                 ReportSyncState,
                 session.get(
                     ReportSyncState,
-                    (tenant_id, fact.advertiser_id, "campaign_day", fact.stat_date),
+                    (tenant_id, fact.advertiser_id, kind, fact.stat_date),
                 ),
             )
             fact.evidence = fact.evidence | {
@@ -865,3 +929,11 @@ def publish_campaign_day(
             }
     session.flush()
     return len(staged)
+
+
+def publish_campaign_day(session: Session, **kwargs: Any) -> int:
+    return publish_parent_day(session, level="campaign", **kwargs)
+
+
+def publish_adgroup_day(session: Session, **kwargs: Any) -> int:
+    return publish_parent_day(session, level="adgroup", **kwargs)

@@ -28,8 +28,9 @@ from sqlmodel import Session
 from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.filters import CONFIG_SORT_FIELDS, NAME_SORT_FIELDS
+from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
 from app.modules.reporting.schemas import ReportingFilter
-from app.modules.reporting.store_models import CAMPAIGN_STATE_SQL, METRIC_COLUMNS
+from app.modules.reporting.store_models import METRIC_COLUMNS
 
 # 派生比率：名称 -> (分子, 分母, 倍数)，与 dimension_query.metric_vector 一致。
 DERIVED_METRICS: dict[str, tuple[str, str, int]] = {
@@ -71,7 +72,7 @@ _FACT_TABLE = {
     "account": ("campaign_report_day", None),
     "campaign": ("campaign_selected_day", "campaign_id"),
     "drama": ("campaign_report_day", "campaign_id"),
-    "adgroup": ("adgroup_report_day", "adgroup_id"),
+    "adgroup": ("adgroup_selected_day", "adgroup_id"),
     "ad": ("ad_report_day", "ad_id"),
 }
 _FACT_META = {
@@ -85,6 +86,7 @@ _FACT_META = {
         "adgroup_name",
         "ad_name",
     ),
+    "adgroup_selected_day": ("campaign_id", "campaign_name", "adgroup_name"),
     "adgroup_report_day": ("campaign_id", "campaign_name", "adgroup_name"),
     # 纯指标路径仍保留后续CTE的列合同，但只生成NULL占位，不读历史名称。
     "campaign_metric_day": ("campaign_id", "campaign_name"),
@@ -236,6 +238,7 @@ def _facts_cte(
     if table in {
         "account_report_day",
         "adgroup_report_day",
+        "adgroup_selected_day",
         "campaign_metric_day",
         "adgroup_metric_day",
         "ad_metric_day",
@@ -266,8 +269,8 @@ def _common_ctes(cov_kind: str, *, account: bool = False) -> str:
     period = ""
     if account:
         state = "SELECT tenant_id,advertiser_id,stat_date,status FROM account_report_day_state"
-    elif cov_kind == "campaign_day":
-        state = CAMPAIGN_STATE_SQL
+    elif cov_kind in PARENT_KINDS:
+        state = state_sql(cov_kind)
     elif cov_kind == "creative_material":
         from app.modules.reporting.creative_query import PERIOD_SQL
 
@@ -549,7 +552,9 @@ def _metric_dimension_rows(
     """纯指标候选本身就是事实成员，避免身份集合再回连同一份大聚合。"""
     dim = filters.dimension
     fact = _facts_cte(
-        "campaign_selected_day" if dim == "campaign" else f"{dim}_metric_day",
+        f"{dim}_selected_day"
+        if query_kind(dim) in PARENT_KINDS
+        else f"{dim}_metric_day",
         f"{dim}_id",
         include_metadata=False,
         period_scan=period_scan,
@@ -557,7 +562,7 @@ def _metric_dimension_rows(
     values = ", ".join(f"f.{m}, f.{m}_hn" for m in METRIC_COLUMNS)
     return ",\n".join(
         [
-            _common_ctes("campaign_day" if dim == "campaign" else "ad_day"),
+            _common_ctes(query_kind(dim)),
             fact,
             f"""mb AS (
             SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.currency,f.tz,
@@ -843,12 +848,14 @@ def _dimension_rows(
             FROM ent e
         )""")
     ctes.append(
-        _member_buckets("members", unsupported=frozenset(), campaign=dim == "campaign")
+        _member_buckets(
+            "members", unsupported=frozenset(), campaign=query_kind(dim) in PARENT_KINDS
+        )
     )
     return ",\n".join(
         [
             _common_ctes(
-                "campaign_day" if dim == "campaign" else "ad_day",
+                query_kind(dim),
                 account=dim == "account",
             ),
             *ctes,
@@ -1046,8 +1053,8 @@ def insert_snapshot_rows(
         if filters.dimension == "material"
         else "SELECT tenant_id,advertiser_id,report_kind,stat_date,status FROM report_sync_state"
     )
-    if filters.dimension == "campaign":
-        coverage_source = CAMPAIGN_STATE_SQL
+    if query_kind(filters.dimension) in PARENT_KINDS:
+        coverage_source = state_sql(query_kind(filters.dimension))
     if filters.dimension == "account":
         coverage_source = "SELECT tenant_id,advertiser_id,'ad_day' AS report_kind,stat_date,status FROM account_report_day_state"
     account_versions = (
@@ -1090,7 +1097,7 @@ def insert_snapshot_rows(
         (SELECT COALESCE(array_agg(DISTINCT d.day::date ORDER BY d.day::date), ARRAY[]::date[])
            FROM bad b CROSS JOIN generate_series(CAST(:start AS date), CAST(:end AS date), interval '1 day') d(day)
            WHERE NOT EXISTS (SELECT 1 FROM ({coverage_source}) s WHERE s.tenant_id = :tenant
-               AND s.advertiser_id = b.adv AND s.report_kind = '{"creative_material" if filters.dimension == "material" else "campaign_day" if filters.dimension == "campaign" else "ad_day"}'
+               AND s.advertiser_id = b.adv AND s.report_kind = '{"creative_material" if filters.dimension == "material" else query_kind(filters.dimension)}'
                AND s.stat_date = d.day::date AND s.status = 'COMPLETE')) AS bad_dates,
         {account_versions} AS account_versions,
         {"(SELECT count(DISTINCT (advertiser_id,adgroup_id,currency,timezone)) FROM unallocated_groups)" if filters.dimension == "material" else "0"} AS unallocated_group_count

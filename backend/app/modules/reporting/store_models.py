@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from app.modules.ads.models import AwareDateTime
+from app.modules.reporting.levels import BASIC_KINDS, state_sql
 
 # 所有日/小时事实共享的指标列；顺序即 API 与导出列序。
 METRIC_COLUMNS = (
@@ -39,16 +40,7 @@ METRIC_COLUMNS = (
 
 
 # 与 Campaign 数值选择同桶；直接发布完成后不再借广告层完成状态。
-CAMPAIGN_STATE_SQL = """
-SELECT s.tenant_id,s.advertiser_id,'campaign_day' AS report_kind,s.stat_date,
-       s.status,s.row_count,s.last_success_at,s.observed_at,s.publication_version,s.active_contract,s.publication_digest,s.error_code,s.updated_at
-FROM report_sync_state s WHERE
-(s.report_kind='campaign_day' AND s.last_success_at IS NOT NULL)
-OR (s.report_kind='ad_day' AND NOT EXISTS (
- SELECT 1 FROM report_sync_state direct WHERE direct.tenant_id=s.tenant_id
- AND direct.advertiser_id=s.advertiser_id AND direct.stat_date=s.stat_date
- AND direct.report_kind='campaign_day' AND direct.last_success_at IS NOT NULL))
-"""
+CAMPAIGN_STATE_SQL = state_sql("campaign_day")
 
 
 def _num() -> Any:
@@ -126,6 +118,8 @@ class ParentReportDay(_Fact, table=True):
     remote_id: str = Field(primary_key=True, max_length=128)
     stat_date: date = Field(primary_key=True)
     object_name: str | None = None
+    campaign_id: str | None = None
+    campaign_name: str | None = None
     evidence: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
 
 
@@ -210,12 +204,7 @@ class AccountReconciliationDay(SQLModel, table=True):
     checked_at: datetime = Field(sa_type=AwareDateTime)
 
 
-REPORT_KINDS = (
-    "creative_day",
-    "ad_day",
-    "campaign_hour",
-    "account_day",
-)
+REPORT_KINDS = tuple(sorted(BASIC_KINDS))
 
 
 class ReportDispatchCursor(SQLModel, table=True):

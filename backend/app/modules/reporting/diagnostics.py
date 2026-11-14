@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Any, ParamSpec, TypeVar
 
 from app.core.diagnostics import emit, error_fields, identifier
+from app.modules.reporting.levels import BASIC_KINDS
 
 _STAGES = frozenset(
     {
@@ -75,7 +76,7 @@ _COUNTS = frozenset(
         "refill_jobs",
     }
 )
-_KINDS = frozenset({"ad_day", "creative_day", "campaign_hour", "account_day"})
+_KINDS = BASIC_KINDS
 _RESULTS = frozenset({"COMPLETE", "WAITING", "FAILED"})
 P = ParamSpec("P")
 R = TypeVar("R")

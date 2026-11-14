@@ -778,6 +778,10 @@ def get_ad_sync_status_route(
             ReportSyncState.stat_date <= end_date,
         )
     ).all()
+    from app.modules.reporting.levels import LEVELS
+    from app.modules.reporting.schemas import LevelSyncStatus
+
+    level_index = {(r.advertiser_id, r.report_kind, r.stat_date): r for r in states}
     by_key = {
         (r.advertiser_id, r.stat_date): r for r in states if r.report_kind == "ad_day"
     }
@@ -840,6 +844,22 @@ def get_ad_sync_status_route(
                 advertiser_id=account.advertiser_id,
                 timezone=account.timezone,
                 local_today=today,
+                levels=tuple(
+                    LevelSyncStatus(
+                        level=contract.level,
+                        stat_date=day,
+                        status=state.status if state else "MISSING",
+                        last_success_at=state.last_success_at if state else None,
+                        last_attempt_at=state.updated_at if state else None,
+                        observed_at=state.observed_at if state else None,
+                        publication_version=state.publication_version if state else 0,
+                        contract_revision=state.active_contract if state else None,
+                        reason=state.error_code if state else "NO_OBSERVATION",
+                    )
+                    for kind, contract in LEVELS.items()
+                    for day in current_days
+                    for state in [level_index.get((account.advertiser_id, kind, day))]
+                ),
                 last_success_at=min(successes) if successes else None,
                 incomplete_dates=tuple(
                     day
