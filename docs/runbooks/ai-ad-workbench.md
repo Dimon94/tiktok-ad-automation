@@ -137,7 +137,9 @@ python3 deploy/k8s/dsh_web_ingress.py --kubeconfig .runtime/company-production-2
 不要把 9082 加入 Service/Ingress；它只供 Pod 内官方 WebUI 使用。模型配置页写入 `/var/lib/dsh/home/profiles/tkada/cordis.patch.yml`，启动脚本保留管理员写入的 provider/model 设置，仅重写部署拥有的 Web listener、管理员代理和任务插件行。变更模型后重启 DSH Pod，确认 `/ready`、`/dsh/`、管理员与普通用户 403，再记录实际模型配置和 Ingress resourceVersion。
 
 
-## 2026-11-14 大范围复盘合同（待生产验收）
+## 2026-11-14 大范围复盘合同（已生产发布）
+
+应用/DSH `1ce9cf35`、schema0131已发布，原50账户真实复盘完成；来源时效与经营深挖范围仍须明确披露，详见[验收记录](../validation/2026-11-14-ai-review-scale.md)。
 
 任务创建只保存范围、版本和复盘日期，返回 `PREPARING`，不在 HTTP 请求内计算全部账户报表。`ai_workbench.prepare_review` 在现有 `ads-reporting` 队列逐账户保存来源，进度与下一次 outbox 同事务提交。Beat 修复遗失投递，重复消息按 cursor/generation 幂等处理。全部账户准备结束后才进入 `PENDING` 供 DSH 领取；失败账户必须明确列为缺口，不能当零或声称全覆盖。
 
