@@ -91,3 +91,5 @@ creativeNativeGrowth 官方支持、D0、traffic、total maturity 继续 Unknown
 真实Redis重复消息补证在原harness使用同一个原PendingDispatch task_id发送三次，不新建业务任务。`/tmp/jb38-queue-final.log` 新快照 `1ee20f05-3154-44f4-a696-44487d377622`，任务 `73146308-9dea-4beb-8a60-778943f614c8`；357311 bytes，sha256 `85bfaf3955d862a95cc39f8cdfd404798bf64fd9d74de9e3dc5ecc594a171d09`，437107 bytes payload，最后一次Worker+HTTP142.05ms。不同随机tenant/观测自然产生不同文件digest；每个任务均只与自己原冻结字节比较。并发单次物理写断言在独立两连接测试，不能把该HTTP耗时外推成生产吞吐。原消息重排由HTTP+PG验证，harness沿原约定从PendingDispatch读取消息发给真实broker，未运行全局flush_dispatch公平扫描或声明验证所有outbox调度策略。
 
 最终重复队列纵切：1 passed /13.11s、13条既有弃用警告；完整五类结果、故障恢复和字节校验通过。除原声明的外部平台/S3/生产容量与root整MMF审查边界外，本票本地AC无未闭合项。
+
+产品/测试/验收提交：`e400e45e86be7acacfb3464ab8a5531b7279c425`。形式化skill扩展的sync_commit精确绑定此产品候选，模型/五个源码探针单独提交。最终tip见交付回复；唯一无关未跟踪仍是原 `.venv` / `node_modules` 链接。

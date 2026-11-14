@@ -412,3 +412,46 @@ query_reuse, page_cache, actual PG/Redis/HTTP and browser/Worker tests personall
 inspected and exercised). Four lifecycle source probes and the existing four
 material isolation probes passed before this source commit; subsequent changes
 were evidence logging, fixture-window isolation, comments and formatting only.
+
+## JB38 M4b original export lifecycle
+
+sync_commit: `e400e45e86be7acacfb3464ab8a5531b7279c425` (product candidate checked).
+Outcome **updated** for T5–T11/R5/R9/R10. JB35 identity, JB36 money/parent
+control and JB37 atomic query contracts remain inherited source-bound evidence;
+this extension does not turn their models into an export or whole-system proof.
+See [JB38 evidence](../../../docs/validation/2026-11-14-jb38-material-export-lifecycle.md)
+for the complete new/inherited T1–T12/R1–R10 map and review limitations.
+
+Run serially from the product root, with no other writer or fixture suite:
+
+```bash
+python3 /tmp/tkada-native-series-20261112/m4b-implementation/run-test.py python .agents/skills/formal-verify-reporting-data/scripts/material_export.py
+python3 /tmp/tkada-native-series-20261112/m4b-implementation/run-test.py python -m pytest backend/tests/modules/reporting/test_material_export_lifecycle.py -q --tb=short
+python3 .agents/skills/formal-verify-reporting-data/scripts/material_export_probes.py
+```
+
+The model explores 64 combinations of two frozen/live amount tokens and binary
+write-before/write-after failure, expiry and authorization. It assumes committed
+correctly captured payload and atomic object put; download visibility requires
+completed publication, current scope and a valid clock. `--broken-live`,
+`--broken-partial`, `--broken-scope`, `--broken-expiry` must each fail with
+AssertionError. It does not prove storage atomicity, SQL permissions, Redis,
+unbounded concurrency, liveness, platform semantics or production capacity.
+
+Source binding: `_export_rows` consumes only ReportExport-owned frozen material
+results; `generate_export` rechecks authority/expiry after object put and cleans
+its deterministic key on failure; `_scope_check` checks tenant/BC/actor/account;
+original `run_export` uses PG task-row locks and preserves EXPIRED on crossing;
+`_enqueue_export` rearms the original outbox identity only on FAILED→QUEUED.
+No new exporter, recovery or TTL owner is modeled or introduced.
+
+Five actual-source probes break original-message rearm, object cleanup, scope,
+expiry and frozen-vs-live reads. Each requires a business assertion or expected
+HTTP refusal not raised, then restores an external backup in finally, invokes
+cmp and requires unchanged PG/HTTP/storage tests GREEN. The probe script invokes
+the guarded runner for every fixture suite. Storage fault tests execute before
+and after actual local os.replace, not a mocked repository/service. The highest
+browser seam additionally retries the full five-kind material payload through
+HTTP, the original PendingDispatch reference, real Redis/Celery and disk object
+storage, with three duplicate task envelopes and exact repeated download bytes.
+It does not run the global outbox fair-scan scheduler or contact remote S3.
