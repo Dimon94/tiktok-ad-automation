@@ -171,7 +171,7 @@ def pytest_command(args, fast=False):
     ]
 
 
-def start_groups(groups, first_index, label, args, base_env, database_url=None):
+def start_groups(groups, first_index, label, args, base_env, database_url=None, *, redis_index=None):
     """启动一批分组；组号从 first_index 起，保证库名与 Redis 库号不冲突。"""
     database_url = database_url or base_env["DATABASE_URL"]
     running = []
@@ -184,7 +184,8 @@ def start_groups(groups, first_index, label, args, base_env, database_url=None):
         log = (args.work / f"shard{index}.log").open("w")
         process = subprocess.Popen(
             pytest_command(group, args.fast),
-            env=shard_env(base_env, index, name, results, database_url),
+            env=shard_env(base_env, index if redis_index is None else redis_index + offset,
+                          name, results, database_url),
             stdout=log,
             stderr=subprocess.STDOUT,
         )
@@ -283,11 +284,12 @@ def main():
         measured.update(more_measured)
         process_errors.extend(errors)
     # 所有并行进程都已退出；每个容量文件使用新进程，避免历史RSS峰值跨文件继承。
+    # Redis复用已结束普通组的0号槽；独立结果编号不能无限增加Redis库号。
     for serial_index, path in enumerate(sorted({n.split("::", 1)[0] for n in serial})):
         selected = [n for n in serial if n.split("::", 1)[0] == path]
         more, more_measured, errors = wait_groups(
             start_groups(partition(selected, durations, 1), shards + args.exclusive_shards + serial_index,
-                         "容量串行", args, base_env),
+                         "容量串行", args, base_env, redis_index=0),
             "容量串行", args, started,
         )
         outcomes.update(more)
@@ -315,7 +317,7 @@ def main():
         with (args.work / "rerun.log").open("w") as log:
             rerun_process = subprocess.run(
                 pytest_command(rerun_args, args.fast),
-                env=shard_env(base_env, shards + args.exclusive_shards + len({n.split("::", 1)[0] for n in serial}), name, results),
+                env=shard_env(base_env, 0, name, results),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 check=False,

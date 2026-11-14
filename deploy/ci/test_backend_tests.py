@@ -68,9 +68,11 @@ class PartitionTests(unittest.TestCase):
     def test_serial_files_wait_for_parallel_and_keep_separate_results(self):
         ids = ["tests/normal.py::a", "tests/cap_a.py::b", "tests/cap_b.py::c"]
         calls = []
-        def start(groups, index, label, *_args):
+        def start(groups, index, label, *_args, **kwargs):
             paths = [p for _, group in groups for p in group]
             calls.append(("start", index, paths))
+            if label == "容量串行":
+                self.assertEqual(kwargs["redis_index"], 0)
             return (index, paths)
         def wait(running, *_args):
             index, paths = running
@@ -88,6 +90,21 @@ class PartitionTests(unittest.TestCase):
         self.assertEqual([c[2] for c in calls[::2]],
                          [["tests/normal.py"], ["tests/cap_a.py"], ["tests/cap_b.py"]])
         self.assertEqual(len({c[1] for c in calls[::2]}), 3)
+
+    def test_serial_artifact_index_does_not_allocate_more_redis_databases(self):
+        env = {"DATABASE_URL": "postgresql://u:p@localhost/base_test",
+               "REDIS_URL": "redis://localhost/0", "TEST_REDIS_URL": "redis://localhost/1"}
+        args = Mock(work=Path("/tmp"), fast=False)
+        with patch.object(backend_tests, "recreate_database"), patch.object(
+            backend_tests.Path, "open", return_value=Mock()
+        ), patch.object(backend_tests.Path, "unlink"), patch.object(
+            backend_tests.subprocess, "Popen"
+        ) as process:
+            backend_tests.start_groups([(1, ["tests/cap.py"])], 100, "容量串行",
+                                       args, env, redis_index=0)
+            actual = process.call_args.kwargs["env"]
+            self.assertTrue(actual["TEST_REDIS_URL"].endswith("/3"))
+            self.assertTrue(actual["DATABASE_URL"].endswith("/ci_shard100_test"))
 
     def test_fast_tier_deselects_slow_marker(self):
         fast = backend_tests.pytest_command(["tests"], fast=True)
