@@ -93,7 +93,9 @@ class NativeDirectoryPublic(BaseModel):
     coverage_reasons: tuple[str, ...] = ()
 
 
-def _identity(config: dict[str, Any]) -> DirectoryIdentityPublic | None:
+def _identity(config: dict[str, Any] | None) -> DirectoryIdentityPublic | None:
+    if config is None:
+        return None
     keys = ("identity_type", "identity_id", "identity_authorized_bc_id")
     return (
         DirectoryIdentityPublic(**{k: config.get(k) for k in keys})
@@ -172,7 +174,10 @@ def _native_detail(
         # 只有相同 creative ID 可连接两个观察来源；无 ID 配置始终单独保留。
         configs = {c.remote_id: (c.configuration, c) for c in children}
         anonymous = []
-        for item in entity.configuration.get("creative_list", []):
+        creative_list = entity.configuration.get("creative_list")
+        if creative_list is None:
+            reasons.append("creative_list:not_provided")
+        for item in creative_list if creative_list is not None else ():
             creative_id = item.get("smart_plus_creative_id")
             if creative_id is None:
                 anonymous.append(item)

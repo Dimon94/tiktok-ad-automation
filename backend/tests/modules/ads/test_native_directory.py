@@ -62,7 +62,7 @@ def test_native_group_and_unknown_fields(navigation):
 
 
 @pytest.fixture
-def native_published(navigation, monkeypatch):
+def native_published(navigation, monkeypatch, request):
     client, seed, session = navigation
     from app.modules.accounts.connection_models import ConnectionAuthorization
 
@@ -141,6 +141,17 @@ def native_published(navigation, monkeypatch):
             for i in (1, 2)
         ],
     }
+    partial = getattr(request, "param", None)
+    if partial == "null-list":
+        rows["ad"][0]["creative_list"] = None
+    elif partial == "null-info":
+        rows["creative"][0] = {
+            "advertiser_id": "account-a",
+            "ad_id": "cr1",
+            "smart_plus_ad_id": "a1",
+            "ad_name": "partial-child",
+            "creative_info": None,
+        }
     calls = []
     active = []
 
@@ -210,6 +221,36 @@ def native_published(navigation, monkeypatch):
     assert len(calls) == 4 and all(method == "GET" for method, _ in calls)
     session.refresh(seed.row)
     yield navigation
+
+
+@pytest.mark.parametrize(
+    "native_published,partial_field",
+    [("null-list", "creative_list"), ("null-info", "creative_info")],
+    indirect=["native_published"],
+)
+def test_published_unknown_creative_fields_remain_readable(
+    native_published, partial_field
+):
+    client, seed, _session = native_published
+    response = client.get(
+        f"/api/tenants/{seed.context.tenant_id}/ads/ad/a1",
+        params={"bc_id": seed.bc_id, "advertiser_id": "account-a"},
+    )
+    assert response.status_code == 200
+    detail = response.json()
+    native = detail["native"]
+    assert native["series_id"] == "series-1"
+    assert native["group_identity"]["identity_id"] == "group-1"
+    assert {c["creative_id"] for c in native["creatives"]} == {"cr1", "cr2"}
+    assert "creative_coverage:unknown" in native["coverage_reasons"]
+    if partial_field == "creative_list":
+        assert detail["configuration"]["creative_list"] is None
+        assert "creative_list:not_provided" in native["coverage_reasons"]
+    else:
+        creative = next(c for c in native["creatives"] if c["creative_id"] == "cr1")
+        assert creative["configuration"]["creative_info"] is None
+        assert creative["identity"] is None
+        assert "creative_identity:not_provided" in creative["coverage_reasons"]
 
 
 def test_native_transport_published_http(native_published):

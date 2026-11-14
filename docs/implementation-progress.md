@@ -5372,3 +5372,7 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 起点4ddb3e0031b53f1168b22a7185399285f0daa457，在授权共享M3集成树单写者完成现有详情owner只读native投影；目录/报表设置共用展示，精确creative ID关联现有素材事实，保留父级、两层身份、版位、原配置、来源/观察/版本与覆盖未知。无Series实体、缓存、同步/模型/迁移改动或管理动作。
 
 受控官方SDK transport→现有目录暂存/发布→真实PG→真实列表/详情HTTP→工作区浏览器主链通过。相关25项通过；两个实际源码错配探针失败并字节恢复，最终native4项通过，报表/新映射5项和完整配置5项通过，正式/demo构建通过。证据及Testing1–10矩阵见 [JB-23验证](validation/2026-11-14-jb23-native-directory-recognition.md)。完整Celery调度宿主未启动；真实平台字段/Series名称/完整性/生产验收Unknown。独立两轴审查与M3统一接受/集成归root；未自行放行、未push/PR/deploy/改Linear/合main/删树，既有.venv/node_modules链接保留。
+
+### 2026-11-14 M3 R1 未知创意字段修复
+
+Standards R1 PASS，Spec R1 一个 P1：已发布 creative_list/creative_info 为 null 时详情500。root 在原详情投影处理合法未知配置，保留原始null、已观察关系及覆盖原因；未改同步/发布/模型/公开DTO。两个SDK→发布→PG→HTTP场景真实RED→GREEN，丢创意/借组身份两探针均红且字节恢复；相关原生与详情9项通过，Ruff/diffcheck通过。见[修复证据](validation/2026-11-14-native-m3-r1-null-fix.md)。待独立Spec R2，M3未放行；未push/部署/改Linear/合main。
