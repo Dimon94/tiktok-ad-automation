@@ -373,8 +373,10 @@ def live_campaign_workspace(
     attempt_status="COMPLETE",
     refresh_status="",
     scope_demo=False,
+    snapshot_refresh=None,
 ):
     """真实 FastAPI/Vite/浏览器；唯一平台替身在 urllib3 transport。"""
+    import json
     import os
     import socket
     import subprocess
@@ -418,10 +420,55 @@ def live_campaign_workspace(
     thread = threading.Thread(
         target=server.run, kwargs={"sockets": [sock]}, daemon=True
     )
+    import tempfile
+
     from app.modules.reporting.page_cache import client as redis_connection
     from app.modules.reporting.page_cache import refresh_page
     from app.modules.reporting.page_cache_tasks import plan_due
 
+    barrier_directory = tempfile.TemporaryDirectory(prefix="jb29-live-")
+    barrier = Path(barrier_directory.name) / "refresh"
+    snapshot_errors = []
+
+    def source_refresh():
+        while not stop.wait(0.05):
+            if barrier.exists():
+                try:
+                    outcome = snapshot_refresh()
+                    barrier.with_suffix(".done").write_text(json.dumps(outcome))
+                except Exception as error:
+                    snapshot_errors.append(error)
+                return
+
+    if snapshot_refresh:
+        from datetime import UTC, datetime
+
+        from app.modules.ads.models import AdObject
+
+        with factory() as s:
+            for kind, parent in (
+                ("campaign", None),
+                ("adgroup", "campaign"),
+                ("ad", "adgroup"),
+            ):
+                for i in (1, 2):
+                    key = (seed.tenant_id, "acc-1", kind, f"{kind}{i}")
+                    if s.get(AdObject, key) is None:
+                        s.add(
+                            AdObject(
+                                tenant_id=seed.tenant_id,
+                                advertiser_id="acc-1",
+                                kind=kind,
+                                remote_id=f"{kind}{i}",
+                                parent_kind=parent,
+                                parent_remote_id=f"{parent}{i}" if parent else None,
+                                name=f"{kind.title()} {1 if kind == 'campaign' else i}",
+                                ad_type="NATIVE_SERIES",
+                                observed_at=datetime.now(UTC),
+                                published_version=1,
+                            )
+                        )
+            s.commit()
     stop = threading.Event()
 
     def cache_worker():
@@ -431,6 +478,13 @@ def live_campaign_workspace(
 
     cache_thread = threading.Thread(target=cache_worker, daemon=True)
     cache_thread.start()
+    source_thread = (
+        threading.Thread(target=source_refresh, daemon=True)
+        if snapshot_refresh
+        else None
+    )
+    if source_thread:
+        source_thread.start()
     try:
         with TestClient(app) as client:
             import time
@@ -441,6 +495,7 @@ def live_campaign_workspace(
                 params={
                     "bc_id": TEST_BC,
                     "dimension": level,
+                    "force_refresh": bool(snapshot_refresh),
                     "start_date": str(D),
                     "end_date": str(D),
                     "advertiser_id": "acc-1",
@@ -464,6 +519,11 @@ def live_campaign_workspace(
             )
             first_ms = (time.perf_counter() - started) * 1000
             payload = response.json()
+            if snapshot_refresh:
+                assert (
+                    payload["items"][0]["display"]["report_refresh_status"]
+                    == "COMPLETE"
+                ), payload["items"][0]["display"]["report_layer_status"]
             started = time.perf_counter()
             page1 = client.get(
                 f"/api/tenants/{seed.tenant_id}/ads",
@@ -540,6 +600,7 @@ def live_campaign_workspace(
                 "API_PROXY_TARGET": f"http://127.0.0.1:{port}",
                 "NATIVE_CAMPAIGN_TENANT": str(seed.tenant_id),
                 "NATIVE_LEVEL": level,
+                "JB29_REFRESH_BARRIER": str(barrier) if snapshot_refresh else "",
                 "JB28_SCOPE_DEMO": "1" if scope_demo else "",
                 "NATIVE_LABEL": label,
                 "NATIVE_NAME": name,
@@ -550,10 +611,14 @@ def live_campaign_workspace(
             text=True,
             timeout=120,
         )
+        assert not snapshot_errors, snapshot_errors
         assert result.returncode == 0, result.stdout + result.stderr
     finally:
         stop.set()
         cache_thread.join(timeout=10)
+        if source_thread:
+            source_thread.join(timeout=10)
+        barrier_directory.cleanup()
         server.should_exit = True
         if thread.ident:
             thread.join(timeout=10)

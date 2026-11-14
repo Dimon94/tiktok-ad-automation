@@ -314,6 +314,12 @@ def _facts_cte(
     state_join = f""" LEFT JOIN report_sync_state s ON s.tenant_id=t.tenant_id
         AND s.advertiser_id=t.advertiser_id AND s.stat_date=t.stat_date
         AND s.report_kind='{level}_day'"""
+    publication = "to_jsonb(s)"
+    if table.endswith("_selected_day") and not contribution:
+        state_join += """ LEFT JOIN report_sync_state derived_s ON derived_s.tenant_id=t.tenant_id
+            AND derived_s.advertiser_id=t.advertiser_id AND derived_s.stat_date=t.stat_date
+            AND derived_s.report_kind='ad_day'"""
+        publication = f"CASE WHEN {source_kind}='CHILD_DERIVED' THEN to_jsonb(derived_s) ELSE to_jsonb(s) END"
     evidence_table = (
         "parent_report_day"
         if table.endswith("_selected_day") and not contribution
@@ -347,10 +353,10 @@ def _facts_cte(
         'advertiser_id',t.advertiser_id,'remote_id',t.{level}_id,'level','{level}',
         'source_kind',{source_kind},'contract_revision',{revision},
         'local_day',t.stat_date,'timezone',t.timezone,'currency',t.currency,
-        'fact',jsonb_build_object({",".join(f"'{m}',t.{m}" for m in METRIC_COLUMNS)}),
+        'fact',jsonb_build_object({",".join(f"'{m}',t.{m}::text" for m in METRIC_COLUMNS)}),
         'returned',row_evidence.advertiser_id IS NOT NULL,
         'fields',COALESCE(row_evidence.evidence->'fields','{{}}'::jsonb),
-        'publication',COALESCE(to_jsonb(s),'{{}}'::jsonb))) AS observations,"""
+        'publication',COALESCE({publication},'{{}}'::jsonb))) AS observations,"""
     return f"""facts AS (
         SELECT {adv} AS adv, {rid} AS rid{extra_select}, {currency} AS currency,
             CASE WHEN min(t.timezone) = max(t.timezone) THEN min(t.timezone) ELSE 'MIXED' END AS tz,
@@ -537,8 +543,8 @@ def _member_buckets(
         for m in METRIC_COLUMNS
     )
     return f"""mb AS (
-        SELECT m.row_key, m.adv, COALESCE(f.level,'{level}') AS level, COALESCE(f.source_kind,'CHILD_DERIVED') AS source_kind, COALESCE(f.contract_revision,'LEGACY_UNKNOWN') AS contract_revision, COALESCE(f.currency, a.currency) AS currency,
-            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, f.observations, {values}
+        SELECT m.row_key, m.adv, m.rid, COALESCE(f.level,'{level}') AS level, COALESCE(f.source_kind,'CHILD_DERIVED') AS source_kind, COALESCE(f.contract_revision,'LEGACY_UNKNOWN') AS contract_revision, COALESCE(f.currency, a.currency) AS currency,
+            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, f.observations, to_jsonb(f) AS selected_fact, {values}
         FROM {members} m
         JOIN acc a ON a.adv = m.adv
         JOIN cov c ON c.adv = m.adv
@@ -659,9 +665,11 @@ def _metric_dimension_rows(
     fact = _facts_cte(
         f"{dim}_selected_day"
         if query_kind(dim) in PARENT_KINDS
+        else "ad_report_day"
+        if dim == "ad"
         else f"{dim}_metric_day",
         f"{dim}_id",
-        include_metadata=False,
+        include_metadata=True,
         period_scan=period_scan,
         contribution=filters.contribution is not None,
     )
@@ -671,8 +679,8 @@ def _metric_dimension_rows(
             _common_ctes(query_kind(dim)),
             fact,
             f"""mb AS (
-            SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.currency,f.tz,
-                NOT c.complete AS incomplete,f.level,f.source_kind,f.contract_revision,f.observations,{values}
+            SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.rid,f.currency,f.tz,
+                NOT c.complete AS incomplete,f.level,f.source_kind,f.contract_revision,f.observations,to_jsonb(f) AS selected_fact,{values}
             FROM facts f JOIN acc a ON a.adv=f.adv JOIN cov c ON c.adv=f.adv
         )""",
             f"""base AS (
@@ -701,7 +709,7 @@ def _drama_metric_rows(params: _Params, bc_id: str) -> tuple[str, str]:
             _facts_cte(
                 "campaign_selected_day",
                 "campaign_id",
-                include_metadata=False,
+                include_metadata=True,
                 period_scan=len(params.values["advs"]) >= 1000,
                 contribution="contribution_ids" in params.values,
             ),
@@ -959,7 +967,11 @@ def _dimension_rows(
             "members",
             unsupported=frozenset(),
             campaign=query_kind(dim) in PARENT_KINDS,
-            level="ad" if filters.contribution else kind,
+            level="ad"
+            if filters.contribution
+            else "campaign"
+            if kind == "account"
+            else kind,
         )
     )
     return ",\n".join(
@@ -1196,13 +1208,33 @@ def insert_snapshot_rows(
         scoped=filters.dimension != "material",
     )
     bad_source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
-    statement = f"""{ctes},
+    numeric_strings = ",".join(f"'{m}',mb.{m}::text" for m in METRIC_COLUMNS)
+    projection_cte = (
+        ""
+        if filters.dimension == "material"
+        else f"""
+    frozen_projection AS MATERIALIZED (
+        SELECT row_key, jsonb_agg(to_jsonb(mb) || jsonb_build_object({numeric_strings})) AS payload
+        FROM mb JOIN fr USING (row_key) GROUP BY row_key
+    ),"""
+    )
+    payload = (
+        "'[]'::jsonb"
+        if filters.dimension == "material"
+        else "frozen_projection.payload"
+    )
+    selected = (
+        "ordered"
+        if filters.dimension == "material"
+        else "ordered JOIN frozen_projection USING (row_key)"
+    )
+    statement = f"""{ctes}, {projection_cte}
     ins AS (
         INSERT INTO query_snapshot_row (snapshot_id, row_key, stable_sequence, dimension, display, refs,
             material_uses, metric_buckets, capabilities, directory_versions, membership_digest,account_membership_version_id,member_keys,member_count,evidence_versions)
         SELECT :snapshot_id, row_key, seq, :dimension, '{{}}'::jsonb, refs, material_uses,
-            '[]'::jsonb, '{{}}'::jsonb, '{{}}'::jsonb, '',account_membership_version_id,member_keys,member_count,evidence_versions
-        FROM ordered
+            {payload}, '{{}}'::jsonb, '{{}}'::jsonb, '',account_membership_version_id,member_keys,member_count,evidence_versions
+        FROM {selected}
         RETURNING snapshot_id,row_key
     ),
     bad AS (

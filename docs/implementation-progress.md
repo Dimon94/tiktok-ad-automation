@@ -5478,3 +5478,21 @@ Ruff/diff及实际skill入口通过；不重跑浏览器/构建/2k计划/旧mypy
 - Real PG RED reproduced empty-summary ABSENT versus NO_RETURNED_ROW and missing CPM formula multiplier; corrected shared vector_provenance only, preserved monetary/source contracts.
 - Final affected scope: 63 passed/1 deselected (28.97s), Ruff passed. No source decision or arithmetic model drift; bounded assumptions remain explicit.
 - JB28 locally accepted for JB29 consumption. All M4a tickets remain open until full review/local integration; no push/deploy/real platform acceptance. See docs/validation/2026-11-14-jb28-native-growth-formal.md.
+
+## 2026-11-14 JB29 frozen query observation candidate
+
+Sol/high唯一产品写者，自精确47359643e6662568c124d314f0684d943e3bcbb0沿共享M4a树串行实现。
+同一SQL选择计划冻结成员/阈值/排序/summary与所选指标；RR内100行分批组装，续页与详情读取
+短期frozen_result，保留合同副本与账户×层×日发布map；无snapshot详情返回自己的账户本地日查询。
+当前目录属性独立标识，源发布提示“有新数据”后由人加载；素材沿原刷新合同。未改决策输入或CSV。
+
+新增本地additive迁移native_frozen_query，旧合同/空或不兼容载荷/scope变化/过期拒绝重查；
+每次读仍重验当前权限。真实PG109项通过，补充迁移/消费者10项通过；真实SDK/Redis/Celery/
+Worker/HTTP/Vite/浏览器冻结详情及40→80刷新链通过。7源码探针业务RED→仓外备份finally/cmp恢复→GREEN。
+2k合成首查8.96s/续页1.62s/详情0.75s，PG载荷11.68MB，22批清理89ms；非生产容量。
+Ruff、主/演示build含tsc、diff通过；窄mypy仅继承1条旧注解问题，原410基线不冒称绿。
+
+完整AC/失败修复/实测与继承边界、生产统一reader/writer及回滚约束、JB30消费合同见
+[JB29 validation](validation/2026-11-14-jb29-native-growth-snapshot.md)。formal owner扩展R9且单独同步提交。
+候选待root独立review，不标Done，不宣称M4a完成。无tracker/main/推送/PR/部署/生产迁移/真实平台写；
+原未跟踪.venv/node_modules软链保留。

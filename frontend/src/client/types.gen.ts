@@ -213,6 +213,12 @@ export type AdContributionScope = {
  */
 export type AdDetailPublic = {
     native?: NativeDirectoryPublic | null;
+    report_snapshot?: QuerySnapshotPublic | null;
+    report_result?: ReportRow | null;
+    /**
+     * Directory Time Basis
+     */
+    directory_time_basis?: string;
     ref: EntityRef;
     /**
      * Name
@@ -8320,6 +8326,18 @@ export type QuerySnapshotPublic = {
      */
     expires_at: string;
     filters: ReportingFilter_Output;
+    /**
+     * Result Contract
+     */
+    result_contract?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Publication Map
+     */
+    publication_map?: Array<{
+        [key: string]: unknown;
+    }>;
     /**
      * Publication Versions
      */

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { expect, test } from "@playwright/test"
 import { adsBoundary, BC_A, TENANT } from "./utils/adsBoundary"
 
@@ -876,6 +877,55 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
       await expect(item).toBeVisible()
       await expect(item.locator('[data-metric="revenue_total"]')).toContainText(revenue)
     }
+  }
+
+  if (process.env.JB29_REFRESH_BARRIER) {
+    test.setTimeout(90_000)
+    await page.getByRole("tab", { name: "系列", exact: true }).click()
+    const apply = page.waitForResponse(r => r.url().includes("/ads?") && r.request().method() === "GET" && r.status() === 200)
+    await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+    const baselineResponse = await apply
+    const baseline = await baselineResponse.json()
+    const snapshot = baseline.snapshot.snapshot_id
+    const first = baseline.items.find((r: { row_key: string }) => r.row_key === "acc-1:campaign:campaign1")
+    const firstRow = page.getByRole("row").filter({ has: page.getByRole("button", { name: "Campaign 1", exact: true }) }).first()
+    await firstRow.getByRole("button", { name: "Campaign 1", exact: true }).click()
+    await expect(page.getByTestId("frozen-report")).toContainText("报表查询时间")
+    writeFileSync(process.env.JB29_REFRESH_BARRIER, "refresh source through real Worker")
+    await expect.poll(() => existsSync(process.env.JB29_REFRESH_BARRIER + ".done"), { timeout: 30_000 }).toBeTruthy()
+    const oldUrl = new URL(baselineResponse.url())
+    oldUrl.searchParams.set("snapshot_id", snapshot)
+    oldUrl.searchParams.delete("force_refresh")
+    const old = await page.request.get(oldUrl.toString())
+    expect(old.ok(), await old.text()).toBeTruthy()
+    expect((await old.json()).items).toEqual(baseline.items)
+    const detail = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads/campaign/campaign1`, { params: {
+      bc_id: "123456", advertiser_id: "acc-1", snapshot_id: snapshot,
+    } })
+    expect(detail.ok()).toBeTruthy()
+    expect((await detail.json()).report_result.metric_buckets).toEqual(first.metric_buckets)
+    const independent = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads/campaign/campaign1`, { params: {
+      bc_id: "123456", advertiser_id: "acc-1",
+    } })
+    expect(independent.ok()).toBeTruthy()
+    expect((await independent.json()).report_snapshot.snapshot_id).not.toEqual(snapshot)
+    await page.getByRole("button", { name: "Close", exact: true }).click()
+    const notice = page.getByRole("button", { name: "有新数据，点击加载", exact: true })
+    await expect(notice).toBeVisible({ timeout: 30_000 })
+    await expect(firstRow.locator('[data-metric="revenue_total"]')).toContainText("40")
+    const latestResponse = page.waitForResponse(r => r.url().includes("/ads?") && r.status() === 200)
+    await notice.click()
+    const latest = await (await latestResponse).json()
+    expect(latest.snapshot.snapshot_id).not.toEqual(snapshot)
+    const oldMap = baseline.snapshot.publication_map
+    const newMap = latest.snapshot.publication_map
+    expect(newMap.find((r: { report_kind: string }) => r.report_kind === "campaign_day").publication_version).toBeGreaterThan(oldMap.find((r: { report_kind: string }) => r.report_kind === "campaign_day").publication_version)
+    const publication = JSON.parse(readFileSync(process.env.JB29_REFRESH_BARRIER + ".done", "utf8"))
+    for (const kind of ["adgroup_day", "ad_day"]) {
+      expect(publication.after[kind]).toEqual(publication.before[kind])
+      expect(newMap.find((r: { report_kind: string }) => r.report_kind === kind).publication_version).toEqual(publication.before[kind])
+    }
+    await expect(firstRow.locator('[data-metric="revenue_total"]')).toContainText("80", { timeout: 20_000 })
   }
 
 })

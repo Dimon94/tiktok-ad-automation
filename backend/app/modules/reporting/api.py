@@ -815,6 +815,27 @@ def get_ad_sync_status_route(
         """),
         {"tenant_id": tenant_id, "bc_id": bc_id, "advertisers": list(allowed)},
     ).scalar_one()
+    from app.modules.reporting.frozen_result import RESULT_CONTRACT
+
+    # 源证据/派生修订也能改变结果；金额相同不能吞掉新数据提示。
+    bucket_versions = (
+        session.connection()
+        .execute(
+            text("""
+        SELECT advertiser_id,kind,bucket,source_revision,derived_revision
+        FROM read_bucket_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs)
+        AND (bucket BETWEEN :start AND :end OR bucket=DATE '1970-01-01')
+        ORDER BY advertiser_id,kind,bucket
+    """),
+            {
+                "tenant": tenant_id,
+                "advs": list(allowed),
+                "start": start_date,
+                "end": end_date,
+            },
+        )
+        .all()
+    )
     # 素材发布与失败覆盖也推进版本，页面不能只看广告日的最后成功时间。
     version = sha256(
         repr(
@@ -825,11 +846,18 @@ def get_ad_sync_status_route(
                     str(r.stat_date),
                     r.status,
                     str(r.last_success_at),
+                    r.publication_version,
+                    str(r.observed_at),
+                    r.active_contract,
+                    r.publication_digest,
+                    str(r.updated_at),
                 )
                 for r in states
             )
             + balance_version
             + [("directory", directory_version)]
+            + [tuple(r) for r in bucket_versions]
+            + [("result_contract", RESULT_CONTRACT)]
         ).encode()
     ).hexdigest()
     days = [

@@ -510,6 +510,16 @@ def test_representative_selected_plan(session, sync_seed):
         cursor=first.next_cursor,
     )
     next_ms = (perf_counter() - started) * 1000
+    from sqlalchemy import func
+    from sqlmodel import select
+
+    from app.modules.reporting.query_models import QuerySnapshotRow
+
+    payload_bytes = session.exec(
+        select(func.sum(func.pg_column_size(QuerySnapshotRow.frozen_result))).where(
+            QuerySnapshotRow.snapshot_id == first.snapshot.snapshot_id
+        )
+    ).one()
     assert len(first.items) == len(second.items) == 25
     assert not {r.row_key for r in first.items} & {r.row_key for r in second.items}
     assert MetricVector.model_validate(first.summary["buckets"][0]).values[
@@ -519,12 +529,62 @@ def test_representative_selected_plan(session, sync_seed):
         r.metric_buckets[0].values["roas_total"] == Decimal(".8")
         for r in first.items + second.items
     )
+    from datetime import timedelta
+
+    from app.modules.ads.models import AdObject
+    from app.modules.reporting.detail import get_ad_detail
+    from app.modules.reporting.job_tasks import cleanup_store
+
+    ref = first.items[0].refs[0]
+    session.add(
+        AdObject(
+            tenant_id=sync_seed.tenant_id,
+            advertiser_id=ref.advertiser_id,
+            kind=ref.kind,
+            remote_id=ref.remote_id,
+            name="Current directory",
+            ad_type="NATIVE_SERIES",
+            observed_at=datetime.now(UTC),
+            published_version=1,
+        )
+    )
+    session.flush()
+    started = perf_counter()
+    detail = get_ad_detail(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        ref=ref,
+        snapshot_id=first.snapshot.snapshot_id,
+    )
+    detail_ms = (perf_counter() - started) * 1000
+    assert detail.report_result == first.items[0]
+    started = perf_counter()
+    cursors = {}
+    for _ in range(22):
+        cleanup_store(
+            session,
+            now=datetime.now(UTC) + timedelta(minutes=16),
+            categories=("snapshots",),
+            cursors=cursors,
+        )
+    cleanup_ms = (perf_counter() - started) * 1000
+    remaining = session.exec(
+        select(func.count())
+        .select_from(QuerySnapshotRow)
+        .where(QuerySnapshotRow.snapshot_id == first.snapshot.snapshot_id)
+    ).one()
+    assert remaining == 0
     print(  # noqa: T201 - synthetic PG plan evidence
         "JB28_REPRESENTATIVE "
         + json.dumps(
             {
                 "campaigns": 2000,
                 "days": 1,
+                "frozen_payload_bytes": payload_bytes,
+                "detail_ms": detail_ms,
+                "cleanup_ms": cleanup_ms,
+                "cleanup_batches": 22,
                 "first_ms": first_ms,
                 "next_ms": next_ms,
                 "plans": plans,

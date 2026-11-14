@@ -23,8 +23,8 @@ from app.core.context import TenantContext
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants
-from app.modules.reporting.levels import DAY_KINDS, PARENT_KINDS, query_kind
-from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
+from app.modules.reporting.frozen_result import RESULT_CONTRACT
+from app.modules.reporting.levels import DAY_KINDS, query_kind
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     QuerySnapshotBuild,
@@ -71,6 +71,8 @@ def query_key(context: TenantContext, bc_id: str, filters: ReportingFilter) -> s
         context.actor_id,
         filters.model_dump(mode="json"),
     ]
+    if filters.dimension != "material":
+        payload.append(RESULT_CONTRACT)
     if filters.dimension == "material":
         payload.append(f"creative-material-v{MATERIAL_QUERY_CONTRACT}")
     return _digest(payload)
@@ -176,7 +178,7 @@ def dependency_stamp(
         .execute(
             text("""
             SELECT advertiser_id,report_kind,stat_date,publication_version,observed_at,
-                   last_success_at,status,error_code,updated_at,active_contract,publication_digest
+                   last_success_at,status,error_code,updated_at,active_contract,publication_digest,publication_coordinates
             FROM report_sync_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advertisers)
             AND report_kind=ANY(:day_kinds) AND stat_date BETWEEN :start AND :end
             ORDER BY advertiser_id,report_kind,stat_date
@@ -205,9 +207,7 @@ def dependency_stamp(
     return QueryDependencyStamp(
         metric_contract=f"creative-material-v{MATERIAL_QUERY_CONTRACT}"
         if filters.dimension == "material"
-        else NATIVE_CONTRACT
-        if query_kind(filters.dimension) in PARENT_KINDS
-        else "report-metrics-v1",
+        else _digest(RESULT_CONTRACT),
         scope_digest=authority.scope_digest,
         permission_revision=authority.permission_revision,
         filter_digest=_digest(filters.model_dump(mode="json")),

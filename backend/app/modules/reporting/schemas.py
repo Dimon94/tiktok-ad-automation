@@ -230,6 +230,8 @@ class QuerySnapshotPublic(BaseModel):
     snapshot_at: datetime
     expires_at: datetime
     filters: ReportingFilter
+    result_contract: dict[str, Any] = Field(default_factory=dict)
+    publication_map: tuple[dict[str, Any], ...] = ()
     publication_versions: dict[str, int] = Field(default_factory=dict)
 
 

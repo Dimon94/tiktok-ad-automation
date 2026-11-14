@@ -26,6 +26,7 @@ import type { DirectoryDetailEntry } from "../DirectoryBrowser"
 import { columnsFor, useMetricCatalog } from "../metricCatalog"
 import { type AdsDimension, rowAdvertiserId, rowObjectId } from "../search"
 import { statusLabel } from "../statusLabel"
+import { FrozenReport } from "./FrozenReport"
 import { DirectoryConfiguration } from "./DirectoryConfiguration"
 import { DirectoryDetailBody } from "./DirectoryDetailBody"
 import { HistoryTab } from "./HistoryTab"
@@ -335,6 +336,7 @@ function DetailBody({
           {kind && <TabsTrigger value="history">操作记录</TabsTrigger>}
         </TabsList>
         <TabsContent value="overview" className="mt-4">
+          {detail?.report_result && detail.report_snapshot && <FrozenReport row={detail.report_result} snapshot={detail.report_snapshot} />}
           <OverviewTab
             row={row}
             dimension={dimension}

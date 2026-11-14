@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DirectoryObjects, directoryChildKind } from "../DirectoryBrowser"
+import { FrozenReport } from "./FrozenReport"
 import { DirectoryConfiguration } from "./DirectoryConfiguration"
 
 export function DirectoryDetailBody({
@@ -67,7 +68,7 @@ export function DirectoryDetailBody({
         {detail && (
           <>
             <p className="text-xs text-muted-foreground">
-              来源连接：{detail.source_connection_id ?? "未提供"} · 渠道：
+              当前目录属性 · 来源连接：{detail.source_connection_id ?? "未提供"} · 渠道：
               {detail.source_channel ?? "未提供"} · 发布版本：
               {detail.published_version} · 观察时间：{detail.observed_at}
             </p>
@@ -91,7 +92,7 @@ export function DirectoryDetailBody({
                 <DirectoryConfiguration detail={detail} />
               </TabsContent>
               <TabsContent value="report">
-                <p>目录入口没有报表上下文，暂无报表数据。</p>
+                {detail.report_result && detail.report_snapshot ? <FrozenReport row={detail.report_result} snapshot={detail.report_snapshot} /> : <p>该对象没有日报指标。</p>}
               </TabsContent>
               {objectRef.kind in directoryChildKind && (
                 <TabsContent value="children">

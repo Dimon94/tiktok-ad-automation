@@ -666,6 +666,11 @@ export function AdsWorkspace() {
       if (followOwnOperation) void refreshCurrentPage()
       return
     }
+    // 日报固定本次查询，源发布只提示用户重查；素材沿用原有刷新合同。
+    if (applied.dimension !== "material") {
+      if (previous.version !== version) setNewDataAvailable(true)
+      return
+    }
     // 延迟的新版本在操作结束后仍可自动加载；同一版本只加载一次，避免刷新循环。
     if (previous.version === version && !newDataAvailable) return
     // 只有空闲且当前请求结束时换快照，避免打断选择、详情、预览或跨页操作。
@@ -694,6 +699,7 @@ export function AdsWorkspace() {
     ads.snapshot,
     refreshCurrentPage,
     canAutoLoadLatest,
+    applied.dimension,
     newDataAvailable,
     pageVisible,
   ])

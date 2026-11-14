@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,7 +25,12 @@ from app.modules.ad_management.models import (
 )
 from app.modules.ads import directory
 from app.modules.ads.models import AdMaterialReference, AdObject
-from app.modules.reporting.query_models import read_snapshot
+from app.modules.reporting.query_models import QuerySnapshotRow, read_snapshot
+from app.modules.reporting.schemas import (
+    QuerySnapshotPublic,
+    ReportingFilter,
+    ReportRow,
+)
 
 
 class ParentRestrictionPublic(BaseModel):
@@ -259,6 +265,9 @@ class AdDetailPublic(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     native: NativeDirectoryPublic | None = None
+    report_snapshot: QuerySnapshotPublic | None = None
+    report_result: ReportRow | None = None
+    directory_time_basis: str = "CURRENT_DIRECTORY"
     ref: EntityRef
     name: str
     ad_type: str
@@ -305,15 +314,55 @@ def get_ad_detail(
     ref: EntityRef,
     snapshot_id: UUID | None = None,
 ) -> AdDetailPublic:
+    snapshot = None
+    report_result = None
     if snapshot_id is not None:
-        # Bind detail reads to the same tenant/BC snapshot lifecycle as list,
-        # pagination and selection requests before reading current directory data.
-        read_snapshot(session, context=context, bc_id=bc_id, snapshot_id=snapshot_id)
+        snapshot = read_snapshot(
+            session, context=context, bc_id=bc_id, snapshot_id=snapshot_id
+        )
     try:
         entity = directory.locate(session, context=context, bc_id=bc_id, ref=ref)
     except DomainError as exc:
         # Do not disclose an object that belongs to another BC or tenant.
         raise HTTPException(404, detail="ad_not_found") from exc
+    if ref.kind in {"campaign", "adgroup", "ad"}:
+        from app.modules.reporting.frozen_result import frozen_row
+        from app.modules.reporting.queries import _snapshot_public, query_ads
+
+        if snapshot is None:
+            from app.modules.accounts.models import AdvertiserAccount
+
+            account = session.exec(
+                select(AdvertiserAccount).where(
+                    AdvertiserAccount.tenant_id == context.tenant_id,
+                    AdvertiserAccount.advertiser_id == ref.advertiser_id,
+                )
+            ).one()
+            day = datetime.now(ZoneInfo(account.timezone or "UTC")).date()
+            page = query_ads(
+                session,
+                context=context,
+                bc_id=bc_id,
+                filters=ReportingFilter(
+                    dimension=ref.kind,
+                    start_date=day,
+                    end_date=day,
+                    advertiser_ids=(ref.advertiser_id,),
+                    ids=(ref.remote_id,),
+                    include_empty=True,
+                ),
+            )
+            snapshot = read_snapshot(
+                session,
+                context=context,
+                bc_id=bc_id,
+                snapshot_id=page.snapshot.snapshot_id,
+            )
+        row_key = f"{ref.advertiser_id}:{ref.kind}:{ref.remote_id}"
+        row = session.get(QuerySnapshotRow, (snapshot.id, row_key))
+        if row is None:
+            raise HTTPException(409, detail="query_snapshot_object_mismatch")
+        report_result = frozen_row(row)
     parent_entity: AdObject | None = None
     if entity.parent_ref is not None:
         try:
@@ -390,6 +439,8 @@ def get_ad_detail(
         for item, task, preview in history_rows
     )
     return AdDetailPublic(
+        report_snapshot=_snapshot_public(snapshot) if snapshot else None,
+        report_result=report_result,
         native=_native_detail(
             session, context, bc_id, entity, parent_entity, material_rows
         ),

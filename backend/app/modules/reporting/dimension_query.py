@@ -610,6 +610,7 @@ def materialize_rows(
     filters: ReportingFilter,
     members: Sequence[SnapshotMember],
     advertisers: Sequence[str],
+    selected_facts: list[dict[str, Any]] | None = None,
 ) -> tuple[ReportRow, ...]:
     """按快照冻结的成员与顺序补全展示字段、指标和覆盖；不再做筛选与排序。
 
@@ -666,6 +667,7 @@ def materialize_rows(
             ReportSyncState.stat_date <= filters.end_date,
         )
     ).all()
+    layer_states = states
     if query_kind(filters.dimension) in PARENT_KINDS:
         states = [
             ReportSyncState.model_validate(r)
@@ -700,21 +702,25 @@ def materialize_rows(
     )
     grouped_facts = []
     for item in (
-        session.connection()
-        .execute(
-            text(f"WITH {rows_sql} SELECT * FROM facts WHERE rid=ANY(:ids)"),
-            {
-                "tenant": tenant_id,
-                "advs": advertisers,
-                "start": filters.start_date,
-                "end": filters.end_date,
-                "ids": member_ids,
-                "contribution_ids": list(filters.contribution.ids)
-                if filters.contribution
-                else [],
-            },
+        (
+            session.connection()
+            .execute(
+                text(f"WITH {rows_sql} SELECT * FROM facts WHERE rid=ANY(:ids)"),
+                {
+                    "tenant": tenant_id,
+                    "advs": advertisers,
+                    "start": filters.start_date,
+                    "end": filters.end_date,
+                    "ids": member_ids,
+                    "contribution_ids": list(filters.contribution.ids)
+                    if filters.contribution
+                    else [],
+                },
+            )
+            .mappings()
         )
-        .mappings()
+        if selected_facts is None
+        else selected_facts
     ):
         grouped_facts.append(
             dict(item)
@@ -978,7 +984,23 @@ def materialize_rows(
                 }
             }
         )
-        row = report_provenance(session, row, tenant_id=tenant_id, filters=filters)
+        records = None
+        if selected_facts is not None:
+            pairs = set(identities[member.row_key])
+            records = [
+                r
+                for f in selected_facts
+                if (f["adv"], f["rid"]) in pairs
+                for r in (f.get("observations") or [])
+            ]
+        row = report_provenance(
+            session,
+            row,
+            tenant_id=tenant_id,
+            filters=filters,
+            selected_records=records,
+            selected_states=layer_states if records is not None else None,
+        )
         result.append(row)
     return tuple(result)
 
@@ -1322,7 +1344,13 @@ def vector_provenance(
 
 
 def report_provenance(
-    session: Session, row: ReportRow, *, tenant_id: UUID, filters: ReportingFilter
+    session: Session,
+    row: ReportRow,
+    *,
+    tenant_id: UUID,
+    filters: ReportingFilter,
+    selected_records: list[dict[str, Any]] | None = None,
+    selected_states: Sequence[ReportSyncState] | None = None,
 ) -> ReportRow:
     """仅对本页冻结成员取逐日证据；金额和成员仍由共同 SQL 选择计划负责。"""
     from app.modules.reporting.metrics import PLATFORM_RATIOS
@@ -1348,7 +1376,7 @@ def report_provenance(
     )
     records: list[dict[str, Any]] = []
     refs = sorted({(r.advertiser_id, r.kind, r.remote_id) for r in row.refs})
-    if filters.dimension == "account":
+    if filters.dimension == "account" and selected_records is None:
         # 账户行身份不是 Campaign refs；贡献集合由同一 selected view 与目录补空确定。
         adv = str(row.display["advertiser_id"])
         refs = [
@@ -1369,89 +1397,94 @@ def report_provenance(
             )
             .scalars()
         ]
-    for kind in sorted({k for _, k, _ in refs}):
-        pairs = [(adv, rid) for adv, k, rid in refs if k == kind]
-        level = "ad" if filters.contribution else kind
-        table = f"{level}_selected_day" if level != "ad" else "ad_report_day"
-        identity = f"p.{level}_id=w.rid"
-        params: dict[str, Any] = {
-            "tenant": tenant_id,
-            "advs": [a for a, _ in pairs],
-            "ids": [r for _, r in pairs],
-            "start": filters.start_date,
-            "end": filters.end_date,
-        }
-        if filters.contribution:
-            identity = f"p.{kind}_id=w.rid AND p.ad_id=ANY(:subset)"
-            params["subset"] = list(filters.contribution.ids)
-        result = (
-            session.connection()
-            .execute(
-                text(f"""
-            SELECT w.adv,w.rid,d.day::date AS day, to_jsonb(p) AS fact,
-                   account.timezone AS account_timezone, account.currency AS account_currency,
-                   to_jsonb(s) AS publication, raw.evidence
-            FROM unnest(CAST(:advs AS text[]),CAST(:ids AS text[])) w(adv,rid)
-            JOIN advertiser_account account ON account.tenant_id=:tenant AND account.advertiser_id=w.adv
-            CROSS JOIN generate_series(CAST(:start AS date),CAST(:end AS date),interval '1 day') d(day)
-            LEFT JOIN {table} p ON p.tenant_id=:tenant AND p.advertiser_id=w.adv
-                 AND p.stat_date=d.day::date AND {identity}
-            LEFT JOIN report_sync_state s ON s.tenant_id=:tenant AND s.advertiser_id=w.adv
-                 AND s.stat_date=d.day::date AND s.report_kind=CASE
-                   WHEN '{level}'='ad' THEN 'ad_day'
-                   WHEN EXISTS (SELECT 1 FROM report_sync_state own WHERE own.tenant_id=:tenant
-                     AND own.advertiser_id=w.adv AND own.stat_date=d.day::date
-                     AND own.report_kind='{level}_day' AND own.last_success_at IS NOT NULL)
-                   THEN '{level}_day' ELSE 'ad_day' END
-            LEFT JOIN parent_report_day raw ON raw.tenant_id=:tenant AND raw.advertiser_id=w.adv
-                 AND raw.stat_date=d.day::date AND raw.level='{level}' AND raw.remote_id=w.rid
-            ORDER BY w.adv,w.rid,d.day
-        """),
-                params,
+    if selected_records is None:
+        for kind in sorted({k for _, k, _ in refs}):
+            pairs = [(adv, rid) for adv, k, rid in refs if k == kind]
+            level = "ad" if filters.contribution else kind
+            table = f"{level}_selected_day" if level != "ad" else "ad_report_day"
+            identity = f"p.{level}_id=w.rid"
+            params: dict[str, Any] = {
+                "tenant": tenant_id,
+                "advs": [a for a, _ in pairs],
+                "ids": [r for _, r in pairs],
+                "start": filters.start_date,
+                "end": filters.end_date,
+            }
+            if filters.contribution:
+                identity = f"p.{kind}_id=w.rid AND p.ad_id=ANY(:subset)"
+                params["subset"] = list(filters.contribution.ids)
+            result = (
+                session.connection()
+                .execute(
+                    text(f"""
+                SELECT w.adv,w.rid,d.day::date AS day, to_jsonb(p) AS fact,
+                       account.timezone AS account_timezone, account.currency AS account_currency,
+                       to_jsonb(s) AS publication, raw.evidence
+                FROM unnest(CAST(:advs AS text[]),CAST(:ids AS text[])) w(adv,rid)
+                JOIN advertiser_account account ON account.tenant_id=:tenant AND account.advertiser_id=w.adv
+                CROSS JOIN generate_series(CAST(:start AS date),CAST(:end AS date),interval '1 day') d(day)
+                LEFT JOIN {table} p ON p.tenant_id=:tenant AND p.advertiser_id=w.adv
+                     AND p.stat_date=d.day::date AND {identity}
+                LEFT JOIN report_sync_state s ON s.tenant_id=:tenant AND s.advertiser_id=w.adv
+                     AND s.stat_date=d.day::date AND s.report_kind=CASE
+                       WHEN '{level}'='ad' THEN 'ad_day'
+                       WHEN EXISTS (SELECT 1 FROM report_sync_state own WHERE own.tenant_id=:tenant
+                         AND own.advertiser_id=w.adv AND own.stat_date=d.day::date
+                         AND own.report_kind='{level}_day' AND own.last_success_at IS NOT NULL)
+                       THEN '{level}_day' ELSE 'ad_day' END
+                LEFT JOIN parent_report_day raw ON raw.tenant_id=:tenant AND raw.advertiser_id=w.adv
+                     AND raw.stat_date=d.day::date AND raw.level='{level}' AND raw.remote_id=w.rid
+                ORDER BY w.adv,w.rid,d.day
+            """),
+                    params,
+                )
+                .mappings()
             )
-            .mappings()
-        )
-        for r in result:
-            adv, rid = r["adv"], r["rid"]
-            fact, state = r["fact"] or {}, r["publication"] or {}
-            evidence = (r["evidence"] if level != "ad" else fact.get("evidence")) or {}
-            direct = level == "ad" or (
-                state.get("report_kind") == f"{level}_day"
-                and state.get("last_success_at")
-            )
-            revision = (
-                (state.get("active_contract") or "LEGACY_UNKNOWN")
-                if direct
-                else "LEGACY_UNKNOWN"
-            )
-            # 行证据与发布合同冲突必须保留为不可解释坐标，不能以当前合同追认。
-            if (
-                direct
-                and revision == NATIVE_CONTRACT
-                and evidence.get("contract_revision") not in (None, revision)
-            ):
-                revision = "CONTRACT_MISMATCH"
-            records.append(
-                {
-                    "advertiser_id": adv,
-                    "remote_id": fact.get("ad_id", rid),
-                    "level": level,
-                    "source_kind": "PLATFORM_DIRECT" if direct else "CHILD_DERIVED",
-                    "contract_revision": revision,
-                    "local_day": str(r["day"]),
-                    "timezone": fact.get("timezone")
-                    or (state.get("publication_coordinates") or {}).get(
-                        "timezone", "UNKNOWN"
-                    ),
-                    "currency": fact.get("currency")
-                    or (state.get("publication_coordinates") or {}).get(
-                        "currency", "UNKNOWN"
-                    ),
-                    "fact": fact,
-                    "fields": evidence.get("fields", {}),
-                    "publication": state,
-                }
-            )
+            for r in result:
+                adv, rid = r["adv"], r["rid"]
+                fact, state = r["fact"] or {}, r["publication"] or {}
+                evidence = (
+                    r["evidence"] if level != "ad" else fact.get("evidence")
+                ) or {}
+                direct = level == "ad" or (
+                    state.get("report_kind") == f"{level}_day"
+                    and state.get("last_success_at")
+                )
+                revision = (
+                    (state.get("active_contract") or "LEGACY_UNKNOWN")
+                    if direct
+                    else "LEGACY_UNKNOWN"
+                )
+                # 行证据与发布合同冲突必须保留为不可解释坐标，不能以当前合同追认。
+                if (
+                    direct
+                    and revision == NATIVE_CONTRACT
+                    and evidence.get("contract_revision") not in (None, revision)
+                ):
+                    revision = "CONTRACT_MISMATCH"
+                records.append(
+                    {
+                        "advertiser_id": adv,
+                        "remote_id": fact.get("ad_id", rid),
+                        "level": level,
+                        "source_kind": "PLATFORM_DIRECT" if direct else "CHILD_DERIVED",
+                        "contract_revision": revision,
+                        "local_day": str(r["day"]),
+                        "timezone": fact.get("timezone")
+                        or (state.get("publication_coordinates") or {}).get(
+                            "timezone", "UNKNOWN"
+                        ),
+                        "currency": fact.get("currency")
+                        or (state.get("publication_coordinates") or {}).get(
+                            "currency", "UNKNOWN"
+                        ),
+                        "fact": fact,
+                        "fields": evidence.get("fields", {}),
+                        "publication": state,
+                    }
+                )
+    else:
+        records = selected_records
 
     display = dict(row.display)
     observations = [{k: v for k, v in r.items() if k != "fact"} for r in records]
@@ -1473,15 +1506,23 @@ def report_provenance(
     from app.modules.reporting.levels import DAY_KINDS
 
     advs = sorted({a for a, _, _ in refs})
-    states = session.exec(
-        select(ReportSyncState).where(
-            ReportSyncState.tenant_id == tenant_id,
-            col(ReportSyncState.advertiser_id).in_(advs),
-            col(ReportSyncState.report_kind).in_(DAY_KINDS),
-            ReportSyncState.stat_date >= filters.start_date,
-            ReportSyncState.stat_date <= filters.end_date,
-        )
-    ).all()
+    states = (
+        session.exec(
+            select(ReportSyncState).where(
+                ReportSyncState.tenant_id == tenant_id,
+                col(ReportSyncState.advertiser_id).in_(advs),
+                col(ReportSyncState.report_kind).in_(DAY_KINDS),
+                ReportSyncState.stat_date >= filters.start_date,
+                ReportSyncState.stat_date <= filters.end_date,
+            )
+        ).all()
+        if selected_states is None
+        else [
+            s
+            for s in selected_states
+            if s.advertiser_id in advs and s.report_kind in DAY_KINDS
+        ]
+    )
     complete = len(states) == len(advs) * len(DAY_KINDS) * (
         (filters.end_date - filters.start_date).days + 1
     ) and all(s.status == "COMPLETE" for s in states)

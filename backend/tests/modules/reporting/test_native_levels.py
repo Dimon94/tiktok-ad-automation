@@ -47,6 +47,7 @@ def test_two_page_adgroup_worker_and_query(
 
     deferred = set()
     extend_campaign = False
+    snapshot_refreshed = False
 
     def transport(_pool, _method, url, **kwargs):
         args = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
@@ -138,6 +139,10 @@ def test_two_page_adgroup_worker_and_query(
                     }
                     for i in range(3, 53)
                 )
+        if snapshot_refreshed and level == "campaign":
+            payload["list"][0]["metrics"]["native_growth_total_ad_impression_value"] = (
+                "80"
+            )
         return HTTPResponse(
             body=json.dumps(
                 {"code": 0, "data": payload, "request_id": "synthetic-jb25"}
@@ -551,8 +556,68 @@ def test_two_page_adgroup_worker_and_query(
         ).all()
     from tests.modules.reporting.test_native_campaign import live_campaign_workspace
 
+    def snapshot_refresh():
+        nonlocal snapshot_refreshed
+        from app.modules.reporting.jobs import enqueue_job
+        from app.modules.reporting.store_models import ReportSyncState
+        from tests.modules.reporting.test_jobs import _route
+
+        with factory() as s:
+            before = {
+                kind: s.get(
+                    ReportSyncState, (seed.tenant_id, "acc-1", kind, D)
+                ).publication_version
+                for kind in ("campaign_day", "adgroup_day", "ad_day")
+            }
+        snapshot_refreshed = True
+        with factory() as s:
+            enqueue_job(
+                s,
+                tenant_id=seed.tenant_id,
+                bc_id=TEST_BC,
+                kind="campaign_day",
+                tier="hot",
+                advertiser_ids=["acc-1"],
+                start=D,
+                end=D,
+                frozen_route=_route(seed) | {"bc_id": TEST_BC},
+                actor_id=seed.actor_id,
+                requested_at=datetime.now(UTC),
+            )
+            s.commit()
+            jobs = claim_jobs(s, now=datetime.now(UTC) + timedelta(seconds=2), limit=4)
+            s.commit()
+        assert jobs
+        for job in jobs:
+            assert (
+                run_job_step(
+                    database_engine=engine,
+                    redis_client=redis_client,
+                    job_id=job.id,
+                    claim_token=job.claim_token,
+                )
+                == "COMPLETE"
+            )
+
+        with factory() as s:
+            after = {
+                kind: s.get(
+                    ReportSyncState, (seed.tenant_id, "acc-1", kind, D)
+                ).publication_version
+                for kind in ("campaign_day", "adgroup_day", "ad_day")
+            }
+        assert after["campaign_day"] > before["campaign_day"]
+        assert after["adgroup_day"] == before["adgroup_day"]
+        assert after["ad_day"] == before["ad_day"]
+        return {"before": before, "after": after}
+
     live_campaign_workspace(
-        seed, factory, level="adgroup", label="广告组", name="Adgroup 1"
+        seed,
+        factory,
+        level="adgroup",
+        label="广告组",
+        name="Adgroup 1",
+        snapshot_refresh=snapshot_refresh if not yield_quota else None,
     )
 
 

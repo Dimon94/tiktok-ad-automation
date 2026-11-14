@@ -86,6 +86,12 @@ class QuerySnapshot(FrozenQueryScope, table=True):
         ),
         Index("ix_query_snapshot_expiry", "expires_at"),
     )
+    result_contract: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
+    publication_map: list[dict[str, Any]] = Field(
+        default_factory=list, sa_type=JSONB, nullable=False
+    )
     total: int = 0
     summary: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB, nullable=False)
     coverage: dict[str, Any] = Field(
@@ -164,6 +170,9 @@ class QuerySnapshotRow(SQLModel, table=True):
     # 复合主键自身提供 snapshot + row_key 索引。
     snapshot_id: UUID = Field(primary_key=True)
     row_key: str = Field(primary_key=True, max_length=512)
+    frozen_result: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
     stable_sequence: int
     dimension: str = Field(max_length=32)
     member_keys: list[list[str]] = Field(
@@ -377,6 +386,11 @@ def read_snapshot(
         != MATERIAL_QUERY_CONTRACT
     ):
         raise HTTPException(409, detail="query_snapshot_contract_changed")
+    if snapshot.filters.get("dimension") != "material":
+        from app.modules.reporting.frozen_result import RESULT_CONTRACT
+
+        if snapshot.result_contract != RESULT_CONTRACT:
+            raise HTTPException(409, detail="query_snapshot_contract_changed")
     if snapshot.expires_at <= datetime.now(UTC):
         raise HTTPException(409, detail="query_snapshot_expired")
     return snapshot

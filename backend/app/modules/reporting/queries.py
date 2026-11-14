@@ -159,6 +159,8 @@ def _snapshot_public(snapshot: QuerySnapshot) -> QuerySnapshotPublic:
         expires_at=snapshot.expires_at,
         filters=ReportingFilter.model_validate(snapshot.filters),
         publication_versions=snapshot.publication_versions,
+        result_contract=snapshot.result_contract,
+        publication_map=tuple(snapshot.publication_map),
     )
 
 
@@ -196,7 +198,7 @@ def _build_snapshot(
     bc_id: str,
     filters: ReportingFilter,
 ) -> QuerySnapshot:
-    """在数据库内一次算出并写入快照成员与顺序，再落汇总；行内容不入快照。"""
+    """同一SQL选择计划冻结成员与指标，RR内完成展示投影。"""
     transaction_started = (
         begin_evidence_snapshot(session)
         if filters.dimension in {"material", "campaign", "drama"}
@@ -305,6 +307,33 @@ def _build_snapshot(
             if not totals.complete
             else snapshot.coverage["status"],
         }
+    if filters.dimension != "material":
+        from app.modules.reporting.frozen_result import RESULT_CONTRACT, freeze_results
+
+        snapshot.result_contract = RESULT_CONTRACT
+        snapshot.publication_map = [
+            dict(r)
+            for r in session.connection()
+            .execute(
+                text("""SELECT advertiser_id,report_kind,stat_date,publication_version,observed_at,
+                last_success_at,status,error_code,active_contract,publication_digest,publication_coordinates
+                FROM report_sync_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs)
+                AND report_kind IN ('campaign_day','adgroup_day','ad_day')
+                AND stat_date BETWEEN :start AND :end ORDER BY advertiser_id,report_kind,stat_date"""),
+                {
+                    "tenant": context.tenant_id,
+                    "advs": allowed_ids,
+                    "start": filters.start_date,
+                    "end": filters.end_date,
+                },
+            )
+            .mappings()
+        ]
+        # JSON边界统一序列化时间/日期；没有发布记录的坐标保持缺失而非借用当前值。
+        snapshot.publication_map = json.loads(
+            json.dumps(snapshot.publication_map, default=str)
+        )
+        freeze_results(session, snapshot, filters)
     session.add(snapshot)
     session.flush()
     return snapshot
@@ -342,14 +371,19 @@ def _read_page(
     )
     # 分页会话与构建RR连接独立；同样只在本次读事务禁用一次性LLVM编译。
     session.connection().execute(text("SET LOCAL jit = off"))
-    members = snapshot_members(session, snapshot=snapshot, rows=rows)
-    items = materialize_rows(
-        session,
-        tenant_id=context.tenant_id,
-        filters=filters,
-        members=[members[row.row_key] for row in rows],
-        advertisers=snapshot.advertiser_ids,
-    )
+    if filters.dimension != "material":
+        from app.modules.reporting.frozen_result import frozen_row
+
+        items = tuple(frozen_row(row) for row in rows)
+    else:
+        members = snapshot_members(session, snapshot=snapshot, rows=rows)
+        items = materialize_rows(
+            session,
+            tenant_id=context.tenant_id,
+            filters=filters,
+            members=[members[row.row_key] for row in rows],
+            advertisers=snapshot.advertiser_ids,
+        )
     if filters.dimension == "account":
         # 账户行保留其下全部系列引用供冻结选择展开；列表响应不返回，避免每行带回上百条。
         items = tuple(item.model_copy(update={"refs": ()}) for item in items)
@@ -378,27 +412,12 @@ def _read_page(
         raw_observed = metrics_coverage["metrics_observed_at"]
         observed = datetime.fromisoformat(raw_observed) if raw_observed else None
     else:
-        state_model = (
-            AccountReportDayState if filters.dimension == "account" else ReportSyncState
-        )
-        conditions = (
-            []
-            if filters.dimension == "account"
-            else [ReportSyncState.report_kind == (query_kind(filters.dimension))]
-        )
-        observed = session.exec(
-            select(
-                func.max(
-                    func.coalesce(state_model.observed_at, state_model.last_success_at)
-                )
-            ).where(
-                state_model.tenant_id == context.tenant_id,
-                col(state_model.advertiser_id).in_(snapshot.advertiser_ids),
-                *conditions,
-                state_model.stat_date >= filters.start_date,
-                state_model.stat_date <= filters.end_date,
-            )
-        ).one()
+        times = [
+            r.get("observed_at") or r.get("last_success_at")
+            for r in snapshot.publication_map
+            if r["report_kind"] == query_kind(filters.dimension)
+        ]
+        observed = max((datetime.fromisoformat(t) for t in times if t), default=None)
     return AdsQueryPage(
         snapshot=_snapshot_public(snapshot),
         items=items,
