@@ -501,6 +501,32 @@ class RuleBacktest(BaseModel):
     candidate_definition: RuleDefinition
 
 
+class DailyRuleBacktest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule_id: UUID
+    candidate_definitions: list[dict] = Field(default_factory=list, max_length=5)
+
+
+@router.post("/{task_id}/rules/daily-backtest")
+def daily_backtest_rule(
+    task_id: UUID,
+    body: DailyRuleBacktest,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.backtests import daily_backtest_for_task
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    result = daily_backtest_for_task(
+        session, task=task, rule_id=body.rule_id,
+        candidate_definitions=body.candidate_definitions,
+    )
+    session.commit()
+    return result
+
+
 @router.post("/{task_id}/rules/backtest")
 def backtest_rule(
     task_id: UUID,
@@ -526,7 +552,7 @@ def backtest_rule(
 class EvidenceQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: str = Field(
-        pattern=r"^(reporting|plans|build_occurrences|rule_evidence|attribution|material_orders|history|business|operation_logs|data_pack_business|data_pack_operation_events|knowledge_refs|preparation)$"
+        pattern=r"^(reporting|plans|build_occurrences|rule_evidence|attribution|material_orders|history|business|operation_logs|data_pack_business|data_pack_operation_events|knowledge_refs|preparation|rule_backtest_inputs)$"
     )
     offset: int = Field(default=0, ge=0)
     advertiser_id: str | None = Field(default=None, max_length=100)

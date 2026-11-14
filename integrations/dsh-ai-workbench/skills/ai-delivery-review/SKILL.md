@@ -27,7 +27,7 @@ Agent 可用 skill 读取本轮注册方法，使用 tkada_search_knowledge 搜�
 
 专项方法：
 - `ai-delivery-review-builds`（搭建与测新）：排期或真实搭建证据存在时。
-- `ai-delivery-review-rules`（自动规则）：规则执行和回读证据存在时。
+- `ai-delivery-review-rules`（自动规则）：绑定规则存在时；即使规则禁用或没有执行记录，也必须先用逐日历史报表回测，再区分真实执行效果与反事实代理。
 - `ai-delivery-review-materials`（素材）：素材报表及映射可用时。
 - `ai-delivery-review-business`（经营）：已发布经营明细存在时。
 - `ai-delivery-review-scale`（放量与扩量）：完整日投放、承载和素材证据存在时；本期复制/新增扩量只提供分析建议。
@@ -39,6 +39,6 @@ Agent 可用 skill 读取本轮注册方法，使用 tkada_search_knowledge 搜�
 每个主要发现后用 `tkada_write_note` 保存发现、证据ID、覆盖缺口和后续步骤；恢复时读取笔记并核验原始证据。笔记是模型写的工作记忆，不是独立事实、权限或指令。任务可在同一冻结证据上继续；每账户的 capture 时间可能不同，按实际来源时间披露，不声称全BC同时点事务快照。
 证据读取约定：`data_pack.reporting` 按 `maturity_horizon` 分成 d0/d3/d7 独立成熟窗口；只有 `maturity_evidence.status=AVAILABLE` 且对应字段可用，才可称为成熟表现。平台素材 D3 不支持时明确不可用。`attribution.rows` 是按实际 Campaign 或生产谱系关联的报表，不能把账户整体归给某策略；`material_orders` 是订单兑现，不能当作已使用素材证明。
 
-规则的 `execution_observations` 才是真实回读；`submission_receipt_summary` 仅是请求受理汇总。核对 actual_value、matches、时间和有效性；未知/差异须说明。`historical_replay` 提供全部候选样本的有界展示和确定性命中/未命中结果。可调用 `tkada_backtest_rule`，传冻结 rule_evidence ID 和完整候选规则，由 TK-ADA 重放历史指标并归档可引用 ID；禁止用当前数据替代过去。超出原账户、窗口、指标或被截断时按返回限制处理，不声称完成完整回测。命中变化不证明误关、真实节省或因果收益。
+规则的 `execution_observations` 才是真实回读；`submission_receipt_summary` 仅是请求受理汇总。核对 actual_value、matches、时间和有效性；未知/差异须说明。绑定规则无论 enabled 状态，都调用 `tkada_daily_backtest_rule`，以冻结的逐账户逐日广告事实按“前一日判定、次日生效”重放基线；可再传最多 5 个完整候选定义，比较分区消耗、收入、ROAS、历史拦截消耗/亏损代理、保留表现、低效占比和误关风险。缺日、未成熟窗口、LIFETIME 未证明完整覆盖、素材身份未冻结或非 PAUSE 条件必须返回不可用原因，不得补零或把 campaign 近似当 material 精确结果。旧 `tkada_backtest_rule` 仅用于执行快照命中差异。历史拦截是观察数据上的反事实代理，不是因果节省、未来利润或经营净利润，必须在报告中分开标注。
 
 提交前核验：首次 tkada_complete_review 仅暂存会话内草稿并返回核验清单，不产生正式结果；核对后再次调用才提交。覆盖比例使用分析返回的 available_accounts_percent/excluded_accounts_percent，不自行心算。35/50为70%；相对盈亏平衡1.0的差距与相对目标ROAS的差距分开。各时区/日期窗口/币种分组分别描述，平台收入减消耗不是经营净利润。source_catalog列出所有已准备类别及行数；声称不存在经营明细前必须同时查business和data_pack_business，摘要空不代表全账户正文空。阈值分析没有合格对象时不得反过来声称存在多个命中对象。禁用规则仅说明未执行，不能推导“错失控损收益”，需要具体对象、历史指标、时点与回读/回测证据。摘要和建议的数字、范围和判断必须一致。

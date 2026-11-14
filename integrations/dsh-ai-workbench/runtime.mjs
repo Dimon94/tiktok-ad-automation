@@ -1,7 +1,7 @@
 import { REVIEW_RESULT_PARAMETERS } from './result-contract.mjs'
 import { mountAnalysisTools, ANALYZE_EVIDENCE, WRITE_NOTE, LIST_NOTES } from './analysis.mjs'
 import { mountEvidenceTools, QUERY_EVIDENCE, READ_EVIDENCE } from './evidence.mjs'
-import { mountBacktestTool, BACKTEST_RULE } from './backtests.mjs'
+import { mountBacktestTool, BACKTEST_RULE, mountDailyBacktestTool, DAILY_BACKTEST_RULE } from './backtests.mjs'
 import { readFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { mountKnowledgeTools, SEARCH_KNOWLEDGE, READ_KNOWLEDGE } from './knowledge.mjs'
@@ -39,7 +39,7 @@ export function createRuntime(config, fetchImpl = fetch) {
     }
     return response.json()
   }
-  return { analyzeEvidence: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/evidence/analyze`, args, claim.task_token), writeNote: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/notes`, args, claim.task_token), listNotes: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/notes/list`, args, claim.task_token), queryEvidence: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/evidence/query`, args, claim.task_token), readEvidence: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/evidence/read`, args, claim.task_token), backtestRule: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/rules/backtest`, args, claim.task_token), searchKnowledge: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/knowledge/search`, args, claim.task_token), readKnowledge: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/knowledge/read`, args, claim.task_token), claim: async () => rpc('/claim', await loadMethods()), complete: (claim, result) => rpc(`/${encodeURIComponent(claim.task.id)}/complete`, result, claim.task_token), heartbeat: claim => rpc(`/${encodeURIComponent(claim.task.id)}/heartbeat`, {}, claim.task_token) }
+  return { analyzeEvidence: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/evidence/analyze`, args, claim.task_token), writeNote: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/notes`, args, claim.task_token), listNotes: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/notes/list`, args, claim.task_token), queryEvidence: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/evidence/query`, args, claim.task_token), readEvidence: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/evidence/read`, args, claim.task_token), backtestRule: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/rules/backtest`, args, claim.task_token), dailyBacktestRule: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/rules/daily-backtest`, args, claim.task_token), searchKnowledge: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/knowledge/search`, args, claim.task_token), readKnowledge: (claim, args) => rpc(`/${encodeURIComponent(claim.task.id)}/knowledge/read`, args, claim.task_token), claim: async () => rpc('/claim', await loadMethods()), complete: (claim, result) => rpc(`/${encodeURIComponent(claim.task.id)}/complete`, result, claim.task_token), heartbeat: claim => rpc(`/${encodeURIComponent(claim.task.id)}/heartbeat`, {}, claim.task_token) }
 }
 
 export async function runClaim(ctx, config, claim, runtime, { createUserMessage, SessionId, renderSkillContent, scopeOf }) {
@@ -82,7 +82,8 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
           mountAnalysisTools(taskCtx, claim, runtime, controller.signal)
           mountKnowledgeTools(taskCtx, claim, runtime, controller.signal)
           mountBacktestTool(taskCtx, claim, runtime, controller.signal)
-          const allowed = [ANALYZE_EVIDENCE, WRITE_NOTE, LIST_NOTES, QUERY_EVIDENCE, READ_EVIDENCE, SKILL_TOOL, SEARCH_KNOWLEDGE, READ_KNOWLEDGE, BACKTEST_RULE, COMPLETE_TOOL]
+          mountDailyBacktestTool(taskCtx, claim, runtime, controller.signal)
+          const allowed = [ANALYZE_EVIDENCE, WRITE_NOTE, LIST_NOTES, QUERY_EVIDENCE, READ_EVIDENCE, SKILL_TOOL, SEARCH_KNOWLEDGE, READ_KNOWLEDGE, BACKTEST_RULE, DAILY_BACKTEST_RULE, COMPLETE_TOOL]
           // restrict 只过滤继承/全局工具；本任务局部注册始终可见。
           // 不能把局部工具名传入该接口，否则原生宿主在 setup 时拒绝启动。
           taskCtx.tools.restrict({ allow: [] })

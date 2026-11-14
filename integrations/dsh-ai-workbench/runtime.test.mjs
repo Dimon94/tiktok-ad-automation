@@ -54,7 +54,7 @@ test('native DSH session has only structured result tool and a tenant/task direc
     const completions = []
     await runClaim(ctx, { stateRoot: directory }, claim, { searchKnowledge: async () => ({ items: [{ id: 'knowledge-1' }] }), readKnowledge: async () => ({ id: 'knowledge-1', body: 'policy text' }), complete: async (identity, result) => { completions.push({ identity, result }); return { status: 'COMPLETE' } } }, { SessionId: value => value, createUserMessage: value => value, renderSkillContent: s => s.content, scopeOf: () => "task-scope" })
     assert.deepEqual(allowed, [])
-    assert.deepEqual([...tools.keys()].sort(), ["tkada_analyze_evidence", "tkada_write_note", "tkada_list_notes", "tkada_query_evidence", "tkada_read_evidence", "skill", "tkada_search_knowledge", "tkada_read_knowledge", "tkada_backtest_rule", COMPLETE_TOOL].sort())
+    assert.deepEqual([...tools.keys()].sort(), ["tkada_analyze_evidence", "tkada_write_note", "tkada_list_notes", "tkada_query_evidence", "tkada_read_evidence", "skill", "tkada_search_knowledge", "tkada_read_knowledge", "tkada_backtest_rule", "tkada_daily_backtest_rule", COMPLETE_TOOL].sort())
     assert.equal(guard({ name: 'exec' }), 'Only task-scoped evidence, analysis, notes, skills and review completion are permitted')
     assert.ok(options.meta.cwd.includes('tenant-a/optimizer-a/task-1/fence-1'))
     assert.ok(!JSON.stringify(prompt).includes('short-token'))

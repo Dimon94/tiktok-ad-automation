@@ -5,7 +5,7 @@ from uuid import UUID
 
 from billiard.exceptions import SoftTimeLimitExceeded
 from fastapi import HTTPException
-from sqlalchemy import DateTime, cast, or_
+from sqlalchemy import DateTime, cast, or_, text
 from sqlmodel import select
 
 from app.core.context import TenantContext
@@ -78,6 +78,48 @@ def _empty_pack(task):
         "excluded_accounts": [],
         "causal_incremental_profit": None,
         "window_days": 7,
+    }
+
+
+def _daily_backtest_inputs(session, *, task, advertiser_id, cutoff, version):
+    """冻结规则回测专用的逐账户逐日事实；覆盖不足保持缺口状态，绝不补零。"""
+    start = (cutoff.date() - timedelta(days=35))
+    rows = session.execute(text("""
+        SELECT stat_date, campaign_id, campaign_name, currency, timezone,
+               spend, revenue_d0, revenue_d3, revenue_d7, revenue_d14,
+               revenue_d30, revenue_total
+        FROM campaign_report_day
+        WHERE tenant_id=:tenant AND advertiser_id=:advertiser
+          AND stat_date >= :start AND stat_date < :cutoff
+        ORDER BY stat_date, campaign_id
+    """), {"tenant": task.tenant_id, "advertiser": advertiser_id,
+           "start": start, "cutoff": cutoff.date()}).mappings().all()
+    state = session.execute(text("""
+        SELECT stat_date, status, revision, observed_at, last_success_at
+        FROM account_report_day_state
+        WHERE tenant_id=:tenant AND advertiser_id=:advertiser
+          AND stat_date >= :start AND stat_date < :cutoff
+        ORDER BY stat_date
+    """), {"tenant": task.tenant_id, "advertiser": advertiser_id,
+           "start": start, "cutoff": cutoff.date()}).mappings().all()
+    by_date = {r["stat_date"].isoformat(): r for r in state}
+    dates = sorted({r["stat_date"].isoformat() for r in rows})
+    expected = [(start + timedelta(days=i)).isoformat() for i in range((cutoff.date()-start).days)]
+    missing = [d for d in expected if d not in by_date or by_date[d]["status"] != "COMPLETE"]
+    return {
+        "advertiser_id": advertiser_id, "bc_id": version.bc_id,
+        "currency": next((r["currency"] for r in rows if r["currency"]), None),
+        "timezone": next((r["timezone"] for r in rows if r["timezone"]), None),
+        "start_date": start.isoformat(), "end_date": (cutoff.date()-timedelta(days=1)).isoformat(),
+        "coverage": {"expected_days": len(expected), "observed_days": len(dates),
+                      "missing_days": missing, "complete": not missing,
+                      "states": [{**dict(v), "stat_date": v["stat_date"].isoformat(),
+                                   "observed_at": v["observed_at"].isoformat() if v["observed_at"] else None,
+                                   "last_success_at": v["last_success_at"].isoformat() if v["last_success_at"] else None} for v in state]},
+        "rows": [{k: (str(v) if getattr(v, "as_tuple", None) else v) for k, v in
+                   {**dict(r), "stat_date": r["stat_date"].isoformat()}.items()} for r in rows],
+        "provenance": {"source": "campaign_report_day", "state_source": "account_report_day_state",
+                        "cutoff": cutoff.isoformat(), "full_population": True},
     }
 
 
@@ -189,6 +231,13 @@ def prepare_step(session, *, tenant_id, actor_id, payload):
                     cutoff=cutoff,
                     observed_cutoff=captured,
                     advertiser_ids=(advertiser_id,),
+                )
+                archive_source(
+                    session, task=task, category="rule_backtest_inputs",
+                    payload=_daily_backtest_inputs(session, task=task, advertiser_id=advertiser_id,
+                                                   cutoff=cutoff, version=version),
+                    captured_at=captured,
+                    identity=f"daily-backtest:{advertiser_id}",
                 )
                 for report in pack["reporting"]:
                     archive_source(

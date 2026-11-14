@@ -27,6 +27,7 @@ CATEGORIES = (
     "history",
     "business",
     "operation_logs",
+    "rule_backtest_inputs",
     "knowledge_refs",
 )
 
