@@ -1,11 +1,18 @@
 """只展开已界定的账户集合；每次读取重新校验当前成员与 BC 授权。"""
 
+import base64
+import hashlib
+import hmac
+import json
 from collections import defaultdict
 from collections.abc import Sequence
+from datetime import datetime
 
+from pydantic import BaseModel
 from sqlalchemy import tuple_
 from sqlmodel import Session, col, select
 
+from app.core.config import settings
 from app.core.context import TenantContext
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.ads import (
@@ -71,6 +78,8 @@ def list_objects(
     advertiser_ids: tuple[str, ...],
     kind: str,
     parent: EntityRef | None = None,
+    after: tuple[str, str] | None = None,
+    limit: int | None = None,
 ) -> tuple[AdObject, ...]:
     if kind not in ENTITY_KINDS or (
         parent is not None
@@ -92,12 +101,125 @@ def list_objects(
             AdObject.parent_kind == parent.kind,
             AdObject.parent_remote_id == parent.remote_id,
         )
+    if after is not None:
+        statement = statement.where(
+            tuple_(AdObject.advertiser_id, AdObject.remote_id) > after
+        )
+    if limit is not None:
+        statement = statement.limit(limit)
     return tuple(
         session.exec(
             statement.order_by(
                 AdObject.advertiser_id, AdObject.remote_id
             ).execution_options(populate_existing=True)
         ).all()
+    )
+
+
+class DirectoryObjectPublic(BaseModel):
+    ref: EntityRef
+    name: str
+    parent: EntityRef | None
+    observed_at: datetime
+    published_version: int
+
+
+class DirectoryObjectPage(BaseModel):
+    items: tuple[DirectoryObjectPublic, ...]
+    next_cursor: str | None
+
+
+def read_directory_objects(
+    session: Session,
+    *,
+    context: TenantContext,
+    bc_id: str,
+    advertiser_ids: tuple[str, ...],
+    kind: str,
+    parent: EntityRef | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> DirectoryObjectPage:
+    # 签名只绑定范围；每页仍由 list_objects 重验当前授权。
+    if not 1 <= limit <= 100:
+        raise DomainError("invalid_directory_scope", "每页读取数量无效")
+    if parent is not None:
+        if (
+            parent.tenant_id != context.tenant_id
+            or parent.advertiser_id not in advertiser_ids
+        ):
+            raise DomainError("directory_forbidden", "无法读取该父对象")
+        locate(session, context=context, bc_id=bc_id, ref=parent)
+        if {"campaign": "adgroup", "adgroup": "ad", "ad": "creative"}.get(
+            parent.kind
+        ) != kind:
+            raise DomainError("invalid_directory_scope", "父子对象类型不匹配")
+    scope = [
+        str(context.tenant_id),
+        bc_id,
+        sorted(advertiser_ids),
+        kind,
+        [parent.advertiser_id, parent.kind, parent.remote_id] if parent else None,
+    ]
+    after = None
+    if cursor is not None:
+        try:
+            if len(cursor) > 8192:
+                raise ValueError
+            raw = base64.b64decode(cursor, altchars=b"-_", validate=True)
+            signature, payload = raw[:32], raw[32:]
+            if not hmac.compare_digest(
+                signature,
+                hmac.new(
+                    settings.SECRET_KEY.encode(), payload, hashlib.sha256
+                ).digest(),
+            ):
+                raise ValueError
+            owner, key = json.loads(payload)
+            if (
+                owner != scope
+                or not isinstance(key, list)
+                or len(key) != 2
+                or any(not isinstance(v, str) or not v or len(v) > 128 for v in key)
+            ):
+                raise ValueError
+            after = tuple(key)
+        except ValueError, TypeError, UnicodeError:
+            raise DomainError(
+                "invalid_cursor", "分页游标无效或不属于当前查询"
+            ) from None
+    rows = list_objects(
+        session,
+        context=context,
+        bc_id=bc_id,
+        advertiser_ids=advertiser_ids,
+        kind=kind,
+        parent=parent,
+        after=after,
+        limit=limit + 1,
+    )
+    next_cursor = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        payload = json.dumps(
+            [scope, [last.advertiser_id, last.remote_id]], separators=(",", ":")
+        ).encode()
+        signature = hmac.new(
+            settings.SECRET_KEY.encode(), payload, hashlib.sha256
+        ).digest()
+        next_cursor = base64.urlsafe_b64encode(signature + payload).decode()
+    return DirectoryObjectPage(
+        items=tuple(
+            DirectoryObjectPublic(
+                ref=row.ref,
+                name=row.name,
+                parent=row.parent_ref,
+                observed_at=row.observed_at,
+                published_version=row.published_version,
+            )
+            for row in rows[:limit]
+        ),
+        next_cursor=next_cursor,
     )
 
 

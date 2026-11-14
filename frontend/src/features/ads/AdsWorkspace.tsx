@@ -35,6 +35,7 @@ import {
   loadColumnPrefs,
   saveColumnPrefs,
 } from "./columnPrefs"
+import { DirectoryBrowser } from "./DirectoryBrowser"
 import {
   AdsDetailSheet,
   type DetailActionScope,
@@ -721,6 +722,14 @@ export function AdsWorkspace() {
   }
   return (
     <div className="flex min-w-0 flex-col gap-3">
+      {tenantId && currentBcId && (
+        <DirectoryBrowser
+          key={`${tenantId}:${currentBcId}`}
+          tenantId={tenantId}
+          bcId={currentBcId}
+          onOpen={(ref) => setDetailStack([{ source: "directory", ref }])}
+        />
+      )}
       {submittedTask && submittedTask.bc_id === currentBcId && (
         <Alert>
           <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
@@ -969,6 +978,9 @@ export function AdsWorkspace() {
         </p>
       )}
       <AdsDetailSheet
+        onOpenDirectory={(ref) =>
+          setDetailStack((stack) => [...stack, { source: "directory", ref }])
+        }
         entry={detail}
         // 表格来源的行换成当前表格里的最新数据（操作回读后状态会更新）。
         tableRow={

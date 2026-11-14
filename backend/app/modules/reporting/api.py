@@ -24,8 +24,10 @@ from sqlmodel import Session, col, select
 from app.api.deps import CurrentUser, SessionDep
 from app.core.config import settings
 from app.core.context import TenantContext
+from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.accounts.models import AdvertiserAccount, TenantBC
+from app.modules.ads.directory import DirectoryObjectPage, read_directory_objects
 from app.modules.reporting.ad_materials import (
     AdMaterialsPublic,
     freeze_ad_material_selection,
@@ -373,6 +375,54 @@ def freeze_ad_material_selection_route(
     )
     session.commit()
     return result
+
+
+@router.get(
+    "/ad-directory", response_model=DirectoryObjectPage, name="read_directory_objects"
+)
+def directory_objects_route(
+    tenant_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+    bc_id: Annotated[str, Query(min_length=1, max_length=128)],
+    kind: Literal["campaign", "adgroup", "ad", "creative"],
+    advertiser_ids: Annotated[list[str], Query(min_length=1, max_length=100)],
+    parent_kind: Literal["campaign", "adgroup", "ad"] | None = None,
+    parent_remote_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    parent_advertiser_id: Annotated[
+        str | None, Query(min_length=1, max_length=128)
+    ] = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> DirectoryObjectPage:
+    context = _context(session, user, tenant_id)
+    if (parent_kind is None) != (parent_remote_id is None):
+        raise HTTPException(422, detail="invalid_directory_scope")
+    parent_account = parent_advertiser_id or (
+        advertiser_ids[0] if len(advertiser_ids) == 1 else None
+    )
+    if parent_kind is not None and not parent_account:
+        raise HTTPException(422, detail="invalid_directory_scope")
+    parent = (
+        EntityRef(tenant_id, parent_account, parent_kind, parent_remote_id)
+        if parent_kind
+        else None
+    )
+    try:
+        return read_directory_objects(
+            session,
+            context=context,
+            bc_id=bc_id,
+            advertiser_ids=tuple(advertiser_ids),
+            kind=kind,
+            parent=parent,
+            cursor=cursor,
+            limit=limit,
+        )
+    except DomainError as exc:
+        if exc.code == "invalid_cursor" or exc.code == "invalid_directory_scope":
+            raise HTTPException(400, detail=exc.code) from exc
+        raise HTTPException(404, detail="ad_not_found") from exc
 
 
 @router.get("/ads/{kind}/{remote_id}", response_model=AdDetailPublic, name="ad_detail")

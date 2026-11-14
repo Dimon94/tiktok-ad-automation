@@ -232,6 +232,18 @@ export type AdDetailPublic = {
      * Observed At
      */
     observed_at: string;
+    /**
+     * Published Version
+     */
+    published_version: number;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
 };
 
 /**
@@ -2235,6 +2247,40 @@ export type DirectManagementRequest = {
      * Row Problems
      */
     row_problems?: Array<RenameRowProblem>;
+};
+
+/**
+ * DirectoryObjectPage
+ */
+export type DirectoryObjectPage = {
+    /**
+     * Items
+     */
+    items: Array<DirectoryObjectPublic>;
+    /**
+     * Next Cursor
+     */
+    next_cursor: string | null;
+};
+
+/**
+ * DirectoryObjectPublic
+ */
+export type DirectoryObjectPublic = {
+    ref: EntityRef;
+    /**
+     * Name
+     */
+    name: string;
+    parent: EntityRef | null;
+    /**
+     * Observed At
+     */
+    observed_at: string;
+    /**
+     * Published Version
+     */
+    published_version: number;
 };
 
 /**
@@ -15482,6 +15528,69 @@ export type adsReportingFreezeAdMaterialSelectionResponses = {
 };
 
 export type adsReportingFreezeAdMaterialSelectionResponse = adsReportingFreezeAdMaterialSelectionResponses[keyof adsReportingFreezeAdMaterialSelectionResponses];
+
+export type adsReportingReadDirectoryObjectsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Bc Id
+         */
+        bc_id: string;
+        /**
+         * Kind
+         */
+        kind: 'campaign' | 'adgroup' | 'ad' | 'creative';
+        /**
+         * Advertiser Ids
+         */
+        advertiser_ids: Array<string>;
+        /**
+         * Parent Kind
+         */
+        parent_kind?: 'campaign' | 'adgroup' | 'ad' | null;
+        /**
+         * Parent Remote Id
+         */
+        parent_remote_id?: string | null;
+        /**
+         * Parent Advertiser Id
+         */
+        parent_advertiser_id?: string | null;
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/tenants/{tenant_id}/ad-directory';
+};
+
+export type adsReportingReadDirectoryObjectsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type adsReportingReadDirectoryObjectsError = adsReportingReadDirectoryObjectsErrors[keyof adsReportingReadDirectoryObjectsErrors];
+
+export type adsReportingReadDirectoryObjectsResponses = {
+    /**
+     * Successful Response
+     */
+    200: DirectoryObjectPage;
+};
+
+export type adsReportingReadDirectoryObjectsResponse = adsReportingReadDirectoryObjectsResponses[keyof adsReportingReadDirectoryObjectsResponses];
 
 export type adsReportingAdDetailData = {
     body?: never;

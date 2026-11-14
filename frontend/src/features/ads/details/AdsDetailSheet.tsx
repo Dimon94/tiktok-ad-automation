@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { ArrowLeft } from "lucide-react"
 import type { ReactNode } from "react"
+import type { EntityRef } from "@/client"
 import { AdsReportingService, type ReportRow } from "@/client"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -21,9 +22,11 @@ import {
   toolbarAction,
   toolbarActionLabel,
 } from "../AdsTableToolbar"
+import type { DirectoryDetailEntry } from "../DirectoryBrowser"
 import { columnsFor, useMetricCatalog } from "../metricCatalog"
 import { type AdsDimension, rowAdvertiserId, rowObjectId } from "../search"
 import { statusLabel } from "../statusLabel"
+import { DirectoryDetailBody } from "./DirectoryDetailBody"
 import { HistoryTab } from "./HistoryTab"
 import { AdMaterialsTab, MaterialsTab } from "./MaterialsTab"
 import { OverviewTab } from "./OverviewTab"
@@ -48,6 +51,7 @@ const DETAIL_KINDS = new Set<AdsDimension>(["campaign", "adgroup", "ad"])
  * 关联目标按 ID 重新查询真实报表行，因此与在该维度报表里点开的详情一致、可直接操作。
  */
 export type DetailEntry =
+  | DirectoryDetailEntry
   | { source: "table"; row: ReportRow; dimension: AdsDimension }
   | { source: "linked"; target: LinkedTarget }
 
@@ -58,6 +62,7 @@ export type DetailActionScope = {
 }
 
 export type AdsDetailSheetProps = {
+  onOpenDirectory: (ref: EntityRef) => void
   entry: DetailEntry | null
   // 表格来源的行在工作台里已按最新表格数据替换；关联来源为 null，由抽屉自行查询。
   tableRow: ReportRow | null
@@ -85,6 +90,7 @@ export type AdsDetailSheetProps = {
 
 export function AdsDetailSheet({
   entry,
+  onOpenDirectory,
   tableRow,
   canGoBack,
   startDate,
@@ -97,6 +103,7 @@ export function AdsDetailSheet({
   onAdMaterialAction,
   onOpenLinked,
 }: AdsDetailSheetProps) {
+  const { tenantId, bc } = useTenantScope()
   const target = entry?.source === "linked" ? entry.target : null
   const linked = useLinkedRows({
     dimension: target?.dimension ?? "campaign",
@@ -142,7 +149,15 @@ export function AdsDetailSheet({
             </Button>
           </div>
         )}
-        {row ? (
+        {entry?.source === "directory" && tenantId && bc ? (
+          <DirectoryDetailBody
+            key={`${bc.bc_id}:${entry.ref.kind}:${entry.ref.advertiser_id}:${entry.ref.remote_id}`}
+            tenantId={tenantId}
+            bcId={bc.bc_id}
+            ref={entry.ref}
+            onOpen={onOpenDirectory}
+          />
+        ) : row ? (
           <DetailBody
             key={`${dimension}:${row.row_key}`}
             row={row}

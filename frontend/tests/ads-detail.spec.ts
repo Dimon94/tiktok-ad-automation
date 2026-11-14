@@ -95,7 +95,9 @@ test.describe("ads detail", () => {
     // 素材挂在广告下面，广告组详情不显示素材页签。
     await expect(sheet.getByRole("tab", { name: "素材" })).toHaveCount(0)
     await sheet.getByRole("tab", { name: "设置" }).click()
-    await expect(sheet.getByText("目标 ROAS", { exact: true })).toBeVisible()
+    await expect(
+      sheet.getByRole("term").filter({ hasText: /^目标 ROAS$/ }),
+    ).toBeVisible()
     await sheet.getByRole("tab", { name: "趋势" }).click()
     await expect(sheet.getByTestId("ads-trend-chart")).toBeVisible()
     await expectLineDrawn(sheet.getByTestId("ads-trend-chart"))
@@ -813,3 +815,70 @@ for (const branch of ["empty", "uses", "carousel", "complete-empty"] as const) {
     }
   })
 }
+
+test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
+  test.skip(!process.env.DIRECTORY_TENANT, "由独立 M3 PostgreSQL runner 启动")
+  await page.addInitScript(() =>
+    localStorage.setItem("access_token", "local-test-actor"),
+  )
+  const requests: string[] = []
+  page.on("request", (request) => {
+    if (request.url().includes("/api/")) requests.push(request.url())
+  })
+  await page.goto(
+    `/tenants/${process.env.DIRECTORY_TENANT}/ads?bc_id=${process.env.DIRECTORY_BC}`,
+  )
+  const directory = page.getByRole("region", { name: "广告目录" })
+  await directory.getByRole("combobox", { name: "目录账户" }).click()
+  await page
+    .getByRole("dialog")
+    .getByText(/account-a/)
+    .first()
+    .click()
+  await expect(
+    directory.getByRole("button", { name: "重复名称 · c1", exact: true }),
+  ).toBeVisible()
+  await directory.getByRole("button", { name: "下一页", exact: true }).click()
+  await expect(
+    directory.getByRole("button", { name: "重复名称 · c22", exact: true }),
+  ).toBeVisible()
+  await directory.getByRole("button", { name: "上一页", exact: true }).click()
+  await directory
+    .getByRole("button", { name: "重复名称 · c1", exact: true })
+    .click()
+  const sheet = page.getByRole("dialog")
+  await expect(sheet.getByText(/发布版本：1/)).toBeVisible()
+  for (const identity of ["g1", "a1", "cr1"]) {
+    await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
+    await sheet
+      .getByRole("button", { name: `重复名称 · ${identity}`, exact: true })
+      .click()
+    await expect(
+      sheet.getByText(new RegExp(`· ${identity} · 账户`)),
+    ).toBeVisible()
+    await expect(sheet.getByText(/来源连接：/)).toBeVisible()
+  }
+  await expect(sheet.getByText(/cr1/).first()).toBeVisible()
+  await sheet.getByRole("tab", { name: "报表", exact: true }).click()
+  await expect(
+    sheet.getByText("目录入口没有报表上下文，暂无报表数据。"),
+  ).toBeVisible()
+  await expect(
+    sheet.getByRole("button", { name: /启用|停用|改预算|复制/ }),
+  ).toHaveCount(0)
+  await sheet.getByRole("button", { name: /查看父对象 · a1/ }).click()
+  await expect(sheet.getByText(/ad · a1 · 账户/)).toBeVisible()
+  expect((await page.request.post("/api/test-directory-revoke")).status()).toBe(200)
+  await sheet.getByRole("button", { name: /查看父对象 · g1/ }).click()
+  await expect(sheet.getByRole("alert")).toContainText("对象详情读取失败", { timeout: 15000 })
+  await expect(sheet.getByText(/来源连接：/)).toHaveCount(0)
+  await sheet.getByRole("button", { name: "Close", exact: true }).click()
+  await directory.getByRole("button", { name: "下一页", exact: true }).click()
+  await expect(directory.getByRole("alert")).toContainText("目录读取失败", { timeout: 15000 })
+  await expect(directory.getByRole("button", { name: /重复名称 · c/ })).toHaveCount(0)
+  expect(
+    requests
+      .filter((url) => /\/ads\/(campaign|adgroup|ad|creative)\//.test(url))
+      .every((url) => !url.includes("snapshot_id")),
+  ).toBe(true)
+})

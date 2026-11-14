@@ -3,6 +3,7 @@
 详情只消费 A 阶段已发布的目录和素材使用引用；缺少本地视频文件不会让外部
 广告消失。父级限制单独返回，避免把停用、审核或排期状态误报成子广告状态。
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -59,6 +60,9 @@ class AdDetailPublic(BaseModel):
     materials: tuple[MaterialUsePublic, ...] = ()
     operation_history: tuple[dict[str, Any], ...] = ()
     observed_at: datetime
+    published_version: int
+    source_connection_id: UUID | None = None
+    source_channel: str | None = None
 
 
 def _reasons(entity: AdObject) -> tuple[str, ...]:
@@ -83,14 +87,6 @@ def _reasons(entity: AdObject) -> tuple[str, ...]:
     if entity.delivery_status not in {None, "ENABLE", "STATUS_ENABLE"}:
         result.append(f"delivery_status:{entity.delivery_status}")
     return tuple(dict.fromkeys(result))
-
-
-def _parent_public(entity: AdObject) -> ParentRestrictionPublic | None:
-    if entity.parent_ref is None:
-        return None
-    # Parent is loaded by the caller and assigned through model construction so
-    # a missing parent remains an explicit unavailable restriction.
-    return None
 
 
 def get_ad_detail(
@@ -125,20 +121,29 @@ def get_ad_detail(
             operation_status=parent_entity.operation_status if parent_entity else None,
             review_status=parent_entity.review_status if parent_entity else None,
             delivery_status=parent_entity.delivery_status if parent_entity else None,
-            reasons=_reasons(parent_entity) if parent_entity else ("parent_not_synced",),
+            reasons=_reasons(parent_entity)
+            if parent_entity
+            else ("parent_not_synced",),
         )
     material_rows = session.exec(
-        select(AdMaterialReference).where(
+        select(AdMaterialReference)
+        .where(
             AdMaterialReference.tenant_id == context.tenant_id,
             AdMaterialReference.advertiser_id == ref.advertiser_id,
             AdMaterialReference.ad_remote_id == ref.remote_id,
-        ).order_by(col(AdMaterialReference.platform_material_id), col(AdMaterialReference.ad_material_id))
+        )
+        .order_by(
+            col(AdMaterialReference.platform_material_id),
+            col(AdMaterialReference.ad_material_id),
+        )
     ).all()
     materials = tuple(
         MaterialUsePublic(
             use_ref=row.use_ref,
             name=row.name,
-            local_material_id=str(row.local_material_id) if row.local_material_id else None,
+            local_material_id=str(row.local_material_id)
+            if row.local_material_id
+            else None,
             operation_status=row.operation_status,
             complete=row.complete,
             external=row.local_material_id is None,
@@ -149,7 +154,10 @@ def get_ad_detail(
     history_rows = session.exec(
         select(ManagementTaskItem, ManagementTask, ManagementPreview)
         .join(ManagementTask, col(ManagementTask.id) == col(ManagementTaskItem.task_id))
-        .join(ManagementPreview, col(ManagementPreview.id) == col(ManagementTask.preview_id))
+        .join(
+            ManagementPreview,
+            col(ManagementPreview.id) == col(ManagementTask.preview_id),
+        )
         .where(
             ManagementTaskItem.tenant_id == context.tenant_id,
             ManagementTask.bc_id == bc_id,
@@ -187,4 +195,7 @@ def get_ad_detail(
         materials=materials,
         operation_history=history,
         observed_at=entity.observed_at,
+        published_version=entity.published_version,
+        source_connection_id=entity.source_connection_id,
+        source_channel=entity.source_channel,
     )
