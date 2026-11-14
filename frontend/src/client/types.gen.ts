@@ -196,6 +196,7 @@ export type Action_Output = {
  * AdDetailPublic
  */
 export type AdDetailPublic = {
+    native?: NativeDirectoryPublic | null;
     ref: EntityRef;
     /**
      * Name
@@ -2250,6 +2251,103 @@ export type DirectManagementRequest = {
 };
 
 /**
+ * DirectoryCreativePublic
+ */
+export type DirectoryCreativePublic = {
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Published Version
+     */
+    published_version?: number | null;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
+    /**
+     * Creative Id
+     */
+    creative_id: string | null;
+    identity: DirectoryIdentityPublic | null;
+    /**
+     * Configuration
+     */
+    configuration: {
+        [key: string]: unknown;
+    };
+    /**
+     * Materials
+     */
+    materials: Array<DirectoryMaterialPublic>;
+    /**
+     * Coverage Reasons
+     */
+    coverage_reasons: Array<string>;
+};
+
+/**
+ * DirectoryIdentityPublic
+ */
+export type DirectoryIdentityPublic = {
+    /**
+     * Identity Type
+     */
+    identity_type?: string | null;
+    /**
+     * Identity Id
+     */
+    identity_id?: string | null;
+    /**
+     * Identity Authorized Bc Id
+     */
+    identity_authorized_bc_id?: string | null;
+};
+
+/**
+ * DirectoryMaterialPublic
+ */
+export type DirectoryMaterialPublic = {
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Published Version
+     */
+    published_version?: number | null;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
+    /**
+     * Platform Material Id
+     */
+    platform_material_id: string;
+    /**
+     * Material Type
+     */
+    material_type: string;
+    /**
+     * Name
+     */
+    name?: string | null;
+    /**
+     * Ad Material Id
+     */
+    ad_material_id?: string | null;
+};
+
+/**
  * DirectoryObjectPage
  */
 export type DirectoryObjectPage = {
@@ -2281,6 +2379,35 @@ export type DirectoryObjectPublic = {
      * Published Version
      */
     published_version: number;
+};
+
+/**
+ * DirectoryParentPublic
+ */
+export type DirectoryParentPublic = {
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Published Version
+     */
+    published_version?: number | null;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
+    ref: EntityRef;
+    /**
+     * Configuration
+     */
+    configuration: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -5922,6 +6049,42 @@ export type NativeCheckpoint = {
     material_issues?: Array<{
         [key: string]: unknown;
     }>;
+};
+
+/**
+ * NativeDirectoryPublic
+ */
+export type NativeDirectoryPublic = {
+    /**
+     * Series Id
+     */
+    series_id?: string | null;
+    /**
+     * Series Name
+     */
+    series_name?: string | null;
+    group_identity?: DirectoryIdentityPublic | null;
+    /**
+     * Placement Type
+     */
+    placement_type?: string | null;
+    /**
+     * Placements
+     */
+    placements?: Array<string> | null;
+    /**
+     * Tiktok Subplacements
+     */
+    tiktok_subplacements?: Array<string> | null;
+    parent_adgroup?: DirectoryParentPublic | null;
+    /**
+     * Creatives
+     */
+    creatives?: Array<DirectoryCreativePublic> | null;
+    /**
+     * Coverage Reasons
+     */
+    coverage_reasons?: Array<string>;
 };
 
 /**

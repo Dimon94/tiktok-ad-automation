@@ -160,6 +160,17 @@ const SECTIONS: Record<
       ],
     },
     {
+      title: "原生 Series 与身份",
+      fields: [
+        { key: "native_series_id", label: "Series ID" },
+        { key: "native_series_name", label: "Series 名称" },
+        { key: "identity_type", label: "组身份类型" },
+        { key: "identity_id", label: "组身份 ID" },
+        { key: "identity_authorized_bc_id", label: "组授权 BC ID" },
+        { key: "tiktok_subplacements", label: "TikTok 子版位" },
+      ],
+    },
+    {
       title: "版位与定向",
       fields: [
         { key: "placement_type", label: "版位类型" },

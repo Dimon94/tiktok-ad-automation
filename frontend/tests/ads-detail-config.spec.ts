@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test"
+import type { ReportRow } from "../src/client"
 import { configSections } from "../src/features/ads/details/configFields"
 import {
-  rowOptimizationGoal,
   rowBidStrategy,
+  rowOptimizationGoal,
   rowTargetRoas,
 } from "../src/features/ads/search"
-import type { ReportRow } from "../src/client"
 
 test("广告收入价值、竞价策略和出价值分别显示", () => {
   const row = {
@@ -106,4 +106,24 @@ test("广告配置与创意列表展示子项，不丢字段", () => {
   expect(flat["创意列表"]).toBe("单视频：ep1.mp4")
   expect(flat["身份类型"]).toBe("CUSTOMIZED_USER")
   expect(flat.foo).toBe("bar")
+})
+
+test("原生字段默认映射并保留未映射配置", () => {
+  const sections = configSections("adgroup", {
+    native_series_id: "series-1",
+    identity_id: "group-1",
+    identity_authorized_bc_id: "bc-1",
+    tiktok_subplacements: ["custom-placement"],
+    unknown_native: "kept",
+  })
+  const native = sections.find((s) => s.title === "原生 Series 与身份")!
+  expect(
+    Object.fromEntries(native.items.map((i) => [i.label, i.value])),
+  ).toMatchObject({
+    "Series ID": "series-1",
+    "组身份 ID": "group-1",
+    "组授权 BC ID": "bc-1",
+    "TikTok 子版位": "custom-placement",
+  })
+  expect(flatten(sections)["unknown_native"]).toBe("kept")
 })

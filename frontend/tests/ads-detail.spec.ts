@@ -847,7 +847,8 @@ test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
     .getByRole("button", { name: "重复名称 · c1", exact: true })
     .click()
   const sheet = page.getByRole("dialog")
-  await expect(sheet.getByText(/发布版本：1/)).toBeVisible()
+  if (!process.env.DIRECTORY_NATIVE)
+    await expect(sheet.getByText(/发布版本：1/)).toBeVisible()
   for (const identity of ["g1", "a1", "cr1"]) {
     await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
     await sheet
@@ -857,6 +858,59 @@ test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
       sheet.getByText(new RegExp(`· ${identity} · 账户`)),
     ).toBeVisible()
     await expect(sheet.getByText(/来源连接：/)).toBeVisible()
+    if (process.env.DIRECTORY_NATIVE && identity !== "cr1") {
+      const native = sheet.getByRole("region", { name: "原生 Series 与身份" })
+      await expect(
+        native.getByText('"series-1"', { exact: true }),
+      ).toBeVisible()
+      await expect(native.getByText('"group-1"', { exact: true })).toBeVisible()
+      await expect(
+        native.getByText('"group-bc-1"', { exact: true }),
+      ).toBeVisible()
+      await expect(
+        native.getByText('["PLACEMENT_TIKTOK"]', { exact: true }),
+      ).toBeVisible()
+      await expect(native.getByText("[]", { exact: true })).toBeVisible()
+      if (identity === "g1") {
+        await sheet.getByRole("button", { name: /查看父对象 · c1/ }).click()
+        await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
+        await sheet
+          .getByRole("button", { name: "重复名称 · g2", exact: true })
+          .click()
+        await expect(
+          sheet
+            .getByRole("region", { name: "原生 Series 与身份" })
+            .getByText('"series-2"', { exact: true }),
+        ).toBeVisible()
+        await expect(
+          sheet
+            .getByRole("region", { name: "原生 Series 与身份" })
+            .getByText('"group-2"', { exact: true }),
+        ).toBeVisible()
+        await sheet.getByRole("button", { name: /查看父对象 · c1/ }).click()
+        await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
+        await sheet
+          .getByRole("button", { name: "重复名称 · g1", exact: true })
+          .click()
+      }
+      if (identity === "a1") {
+        for (const i of [1, 2]) {
+          const creative = native.getByRole("region", {
+            name: `创意 cr${i}`,
+            exact: true,
+          })
+          await expect(
+            creative.getByText(`"creative-${i}"`, { exact: true }),
+          ).toBeVisible()
+          await expect(
+            creative.getByText(`"creative-bc-${i}"`, { exact: true }),
+          ).toBeVisible()
+          await expect(
+            creative.getByText('"shared-video"', { exact: true }),
+          ).toBeVisible()
+        }
+      }
+    }
   }
   await expect(sheet.getByText(/cr1/).first()).toBeVisible()
   await sheet.getByRole("tab", { name: "报表", exact: true }).click()
@@ -868,14 +922,22 @@ test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
   ).toHaveCount(0)
   await sheet.getByRole("button", { name: /查看父对象 · a1/ }).click()
   await expect(sheet.getByText(/ad · a1 · 账户/)).toBeVisible()
-  expect((await page.request.post("/api/test-directory-revoke")).status()).toBe(200)
+  expect((await page.request.post("/api/test-directory-revoke")).status()).toBe(
+    200,
+  )
   await sheet.getByRole("button", { name: /查看父对象 · g1/ }).click()
-  await expect(sheet.getByRole("alert")).toContainText("对象详情读取失败", { timeout: 15000 })
+  await expect(sheet.getByRole("alert")).toContainText("对象详情读取失败", {
+    timeout: 15000,
+  })
   await expect(sheet.getByText(/来源连接：/)).toHaveCount(0)
   await sheet.getByRole("button", { name: "Close", exact: true }).click()
   await directory.getByRole("button", { name: "下一页", exact: true }).click()
-  await expect(directory.getByRole("alert")).toContainText("目录读取失败", { timeout: 15000 })
-  await expect(directory.getByRole("button", { name: /重复名称 · c/ })).toHaveCount(0)
+  await expect(directory.getByRole("alert")).toContainText("目录读取失败", {
+    timeout: 15000,
+  })
+  await expect(
+    directory.getByRole("button", { name: /重复名称 · c/ }),
+  ).toHaveCount(0)
   expect(
     requests
       .filter((url) => /\/ads\/(campaign|adgroup|ad|creative)\//.test(url))

@@ -5366,3 +5366,9 @@ R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1�
 源码故障探针串行外备份/finally/cmp 恢复，产品代码未改。详见 docs/validation/2026-11-12-jb17-native-batch-recovery.md
 与 formal skill T18 节。当前 Timeout/空查询仍应 UNKNOWN，无新平台能力。可交 root 验收，非 Done，JB18 放行归 root。
 最终 T18 串行恢复 green：1 passed / 12.41s；两个实际源码故障探针均红，恢复 cmp 一致；Ruff/diffcheck 通过。
+
+### 2026-11-14 JB-23 原生目录识别候选
+
+起点4ddb3e0031b53f1168b22a7185399285f0daa457，在授权共享M3集成树单写者完成现有详情owner只读native投影；目录/报表设置共用展示，精确creative ID关联现有素材事实，保留父级、两层身份、版位、原配置、来源/观察/版本与覆盖未知。无Series实体、缓存、同步/模型/迁移改动或管理动作。
+
+受控官方SDK transport→现有目录暂存/发布→真实PG→真实列表/详情HTTP→工作区浏览器主链通过。相关25项通过；两个实际源码错配探针失败并字节恢复，最终native4项通过，报表/新映射5项和完整配置5项通过，正式/demo构建通过。证据及Testing1–10矩阵见 [JB-23验证](validation/2026-11-14-jb23-native-directory-recognition.md)。完整Celery调度宿主未启动；真实平台字段/Series名称/完整性/生产验收Unknown。独立两轴审查与M3统一接受/集成归root；未自行放行、未push/PR/deploy/改Linear/合main/删树，既有.venv/node_modules链接保留。

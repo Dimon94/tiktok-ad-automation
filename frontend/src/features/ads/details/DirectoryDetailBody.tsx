@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DirectoryObjects, directoryChildKind } from "../DirectoryBrowser"
-import { SettingsTab } from "./SettingsTab"
+import { DirectoryConfiguration } from "./DirectoryConfiguration"
 
 export function DirectoryDetailBody({
   tenantId,
@@ -88,17 +88,7 @@ export function DirectoryDetailBody({
                 )}
               </TabsList>
               <TabsContent value="settings">
-                {objectRef.kind === "creative" ? (
-                  <pre className="whitespace-pre-wrap break-all">
-                    {JSON.stringify(detail.configuration, null, 2)}
-                  </pre>
-                ) : (
-                  <SettingsTab
-                    kind={objectRef.kind}
-                    configuration={detail.configuration ?? {}}
-                    observedAt={detail.observed_at}
-                  />
-                )}
+                <DirectoryConfiguration detail={detail} />
               </TabsContent>
               <TabsContent value="report">
                 <p>目录入口没有报表上下文，暂无报表数据。</p>

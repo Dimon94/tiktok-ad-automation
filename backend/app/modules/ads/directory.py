@@ -439,3 +439,26 @@ def directory_carousels(entity: AdObject) -> CarouselDirectory:
     except ValueError:
         # 历史已发布的坏结构不影响广告金额；说明关系明确不可用。
         return CarouselDirectory(is_carousel=True, complete=False)
+
+
+def list_native_creatives(
+    session: Session, *, context: TenantContext, bc_id: str, parent: EntityRef
+):
+    """只读已发布创意事实，不按素材或报表反推创意身份。"""
+    from app.modules.ads.creative_models import AdCreative
+
+    entity = locate(session, context=context, bc_id=bc_id, ref=parent)
+    if entity.kind != "ad" or entity.ad_type != "SMART_PLUS":
+        raise DomainError("invalid_directory_scope", "父对象必须是 Smart+ 广告")
+    return tuple(
+        session.exec(
+            select(AdCreative)
+            .where(
+                AdCreative.tenant_id == context.tenant_id,
+                AdCreative.advertiser_id == parent.advertiser_id,
+                AdCreative.ad_remote_id == parent.remote_id,
+            )
+            .order_by(AdCreative.creative_id)
+            .execution_options(populate_existing=True)
+        ).all()
+    )

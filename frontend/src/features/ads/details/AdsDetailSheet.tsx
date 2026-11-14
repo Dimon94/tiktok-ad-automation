@@ -26,11 +26,11 @@ import type { DirectoryDetailEntry } from "../DirectoryBrowser"
 import { columnsFor, useMetricCatalog } from "../metricCatalog"
 import { type AdsDimension, rowAdvertiserId, rowObjectId } from "../search"
 import { statusLabel } from "../statusLabel"
+import { DirectoryConfiguration } from "./DirectoryConfiguration"
 import { DirectoryDetailBody } from "./DirectoryDetailBody"
 import { HistoryTab } from "./HistoryTab"
 import { AdMaterialsTab, MaterialsTab } from "./MaterialsTab"
 import { OverviewTab } from "./OverviewTab"
-import { SettingsTab } from "./SettingsTab"
 import { TrendTab } from "./TrendTab"
 import { type LinkedTarget, useLinkedRows } from "./useLinkedRows"
 
@@ -360,13 +360,7 @@ function DetailBody({
         {kind && (
           <TabsContent value="settings" className="mt-4">
             <DetailState query={detailQuery}>
-              {detail && (
-                <SettingsTab
-                  kind={kind}
-                  configuration={detail.configuration ?? {}}
-                  observedAt={detail.observed_at}
-                />
-              )}
+              {detail && <DirectoryConfiguration detail={detail} />}
             </DetailState>
           </TabsContent>
         )}
