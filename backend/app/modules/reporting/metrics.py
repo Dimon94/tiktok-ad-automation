@@ -42,7 +42,9 @@ PLATFORM_RATIOS = {
 
 def metric_evidence(metrics: dict[str, Any], *, level: str = "ad") -> dict[str, Any]:
     # 保存请求合同和逐字段状态，不保存响应行、令牌或客户素材。
-    fields = _BASIC | PLATFORM_RATIOS
+    # 广告日报未请求平台比率，不能把它解释为平台漏返字段。
+    requested_ratios = PLATFORM_RATIOS if level == "campaign" else {}
+    fields = _BASIC | requested_ratios
     evidence = {}
     for key, field in fields.items():
         raw = metrics.get(field)
@@ -56,13 +58,15 @@ def metric_evidence(metrics: dict[str, Any], *, level: str = "ad") -> dict[str, 
             else "DASH"
             if raw == "-"
             else "VALUE",
-            "value": str(value) if value is not None else None,
         }
+        # 金额只存事实 Numeric 列；仅非可加的平台比率作为独立观测保留。
+        if key in requested_ratios:
+            evidence[key]["value"] = str(value) if value is not None else None
     return {
         "contract_revision": NATIVE_CONTRACT,
         "level": level,
         "field_states": {key: item["status"] for key, item in evidence.items()},
-        "platform_roas": {key: evidence[key]["value"] for key in PLATFORM_RATIOS},
+        "platform_roas": {key: evidence[key]["value"] for key in requested_ratios},
         "source_kind": "PLATFORM_DIRECT",
         "request": {
             "report_type": "BASIC",

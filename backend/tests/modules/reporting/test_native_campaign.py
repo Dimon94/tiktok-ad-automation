@@ -789,3 +789,34 @@ def test_account_restore_trigger_preserves_parent(session, sync_seed):
     )
     assert fact.revenue_total == Decimal("40")
     assert fact.evidence["source_kind"] == "PLATFORM_DIRECT"
+
+
+def test_ad_evidence_tracks_requested_fields_without_copying_money(session, sync_seed):
+    """Spec R2/R10: 未请求不等于未返回，金额只由 Numeric 事实持有。"""
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.modules.reporting.publish import AccountMeta, publish_ad_day
+    from app.modules.reporting.store_models import AdReportDay
+    from tests.modules.reporting.sync_conftest import ad_row
+
+    publish_ad_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "Asia/Hong_Kong")},
+        start=D,
+        end=D,
+        rows=[ad_row("requested-fields", D, spend="50", total="8")],
+    )
+    fact = session.get(
+        AdReportDay, (sync_seed.tenant_id, "acc-1", D, "requested-fields")
+    )
+    assert fact is not None
+    assert fact.revenue_total == Decimal("8")
+    assert "platform_roas_total" not in fact.evidence["field_states"]
+    assert "platform_roas_d0" not in fact.evidence["field_states"]
+    assert fact.evidence["platform_roas"] == {}
+    assert fact.evidence["fields"]["revenue_total"]["status"] == "VALUE"
+    assert "value" not in fact.evidence["fields"]["revenue_total"]
+    assert "value" not in fact.evidence["fields"]["spend"]

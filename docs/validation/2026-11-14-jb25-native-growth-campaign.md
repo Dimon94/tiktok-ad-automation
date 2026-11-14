@@ -58,3 +58,12 @@ JB-26消费：复用 ParentReportDay 的 level/remote_id/local-day、MetricCatal
 未进入本票的后续工作：Adgroup完整采集、三层部分失败/统一总览、完整并发与重放digest、子集/来源分桶计算、冻结行指标/详情/CSV、全M4a形式与验收。当前快照仍沿既有成员冻结/页内金额重算机制；本票不宣称跨刷新指标冻结。自动规则、经营测算、素材金额仍用原输入。本地实现与验证交由root独立审查；不自标Done、不开放JB-26、不宣称M4a完成。真实平台支持和生产验收仍Unknown。
 
 最终目录合同补测：明确公开 levels 和 PLATFORM_DIRECT/LOCAL_CALCULATION，额外断言平台观察与本地公式的区别；主Seam目标检查 1 passed/5.96s，客户端类型同步，TypeScript静态检查通过。该补充只收紧目录 DTO，无广告业务操作。
+
+
+## Root 独立接手复验与元数据修正
+
+root核对提交0cf9358863d6a5af0d4c4fa943f33a228ba1792e、工作树差异、迁移/父表隔离/授权入口与真实transport主Seam。亲跑native/metric_catalog/dimension_query：29 passed/8.65s。发现并修正两个证据合同缺口：Ad未请求平台ROAS时不能记成平台ABSENT；金额只持有于Numeric事实列，证据不再复制金额值，平台非可加比率继续作为观测保留。
+
+新增真实PG发布读回检查先因未请求比率被标ABSENT而失败；修正后同范围30 passed/8.66s（含真实SDK→Worker函数→HTTP→工作区）。两个近似错误探针：恢复所有层均标平台比率、恢复证据复制money，各实际断言RED；finally与仓外备份字节比较恢复后目标GREEN。日志为外仓m4a-implementation/jb25-root-*-red.log及green.log。独立期望来源为Spec R2/R10的请求状态和单一金额持有合同。
+
+本票可交JB-26消费；不标Linear Done、不代表完整M4a通过正式两轴审查。独立Celery进程投递与整个MMF形式/端到端验收仍由后续票完成。本次root修正未改变前端，复用匹配前端源码的构建证据；没有重跑全部旧探针。

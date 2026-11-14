@@ -5386,3 +5386,8 @@ Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接
 从 `b0f3b144` 在唯一获批 M4a 集成树串行实现 Campaign walking skeleton：同一 ReportingData 的物理隔离 ParentReportDay、原需求/SDK/Redis/Worker 发布、SQL direct整向量选择、独立覆盖状态、Ad nullable evidence、目录合同及工作区可见来源/窗口/平台与本地ROAS。不派下级、不进入JB-26，不合main/推送/PR/部署/改Linear。
 
 官方SDK transport替身→原网关/Redis/Worker→真实PG→查询HTTP/缓存Worker→真实工作区显示40/30及平台长小数；相关53项通过，后续覆盖修复及账户恢复/原维度查询24项通过，撤权补测1项通过；最终类型合同相关29项及最新本票7项通过。8个源码错误探针实际RED、finally字节恢复、GREEN；构建、Ruff与diffcheck通过。严格mypy全量仍有起点可复现诊断，未称全绿。实现、失败/修复、运行命令、迁移/回滚限制及JB-26消费合同见 [JB-25验证记录](validation/2026-11-14-jb25-native-growth-campaign.md)。独立审查/票状态由root处理，本票不自标Done；M4a剩余票、生产/真实平台仍未验收。
+
+
+### 2026-11-14 JB-25 root接手
+
+在feat/jb24-native-growth-m4a核对0cf93588并独立复跑29项后，修正请求证据与金额所有权：未请求平台ratio不记ABSENT，证据不重复money。新增真实PG回归，30 passed；两个错误探针红→字节恢复→绿。JB-25仅集成基线验收，后续JB-26继续，完整M4a及正式审查未完成；未推送/部署。
