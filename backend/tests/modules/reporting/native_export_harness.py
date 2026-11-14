@@ -110,16 +110,71 @@ def complete(base_url, seed, factory, pending):
                             ).all()
                             if r.payload["export_id"] == export_id
                         )
+                    if material:
+                        # 在实际本地对象执行层注入写前/写后失败；保留原业务Worker和HTTP。
+                        from hashlib import sha256
+                        from unittest.mock import patch
+
+                        from app.modules.reporting import exports
+                        from app.modules.reporting.export_tasks import run_export
+
+                        original_replace = exports.os.replace
+                        for fault in ("before", "after"):
+
+                            def storage_execution(
+                                src, dst, fault=fault, original_replace=original_replace
+                            ):
+                                if fault == "before":
+                                    raise OSError("JB38 before write")
+                                original_replace(src, dst)
+                                raise OSError("JB38 after write")
+
+                            with patch.object(exports.os, "replace", storage_execution):
+                                run_export(UUID(export_id))
+                            with factory() as s:
+                                failed = s.get(ReportExport, UUID(export_id))
+                                assert (
+                                    failed.status == "FAILED"
+                                    and failed.object_key is None
+                                )
+                                assert not exports._object_path(
+                                    exports._expected_key(failed)
+                                ).exists()
+                            unavailable = client.get(
+                                f"/api/tenants/{seed.tenant_id}/report-exports/{export_id}/download",
+                                params={"bc_id": TEST_BC},
+                            )
+                            assert unavailable.status_code == 409
+                        with factory() as s:
+                            frozen = s.get(ReportExport, UUID(export_id))
+                            intended = exports._csv_rows(
+                                frozen, exports._export_rows(s, frozen)
+                            )
+                            retry_body = {
+                                "snapshot_id": str(frozen.snapshot_id),
+                                "idempotency_key": frozen.idempotency_key,
+                            }
+                        retry = client.post(
+                            f"/api/tenants/{seed.tenant_id}/report-exports",
+                            params={"bc_id": TEST_BC},
+                            json=retry_body,
+                        )
+                        assert (
+                            retry.status_code == 200
+                            and retry.json()["status"] == "QUEUED"
+                        )
                     started = time.perf_counter()
-                    celery_app.send_task(
-                        "reporting.export",
-                        queue=queue,
-                        kwargs=dict(  # noqa: C408
-                            tenant_id=str(seed.tenant_id),
-                            actor_id=str(seed.actor_id),
-                            payload=record.payload,
-                        ),
-                    )
+                    for _ in range(3 if material else 1):
+                        celery_app.send_task(
+                            "reporting.export",
+                            queue=queue,
+                            task_id=str(record.id),
+                            kwargs=dict(  # noqa: C408
+                                tenant_id=str(seed.tenant_id),
+                                actor_id=str(seed.actor_id),
+                                payload=record.payload,
+                            ),
+                        )
                     url = f"/api/tenants/{seed.tenant_id}/report-exports/{export_id}"
                     deadline = time.monotonic() + 20
                     while True:
@@ -133,6 +188,15 @@ def complete(base_url, seed, factory, pending):
                     assert status == "COMPLETE", response.text
                     download = client.get(url + "/download", params={"bc_id": TEST_BC})
                     assert download.status_code == 200, download.text
+                    if material:
+                        assert download.content == intended
+                        repeated = client.get(
+                            url + "/download", params={"bc_id": TEST_BC}
+                        )
+                        assert repeated.content == intended
+                        print(  # noqa: T201
+                            f"JB38 full task={export_id}; sha256={sha256(intended).hexdigest()}; bytes={len(intended)}"
+                        )  # noqa: T201
                     rows = list(csv.DictReader(io.StringIO(download.text)))
                     if material:
                         expected = [

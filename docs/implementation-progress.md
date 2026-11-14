@@ -5589,3 +5589,9 @@ JB36最终入口补证：Playwright查看vid1指标及轮播后清空筛选，�
 JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化模型和现有skill同步单独随后提交。没有main集成或整个MMF完成声明。
 
 - M4b JB37 root阶段接受：候选708cc31a，独立lifecycle+tracer12 passed（PG故障/TTL/旧合同/新ID及真实浏览器重查/原Worker五类CSV），24有限组合通过。继续fresh Sol/high JB38导出故障、重试、阶段撤权和24h到期；整体未放行。
+
+## 2026-11-14 JB38 / M4B-05 本地实现候选
+
+- 从 `6bcf1addccb659ee98414e9331d76c36d2d2883c` 在用户指定M4b串行树实现原导出生命周期：原Worker行锁防重复发布、写后当前权限/到期重查、失败对象清理、跨写入EXPIRED，以及FAILED重试复用原outbox消息并重新排队。冻结payload、合同、publication_map、snapshot身份和24小时期限保持原owner，无迁移/新系统/UI变更。
+- 本轮真实存储/PG/HTTP阶段撤权、并发/重复、snapshot删除后生成、源更新/目录删除后的重复下载；原完整浏览器→Redis/Celery→五类CSV，357311 bytes，sha256 `78df6695657f2886e01386b8b095c9e50cdc49d8db9fa99290ec14d1f0bc238b`。最初空夹具及异步轮询工装错误已记录并由有效payload结果替代。
+- 详见 `docs/validation/2026-11-14-jb38-material-export-lifecycle.md`，含整个M4b T1–T12/R1–R10的新/继承证据、限制、具体命令与root审阅包。formal单独提交；root fresh Standards/Spec、整个MMF接受/本地集成/关闭仍待执行。平台creative支持/口径/成熟度与生产容量Unknown；没有Linear写入、推送、PR、main合并、部署、平台操作或补写源数据。

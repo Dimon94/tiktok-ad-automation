@@ -45,17 +45,28 @@ _MEMORY_OBJECTS: dict[str, bytes] = {}
 
 
 def _enqueue_export(
-    session: Session, *, context: TenantContext, export_id: UUID
+    session: Session, *, context: TenantContext, export: ReportExport
 ) -> None:
     from app.jobs.outbox import enqueue_after_commit
 
-    enqueue_after_commit(
+    dispatch_id = enqueue_after_commit(
         session,
         context=context,
         task_name="reporting.export",
-        task_key=f"reporting.export:{export_id}",
-        payload={"export_id": str(export_id)},
+        task_key=f"reporting.export:{export.id}",
+        payload={"export_id": str(export.id)},
     )
+    if export.status == "FAILED":
+        from app.jobs.models import PendingDispatch
+
+        # 重试复用原outbox身份；只在FAILED→QUEUED时重新投递，重复请求不另建消息。
+        dispatch = session.get(PendingDispatch, dispatch_id, with_for_update=True)
+        assert dispatch is not None
+        dispatch.published_at = None
+        dispatch.available_at = datetime.now(UTC)
+        export.status = "QUEUED"
+        session.add_all([dispatch, export])
+        session.flush()
 
 
 def csv_safe_text(value: str) -> str:
@@ -139,18 +150,20 @@ def create_export(
     # Idempotency lookup itself is scoped by all three dimensions. A key from
     # another BC/user can never return an existing export.
     existing = session.exec(
-        select(ReportExport).where(
+        select(ReportExport)
+        .where(
             ReportExport.tenant_id == context.tenant_id,
             ReportExport.bc_id == bc_id,
             ReportExport.actor_id == context.actor_id,
             ReportExport.idempotency_key == idempotency_key.strip(),
         )
+        .with_for_update()
     ).first()
     if existing is not None:
         _scope_check(session, context=context, bc_id=bc_id, export=existing)
         if existing.snapshot_id != snapshot_id:
             raise HTTPException(409, detail="export_idempotency_conflict")
-        _enqueue_export(session, context=context, export_id=existing.id)
+        _enqueue_export(session, context=context, export=existing)
         return _public(existing)
 
     snapshot = read_snapshot(
@@ -200,9 +213,9 @@ def create_export(
         _scope_check(session, context=context, bc_id=bc_id, export=existing)
         if existing.snapshot_id != snapshot_id:
             raise HTTPException(409, detail="export_idempotency_conflict")
-        _enqueue_export(session, context=context, export_id=existing.id)
+        _enqueue_export(session, context=context, export=existing)
         return _public(existing)
-    _enqueue_export(session, context=context, export_id=row.id)
+    _enqueue_export(session, context=context, export=row)
     return _public(row)
 
 
@@ -506,13 +519,28 @@ def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, 
 
 def generate_export(session: Session, export: ReportExport) -> None:
     """Generate a complete object or leave no externally visible partial file."""
+    context = require_tenant(
+        session, actor_id=export.actor_id, tenant_id=export.tenant_id, action="read"
+    )
+    _scope_check(session, context=context, bc_id=export.bc_id, export=export)
     key = _expected_key(export)
     content = _csv_rows(export, _export_rows(session, export))
-    _put_object(key, content)
-    export.object_key = key
-    export.status = "COMPLETE"
-    session.add(export)
-    session.flush()
+    try:
+        _put_object(key, content)
+        # 对象写入可能跨越到期或撤权；发布键之前重读当前授权，不能借旧上下文放行。
+        session.expire_all()
+        context = require_tenant(
+            session, actor_id=export.actor_id, tenant_id=export.tenant_id, action="read"
+        )
+        _scope_check(session, context=context, bc_id=export.bc_id, export=export)
+        export.object_key = key
+        export.status = "COMPLETE"
+        session.add(export)
+        session.flush()
+    except Exception:
+        # put 也可能写成功后才抛错；只清理本任务确定性键，失败对象不能遗留。
+        _delete_object(key)
+        raise
 
 
 def download_export(

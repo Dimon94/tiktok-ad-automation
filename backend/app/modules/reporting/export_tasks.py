@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.db import engine
 from app.core.errors import DomainError
@@ -30,7 +30,9 @@ def run_export(export_id: UUID) -> None:
         raise DomainError("report_export_not_found", "导出不存在") from exc
 
     with Session(engine) as session:
-        export = session.get(ReportExport, export_id, populate_existing=True)
+        export = session.exec(
+            select(ReportExport).where(ReportExport.id == export_id).with_for_update()
+        ).one_or_none()
         if export is None:
             raise DomainError("report_export_not_found", "导出不存在")
         try:
@@ -66,10 +68,13 @@ def run_export(export_id: UUID) -> None:
         try:
             # 生成阶段再次重建上下文和授权，覆盖队列等待期间的撤权。
             with Session(engine) as verify_session:
-                verify_export = verify_session.get(
-                    ReportExport, export_id, populate_existing=True
-                )
-                if verify_export is None:
+                # 同一任务的重复消息串行发布，等待者重新检查完成状态。
+                verify_export = verify_session.exec(
+                    select(ReportExport)
+                    .where(ReportExport.id == export_id)
+                    .with_for_update()
+                ).one_or_none()
+                if verify_export is None or verify_export.status == "COMPLETE":
                     return
                 verify_context = require_tenant(
                     verify_session,
@@ -87,11 +92,20 @@ def run_export(export_id: UUID) -> None:
                 verify_session.commit()
         except Exception as exc:
             with Session(engine) as failed_session:
-                failed = failed_session.get(
-                    ReportExport, export_id, populate_existing=True
-                )
-                if failed is not None:
-                    failed.status = "FAILED"
+                failed = failed_session.exec(
+                    select(ReportExport)
+                    .where(ReportExport.id == export_id)
+                    .with_for_update()
+                ).one_or_none()
+                if failed is not None and failed.status != "COMPLETE":
+                    _delete_object(_expected_key(failed))
+                    # 写入过程中跨过24小时仍必须保留EXPIRED语义。
+                    failed.status = (
+                        "EXPIRED"
+                        if isinstance(exc, HTTPException)
+                        and exc.detail == "report_export_expired"
+                        else "FAILED"
+                    )
                     if isinstance(exc, HTTPException):
                         failed.coverage = dict(failed.coverage) | {
                             "export_error": str(exc.detail)
