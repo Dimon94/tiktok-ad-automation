@@ -700,3 +700,134 @@ def test_material_projection_local_windows_keep_history_ties_and_type_boundaries
     image.material_type = "VIDEO"
     session.flush()
     assert projected() == {("image", "VIDEO", 10)}
+
+
+@pytest.mark.parametrize("fail_late", [False, True])
+def test_material_write_batches_preserve_ambiguity_and_atomicity(
+    session, directory_seed, monkeypatch, fail_late
+):
+    from app.modules.ads import sync
+
+    _authority(session, directory_seed)
+    monkeypatch.setattr(sync, "_MATERIAL_WRITE_BATCH_SIZE", 1)
+    run = _run(session, directory_seed, kind="ad")
+    owner = replace(
+        _page(directory_seed).items[0],
+        ref=EntityRef(run.tenant_id, run.advertiser_id, "ad", "batch-owner"),
+    )
+    materials = tuple(
+        AdMaterialUsage(
+            MaterialUseRef(owner.ref, video, inner, "VIDEO"),
+            None,
+            "ENABLE",
+            True,
+            "name",
+            (),
+        )
+        for video, inner in (
+            ("shared-video", "precise-a"),
+            ("shared-video", "precise-b"),
+            ("z-other-video", "precise-c"),
+        )
+    )
+    stage_directory_page(
+        session,
+        run_id=run.id,
+        claim_generation=1,
+        page=DirectoryPage((owner,), materials, None, True, CallEvidence()),
+    )
+    writes = 0
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        nonlocal writes
+        if statement.lstrip().startswith("INSERT INTO ad_material_reference"):
+            writes += 1
+            if fail_late and writes == 2:
+                raise RuntimeError("second material batch failed")
+
+    connection = session.connection()
+    event.listen(connection, "before_cursor_execute", record)
+    try:
+        if fail_late:
+            with pytest.raises(RuntimeError, match="second material batch failed"):
+                publish_directory(session, run_id=run.id, claim_generation=1)
+        else:
+            publish_directory(session, run_id=run.id, claim_generation=1)
+    finally:
+        event.remove(connection, "before_cursor_execute", record)
+    assert writes == 2
+    for table in ("ad_material_reference", "current_ad_material"):
+        assert connection.execute(
+            text(f"SELECT count(*) FROM {table} WHERE tenant_id=:tenant"),
+            {"tenant": run.tenant_id},
+        ).scalar_one() == (0 if fail_late else 3)
+    members = connection.execute(
+        text("""
+            SELECT ad_material_id FROM material_ad_member_current
+            WHERE tenant_id=:tenant AND platform_material_id='shared-video'
+        """),
+        {"tenant": run.tenant_id},
+    ).all()
+    assert members == ([] if fail_late else [(None,)])
+    session.refresh(run)
+    if fail_late:
+        assert run.published_version is None
+        assert (
+            session.get(
+                AdObject, (run.tenant_id, run.advertiser_id, "ad", "batch-owner")
+            )
+            is None
+        )
+    else:
+        assert run.status == "COMPLETE"
+
+
+def test_repeated_ambiguous_materials_keep_evidence_versions(
+    session, directory_seed, monkeypatch
+):
+    from app.modules.ads import sync
+
+    _authority(session, directory_seed)
+    monkeypatch.setattr(sync, "_MATERIAL_WRITE_BATCH_SIZE", 1)
+    run = _run(session, directory_seed, kind="ad")
+    owner = replace(
+        _page(directory_seed).items[0],
+        ref=EntityRef(run.tenant_id, run.advertiser_id, "ad", "repeat-owner"),
+    )
+    materials = tuple(
+        AdMaterialUsage(
+            MaterialUseRef(owner.ref, video, inner, "VIDEO"),
+            None,
+            "ENABLE",
+            True,
+            "name",
+            (),
+        )
+        for video, inner in (
+            ("shared-video", "precise-a"),
+            ("shared-video", "precise-b"),
+            ("z-other-video", "precise-c"),
+        )
+    )
+    page = DirectoryPage((owner,), materials, None, True, CallEvidence())
+
+    def publish(value):
+        stage_directory_page(
+            session, run_id=value.id, claim_generation=1, page=page
+        )
+        publish_directory(session, run_id=value.id, claim_generation=1)
+
+    def versions():
+        return tuple(
+            session.connection().execute(
+                text(f"""SELECT version_id FROM {table}
+                    WHERE tenant_id=:tenant AND platform_material_id='shared-video'"""),
+                {"tenant": run.tenant_id},
+            ).scalar_one()
+            for table in ("material_ad_member_current", "material_account_member_current")
+        )
+
+    publish(run)
+    before = versions()
+    publish(_run(session, directory_seed, kind="ad"))
+    assert versions() == before
