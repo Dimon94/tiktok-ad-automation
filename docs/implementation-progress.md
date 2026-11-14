@@ -5587,3 +5587,5 @@ JB36最终入口补证：Playwright查看vid1指标及轮播后清空筛选，�
 现有reporting-data skill新增24有界生命周期组合及3种broken模型拒错；四个实际源码探针和既有四个隔离探针均RED→外部备份/finally/cmp→GREEN。详情、准确命令/日志/计数/digest/失败修复、继承证据及JB38消费合同见 [JB37验证](validation/2026-11-14-jb37-material-query-lifecycle.md)。本地AC闭合；JB38完整导出故障/重试/幂等/阶段权限/24小时矩阵和整个MMF fresh两轴审查/集成由root继续。JB35/JB36阶段接受不改，Linear状态/依赖不动；未推送、PR、合并或部署，平台语义/生产容量Unknown。
 
 JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化模型和现有skill同步单独随后提交。没有main集成或整个MMF完成声明。
+
+- M4b JB37 root阶段接受：候选708cc31a，独立lifecycle+tracer12 passed（PG故障/TTL/旧合同/新ID及真实浏览器重查/原Worker五类CSV），24有限组合通过。继续fresh Sol/high JB38导出故障、重试、阶段撤权和24h到期；整体未放行。
