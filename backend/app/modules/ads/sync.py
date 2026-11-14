@@ -639,12 +639,21 @@ def _publish_staged_materials(session, run, staged, *, statement_timeout_ms=None
         if not large:
             break
         # 冷库中的成员/证据表会在一次发布中增长数万行。每段真实统计并重规划，
-        # 避免逐VID刷新和外键检查沿用空表SeqScan；小目录不更新共享表统计。
+        # 避免逐VID刷新和外键检查沿用空表SeqScan；只统计查询键，
+        # 不反复解压/比较证据JSON等宽值。小目录不更新共享表统计。
         connection.execute(
             text("""
-            ANALYZE ad_material_reference,current_ad_material,
-                material_ad_member_current,material_account_member_current,
-                report_evidence_version
+            ANALYZE ad_material_reference
+                    (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+                     ad_material_id,material_type),
+                current_ad_material
+                    (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+                     ad_material_id,material_type),
+                material_ad_member_current
+                    (tenant_id,advertiser_id,ad_remote_id,platform_material_id,material_type),
+                material_account_member_current
+                    (tenant_id,advertiser_id,platform_material_id),
+                report_evidence_version (id,tenant_id,advertiser_id)
         """)
         )
         connection.execute(text("DISCARD PLANS"))

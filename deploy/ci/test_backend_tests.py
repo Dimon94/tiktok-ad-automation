@@ -55,6 +55,40 @@ class PartitionTests(unittest.TestCase):
         self.assertEqual(regular, ["tests/x.py::a", "tests/y.py::c"])
         self.assertEqual(exclusive, ["tests/acceptance/test_flow.py::b"])
 
+    def test_serial_capacity_files_preserve_every_collected_case(self):
+        ids = ["tests/x.py::a", "tests/cap.py::size[10000]",
+               "tests/cap.py::rollback", "tests/acceptance/test_flow.py::b"]
+        parallel, serial = backend_tests.split_serial(ids, ["tests/cap.py"])
+        self.assertEqual(serial, ids[1:3])
+        self.assertEqual(parallel, [ids[0], ids[3]])
+        self.assertEqual(set(parallel + serial), set(ids))
+        self.assertFalse(set(parallel) & set(serial))
+        self.assertEqual(backend_tests.partition(serial, {}, 1)[0][1], ["tests/cap.py"])
+
+    def test_serial_files_wait_for_parallel_and_keep_separate_results(self):
+        ids = ["tests/normal.py::a", "tests/cap_a.py::b", "tests/cap_b.py::c"]
+        calls = []
+        def start(groups, index, label, *_args):
+            paths = [p for _, group in groups for p in group]
+            calls.append(("start", index, paths))
+            return (index, paths)
+        def wait(running, *_args):
+            index, paths = running
+            calls.append(("wait", index, paths))
+            return ({n: "passed" for n in ids if n.split("::")[0] in paths}, {}, [])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            backend_tests.os.environ, {}, clear=True
+        ), patch.object(sys, "argv", ["backend_tests.py", "--work", directory,
+            "--serial-file", "tests/cap_a.py", "--serial-file", "tests/cap_b.py"
+        ]), patch.object(backend_tests, "collect", return_value=ids), patch.object(
+            backend_tests, "start_groups", side_effect=start
+        ), patch.object(backend_tests, "wait_groups", side_effect=wait):
+            self.assertEqual(backend_tests.main(), 0)
+        self.assertEqual([c[0] for c in calls], ["start", "wait"] * 3)
+        self.assertEqual([c[2] for c in calls[::2]],
+                         [["tests/normal.py"], ["tests/cap_a.py"], ["tests/cap_b.py"]])
+        self.assertEqual(len({c[1] for c in calls[::2]}), 3)
+
     def test_fast_tier_deselects_slow_marker(self):
         fast = backend_tests.pytest_command(["tests"], fast=True)
         full = backend_tests.pytest_command(["tests"], fast=False)
