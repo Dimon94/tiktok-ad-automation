@@ -5543,3 +5543,7 @@ Root independently checked frozen payload/contract, RR build, page/detail and cu
 ## 2026-11-14 M4a R1 root P2 repair
 
 JB31 creative snapshot serializer and JB32 legacy/unrequested evidence states fixed by root. Three real PG regressions RED on pinned product then GREEN; setup errors excluded. Targeted/snapshot/export/new-state regression28 passed; full native_levels False SDK/Worker/HTTP/browser/CSV chain1 passed/6 deselected (68.06s), including original NOT_REQUESTED assertion. Targeted8 and snapshot128 bounded models passed; Ruff/format/diff pass. No source selection/amount or model atomicity changed by root P2 fixes. P1 implementation inherited134/17 plus root28 checks; fresh R2 both axes required for changed public provenance. No push/deploy/main integration yet.
+
+## 2026-11-14 M4a final local acceptance
+
+All six implementation slices and R1 fixes accepted; fresh Standards/Spec R2 PASS, no outstanding P0/P1. Full acceptance and four review reports preserved under docs/validation/2026-11-14-native-m4a-acceptance.md and native-m4a-review/. Ready for local main fast-forward and tracker completion only; no push/deployment/real-platform write. Existing unrelated main artifacts retained.
