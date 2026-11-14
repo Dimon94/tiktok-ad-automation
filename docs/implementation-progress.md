@@ -5404,3 +5404,11 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 真实 pytest sessionfinish 故障探针：1 个用例通过后强制退出 1，执行器仍返回 1 并记录“进程失败”，验证不能假绿。
 - `python3 deploy/ci/test_backend_tests.py`：12 tests OK；YAML 解析、全部 workflow shell 语法及修改 Python 的编译检查通过。
 - 未重跑完整 modules；旧轮最终没有 pytest summary 的原因仍为 Unknown。共有数据库的大输入夹具可能影响后续测试，尚无具体失败归因，本轮不据此扩大改动。
+
+
+## 2026-11-14：CI 按测试文件恢复干净数据库
+
+- modules 的四组执行继续保留全部收集结果；`--isolate-files` 在文件 teardown 后从既有独立迁移模板重建本组测试数据库，避免已提交的跨租户队列被后续测试重复处理。保留 Redis 原逻辑。
+- 证据：CI 的投影任务原期望 32 桶却处理 1157 桶；独立干净库中同组查询/投影/阶段用例 18 passed，仅归档密钥夹具一项失败（另行修复）。原测试断言不放宽。
+- 黑盒：首文件提交标记表，次文件要求其不存在；无隔离时 1 failed / 1 passed，实际插件开启后 2 passed / 5.67s。13 项 runner 检查通过；独立 Standards / Spec 第1轮均 PASS。
+- 逐项结果同时保留既有性能用例的 record_property 数据，以免仅剩总体耗时。完整远程 modules 尚未通过，产品名称与素材发布性能问题仍在独立修复，不把隔离视为全量修复。
