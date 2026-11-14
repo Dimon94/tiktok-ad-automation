@@ -108,6 +108,37 @@ def _writable_buckets(session, *, tenant_id, accounts, kind, start, end, request
     } - protected
 
 
+def _publication_buckets(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    kind: str,
+    buckets: set[tuple[str, date]],
+    observed_at: datetime,
+    payloads: dict[tuple[str, date], str],
+) -> set[tuple[str, date]]:
+    """账户锁内裁决相同观测：重放不写，冲突拒绝，不能借重试推进版本。"""
+    writable = set(buckets)
+    for advertiser, day in sorted(buckets):
+        state = session.get(ReportSyncState, (tenant_id, advertiser, kind, day))
+        if state is not None and state.observed_at == observed_at:
+            if (state.active_contract, state.publication_digest) != (
+                NATIVE_CONTRACT,
+                payloads[(advertiser, day)],
+            ):
+                raise DomainError(
+                    "report_publication_conflict", "同一观测时点的报表内容冲突"
+                )
+            writable.remove((advertiser, day))
+    return writable
+
+
+def _payload_digest(payload: Sequence[Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(sorted(payload), sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
 def _bucket_filter(
     model: Any, buckets: Iterable[tuple[str, date]]
 ) -> ColumnElement[bool]:
@@ -300,6 +331,8 @@ def publish_ad_day(
     counts: dict[tuple[str, date], int] = {}
     requested_at = requested_at or now
 
+    seen = set()
+
     def records():
         for row in rows:
             advertiser = _account(row, accounts)
@@ -316,6 +349,10 @@ def publish_ad_day(
                 )
             if campaign_ids and campaign not in campaign_ids:
                 raise DomainError("report_row_invalid", "按系列分批结果包含范围外系列")
+            key = (advertiser, day, str(ad_id))
+            if key in seen:
+                raise DomainError("report_row_invalid", "广告日报包含重复身份")
+            seen.add(key)
             meta = accounts[advertiser]
             yield (
                 {
@@ -365,6 +402,34 @@ def publish_ad_day(
         end=end,
         requested_at=requested_at,
     )
+    payloads = {}
+    if not campaign_ids:
+        for advertiser, day in sorted(buckets):
+            payload = (
+                session.connection()
+                .execute(
+                    select(
+                        staged.c.ad_id,
+                        staged.c.evidence,
+                        staged.c.currency,
+                        staged.c.timezone,
+                    ).where(
+                        staged.c.advertiser_id == advertiser, staged.c.stat_date == day
+                    )
+                )
+                .all()
+            )
+            payloads[(advertiser, day)] = _payload_digest(
+                [(r.ad_id, r.evidence, r.currency, r.timezone) for r in payload]
+            )
+        buckets = _publication_buckets(
+            session,
+            tenant_id=tenant_id,
+            kind="ad_day",
+            buckets=buckets,
+            observed_at=requested_at,
+            payloads=payloads,
+        )
     if not buckets:
         return 0
     diagnostics.counts(buckets=len(buckets))
@@ -415,20 +480,7 @@ def publish_ad_day(
                 session.get(ReportSyncState, (tenant_id, advertiser, "ad_day", day)),
             )
             state.active_contract = NATIVE_CONTRACT
-            digests = (
-                session.connection()
-                .execute(
-                    text(
-                        "SELECT ad_id,evidence->>'response_row_digest' FROM ad_report_day "
-                        "WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d ORDER BY ad_id"
-                    ),
-                    {"t": tenant_id, "a": advertiser, "d": day},
-                )
-                .all()
-            )
-            state.publication_digest = hashlib.sha256(
-                json.dumps([tuple(r) for r in digests]).encode()
-            ).hexdigest()
+            state.publication_digest = payloads[(advertiser, day)]
             session.add(state)
             session.connection().execute(
                 text(
@@ -875,6 +927,24 @@ def publish_parent_day(
         end=end,
         requested_at=requested_at,
     )
+    payloads = {
+        (advertiser, day): _payload_digest(
+            [
+                (fact.remote_id, fact.evidence, fact.currency, fact.timezone)
+                for fact in staged
+                if fact.advertiser_id == advertiser and fact.stat_date == day
+            ]
+        )
+        for advertiser, day in buckets
+    }
+    buckets = _publication_buckets(
+        session,
+        tenant_id=tenant_id,
+        kind=kind,
+        buckets=buckets,
+        observed_at=requested_at,
+        payloads=payloads,
+    )
     if not buckets:
         return 0
     session.exec(
@@ -902,14 +972,7 @@ def publish_parent_day(
             session.get(ReportSyncState, (tenant_id, advertiser, kind, day)),
         )
         state.active_contract = NATIVE_CONTRACT
-        payload = sorted(
-            (fact.remote_id, fact.evidence["response_row_digest"])
-            for fact in staged
-            if fact.advertiser_id == advertiser and fact.stat_date == day
-        )
-        state.publication_digest = hashlib.sha256(
-            json.dumps(payload).encode()
-        ).hexdigest()
+        state.publication_digest = payloads[(advertiser, day)]
         session.add(state)
     for fact in staged:
         if (fact.advertiser_id, fact.stat_date) in buckets:

@@ -23,7 +23,7 @@ from app.core.context import TenantContext
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants
-from app.modules.reporting.levels import PARENT_KINDS, query_kind
+from app.modules.reporting.levels import DAY_KINDS, PARENT_KINDS, query_kind
 from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
 from app.modules.reporting.query_models import (
     QuerySnapshot,
@@ -169,21 +169,22 @@ def dependency_stamp(
     )
     kind = "creative_material" if filters.dimension == "material" else "ad_day"
     facts = [tuple(r[:4]) for r in rows if r.kind == kind]
-    if query_kind(filters.dimension) in PARENT_KINDS:
-        facts.extend(
-            tuple(r)
-            for r in session.connection()
-            .execute(
-                text("""
-            SELECT advertiser_id,stat_date,publication_version,observed_at,status
+    # 三层状态和证据均影响刷新概览；相同金额的新合同/失败也必须失效缓存。
+    facts.extend(
+        tuple(r)
+        for r in session.connection()
+        .execute(
+            text("""
+            SELECT advertiser_id,report_kind,stat_date,publication_version,observed_at,
+                   last_success_at,status,error_code,updated_at,active_contract,publication_digest
             FROM report_sync_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advertisers)
-            AND report_kind=:report_kind AND stat_date BETWEEN :start AND :end
-            ORDER BY advertiser_id,stat_date
-        """),
-                params,
-            )
-            .all()
+            AND report_kind=ANY(:day_kinds) AND stat_date BETWEEN :start AND :end
+            ORDER BY advertiser_id,report_kind,stat_date
+            """),
+            params | {"day_kinds": list(DAY_KINDS)},
         )
+        .all()
+    )
     derived = [
         (r.advertiser_id, r.kind, r.bucket, r.derived_revision)
         for r in rows

@@ -2,6 +2,8 @@
 
 from datetime import date
 
+import pytest
+
 from tests.modules.accounts.conftest import app_config as app_config
 from tests.modules.accounts.conftest import policy as policy
 
@@ -9,8 +11,9 @@ D = date(2026, 11, 13)
 TEST_BC = "123456"
 
 
+@pytest.mark.parametrize("yield_quota", [False, True])
 def test_two_page_adgroup_worker_and_query(
-    committed_sync_seed, monkeypatch, redis_client, policy
+    committed_sync_seed, monkeypatch, redis_client, policy, yield_quota
 ):
     from datetime import UTC, datetime, timedelta
     from decimal import Decimal
@@ -42,16 +45,46 @@ def test_two_page_adgroup_worker_and_query(
         {"base": policy.model_dump() | {"lease_ms": 240000}},
     )
 
+    deferred = set()
+
     def transport(_pool, _method, url, **kwargs):
         args = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
         args.update(dict(kwargs.get("fields") or []))
         calls.append(args)
         page = int(args["page"])
+        # 真实 SDK 发送期间，另一 PG 会话可取得任务行与账户发布锁。
+        from sqlalchemy import text
+
+        from app.modules.reporting.store_models import ReportSyncJob
+
+        with factory() as probe:
+            probe.exec(
+                select(ReportSyncJob)
+                .where(ReportSyncJob.tenant_id == seed.tenant_id)
+                .with_for_update(nowait=True)
+            ).all()
+            for kind in ("campaign_day", "adgroup_day", "ad_day"):
+                assert (
+                    probe.connection()
+                    .execute(
+                        text(
+                            "SELECT pg_try_advisory_xact_lock(hashtextextended(:scope,0))"
+                        ),
+                        {"scope": f"report:{seed.tenant_id}:acc-1:{kind}"},
+                    )
+                    .scalar_one()
+                )
         level = {
             "AUCTION_CAMPAIGN": "campaign",
             "AUCTION_ADGROUP": "adgroup",
             "AUCTION_AD": "ad",
         }[args["data_level"]]
+        # 真 SDK transport 边界让出；第一页 checkpoint 必须由原 Worker 续用。
+        if yield_quota and page == 2 and level not in deferred:
+            from app.integrations.tiktok.sdk import AccountAdmissionDeferred
+
+            deferred.add(level)
+            raise AccountAdmissionDeferred(1000)
         dimension = "ad_id_v2" if level == "ad" else f"{level}_id"
         payload = {
             "list": [
@@ -179,21 +212,83 @@ def test_two_page_adgroup_worker_and_query(
         assert {j.kind for j in claimed} == {"ad_day", "campaign_day", "adgroup_day"}
         s.commit()
     for job in claimed:
-        outcome = run_job_step(
-            database_engine=engine,
-            redis_client=redis_client,
-            job_id=job.id,
-            claim_token=job.claim_token,
+        outcome = (
+            celery_delivery(seed, factory, job, redis_client, calls)
+            if job.kind == "adgroup_day" and not yield_quota
+            else run_job_step(
+                database_engine=engine,
+                redis_client=redis_client,
+                job_id=job.id,
+                claim_token=job.claim_token,
+            )
         )
+        if yield_quota:
+            assert outcome == "WAITING"
+            with factory() as s:
+                from app.modules.reporting.store_models import (
+                    ReportSyncJob,
+                    ReportSyncPage,
+                )
+
+                pending = s.get(ReportSyncJob, job.id)
+                observed = pending.progress["basic_paging"]["observed_at"]
+                assert (
+                    len(
+                        s.exec(
+                            select(ReportSyncPage).where(
+                                ReportSyncPage.job_id == job.id
+                            )
+                        ).all()
+                    )
+                    == 1
+                )
+                resumed = claim_jobs(
+                    s, now=datetime.now(UTC) + timedelta(seconds=5), limit=4
+                )
+                retry = next(j for j in resumed if j.id == job.id)
+                token = retry.claim_token
+                s.commit()
+            outcome = run_job_step(
+                database_engine=engine,
+                redis_client=redis_client,
+                job_id=job.id,
+                claim_token=token,
+            )
+            with factory() as s:
+                from app.modules.reporting.store_models import ReportSyncState
+
+                bucket = s.get(ReportSyncState, (seed.tenant_id, "acc-1", job.kind, D))
+                assert (
+                    bucket.observed_at.isoformat()
+                    == datetime.fromisoformat(observed)
+                    .astimezone(bucket.observed_at.tzinfo)
+                    .isoformat()
+                )
+                assert not s.exec(
+                    select(ReportSyncPage).where(ReportSyncPage.job_id == job.id)
+                ).all()
         with factory() as check:
             from app.modules.reporting.store_models import ReportSyncJob
 
             state = check.get(ReportSyncJob, job.id)
             assert outcome == "COMPLETE", (outcome, state.error_code, state.progress)
-    assert len(calls) == 6
+            assert state.request_count == (3 if yield_quota else 2)
+    assert len(calls) == (9 if yield_quota else 6)
     assert sorted(call["data_level"] for call in calls) == sorted(
-        ["AUCTION_CAMPAIGN"] * 2 + ["AUCTION_ADGROUP"] * 2 + ["AUCTION_AD"] * 2
+        ["AUCTION_CAMPAIGN"] * (3 if yield_quota else 2)
+        + ["AUCTION_ADGROUP"] * (3 if yield_quota else 2)
+        + ["AUCTION_AD"] * (3 if yield_quota else 2)
     )
+    for data_level in ("AUCTION_CAMPAIGN", "AUCTION_ADGROUP", "AUCTION_AD"):
+        same_level = [c for c in calls if c["data_level"] == data_level]
+        assert [int(c["page"]) for c in same_level] == (
+            [1, 2, 2] if yield_quota else [1, 2]
+        )
+        assert all(
+            {k: v for k, v in c.items() if k != "page"}
+            == {k: v for k, v in same_level[0].items() if k != "page"}
+            for c in same_level
+        )
     for call in (c for c in calls if c["data_level"] == "AUCTION_ADGROUP"):
         assert json.loads(call["dimensions"]) == ["adgroup_id", "stat_time_day"]
         assert "native_growth_ad_revenue_roas" in json.loads(call["metrics"])
@@ -233,6 +328,160 @@ def test_two_page_adgroup_worker_and_query(
             ].field_state_counts == {"VALUE": 2}
             assert row.coverage["status"] == "COMPLETE"
 
+    if not yield_quota:
+        from app.core.errors import DomainError
+        from app.modules.reporting.jobs import enqueue_job
+        from app.modules.reporting.store_models import ReportSyncJob, ReportSyncState
+
+        old_transport = transport
+        fail = True
+
+        def failing_transport(pool, method, url, **kwargs):
+            args = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+            args.update(dict(kwargs.get("fields") or []))
+            if (
+                fail
+                and args.get("data_level") == "AUCTION_ADGROUP"
+                and int(args["page"]) == 2
+            ):
+                raise DomainError(
+                    "tiktok_response_error", "synthetic second page failure"
+                )
+            return old_transport(pool, method, url, **kwargs)
+
+        monkeypatch.setattr("urllib3.PoolManager.request", failing_transport)
+        with factory() as s:
+            before = {
+                j.kind: s.get(
+                    ReportSyncState, (seed.tenant_id, "acc-1", j.kind, D)
+                ).model_dump()
+                for j in claimed
+            }
+            original = s.get(
+                ReportSyncJob, next(j.id for j in claimed if j.kind == "adgroup_day")
+            )
+            retry_id = enqueue_job(
+                s,
+                tenant_id=seed.tenant_id,
+                bc_id=TEST_BC,
+                actor_id=seed.actor_id,
+                frozen_route=original.frozen_route,
+                kind="adgroup_day",
+                tier="manual",
+                advertiser_ids=["acc-1"],
+                start=D,
+                end=D,
+            )
+            s.commit()
+            retry = next(
+                j
+                for j in claim_jobs(
+                    s, now=datetime.now(UTC) + timedelta(seconds=2), limit=4
+                )
+                if j.id == retry_id
+            )
+            token = retry.claim_token
+            s.commit()
+        assert (
+            run_job_step(
+                database_engine=engine,
+                redis_client=redis_client,
+                job_id=retry_id,
+                claim_token=token,
+            )
+            == "WAITING"
+        )
+        with factory() as s:
+            stale = s.get(ReportSyncState, (seed.tenant_id, "acc-1", "adgroup_day", D))
+            assert stale.status == "STALE"
+            assert stale.error_code == "tiktok_response_error"
+            stale_query = query_ads(
+                s,
+                context=seed.context,
+                bc_id=TEST_BC,
+                filters=ReportingFilter(
+                    dimension="adgroup",
+                    advertiser_ids=("acc-1",),
+                    start_date=D,
+                    end_date=D,
+                ),
+            )
+            assert stale_query.items[0].display["report_refresh_status"] == "PARTIAL"
+            assert (
+                "tiktok_response_error"
+                in stale_query.items[0].display["report_layer_status"]
+            )
+            assert stale.observed_at == before["adgroup_day"]["observed_at"]
+            assert s.exec(
+                select(ParentReportDay).where(
+                    ParentReportDay.tenant_id == seed.tenant_id,
+                    ParentReportDay.level == "adgroup",
+                )
+            ).first().revenue_total == Decimal("40")
+            for kind in ("campaign_day", "ad_day"):
+                assert (
+                    s.get(
+                        ReportSyncState, (seed.tenant_id, "acc-1", kind, D)
+                    ).model_dump()
+                    == before[kind]
+                )
+            from tests.modules.reporting.test_native_campaign import (
+                live_campaign_workspace,
+            )
+
+            live_campaign_workspace(
+                seed,
+                factory,
+                level="adgroup",
+                label="广告组",
+                name="Adgroup 1",
+                attempt_status="STALE",
+                refresh_status="PARTIAL",
+            )
+            retry = next(
+                j
+                for j in claim_jobs(
+                    s, now=datetime.now(UTC) + timedelta(seconds=65), limit=4
+                )
+                if j.id == retry_id
+            )
+            token = retry.claim_token
+            s.commit()
+        fail = False
+        assert (
+            run_job_step(
+                database_engine=engine,
+                redis_client=redis_client,
+                job_id=retry_id,
+                claim_token=token,
+            )
+            == "COMPLETE"
+        )
+        with factory() as s:
+            for kind in ("campaign_day", "ad_day"):
+                assert (
+                    s.get(
+                        ReportSyncState, (seed.tenant_id, "acc-1", kind, D)
+                    ).model_dump()
+                    == before[kind]
+                )
+            assert (
+                s.get(
+                    ReportSyncState, (seed.tenant_id, "acc-1", "adgroup_day", D)
+                ).publication_version
+                == before["adgroup_day"]["publication_version"] + 1
+            )
+
+    with factory() as check:
+        from app.modules.reporting.store_models import ReportSyncJob
+
+        assert not check.exec(
+            select(ReportSyncJob).where(
+                ReportSyncJob.tenant_id == seed.tenant_id,
+                ReportSyncJob.kind.in_(["campaign_day", "adgroup_day", "ad_day"]),
+                ReportSyncJob.status.in_(["QUEUED", "WAITING", "RUNNING"]),
+            )
+        ).all()
     from tests.modules.reporting.test_native_campaign import live_campaign_workspace
 
     live_campaign_workspace(
@@ -620,3 +869,140 @@ def test_three_kind_requirements_merge_and_reject_parent_subset(session, sync_se
         )
         == 3
     )
+
+
+def celery_delivery(seed, factory, job, redis_client, calls):
+    """Two independent Celery processes consume canonical dispatch on a private queue."""
+    import multiprocessing
+    import os
+    from uuid import uuid4
+
+    from kombu import Queue
+    from sqlmodel import select
+
+    from app.jobs.celery_app import celery_app
+    from app.jobs.models import PendingDispatch
+    from app.modules.sync_control.dispatch_envelope import dispatch_envelope
+
+    queue = f"jb27-{uuid4().hex}"
+    with factory() as s:
+        record = next(
+            r
+            for r in s.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.tenant_id == seed.tenant_id
+                )
+            ).all()
+            if r.payload.get("job_id") == str(job.id)
+            and r.payload.get("claim_id") == str(job.claim_token)
+        )
+        kwargs = {
+            "tenant_id": str(seed.tenant_id),
+            "actor_id": str(seed.actor_id),
+            "payload": record.payload,
+            "dispatch": dispatch_envelope(record),
+        }
+    ctx = multiprocessing.get_context("fork")
+
+    def worker(pipe, index):
+        import urllib3
+        from celery.signals import task_postrun, worker_ready
+
+        from app.core.config import settings
+        from app.core.db import engine
+
+        engine.dispose(close=False)
+        settings.REDIS_URL = os.environ["TEST_REDIS_URL"]
+        celery_app.conf.update(
+            broker_url=settings.REDIS_URL,
+            task_queues=(*old_queues, Queue(queue, exchange=queue, routing_key=queue)),
+            imports=(),
+        )
+        original = urllib3.PoolManager.request
+
+        def transport(*args, **kw):
+            before = len(calls)
+            try:
+                return original(*args, **kw)
+            finally:
+                for call in calls[before:]:
+                    pipe.send(("read", call))
+
+        urllib3.PoolManager.request = transport
+
+        @worker_ready.connect(weak=False)
+        def ready(**_kw):
+            pipe.send(("ready", os.getpid()))
+
+        @task_postrun.connect(weak=False)
+        def done(**kw):
+            pipe.send(("done", str(kw.get("retval"))))
+
+        with open(os.devnull, "w") as sink:
+            import contextlib
+
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                celery_app.worker_main(
+                    [
+                        "worker",
+                        "--pool=solo",
+                        "--concurrency=1",
+                        "-Q",
+                        queue,
+                        "--hostname",
+                        f"jb27-{index}@localhost",
+                        "--without-gossip",
+                        "--without-mingle",
+                        "--without-heartbeat",
+                        "--loglevel=ERROR",
+                    ]
+                )
+
+    processes, pipes = [], []
+    old_broker = celery_app.conf.broker_url
+    old_queues = celery_app.conf.task_queues
+    try:
+        for i in range(2):
+            parent, child = ctx.Pipe()
+            process = ctx.Process(target=worker, args=(child, i))
+            process.start()
+            processes.append(process)
+            pipes.append(parent)
+        for pipe in pipes:
+            assert pipe.poll(15), "Celery worker did not become ready"
+            assert pipe.recv()[0] == "ready"
+        celery_app.conf.update(
+            broker_url=os.environ["TEST_REDIS_URL"],
+            task_queues=(*old_queues, Queue(queue, exchange=queue, routing_key=queue)),
+        )
+        # Duplicate broker delivery exercises the canonical consumer guard as well.
+        for _ in range(2):
+            celery_app.send_task("reporting.job_step", kwargs=kwargs, queue=queue)
+        from multiprocessing.connection import wait
+
+        done_count = 0
+        while done_count < 2:
+            ready = wait(pipes, timeout=20)
+            assert ready, "Celery publication timed out"
+            for pipe in ready:
+                event, value = pipe.recv()
+                if event == "read":
+                    calls.append(value)
+                if event == "done":
+                    done_count += 1
+        from app.modules.reporting.store_models import ReportSyncJob
+
+        with factory() as s:
+            assert s.get(ReportSyncJob, job.id).status == "COMPLETE"
+    finally:
+        celery_app.conf.update(broker_url=old_broker, task_queues=old_queues)
+        for process in processes:
+            process.terminate()
+            process.join(10)
+            if process.is_alive():
+                process.kill()
+                process.join(5)
+        for pipe in pipes:
+            pipe.close()
+        redis_client.delete(queue, f"_kombu.binding.{queue}")
+    return "COMPLETE"

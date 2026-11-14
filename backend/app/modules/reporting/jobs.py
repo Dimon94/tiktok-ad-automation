@@ -57,6 +57,7 @@ _CONTRACT_ERRORS = frozenset(
         "report_query_invalid",
         "report_response_invalid",
         "report_row_invalid",
+        "report_publication_conflict",
         "report_value_invalid",
         "report_operation_invalid",
         "operation_log_format_invalid",
@@ -292,7 +293,7 @@ def _basic_scope(job):
     )
     contract = LEVELS[job.kind].contract if job.kind in LEVELS else "report-v2"
     return hashlib.sha256(
-        f"{key}:{request_time(job).isoformat()}:{contract}".encode()
+        f"{key}:{request_time(job).isoformat()}:{contract}:{LEVELS.get(job.kind)}".encode()
     ).hexdigest()
 
 
@@ -706,6 +707,22 @@ def _handle_error(session, job: ReportSyncJob, error: DomainError) -> str:
         job.status, job.due_at = "WAITING", datetime.now(UTC) + timedelta(seconds=30)
         return "WAITING"
     elif error.code not in _CONTRACT_ERRORS and job.attempts < MAX_PROVIDER_RETRIES:
+        # 重试尚未结束也是真实失败尝试；保留旧成功观测并立即公开本层原因。
+        if job.kind in BASIC_KINDS:
+            publish.mark_failed(
+                session,
+                tenant_id=job.tenant_id,
+                advertiser_ids=job.advertiser_ids,
+                kind=job.kind,
+                start=job.start_date,
+                end=job.end_date,
+                error_code=error.code,
+                requested_at=datetime.fromisoformat(
+                    job.progress["snapshot_observed_at"]
+                )
+                if job.progress.get("snapshot_observed_at")
+                else request_time(job),
+            )
         job.attempts += 1
         job.status = "WAITING"
         now = datetime.now(UTC)

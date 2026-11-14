@@ -5402,3 +5402,7 @@ Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接
 ### 2026-11-14 JB-26 root消费者验收
 
 已核对2662522d候选并修复未知范围遗漏creative探测；其余测试按三层合同准备精确scope/水位与四类调度任务，没有放宽隔离/去重。health+planner83通过，closeout/dedup/正常热轮74通过，关键复验3通过；两个源码探针红→恢复绿，R4/R10 48状态模型及错误变体亲跑。可交JB-27/JB-28继续，完整M4a未完成；无push/PR/部署。
+
+### 2026-11-14 JB-27 三层刷新可靠性候选
+
+从7941c176在唯一共享集成树串行实施同观测no-op/冲突、单页及归并重复拒绝、冻结请求形状、重试等待即公开本层失败、三层刷新概览与查询依赖。沿用原SDK/Worker/fence/route/PG锁与事实事务；新增真实SDK额度续页、单层失败/旧值/恢复、两线程反序/撤权、两独立Celery进程canonical消息重复投递。现有formal owner扩展R7有限模型及源码破坏恢复检查。详细AC/结果/基线与运行层级见 [JB27验证记录](validation/2026-11-14-jb27-native-growth-publication.md)。仅本票候选，不标Done、不启动后票、不改Linear/推送/PR/合main/部署。

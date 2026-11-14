@@ -1276,7 +1276,21 @@ def report_provenance(
                 f"原因 {state.error_code if state else None}"
             )
             day += timedelta(days=1)
-    display["report_layer_status"] = "\n".join(layer_lines)
+    expected_buckets = len(DAY_KINDS) * (
+        (filters.end_date - filters.start_date).days + 1
+    )
+    refresh_status = (
+        "COMPLETE"
+        if len(indexed) == expected_buckets
+        and all(r.status == "COMPLETE" for r in layer_states)
+        else "PARTIAL"
+        if any(r.last_success_at is not None for r in layer_states)
+        else "MISSING"
+    )
+    display["report_refresh_status"] = refresh_status
+    display["report_layer_status"] = "\n".join(
+        [f"刷新概览 {refresh_status}", *layer_lines]
+    )
     display.update(
         report_source=source,
         report_local_days=f"{filters.start_date} — {filters.end_date}",

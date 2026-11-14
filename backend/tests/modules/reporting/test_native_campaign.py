@@ -364,7 +364,14 @@ def test_direct_authority_and_missing_states(session, sync_seed):
 
 
 def live_campaign_workspace(
-    seed, factory, *, level="campaign", label="系列", name="Campaign 1"
+    seed,
+    factory,
+    *,
+    level="campaign",
+    label="系列",
+    name="Campaign 1",
+    attempt_status="COMPLETE",
+    refresh_status="",
 ):
     """真实 FastAPI/Vite/浏览器；唯一平台替身在 urllib3 transport。"""
     import os
@@ -447,7 +454,7 @@ def live_campaign_workspace(
             layers = sync_response.json()["accounts"][0]["levels"]
             assert {item["level"] for item in layers} == {"campaign", "adgroup", "ad"}
             selected = next(item for item in layers if item["level"] == level)
-            assert selected["status"] == "COMPLETE"
+            assert selected["status"] == attempt_status
             assert selected["publication_version"] > 0
             assert (
                 selected["last_success_at"]
@@ -534,6 +541,7 @@ def live_campaign_workspace(
                 "NATIVE_LEVEL": level,
                 "NATIVE_LABEL": label,
                 "NATIVE_NAME": name,
+                "NATIVE_REFRESH_STATUS": refresh_status,
                 "PLAYWRIGHT_PORT": "5206",
             },
             capture_output=True,

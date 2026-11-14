@@ -820,6 +820,10 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
   })
   await expect(row).toBeVisible()
   await expect(row).toContainText("PLATFORM_DIRECT")
+  if (process.env.NATIVE_REFRESH_STATUS) {
+    await expect(row).toContainText(`刷新概览 ${process.env.NATIVE_REFRESH_STATUS}`)
+    await expect(row).toContainText("tiktok_response_error")
+  }
   await expect(row).toContainText("自然＋付费口径待确认")
   await expect(row).toContainText("点击后24h")
   await expect(row).toContainText("0.801234567890123456789")
