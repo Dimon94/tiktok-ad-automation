@@ -5571,3 +5571,5 @@ Root22 relevant checks passed including material browser/Celery/CSV. Corrected l
 新鲜验证：metrics+tracer13 passed（真实browser→HTTP→PG/Redis→原同步/导出Worker→CSV），受影响既有四文件25 passed，tsc+双Vite/Ruff/diff通过。32有界模型和四种破坏模型；四个实际源码探针业务RED→外部备份finally恢复/cmp→PG GREEN。官方creative支持/D0/流量/成熟及生产容量Unknown，合成437107-byte完整payload不作容量承诺。详见 `docs/validation/2026-11-14-jb36-material-metrics-reconciliation.md`。
 
 JB37消费完整contract3/material-instance-result-v1及新增metrics/reconciliation_rows，负责查询原子失败/TTL/重查；JB38消费同一export.frozen_rows，负责幂等/故障/撤权/到期。Linear状态和依赖未改；未push/PR/merge/deploy。MMF仍待root独立Standards/Spec和最终本地集成。
+
+JB36产品候选提交 `981579bc`；形式化模型与源码绑定单独提交随后记录于Git。源探针保留仓外备份/finally恢复/cmp；初次无效parent.ids绑定已替换为真正父控制来源。提交前无关状态始终只有原`.venv`/`node_modules`软链（形式化文件在第二提交前待暂存）。

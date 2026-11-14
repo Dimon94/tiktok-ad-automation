@@ -339,3 +339,27 @@ sync/export Workers and PGRedis plus actual browser and HTTP. See
 [JB35 validation](../../../docs/validation/2026-11-14-jb35-material-identity-evidence.md).
 No production scale, unbounded liveness, platform attribution/maturity or strict
 parent reconciliation proof; final grain and five CSV classes remain JB36.
+
+## JB36 metrics and reconciliation
+
+Run `scripts/material_metrics.py` (32 bounded cases); each `--broken-scope`,
+`--broken-cross-scope`, `--broken-nullzero`, `--broken-parent-total` must fail.
+Run `scripts/material_metrics_probes.py` serially through the M4b guarded runner.
+It mutates actual material_query/frozen_result owners with external backup,
+finally restore and cmp, requiring business assertion RED then PG GREEN.
+
+Binding: material_query's strict denominator merging and reconcile_parent use
+independent FULL_PARENT_AD facts, original selected filters and per-field
+contract/coverage checks; frozen_result aggregates ordinary instances only;
+exports serializes the same immutable five row kinds. Native creative windows,
+traffic and maturity remain UNCONFIRMED: no native monetary difference is
+proved. The model assumes identity, atomic RR capture, honest complete publisher
+coverage and the existing 30-minute observation compatibility window. It does
+not prove SQL authorization, arbitrary concurrent histories, platform support,
+TTL or export lifecycle; JB37/JB38 retain those boundaries.
+
+JB36 sync source: `981579bc` (material_query, frozen_result, MetricCatalog,
+exports and actual PG/browser/Worker tests inspected). Source probes last passed
+against these arithmetic/selection owners; later residual observations and
+frontend formatting do not alter their mutated branches. Final browser replay
+also checks the enriched residual evidence. No claim about JB37/JB38 lifecycle.
