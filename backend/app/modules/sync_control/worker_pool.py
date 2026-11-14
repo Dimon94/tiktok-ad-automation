@@ -281,10 +281,9 @@ def _reserve_background_turn_locked(
     for key in eligible:
         state[key] += POOL_WEIGHTS[key]
     chosen = max(sorted(eligible), key=lambda key: (state[key], POOL_WEIGHTS[key]))
-    # 公平份额约束排队竞争，不能让实际空闲Worker等待另一家族的派发入口。
-    # 空槽允许当前已通过平台准入的候选借用；仍扣当前类份额，后续拥塞时偿还。
-    # 物理槽满后保留原公平赢家和总预取上限，不能无限借用扩大后台并发。
-    if chosen != category and occupied >= pool.capacity:
+    # 完全空闲时允许借用，避免等待另一家族的派发入口；仍扣借用类份额。
+    # 已有工作运行时必须保留公平赢家，确保新到事实能取得下一释放槽位。
+    if chosen != category and occupied > 0:
         return False
     state[category] -= sum(POOL_WEIGHTS[key] for key in eligible)
     for key in POOL_WEIGHTS.keys() - eligible:
