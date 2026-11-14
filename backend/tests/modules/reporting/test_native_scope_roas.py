@@ -166,7 +166,6 @@ def test_source_contract_buckets_are_not_combined(session, sync_seed):
                 "CHILD_DERIVED",
             }
             assert {v.contract_revision for v in buckets} == {
-                "LEGACY_UNKNOWN",
                 "native-growth-day-v1",
             }
 

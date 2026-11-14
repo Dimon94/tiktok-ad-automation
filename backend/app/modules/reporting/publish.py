@@ -403,33 +403,33 @@ def publish_ad_day(
         requested_at=requested_at,
     )
     payloads = {}
-    if not campaign_ids:
-        for advertiser, day in sorted(buckets):
-            payload = (
-                session.connection()
-                .execute(
-                    select(
-                        staged.c.ad_id,
-                        staged.c.evidence,
-                        staged.c.currency,
-                        staged.c.timezone,
-                    ).where(
-                        staged.c.advertiser_id == advertiser, staged.c.stat_date == day
-                    )
-                )
-                .all()
+    for advertiser, day in sorted(buckets):
+        payload = (
+            session.connection()
+            .execute(
+                select(
+                    staged.c.ad_id,
+                    staged.c.evidence,
+                    staged.c.currency,
+                    staged.c.timezone,
+                ).where(staged.c.advertiser_id == advertiser, staged.c.stat_date == day)
             )
-            payloads[(advertiser, day)] = _payload_digest(
-                [
-                    (
-                        "",
-                        _publication_coordinates("ad", accounts[advertiser], day),
-                        None,
-                        None,
+            .all()
+        )
+        payloads[(advertiser, day)] = _payload_digest(
+            [
+                (
+                    "",
+                    _publication_coordinates(
+                        "ad", accounts[advertiser], day, campaign_ids=campaign_ids
                     ),
-                    *[(r.ad_id, r.evidence, r.currency, r.timezone) for r in payload],
-                ]
-            )
+                    None,
+                    None,
+                ),
+                *[(r.ad_id, r.evidence, r.currency, r.timezone) for r in payload],
+            ]
+        )
+    if not campaign_ids:
         buckets = _publication_buckets(
             session,
             tenant_id=tenant_id,
@@ -493,24 +493,55 @@ def publish_ad_day(
             state.active_contract = NATIVE_CONTRACT
             state.publication_digest = payloads[(advertiser, day)]
             session.add(state)
-            session.connection().execute(
-                text(
-                    "UPDATE ad_report_day SET evidence=evidence || CAST(:stamp AS jsonb) "
-                    "WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d"
+    # 行观测与金额同事务落地；定向发布没有整账户版本，使用任务ID和精确范围标识。
+    published_at = _database_now(session)
+    for advertiser, day in sorted(buckets):
+        fact_state = session.get(
+            ReportSyncState, (tenant_id, advertiser, "ad_day", day)
+        )
+        publication = {
+            "publication_id": str(job_id),
+            "publication_version": fact_state.publication_version
+            if not campaign_ids and fact_state
+            else 0,
+            "observed_at": requested_at.isoformat(),
+            "last_success_at": published_at.isoformat(),
+            "status": "COMPLETE",
+            "active_contract": NATIVE_CONTRACT,
+            "publication_digest": payloads[(advertiser, day)],
+            "scope": {
+                "tenant_id": str(tenant_id),
+                "advertiser_id": advertiser,
+                "start_date": str(start),
+                "end_date": str(end),
+                "campaign_ids": sorted(campaign_ids or ()),
+                "kind": "CAMPAIGNS" if campaign_ids else "ACCOUNT_DAY",
+            },
+            "publication_coordinates": _publication_coordinates(
+                "ad", accounts[advertiser], day, campaign_ids=campaign_ids
+            ),
+        }
+        session.connection().execute(
+            text(
+                "UPDATE ad_report_day SET evidence=evidence || CAST(:stamp AS jsonb) "
+                "WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d "
+                "AND sync_job_id=:job"
+            ),
+            {
+                "t": tenant_id,
+                "a": advertiser,
+                "d": day,
+                "job": job_id,
+                "stamp": json.dumps(
+                    {
+                        "publication": publication,
+                        "observed_at": requested_at.isoformat(),
+                        "publication_version": publication["publication_version"],
+                        "local_day": str(day),
+                    }
                 ),
-                {
-                    "t": tenant_id,
-                    "a": advertiser,
-                    "d": day,
-                    "stamp": json.dumps(
-                        {
-                            "observed_at": requested_at.isoformat(),
-                            "publication_version": state.publication_version,
-                            "local_day": str(day),
-                        }
-                    ),
-                },
-            )
+            },
+        )
     with diagnostics.stage("publish_flush"):
         session.flush()
     _project_ad_buckets(session, tenant_id, buckets)
@@ -853,7 +884,7 @@ def _refresh_reconciliation_sums(session, tenant_id, buckets):
 
 
 def _publication_coordinates(
-    level: str, meta: AccountMeta, day: date
+    level: str, meta: AccountMeta, day: date, *, campaign_ids: Sequence[str] = ()
 ) -> dict[str, Any]:
     """空发布没有事实行，仍须保存当时实际请求的坐标，不能事后借账户现值。"""
     return {
@@ -863,7 +894,8 @@ def _publication_coordinates(
         "currency": meta.currency,
         "timezone": meta.timezone,
         "local_day": day.isoformat(),
-        "scope": "ACCOUNT_LOCAL_DAY",
+        "scope": "CAMPAIGN_LOCAL_DAY" if campaign_ids else "ACCOUNT_LOCAL_DAY",
+        **({"campaign_ids": sorted(campaign_ids)} if campaign_ids else {}),
         "window": "DAILY_NATIVE_CLICK_HOURS_TOTAL_UNKNOWN",
     }
 

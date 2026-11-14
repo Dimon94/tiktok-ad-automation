@@ -220,7 +220,9 @@ def fact_coordinates(table: str) -> tuple[str, str, str]:
     direct = "s.last_success_at IS NOT NULL" if parent else "TRUE"
     source = f"CASE WHEN {direct} THEN 'PLATFORM_DIRECT' ELSE 'CHILD_DERIVED' END"
     row_revision = "row_evidence.evidence->>'contract_revision'"
-    revision = f"CASE WHEN {direct} THEN CASE WHEN s.active_contract='{NATIVE_CONTRACT}' AND {row_revision} IS NOT NULL AND {row_revision} IS DISTINCT FROM s.active_contract THEN 'CONTRACT_MISMATCH' ELSE COALESCE(s.active_contract,'LEGACY_UNKNOWN') END ELSE 'LEGACY_UNKNOWN' END"
+    revision = f"CASE WHEN {direct} THEN CASE WHEN s.active_contract='{NATIVE_CONTRACT}' AND {row_revision} IS NOT NULL AND {row_revision} IS DISTINCT FROM s.active_contract THEN 'CONTRACT_MISMATCH' ELSE COALESCE(s.active_contract,'LEGACY_UNKNOWN') END ELSE COALESCE({row_revision},'LEGACY_UNKNOWN') END"
+    if not parent:
+        revision = f"CASE WHEN row_evidence.advertiser_id IS NOT NULL THEN CASE WHEN row_evidence.evidence->'publication'->>'active_contract' IS DISTINCT FROM {row_revision} AND row_evidence.evidence->'publication' IS NOT NULL THEN 'CONTRACT_MISMATCH' ELSE COALESCE({row_revision},'LEGACY_UNKNOWN') END ELSE COALESCE(s.active_contract,'LEGACY_UNKNOWN') END"
     return level, source, revision
 
 
@@ -315,24 +317,52 @@ def _facts_cte(
         AND s.advertiser_id=t.advertiser_id AND s.stat_date=t.stat_date
         AND s.report_kind='{level}_day'"""
     publication = "to_jsonb(s)"
-    if table.endswith("_selected_day") and not contribution:
-        state_join += """ LEFT JOIN report_sync_state derived_s ON derived_s.tenant_id=t.tenant_id
-            AND derived_s.advertiser_id=t.advertiser_id AND derived_s.stat_date=t.stat_date
-            AND derived_s.report_kind='ad_day'"""
-        publication = f"CASE WHEN {source_kind}='CHILD_DERIVED' THEN to_jsonb(derived_s) ELSE to_jsonb(s) END"
-    evidence_table = (
-        "parent_report_day"
-        if table.endswith("_selected_day") and not contribution
-        else "ad_report_day"
-    )
-    evidence_identity = (
-        f"row_evidence.level='{level}' AND row_evidence.remote_id=t.{level}_id"
-        if evidence_table == "parent_report_day"
-        else "row_evidence.ad_id=t.ad_id"
-    )
-    state_join += f""" LEFT JOIN {evidence_table} row_evidence ON
-        row_evidence.tenant_id=t.tenant_id AND row_evidence.advertiser_id=t.advertiser_id
-        AND row_evidence.stat_date=t.stat_date AND {evidence_identity}"""
+    parent = table.endswith("_selected_day") and not contribution
+    if parent:
+        # 父级派生候选按真实子事实分桶；不把多个观测伪装成一次父级刷新。
+        state_join += f""" LEFT JOIN LATERAL (
+            SELECT raw.evidence, raw.advertiser_id, NULL::jsonb AS child_fact,
+                   raw.remote_id AS observation_id
+            FROM parent_report_day raw WHERE s.last_success_at IS NOT NULL
+                AND raw.tenant_id=t.tenant_id AND raw.advertiser_id=t.advertiser_id
+                AND raw.stat_date=t.stat_date AND raw.level='{level}' AND raw.remote_id=t.{level}_id
+            UNION ALL
+            SELECT child.evidence, child.advertiser_id, to_jsonb(child), child.ad_id
+            FROM ad_report_day child WHERE s.last_success_at IS NULL
+                AND child.tenant_id=t.tenant_id AND child.advertiser_id=t.advertiser_id
+                AND child.stat_date=t.stat_date AND child.{level}_id=t.{level}_id
+        ) row_evidence ON TRUE"""
+        for name in METRIC_COLUMNS:
+            metric_sums = (
+                metric_sums.replace(
+                    f"sum(t.{name})",
+                    f"sum(CASE WHEN s.last_success_at IS NULL THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END)",
+                )
+                .replace(
+                    f"bool_or(t.{name}_has_null OR t.{name} IS NULL)",
+                    f"bool_or(CASE WHEN s.last_success_at IS NULL THEN row_evidence.child_fact->>'{name}' IS NULL ELSE t.{name}_has_null OR t.{name} IS NULL END)",
+                )
+                .replace(
+                    f"bool_or(t.{name} IS NULL)",
+                    f"bool_or(CASE WHEN s.last_success_at IS NULL THEN row_evidence.child_fact->>'{name}' IS NULL ELSE t.{name} IS NULL END)",
+                )
+            )
+        publication = "CASE WHEN s.last_success_at IS NULL THEN row_evidence.evidence->'publication' ELSE to_jsonb(s) END"
+    else:
+        state_join += """ LEFT JOIN ad_report_day row_evidence ON
+            row_evidence.tenant_id=t.tenant_id AND row_evidence.advertiser_id=t.advertiser_id
+            AND row_evidence.stat_date=t.stat_date AND row_evidence.ad_id=t.ad_id"""
+        # 真实行没有自有观测时保持未知；只有无返回行的完整空桶可以使用账户发布。
+        publication = "CASE WHEN row_evidence.advertiser_id IS NOT NULL THEN row_evidence.evidence->'publication' ELSE to_jsonb(s) END"
+    observation_id = "row_evidence.observation_id" if parent else f"t.{level}_id"
+
+    def fact_value(m: str) -> str:
+        return (
+            f"CASE WHEN s.last_success_at IS NULL THEN row_evidence.child_fact->>'{m}' ELSE t.{m}::text END"
+            if parent
+            else f"t.{m}::text"
+        )
+
     # 当前目录只能解释这一修订；未知直接合同留在独立桶，绝不回退子级。
     if selected_ids:
         predicate += f" AND {rid}=ANY(:ids)"
@@ -340,6 +370,11 @@ def _facts_cte(
         metric_sums = _metric_sums("t")
         predicate += " AND t.ad_id=ANY(:contribution_ids)"
     for name in METRIC_COLUMNS:
+        if parent:
+            metric_sums = metric_sums.replace(
+                f"sum(CASE WHEN s.last_success_at IS NULL THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END)",
+                f"sum(CASE WHEN ({revision}) IN ('{NATIVE_CONTRACT}','LEGACY_UNKNOWN') THEN CASE WHEN s.last_success_at IS NULL THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END END)",
+            )
         metric_sums = metric_sums.replace(
             f"sum(t.{name})",
             f"sum(CASE WHEN ({revision}) IN ('{NATIVE_CONTRACT}','LEGACY_UNKNOWN') THEN t.{name} END)",
@@ -350,10 +385,10 @@ def _facts_cte(
             WHERE tenant_id=:tenant AND stat_date BETWEEN :start AND :end OFFSET 0
         ) t"""
     observation = f"""jsonb_agg(jsonb_build_object(
-        'advertiser_id',t.advertiser_id,'remote_id',t.{level}_id,'level','{level}',
+        'advertiser_id',t.advertiser_id,'remote_id',{observation_id},'level','{level}',
         'source_kind',{source_kind},'contract_revision',{revision},
         'local_day',t.stat_date,'timezone',t.timezone,'currency',t.currency,
-        'fact',jsonb_build_object({",".join(f"'{m}',t.{m}::text" for m in METRIC_COLUMNS)}),
+        'fact',jsonb_build_object({",".join(f"'{m}',{fact_value(m)}" for m in METRIC_COLUMNS)}),
         'returned',row_evidence.advertiser_id IS NOT NULL,
         'fields',COALESCE(row_evidence.evidence->'fields','{{}}'::jsonb),
         'publication',COALESCE({publication},'{{}}'::jsonb))) AS observations,"""

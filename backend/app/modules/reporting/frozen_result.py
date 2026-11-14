@@ -85,6 +85,26 @@ def freeze_results(
         )
         for row, report in zip(batch, items, strict=True):
             row.frozen_result = report.model_dump(mode="json")
+            # 账户水位描述完整性；实际选择的行观测单独纳入同一个冻结发布图。
+            for vector in report.metric_buckets:
+                for provenance in vector.provenance.values():
+                    for observation in provenance.observations:
+                        publication = observation.get("publication") or {}
+                        if not publication:
+                            continue
+                        coordinate = dict(publication) | {
+                            "advertiser_id": observation["advertiser_id"],
+                            "report_kind": f"{(publication.get('publication_coordinates') or {}).get('level', observation['level'])}_day",
+                            "selected_level": observation["level"],
+                            "stat_date": observation["local_day"],
+                            "observation_source": "SELECTED_FACT",
+                            "source_kind": observation["source_kind"],
+                        }
+                        if coordinate not in snapshot.publication_map:
+                            snapshot.publication_map = [
+                                *snapshot.publication_map,
+                                coordinate,
+                            ]
             # 中间聚合载荷包含计算分母；最终只保存展示向量/provenance和比率对照。
             row.metric_buckets = []
             session.add(row)

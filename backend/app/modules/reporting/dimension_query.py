@@ -1398,91 +1398,36 @@ def report_provenance(
             .scalars()
         ]
     if selected_records is None:
+        from app.modules.reporting.row_set import _facts_cte
+
         for kind in sorted({k for _, k, _ in refs}):
             pairs = [(adv, rid) for adv, k, rid in refs if k == kind]
-            level = "ad" if filters.contribution else kind
-            table = f"{level}_selected_day" if level != "ad" else "ad_report_day"
-            identity = f"p.{level}_id=w.rid"
+            table = f"{kind}_selected_day" if kind != "ad" else "ad_report_day"
             params: dict[str, Any] = {
                 "tenant": tenant_id,
                 "advs": [a for a, _ in pairs],
-                "ids": [r for _, r in pairs],
+                "ids": [rid for _, rid in pairs],
                 "start": filters.start_date,
                 "end": filters.end_date,
             }
             if filters.contribution:
-                identity = f"p.{kind}_id=w.rid AND p.ad_id=ANY(:subset)"
-                params["subset"] = list(filters.contribution.ids)
-            result = (
+                params["contribution_ids"] = list(filters.contribution.ids)
+            facts = _facts_cte(
+                table,
+                f"{kind}_id",
+                selected_ids=True,
+                contribution=bool(filters.contribution),
+            )
+            fact_observations = (
                 session.connection()
                 .execute(
-                    text(f"""
-                SELECT w.adv,w.rid,d.day::date AS day, to_jsonb(p) AS fact,
-                       account.timezone AS account_timezone, account.currency AS account_currency,
-                       to_jsonb(s) AS publication, raw.evidence
-                FROM unnest(CAST(:advs AS text[]),CAST(:ids AS text[])) w(adv,rid)
-                JOIN advertiser_account account ON account.tenant_id=:tenant AND account.advertiser_id=w.adv
-                CROSS JOIN generate_series(CAST(:start AS date),CAST(:end AS date),interval '1 day') d(day)
-                LEFT JOIN {table} p ON p.tenant_id=:tenant AND p.advertiser_id=w.adv
-                     AND p.stat_date=d.day::date AND {identity}
-                LEFT JOIN report_sync_state s ON s.tenant_id=:tenant AND s.advertiser_id=w.adv
-                     AND s.stat_date=d.day::date AND s.report_kind=CASE
-                       WHEN '{level}'='ad' THEN 'ad_day'
-                       WHEN EXISTS (SELECT 1 FROM report_sync_state own WHERE own.tenant_id=:tenant
-                         AND own.advertiser_id=w.adv AND own.stat_date=d.day::date
-                         AND own.report_kind='{level}_day' AND own.last_success_at IS NOT NULL)
-                       THEN '{level}_day' ELSE 'ad_day' END
-                LEFT JOIN parent_report_day raw ON raw.tenant_id=:tenant AND raw.advertiser_id=w.adv
-                     AND raw.stat_date=d.day::date AND raw.level='{level}' AND raw.remote_id=w.rid
-                ORDER BY w.adv,w.rid,d.day
-            """),
-                    params,
+                    text(f"WITH {facts} SELECT adv,rid,observations FROM facts"), params
                 )
                 .mappings()
             )
-            for r in result:
-                adv, rid = r["adv"], r["rid"]
-                fact, state = r["fact"] or {}, r["publication"] or {}
-                evidence = (
-                    r["evidence"] if level != "ad" else fact.get("evidence")
-                ) or {}
-                direct = level == "ad" or (
-                    state.get("report_kind") == f"{level}_day"
-                    and state.get("last_success_at")
-                )
-                revision = (
-                    (state.get("active_contract") or "LEGACY_UNKNOWN")
-                    if direct
-                    else "LEGACY_UNKNOWN"
-                )
-                # 行证据与发布合同冲突必须保留为不可解释坐标，不能以当前合同追认。
-                if (
-                    direct
-                    and revision == NATIVE_CONTRACT
-                    and evidence.get("contract_revision") not in (None, revision)
-                ):
-                    revision = "CONTRACT_MISMATCH"
-                records.append(
-                    {
-                        "advertiser_id": adv,
-                        "remote_id": fact.get("ad_id", rid),
-                        "level": level,
-                        "source_kind": "PLATFORM_DIRECT" if direct else "CHILD_DERIVED",
-                        "contract_revision": revision,
-                        "local_day": str(r["day"]),
-                        "timezone": fact.get("timezone")
-                        or (state.get("publication_coordinates") or {}).get(
-                            "timezone", "UNKNOWN"
-                        ),
-                        "currency": fact.get("currency")
-                        or (state.get("publication_coordinates") or {}).get(
-                            "currency", "UNKNOWN"
-                        ),
-                        "fact": fact,
-                        "fields": evidence.get("fields", {}),
-                        "publication": state,
-                    }
-                )
+            for fact in fact_observations:
+                if (fact["adv"], fact["rid"]) in pairs:
+                    records.extend(fact["observations"] or [])
     else:
         records = selected_records
 
