@@ -1,6 +1,7 @@
 """JB28 source sensitivity, serialized real PG tests with external byte backups."""
 
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -32,13 +33,15 @@ PROBES = (
     (
         "platform-multiday-first",
         "dimension_query.py",
-        "if len(daily) == 1 and filters.start_date == filters.end_date",
-        "if daily",
+        'if len(records) == 1 and records[0]["contract_revision"] == NATIVE_CONTRACT',
+        "if records",
         "test_platform_ratio_is_not_averaged_across_days",
     ),
 )
 
 for name, filename, before, after, node in PROBES:
+    if sys.argv[1:] and name not in sys.argv[1:]:
+        continue
     path = ROOT / "backend/app/modules/reporting" / filename
     original = path.read_bytes()
     assert original.decode().count(before) == 1, name

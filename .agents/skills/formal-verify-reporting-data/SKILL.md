@@ -1,6 +1,6 @@
 ---
 name: formal-verify-reporting-data
-description: Check ReportingData parent direct authority after changing publication, selected SQL views or derived writers.
+description: Verify ReportingData direct authority, publication and bounded Native Growth scope/Decimal contracts.
 ---
 
 # ReportingData direct authority
@@ -20,7 +20,7 @@ Model: explicit exhaustive finite-state exploration, Python 3 standard library; 
 
 Mapping: `publish_parent_day` writes only `parent_report_day`; `publish_ad_day`, projector/rebuild and advertiser restore write the child/derived relation; `campaign_selected_day` and `adgroup_selected_day` suppress derived candidates when direct state has last_success. A complete empty bucket is a direct state with no fact. Model transitions each represent one committed publication or derived update.
 
-Source sync: JB26 candidate based on 7d987d8ebb3bad16b86dbf1e0becd5e7bff04829; see docs/validation/2026-11-14-jb26-native-growth-levels.md for final evidence. Before moving this sync reference, inspect publish.py, levels.py, native_adgroup_day.py, native_campaign_day.py and real writer tests again.
+Historical source sync (superseded by JB28 sync_commit below): JB26 candidate based on 7d987d8ebb3bad16b86dbf1e0becd5e7bff04829; see docs/validation/2026-11-14-jb26-native-growth-levels.md for final evidence. Before moving this sync reference, inspect publish.py, levels.py, native_adgroup_day.py, native_campaign_day.py and real writer tests again.
 
 Sensitivity: `--broken-selector` must fail on direct dash + child 999. Run the recorded source probes (validation document) to establish that the PG regressions reject broken real code; restore bytes and rerun green. A model finding must be replayed through real query/publish before being called a product defect. Do not weaken invariants to make a finding disappear.
 
@@ -51,35 +51,66 @@ parsing. `test_native_levels.py` separately traverses refresh HTTP → real SDK
 transport → original Worker/checkpoint/publish/query → live workspace, including
 quota yield, a failed second page, old readable facts and layer-only retry.
 
-Source sync: JB27 changes built on 7941c17662c2980284491c7fb1548a0638fa07dc;
+Historical source sync (superseded by JB28 sync_commit below): JB27 changes built on 7941c17662c2980284491c7fb1548a0638fa07dc;
 final commands and limits in docs/validation/2026-11-14-jb27-native-growth-publication.md.
 R4/R10's existing 48-state check remains unchanged; R7 is an additional model,
 not a retroactive claim about that check.
 
-## JB28 partial R6 arithmetic extension (WIP)
+## JB28 R2/R5/R6/R8 finite generated verification
 
-`python3 .agents/skills/formal-verify-reporting-data/scripts/denominator.py`
-checks six independently hand-calculated two-member examples (complete numerator,
-partial numerator, missing divisor, zero divisor, all unknown, real zero).
-`--broken-denominator` must fail. This is a bounded example oracle, **not** the
-required exhaustive R2/R5/R6/R8 scope/Decimal model; that work remains pending.
-Do not reuse the R4/R7 models to claim that coverage.
+sync_commit: `a749ad484ed76d48d41bde2c588eb62706996669` (product head personally checked).
+R4/R10 and R7 descriptions remain in sync at this head: direct publication and
+watermark transaction boundaries are unchanged; empty publication coordinates
+are now part of the same atomic payload digest. See the drift audit and exact
+inherited/current evidence in
+[JB28 formal validation](../../../docs/validation/2026-11-14-jb28-native-growth-formal.md).
 
-`python3 .agents/skills/formal-verify-reporting-data/scripts/denominator_probes.py`
-mutates Python denominator completeness, SQL threshold completeness, and account
-summary source selection. Each mutation runs the real PG regression, restores an
-external byte backup in finally, checks byte equality, and reruns green. Serial
-execution only. See `docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`.
-These three probes do not cover subset handling, mixed source/contract buckets,
-parent/child addition, platform ratios, permission, or frozen snapshots.
+Run these from the product repository root, serially:
 
-## JB28 source/scope sensitivity continuation
+```bash
+python3 .agents/skills/formal-verify-reporting-data/scripts/check.py
+python3 .agents/skills/formal-verify-reporting-data/scripts/publication.py
+python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py python .agents/skills/formal-verify-reporting-data/scripts/generated.py
+python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py python -m pytest backend/tests/modules/reporting/test_native_scope_roas.py -k 'not representative' -q --tb=short
+```
 
-`python3 .agents/skills/formal-verify-reporting-data/scripts/scope_probes.py`
-serially mutates actual query code and requires concrete assertion failures for
-ignoring the explicit Ad contribution filter, merging source/contract buckets,
-interpreting unknown direct contracts, and exposing a first-day platform ratio
-as a multiday observation. Each external backup is restored in `finally` and
-byte equality checked before the green rerun. These are source sensitivity
-checks, not a new formal model. R2/R5/R6/R8 exhaustive/generated scope and Decimal
-model coverage remains required; the six denominator examples do not satisfy it.
+Generated exploration checks 1,296 two-member money cases with independent
+Fraction expectations: NULL/DASH/ABSENT/zero/0.1/90 per spend and revenue.
+Nine one-coordinate partitions cover level/source/contract/currency;
+12 local-clock cases cover UTC/Hong_Kong/Los_Angeles including midnight.
+Maps to metric_vector/aggregate_metrics/merge_metric_buckets and
+metric_catalog.semantics_for. Arithmetic abstraction merges three missing
+states; real PG tests check their distinct field_state_counts and SQL threshold,
+NULL-last, summaries, complete denominator counts, and MetricVector values.
+
+Scope is tested through the actual ReportingFilter/AdContributionScope path:
+three levels and supported parent contribution masks, directory attributes,
+parent paths, source buckets and cross-currency local days. No arbitrary window
+or creative/material parent contribution input is invented. Native revision
+fixes each metric window; D0 is click24h, total cutoff stays unknown.
+
+Seven bounded property families and their PG bindings are enumerated in the
+validation document. Assumes at most two arithmetic members, fixed metric
+contracts, committed observations and key equality independent across axes.
+This is not an unbounded SQL, platform attribution, event maturity, liveness,
+DST-transition, permission or snapshot proof. R9/JB29 is outside this check.
+The six-case denominator.py remains historical example evidence only.
+
+Sensitivity (exclusive writer; never overlap fixture suites):
+
+```bash
+python3 .agents/skills/formal-verify-reporting-data/scripts/generated_probes.py
+python3 .agents/skills/formal-verify-reporting-data/scripts/scope_probes.py
+```
+
+Both scripts support optional probe names to run a bounded subset. Each source
+probe requires business AssertionError RED, restores an external backup in
+finally, checks bytes (generated_probes also invokes cmp), then requires GREEN.
+Generated probes cover parent-child addition, average platform ratio,
+cross-currency, cross-source division, missing-to-zero/threshold and D0 window.
+Old scope probe's daily→records mapping was updated without weakening the
+property. Existing denominator/source/empty-coordinate probe evidence can be
+inherited only when the actual mutation target and regression still match.
+Report surviving mutations as reachability/test gaps first; replay any genuine
+counterexample against real PG and report the product owner, never weaken the
+property or change product code here.

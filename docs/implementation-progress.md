@@ -5456,3 +5456,18 @@ No Linear writes, main merge, push/PR/deploy or production migration.
 在原共享M4a树Sol/high唯一写者串行补齐行/summary共用provenance（五维度、counts/完整分母、合同/范围/逐日观察/水位），原发布状态新增nullable publication_coordinates及本地迁移，空桶NULL且不借当前账户时区；行/桶合同冲突独立拒绝。显式AdContributionScope接到真实工作区，Account/Drama展示来源与可展开平台观察，保留原消费者owner。
 
 定向产品39项与发布68项通过；SDK transport→Worker/真实PG/Redis/HTTP→浏览器五视图/同名ID/部分收益/子集5及切层通过；2,000合成Campaign首查3.49s、续页1.30s，非生产容量。两个新增源码消融断言RED→字节恢复→GREEN；build/tsc/Ruff/diff通过，mypy仍继承410且无新增。详细Superseding矩阵、初始失败、精确JB29字段和fresh验证交接见 `docs/validation/2026-11-14-jb28-native-growth-scope-roas.md` 最末。同一SDK fixture52个Campaign的实际浏览器50/2条分页与返回通过。R2/R5/R6/R8完整生成模型、余下源码探针和完整组合筛选矩阵仍待下一验证上下文，JB28未整票接受，JB29未放行。不改Linear/Spec、不push/PR/合main/deploy或生产迁移；原软链保留。
+
+
+### 2026-11-14 JB28 fresh Sol/high 验证候选
+
+在唯一共享M4a树从精确a749ad484ed76d48d41bde2c588eb62706996669开始，
+仅维护原formal owner、测试及文档，产品字节保留，无分支/checkout/下级代理。
+旧48/57状态与六例检查亲跑；新增1,296算术组合、9坐标分区、12本地时间案例，
+真实PG36字段状态组合与三层目录/父路径/Ad贡献mask矩阵、跨币种/来源合同和
+Account/Drama同层去重。聚焦suite78 passed/1 deselected，新增阈值组合和拒绝边界再定向验收。
+七条新增源码探针实际业务断言RED、外备份finally/cmp恢复GREEN；
+旧多日平台比率探针因源码移动重映射并RED→GREEN，其余匹配证据明确继承。
+Ruff/diff及实际skill入口通过；不重跑浏览器/构建/2k计划/旧mypy410。
+[完整17AC矩阵及边界](validation/2026-11-14-jb28-native-growth-formal.md)。
+尚待root独立验收，不自标Done或放行M4a/JB29；无Linear/Spec/main/push/PR/deploy/生产操作，
+原未跟踪.venv/node_modules保留。

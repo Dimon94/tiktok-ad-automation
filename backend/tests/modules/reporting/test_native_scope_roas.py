@@ -157,6 +157,10 @@ def test_source_contract_buckets_are_not_combined(session, sync_seed):
                 Decimal("20"),
                 Decimal("40"),
             ]
+            assert {v.source_kind: v.values["roas_total"] for v in buckets} == {
+                "PLATFORM_DIRECT": Decimal(".8"),
+                "CHILD_DERIVED": Decimal(4),
+            }
             assert {v.source_kind for v in buckets} == {
                 "PLATFORM_DIRECT",
                 "CHILD_DERIVED",
@@ -198,6 +202,14 @@ def test_explicit_ad_contribution_keeps_cost_five(session, sync_seed):
     assert MetricVector.model_validate(page.summary["buckets"][0]).values[
         "spend"
     ] == Decimal("5")
+    for dimension in ("account", "drama"):
+        subset = query(
+            session, sync_seed, dimension, contribution={"kind": "ad", "ids": ("a1",)}
+        )
+        summary = MetricVector.model_validate(subset.summary["buckets"][0])
+        assert summary.values["spend"] == Decimal(5)
+        assert summary.values["revenue_total"] is None
+        assert summary.values["roas_total"] is None
     whole = query(session, sync_seed, ids=("c0",))
     assert whole.items[0].metric_buckets[0].values["revenue_total"] == Decimal("40")
 
@@ -526,3 +538,316 @@ def test_historical_empty_does_not_borrow_current_account_coordinates(
         assert v.values["spend"] is None
         assert v.source_kind == "PLATFORM_DIRECT"
         assert v.provenance["spend"].reason == "NO_RETURNED_ROW"
+
+
+FIELD_STATES = (None, "-", "ABSENT", "0", "0.1", "90")
+
+
+@pytest.mark.parametrize(
+    "spend,revenue", [(s, r) for s in FIELD_STATES for r in FIELD_STATES]
+)
+def test_generated_field_states_pg(session, sync_seed, spend, revenue):
+    """独立固定锚点10/20 + 生成第二成员，经过发布/SQL/向量/阈值。"""
+    rows = []
+    for rid, s, r in (("c0", "10", "20"), ("c1", spend, revenue)):
+        metrics = {"campaign_name": rid}
+        for field, value in (
+            ("spend", s),
+            ("native_growth_total_ad_impression_value", r),
+            ("native_growth_ad_revenue_value_d0", r),
+        ):
+            if value != "ABSENT":
+                metrics[field] = value
+        rows.append(
+            {
+                "dimensions": {"campaign_id": rid, "stat_time_day": str(D)},
+                "metrics": metrics,
+            }
+        )
+    publish_campaign_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "America/Los_Angeles")},
+        start=D,
+        end=D,
+        requested_at=datetime.now(UTC),
+        route=FrozenTikTokRoute(**_route(sync_seed)),
+        rows=rows,
+    )
+    missing_s = spend in (None, "-", "ABSENT")
+    missing_r = revenue in (None, "-", "ABSENT")
+    expected_revenue = Decimal(20) + (Decimal(0) if missing_r else Decimal(revenue))
+    expected_spend = Decimal(10) + (Decimal(0) if missing_s else Decimal(spend))
+    for dimension in ("campaign", "account", "drama"):
+        page = query(session, sync_seed, dimension)
+        summary = MetricVector.model_validate(page.summary["buckets"][0])
+        assert summary.values["revenue_total"] == expected_revenue
+        assert summary.values["spend"] == expected_spend
+        assert summary.values["roas_total"] == (
+            None if missing_s else expected_revenue / expected_spend
+        )
+        assert summary.availability["revenue_total"] == (
+            "PARTIAL" if missing_r else "AVAILABLE"
+        )
+        p = summary.provenance["roas_total"]
+        assert (p.denominator_known_count, p.denominator_missing_count) == (
+            2 - int(missing_s),
+            int(missing_s),
+        )
+        assert {b.stat_date for b in p.buckets} == {D}
+        assert summary.timezone == "America/Los_Angeles"
+    member = next(
+        r for r in query(session, sync_seed).items if r.refs[0].remote_id == "c1"
+    )
+    assert member.metric_buckets[0].values["revenue_total"] == (
+        None if missing_r else Decimal(revenue)
+    )
+    assert member.metric_buckets[0].values["spend"] == (
+        None if missing_s else Decimal(spend)
+    )
+    d0 = member.metric_buckets[0].provenance["revenue_d0"].metric_contract
+    assert (d0.window, d0.click_hours, d0.traffic_scope) == (
+        "CLICK_HOURS",
+        24,
+        "UNCONFIRMED",
+    )
+    assert (
+        member.metric_buckets[0].provenance["revenue_total"].metric_contract.window
+        == "TOTAL_CUTOFF_UNKNOWN"
+    )
+    state = (
+        "NULL"
+        if revenue is None
+        else "DASH"
+        if revenue == "-"
+        else "ABSENT"
+        if revenue == "ABSENT"
+        else "VALUE"
+    )
+    assert member.metric_buckets[0].provenance["revenue_total"].field_state_counts == {
+        state: 1
+    }
+    threshold = query(session, sync_seed, min_d0_roas=Decimal(0))
+    ids = {row.refs[0].remote_id for row in threshold.items}
+    assert ("c1" in ids) == (not missing_s and not missing_r and Decimal(spend) > 0)
+    for direction in ("asc", "desc"):
+        sorted_page = query(
+            session, sync_seed, sort_by="roas_d0", sort_direction=direction
+        )
+        if missing_s or missing_r or spend == "0":
+            assert sorted_page.items[-1].refs[0].remote_id == "c1"
+
+
+@pytest.mark.parametrize(
+    "dimension,subset",
+    tuple(
+        (d, ids)
+        for d in ("campaign", "adgroup")
+        for ids in ((), ("a1",), ("a2",), ("a1", "a2"))
+    )
+    + (("ad", ()),),
+)
+def test_generated_directory_scope_matrix(session, sync_seed, dimension, subset):
+    """复用真实目录投影/发布；逐属性+组合正反例，不虚构素材父贡献。"""
+    from app.modules.ads.models import AdObject
+    from app.modules.reporting.publish import publish_ad_day, publish_adgroup_day
+    from tests.modules.reporting.sync_conftest import ad_row
+
+    for kind, rid, parent in (
+        ("campaign", "c0", None),
+        ("adgroup", "g0", "c0"),
+        ("ad", "a1", "g0"),
+    ):
+        session.add(
+            AdObject(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id="acc-1",
+                kind=kind,
+                remote_id=rid,
+                parent_kind=None
+                if parent is None
+                else "campaign"
+                if kind == "adgroup"
+                else "adgroup",
+                parent_remote_id=parent,
+                name="Needle " + rid,
+                ad_type="NATIVE_SERIES",
+                operation_status="ENABLE",
+                review_status="APPROVED",
+                configuration={
+                    "budget_mode": "BUDGET_MODE_DAY",
+                    "budget": "100",
+                    "create_time": "2026-11-13 00:00:00",
+                },
+                observed_at=datetime.now(UTC),
+                published_version=1,
+            )
+        )
+    session.commit()
+    publish(session, sync_seed, ("50",), ("40",))
+    publish_adgroup_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "UTC")},
+        start=D,
+        end=D,
+        requested_at=datetime.now(UTC),
+        route=FrozenTikTokRoute(**_route(sync_seed)),
+        rows=[
+            {
+                "dimensions": {"adgroup_id": "g0", "stat_time_day": str(D)},
+                "metrics": {
+                    "campaign_id": "c0",
+                    "spend": "50",
+                    "native_growth_total_ad_impression_value": "40",
+                    "native_growth_ad_revenue_value_d0": "40",
+                },
+            }
+        ],
+    )
+    publish_ad_day(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "UTC")},
+        start=D,
+        end=D,
+        rows=[
+            ad_row("a1", D, campaign="c0", adgroup="g0", spend="5", total="-", d0="-"),
+            ad_row("a2", D, campaign="c0", adgroup="g0", spend="45", total="-", d0="-"),
+        ],
+    )
+    rid = {"campaign": "c0", "adgroup": "g0", "ad": "a1"}[dimension]
+    scope = {"contribution": {"kind": "ad", "ids": subset}} if subset else {}
+    common = dict(ids=(rid,), **scope)
+    attributes = (
+        {"query": "Needle"},
+        {"operation_statuses": ("ENABLE",)},
+        {"review_statuses": ("APPROVED",)},
+        {"budget_modes": ("BUDGET_MODE_DAY",)},
+        {"created_from": D, "created_to": D},
+        {"ad_types": ("NATIVE_SERIES",)},
+        {
+            "query": "Needle",
+            "operation_statuses": ("ENABLE",),
+            "budget_modes": ("BUDGET_MODE_DAY",),
+            "created_from": D,
+            "created_to": D,
+        },
+    )
+    for attrs in attributes:
+        page = query(session, sync_seed, dimension, **common, **attrs)
+        assert len(page.items) == 1, (dimension, subset, attrs)
+        vector = page.items[0].metric_buckets[0]
+        expected_spend = (
+            sum((Decimal(5) if i == "a1" else Decimal(45) for i in subset), Decimal(0))
+            if subset
+            else Decimal(5)
+            if dimension == "ad"
+            else Decimal(50)
+        )
+        assert vector.values["spend"] == expected_spend, attrs
+        assert (
+            MetricVector.model_validate(page.summary["buckets"][0]).values["spend"]
+            == expected_spend
+        )
+        assert vector.values["revenue_total"] == (
+            None if subset or dimension == "ad" else Decimal(40)
+        )
+    threshold_page = query(
+        session,
+        sync_seed,
+        dimension,
+        **common,
+        operation_statuses=("ENABLE",),
+        min_d0_roas=Decimal(".7"),
+    )
+    assert len(threshold_page.items) == (0 if subset or dimension == "ad" else 1)
+    if dimension != "campaign":
+        parent = "c0" if dimension == "adgroup" else "g0"
+        parent_page = query(
+            session,
+            sync_seed,
+            dimension,
+            **(common | {"ids": (parent,), "operation_statuses": ("ENABLE",)}),
+        )
+        assert [r.refs[0].remote_id for r in parent_page.items] == [rid]
+    for attrs in (
+        {"query": "NoSuchName"},
+        {"operation_statuses": ("DISABLE",)},
+        {"budget_modes": ("BUDGET_MODE_TOTAL",)},
+        {"created_from": date(2026, 11, 14)},
+        {"min_d0_roas": Decimal(9)},
+    ):
+        assert query(session, sync_seed, dimension, **common, **attrs).items == (), (
+            attrs
+        )
+    if dimension != "ad":
+        for aggregate in ("account", "drama"):
+            page = query(session, sync_seed, aggregate)
+            summary = MetricVector.model_validate(page.summary["buckets"][0])
+            assert summary.values["revenue_total"] == Decimal(40)
+            assert summary.values["spend"] == Decimal(50)
+
+
+def test_generated_currency_days_pg(session, sync_seed):
+    from datetime import timedelta
+
+    for offset, currency, spend, revenue in (
+        (0, "USD", "50", "40"),
+        (1, "EUR", "5", "20"),
+    ):
+        day = D + timedelta(days=offset)
+        publish_campaign_day(
+            session,
+            tenant_id=sync_seed.tenant_id,
+            job_id=uuid4(),
+            accounts={"acc-1": AccountMeta(currency, "UTC")},
+            start=day,
+            end=day,
+            requested_at=datetime.now(UTC),
+            route=FrozenTikTokRoute(**_route(sync_seed)),
+            rows=[
+                {
+                    "dimensions": {"campaign_id": "c0", "stat_time_day": str(day)},
+                    "metrics": {
+                        "spend": spend,
+                        "native_growth_total_ad_impression_value": revenue,
+                    },
+                }
+            ],
+        )
+    for dimension in ("campaign", "account", "drama"):
+        page = query_ads(
+            session,
+            context=sync_seed.context,
+            bc_id="bc-a",
+            filters=ReportingFilter(
+                dimension=dimension,
+                start_date=D,
+                end_date=D + timedelta(days=1),
+                advertiser_ids=("acc-1",),
+            ),
+        )
+        for vectors in (
+            page.items[0].metric_buckets,
+            tuple(MetricVector.model_validate(b) for b in page.summary["buckets"]),
+        ):
+            assert {v.currency: v.values["roas_total"] for v in vectors} == {
+                "USD": Decimal(".8"),
+                "EUR": Decimal(4),
+            }
+
+
+def test_ad_contribution_rejects_unsupported_dimension():
+    with pytest.raises(
+        ValueError, match="ad contribution requires a parent reporting dimension"
+    ):
+        ReportingFilter(
+            dimension="ad",
+            start_date=D,
+            end_date=D,
+            contribution={"kind": "ad", "ids": ("a1",)},
+        )

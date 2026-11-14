@@ -273,3 +273,12 @@ RUN = `python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py`
 4. 复核代表基数JSON：同一SQL selected来源决定成员/filter/sort/summary/向量；证据序列在SQL中生成，只把本页/汇总需要的provenance带回。没有生产容量结论；更大经营范围按真实风险追加，不无限benchmark。
 
 产品实现候选已包含本轮要求的功能owner；全面动态/形式验收仍有上述明确缺口，不能称17AC全过或自行关闭票。无Linear/Spec改写、JB29实施、main合并、push/PR/deploy/生产迁移/真实平台或广告写。
+
+
+### a749ad48 fresh Sol/high 验证候选
+
+R2/R5/R6/R8有限生成、真实PG属性/范围矩阵和剩余源码错误探针已补齐，
+产品源码保持精确a749ad484ed76d48d41bde2c588eb62706996669原字节。
+最终AC1–17矩阵、旧模型漂移审计、有效RED/恢复GREEN及未知边界见
+[本轮formal验证](2026-11-14-jb28-native-growth-formal.md)。
+仅交root独立验收，JB28未自行接受，M4a未放行，JB29仍不得启动。
