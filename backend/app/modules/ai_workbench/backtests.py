@@ -24,161 +24,319 @@ def _dec(value):
 
 
 def _metric(rows, metric):
-    fields = {"roas_total": "revenue_total", "roas_d0": "revenue_d0", "roas_d3": "revenue_d3",
-              "roas_d7": "revenue_d7", "roas_d14": "revenue_d14", "roas_d30": "revenue_d30"}
+    fields = {
+        "roas_total": "revenue_total",
+        "roas_d0": "revenue_d0",
+        "roas_d3": "revenue_d3",
+        "roas_d7": "revenue_d7",
+        "roas_d14": "revenue_d14",
+        "roas_d30": "revenue_d30",
+    }
     if metric in fields:
         spend = _metric(rows, "spend")
         revenue = _metric(rows, fields[metric])
-        return revenue / spend if spend else None
+        return revenue / spend if spend and revenue is not None else None
     values = [_dec(row.get(metric)) for row in rows]
-    values = [v for v in values if v is not None]
-    return sum(values, Decimal(0)) if values else None
+    return (
+        sum(values, Decimal(0))
+        if values and all(v is not None and v.is_finite() for v in values)
+        else None
+    )
 
 
 def _condition_hit(rows, definition, decision_day):
     for condition in definition.conditions:
         scoped = rows
         if condition.range and condition.range != "LIFETIME":
-            count = {"TODAY": 1, "YESTERDAY": 1, "PAST_3_DAYS": 3,
-                     "PAST_5_DAYS": 5, "PAST_7_DAYS": 7}.get(condition.range)
+            count = {
+                "TODAY": 1,
+                "YESTERDAY": 1,
+                "PAST_3_DAYS": 3,
+                "PAST_5_DAYS": 5,
+                "PAST_7_DAYS": 7,
+            }.get(condition.range)
             end = date.fromisoformat(decision_day) - timedelta(days=1)
             if condition.range == "TODAY":
                 scoped = [r for r in rows if r["stat_date"] == end.isoformat()]
             elif condition.range == "YESTERDAY":
-                scoped = [r for r in rows if r["stat_date"] == (end - timedelta(days=1)).isoformat()]
+                scoped = [
+                    r
+                    for r in rows
+                    if r["stat_date"] == (end - timedelta(days=1)).isoformat()
+                ]
             elif count:
                 start = end - timedelta(days=count - 1)
-                scoped = [r for r in rows if start.isoformat() <= r["stat_date"] <= end.isoformat()]
+                scoped = [
+                    r
+                    for r in rows
+                    if start.isoformat() <= r["stat_date"] <= end.isoformat()
+                ]
         value = _metric(scoped, condition.metric)
         if value is None:
             return False
         nums = [_dec(v) for v in condition.values]
         op = condition.operator
-        if op == "GT" and not value > nums[0]: return False
-        if op == "LT" and not value < nums[0]: return False
-        if op == "EQ" and not value == nums[0]: return False
-        if op == "BETWEEN" and not nums[0] < value < nums[1]: return False
+        if op == "GT" and not value > nums[0]:
+            return False
+        if op == "LT" and not value < nums[0]:
+            return False
+        if op == "EQ" and not value == nums[0]:
+            return False
+        if op == "BETWEEN" and not nums[0] < value < nums[1]:
+            return False
     return True
 
 
+def _account_replay(pack, definition):
+    """逐账户计算并立即释放日事实，内存不随整个 BC 的账户数量增长。"""
+    material = definition.apply_to.level == "material"
+    rows = pack.get("material_rows" if material else "rows", [])
+    coverage = pack.get("material_coverage" if material else "coverage", {})
+    missing = set(coverage.get("missing_days", []))
+    objects = defaultdict(list)
+    for row in rows:
+        identity = row.get("row_key") if material else row.get("campaign_id")
+        if (
+            definition.apply_to.status == "SELECTED"
+            and identity not in definition.apply_to.object_ids
+        ):
+            continue
+        objects[(identity, row.get("currency"), row.get("timezone"))].append(row)
+    partitions = {}
+    for (_, currency, timezone), history in objects.items():
+        key = (currency, timezone)
+        totals = partitions.setdefault(
+            key,
+            dict(
+                actual_spend=Decimal(0),
+                actual_revenue=Decimal(0),
+                kept_spend=Decimal(0),
+                kept_revenue=Decimal(0),
+                blocked_spend=Decimal(0),
+                blocked_revenue=Decimal(0),
+                wrong_stop_future_spend=Decimal(0),
+                objects_paused=0,
+            ),
+        )
+        by_day = defaultdict(list)
+        for row in history:
+            by_day[row["stat_date"]].append(row)
+        paused = False
+        future_spend = future_revenue = Decimal(0)
+        # 完整历史只用于事后结果；每次条件判定显式截在决策日前，禁止未来泄漏。
+        for day, current in sorted(by_day.items()):
+            previous = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+            needed_days = {previous}
+            for condition in definition.conditions:
+                count = {"PAST_3_DAYS": 3, "PAST_5_DAYS": 5, "PAST_7_DAYS": 7}.get(
+                    condition.range, 1
+                )
+                end = date.fromisoformat(previous) - timedelta(
+                    days=int(condition.range == "YESTERDAY")
+                )
+                needed_days.update(
+                    (end - timedelta(days=i)).isoformat() for i in range(count)
+                )
+            if not paused and not needed_days.intersection(missing):
+                past = [r for r in history if r["stat_date"] < day]
+                if past and _condition_hit(past, definition, day):
+                    paused = True
+                    totals["objects_paused"] += 1
+            spend, revenue = (
+                _metric(current, "spend"),
+                _metric(current, "revenue_total"),
+            )
+            if spend is None or revenue is None:
+                missing.add(day)
+                continue
+            totals["actual_spend"] += spend
+            totals["actual_revenue"] += revenue
+            prefix = "blocked" if paused else "kept"
+            totals[prefix + "_spend"] += spend
+            totals[prefix + "_revenue"] += revenue
+            if paused:
+                future_spend += spend
+                future_revenue += revenue
+        if future_spend and future_revenue >= future_spend:
+            totals["wrong_stop_future_spend"] += future_spend
+    return partitions, missing, coverage.get("complete", False)
+
+
 def _daily_replay(session, *, task, rule_id, candidate_definitions):
-    """在任务冻结的逐日账户事实上重放 PAUSE；决策日只读取之前日期。"""
     from app.modules.automation_rules.schemas import RuleDefinition
+    from app.modules.automation_rules.catalog import RULE_METRICS
     from app.modules.ai_workbench.review_store import source_payloads
 
-    frozen_rules = {str(r["id"]): r for r in task.evidence.get("rules", [])}
-    baseline = frozen_rules.get(str(rule_id))
+    baseline = next(
+        (r for r in task.evidence.get("rules", []) if str(r["id"]) == str(rule_id)),
+        None,
+    )
     if baseline is None:
         raise HTTPException(404, "bound_rule_not_found_in_frozen_configuration")
-    definitions = [("baseline", baseline["definition"])]
-    for index, raw in enumerate(candidate_definitions):
-        definitions.append((f"candidate_{index + 1}", raw))
-    facts = list(source_payloads(session, task, "rule_backtest_inputs"))
-    if not facts:
-        return {"status": "UNAVAILABLE", "reason": "daily_reporting_history_not_frozen", "variants": []}
     variants = []
-    for name, raw in definitions:
+    scope = task.evidence["optimizer"]
+    for name, raw in [
+        ("baseline", baseline["definition"]),
+        *[(f"candidate_{i + 1}", d) for i, d in enumerate(candidate_definitions)],
+    ]:
         try:
             definition = RuleDefinition.model_validate(raw)
-        except Exception as exc:
-            variants.append({"name": name, "status": "INVALID_DEFINITION", "reason": str(exc)})
-            continue
-        scope_ids = set(task.evidence.get("optimizer", {}).get("advertiser_ids", []))
-        if definition.accounts.mode == "ACCOUNTS" and not set(definition.accounts.advertiser_ids).issubset(scope_ids):
-            variants.append({"name": name, "status": "OUT_OF_SCOPE", "reason": "account_scope_outside_frozen_task"})
-            continue
-        if definition.accounts.mode == "BC" and set(definition.accounts.bc_ids) != {task.evidence.get("optimizer", {}).get("bc_id")}:
-            variants.append({"name": name, "status": "OUT_OF_SCOPE", "reason": "bc_scope_outside_frozen_task"})
+        except ValueError:
+            variants.append(dict(name=name, status="INVALID_DEFINITION"))
             continue
         unsupported = []
-        if definition.action.type != "PAUSE": unsupported.append("action_not_pause")
+        if (
+            definition.action.type != "PAUSE"
+            or definition.action.level != definition.apply_to.level
+        ):
+            unsupported.append("action_not_same_level_pause")
         if definition.apply_to.level not in ("campaign", "material"):
             unsupported.append("daily_source_dimension_unavailable")
-        if definition.aggregation not in ("EACH", "ALL"):
+        if definition.aggregation != "EACH":
             unsupported.append("aggregation_not_supported")
+        if definition.apply_to.status == "PAUSED" or definition.mode == "NOTIFY":
+            unsupported.append(
+                "notification_or_paused_policy_is_not_a_pause_simulation"
+            )
         if any(c.range == "LIFETIME" for c in definition.conditions):
             unsupported.append("lifetime_history_unavailable")
-        from app.modules.automation_rules.catalog import RULE_METRICS
-        if any(RULE_METRICS.get(c.metric) and RULE_METRICS[c.metric].kind == "attribute" for c in definition.conditions):
+        if any(
+            RULE_METRICS.get(c.metric) and RULE_METRICS[c.metric].kind == "attribute"
+            for c in definition.conditions
+        ):
             unsupported.append("attribute_history_unavailable")
+        if any(
+            c.operator not in ("GT", "LT", "EQ", "BETWEEN")
+            for c in definition.conditions
+        ):
+            unsupported.append("operator_not_supported")
+        if definition.accounts.mode == "ACCOUNTS" and not set(
+            definition.accounts.advertiser_ids
+        ).issubset(set(scope["advertiser_ids"])):
+            unsupported.append("account_scope_outside_frozen_task")
+        if definition.accounts.mode == "BC" and set(definition.accounts.bc_ids) != {
+            scope["bc_id"]
+        }:
+            unsupported.append("bc_scope_outside_frozen_task")
         if unsupported:
-            variants.append({"name": name, "status": "UNSUPPORTED", "unsupported": unsupported})
+            variants.append(
+                dict(name=name, status="UNSUPPORTED", unsupported=unsupported)
+            )
             continue
-        all_rows = []
-        missing = []
-        for pack in facts:
-            coverage_key = "material_coverage" if definition.apply_to.level == "material" else "coverage"
-            if not pack.get(coverage_key, {}).get("complete"):
-                missing.extend(pack.get(coverage_key, {}).get("missing_days", []))
-            source_rows = pack.get("material_rows", []) if definition.apply_to.level == "material" else pack.get("rows", [])
-            for row in source_rows:
-                row = dict(row); row["advertiser_id"] = pack["advertiser_id"]
-                all_rows.append(row)
-        days = sorted({r["stat_date"] for r in all_rows})
-        if len(days) < 2:
-            variants.append({"name": name, "status": "INSUFFICIENT_HISTORY", "days": len(days)})
-            continue
-        # 每个冻结事实只落到一个账户/对象/日期键，避免跨广告重复计入。
-        by_object = defaultdict(list)
-        for row in all_rows:
-            object_id = (row.get("row_key") or row.get("platform_material_id") or row.get("creative_id")) if definition.apply_to.level == "material" else row.get("campaign_id")
-            by_object[(row["advertiser_id"], object_id, row.get("currency"), row.get("timezone"))].append(row)
-        paused = set(); hit_on = {}; blocked = []; kept = []
-        for day in days:
-            prior_day = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
-            # 收盘判定，命中后次日才阻断。
-            for key, rows in by_object.items():
-                if key in paused: continue
-                prior = [r for r in rows if r["stat_date"] <= prior_day]
-                if prior and _condition_hit(prior, definition, day):
-                    paused.add(key); hit_on[key] = day
-            for key, rows in by_object.items():
-                current = [r for r in rows if r["stat_date"] == day]
-                if not current: continue
-                spend = _metric(current, "spend") or Decimal(0); revenue = _metric(current, "revenue_total") or Decimal(0)
-                (blocked if key in paused and hit_on[key] < day else kept).append((key, day, spend, revenue))
-        def total(items, idx): return sum((item[idx] for item in items), Decimal(0))
-        b_spend, b_rev = total(blocked, 2), total(blocked, 3); k_spend, k_rev = total(kept, 2), total(kept, 3)
-        partition_rows = defaultdict(lambda: [[], []])
-        for item in blocked:
-            partition_rows[(item[0][2], item[0][3])][0].append(item)
-        for item in kept:
-            partition_rows[(item[0][2], item[0][3])][1].append(item)
-        partition_metrics = []
-        for (currency, timezone), (pb, pk) in sorted(partition_rows.items()):
-            ps, pr = total(pb, 2), total(pb, 3); qs, qr = total(pk, 2), total(pk, 3)
-            partition_metrics.append({"currency": currency, "timezone": timezone,
-                "blocked_spend": str(ps), "blocked_revenue": str(pr), "kept_spend": str(qs), "kept_revenue": str(qr),
-                "blocked_roas": str(pr/ps) if ps else None, "kept_roas": str(qr/qs) if qs else None})
-        wrong = Decimal(0)
-        for key, hit in hit_on.items():
-            future = [x for x in by_object[key] if x["stat_date"] > hit]
-            fs, fr = _metric(future, "spend") or Decimal(0), _metric(future, "revenue_total") or Decimal(0)
-            if fs and fr / fs >= Decimal("1") : wrong += fs
-        variants.append({"name": name, "status": "COMPLETE" if not missing else "PARTIAL_COVERAGE",
-            "coverage": {"missing_days": sorted(set(missing)), "days": days},
-            "decision": {"prior_day_only": True, "pause_next_day": True, "objects_paused": len(paused)},
-            "metrics": {"actual_spend": str(b_spend + k_spend) if len(partition_metrics) <= 1 else None, "actual_revenue": str(b_rev + k_rev) if len(partition_metrics) <= 1 else None,
-                        "actual_roas": str((b_rev + k_rev)/(b_spend+k_spend)) if b_spend+k_spend and len(partition_metrics) <= 1 else None,
-                        "kept_spend": str(k_spend) if len(partition_metrics) <= 1 else None, "kept_revenue": str(k_rev) if len(partition_metrics) <= 1 else None, "kept_roas": str(k_rev/k_spend) if k_spend and len(partition_metrics) <= 1 else None,
-                        "blocked_spend": str(b_spend) if len(partition_metrics) <= 1 else None, "blocked_revenue": str(b_rev) if len(partition_metrics) <= 1 else None, "blocked_roas": str(b_rev/b_spend) if b_spend and len(partition_metrics) <= 1 else None,
-                        "retrospective_blocked_loss": str(b_spend - b_rev if b_spend > b_rev else Decimal(0)), "wrong_stop_future_spend": str(wrong),
-                        "wrong_stop_future_share": str(wrong/b_spend) if b_spend and len(partition_metrics) <= 1 else None,
-                        "inefficiency_spend": str(b_spend - b_rev) if b_spend > b_rev and len(partition_metrics) <= 1 else ("0" if len(partition_metrics) <= 1 else None),
-                        "inefficiency_share": str((b_spend-b_rev)/b_spend) if b_spend and len(partition_metrics) <= 1 else None,
-                        "partitions": partition_metrics, "currency_partitioned": len(partition_metrics) > 1}})
-    return {"status": "COMPLETE", "rule_id": str(rule_id), "variants": variants,
-            "interpretation": "Historical replay only; blocked loss and wrong-stop are observed counterfactual proxies, not causal avoided loss."}
+        grouped = {}
+        missing_days = set()
+        accounts = incomplete = paused = 0
+        # 不得 list(source_payloads(...))：星屿 1344 户会把 59 万行日事实同时展开至 GiB 内存。
+        for pack in source_payloads(session, task, "rule_backtest_inputs"):
+            account = pack.get("advertiser_id")
+            if account not in scope["advertiser_ids"]:
+                continue
+            if (
+                definition.accounts.mode == "ACCOUNTS"
+                and account not in definition.accounts.advertiser_ids
+            ):
+                continue
+            account_groups, missing, complete = _account_replay(pack, definition)
+            accounts += 1
+            incomplete += int(not complete or bool(missing))
+            missing_days.update(missing)
+            for key, values in account_groups.items():
+                totals = grouped.setdefault(key, {k: Decimal(0) for k in values})
+                for metric, value in values.items():
+                    totals[metric] += value
+        partitions = []
+        for (currency, timezone), totals in sorted(
+            grouped.items(), key=lambda item: str(item[0])
+        ):
+            metrics = {k: str(v) for k, v in totals.items() if k != "objects_paused"}
+            for prefix in ("actual", "kept", "blocked"):
+                spend = totals[prefix + "_spend"]
+                metrics[prefix + "_roas"] = (
+                    str(totals[prefix + "_revenue"] / spend) if spend else None
+                )
+            metrics["retrospective_blocked_loss"] = str(
+                totals["blocked_spend"] - totals["blocked_revenue"]
+            )
+            metrics["wrong_stop_future_share"] = (
+                str(totals["wrong_stop_future_spend"] / totals["blocked_spend"])
+                if totals["blocked_spend"]
+                else None
+            )
+            partitions.append(dict(currency=currency, timezone=timezone, **metrics))
+            paused += int(totals["objects_paused"])
+        metrics = (
+            {
+                k: v
+                for k, v in partitions[0].items()
+                if k not in ("currency", "timezone")
+            }
+            if len(partitions) == 1
+            else {}
+        )
+        metrics.update(partitions=partitions, currency_partitioned=len(partitions) > 1)
+        variants.append(
+            dict(
+                name=name,
+                status=(
+                    "UNAVAILABLE"
+                    if not accounts
+                    else "INSUFFICIENT_HISTORY"
+                    if not partitions
+                    else "PARTIAL_COVERAGE"
+                    if incomplete
+                    else "COMPLETE"
+                ),
+                coverage=dict(
+                    accounts=accounts,
+                    incomplete_accounts=incomplete,
+                    missing_days=sorted(missing_days),
+                ),
+                decision=dict(
+                    prior_day_only=True, pause_next_day=True, objects_paused=paused
+                ),
+                metrics=metrics,
+            )
+        )
+    return dict(
+        status="COMPLETE",
+        rule_id=str(rule_id),
+        variants=variants,
+        interpretation="Historical daily policy proxy only; not causal savings or actual execution. Each rule is simulated independently: NEVER add overlapping rule totals. Historical intraday eligibility/status is unknown; daily close decisions apply on the next day. Incomplete coverage limits conclusions.",
+    )
 
 
 def daily_backtest_for_task(session, *, task, rule_id, candidate_definitions=None):
+    from app.modules.ai_workbench.review_store import (
+        ReviewArtifact,
+        archive_artifact,
+        scoped,
+    )
+
     candidate_definitions = candidate_definitions or []
-    payload = _daily_replay(session, task=task, rule_id=rule_id,
-                            candidate_definitions=candidate_definitions)
-    digest = hashlib.sha256(json.dumps([str(rule_id), candidate_definitions], sort_keys=True, default=str).encode()).hexdigest()
-    from app.modules.ai_workbench.review_store import archive_artifact
-    return archive_artifact(session, task=task, kind="daily_rule_backtest", key=digest,
-                            payload={"request_digest": digest, **payload})
+    digest = hashlib.sha256(
+        json.dumps(
+            ["account-stream-v2", str(rule_id), candidate_definitions],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
+    cached = session.exec(
+        scoped(ReviewArtifact, task).where(
+            ReviewArtifact.kind == "daily_rule_backtest", ReviewArtifact.key == digest
+        )
+    ).first()
+    if cached:
+        return cached.payload
+    payload = _daily_replay(
+        session, task=task, rule_id=rule_id, candidate_definitions=candidate_definitions
+    )
+    return archive_artifact(
+        session,
+        task=task,
+        kind="daily_rule_backtest",
+        key=digest,
+        payload={"request_digest": digest, **payload},
+    )
 
 
 def backtest_for_task(

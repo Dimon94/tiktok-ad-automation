@@ -18,7 +18,7 @@ export function createRuntime(config, fetchImpl = fetch) {
   if (origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('TK-ADA runtime requires a plain origin')
   async function rpc(path, body, token) {
     const authorization = token || (await readFile(config.tokenFile, 'utf8')).trim()
-    const response = await fetchImpl(origin.origin + prefix + path, { method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${authorization}`, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) })
+    const response = await fetchImpl(origin.origin + prefix + path, { method: 'POST', redirect: 'error', headers: { authorization: `Bearer ${authorization}`, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(path.endsWith('/rules/daily-backtest') ? 180000 : 20000) })
     if (!response.ok) {
       // 只返回已登记公共错误；禁止把代理/服务端原文或认证头送进模型上下文。
       let detail = ''

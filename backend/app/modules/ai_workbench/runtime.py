@@ -519,10 +519,19 @@ def daily_backtest_rule(
     if task.id != task_id:
         raise HTTPException(403, "Task scope mismatch")
     _read_task_scope(task, session)
+    expected_fence = task.fence
+    # 大范围纯读取不能占住任务行锁，否则续期/取消被长回测阻塞。
+    # 产物落库前重新锁定并核验原 fence；期间撤权/取消会回滚本次产物。
+    session.commit()
     result = daily_backtest_for_task(
-        session, task=task, rule_id=body.rule_id,
+        session,
+        task=task,
+        rule_id=body.rule_id,
         candidate_definitions=body.candidate_definitions,
     )
+    session.refresh(task, with_for_update=True)
+    ai_tasks._check_fence(task, fence=expected_fence)
+    _read_task_scope(task, session)
     session.commit()
     return result
 
