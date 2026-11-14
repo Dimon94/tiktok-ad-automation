@@ -268,3 +268,40 @@ real publisher/query SQL, rather than repairing a model alone.
 Evidence and known root-owned P2 failures:
 [precise provenance validation](../../../docs/validation/2026-11-14-native-m4a-r1-targeted-provenance.md).
 Root must fix the three P2s and perform fresh R2; this sync is not M4a approval.
+
+## JB34 bounded material-instance tracer
+
+sync_commit: `54d55fd6` (product source inspected in the approved M4b shared tree).
+Outcome **updated** for material R1/R2/R5. Existing M4a models remain their own
+bounded evidence and do not prove material freezing or creative semantics.
+
+```bash
+python3 .agents/skills/formal-verify-reporting-data/scripts/material.py
+python3 .agents/skills/formal-verify-reporting-data/scripts/material_probes.py
+python3 /tmp/tkada-native-series-20261112/m4b-implementation/run-test.py python -m pytest backend/tests/modules/reporting/test_material_instance_tracer.py -q
+```
+
+Use the dedicated **M4b** guarded environment; never the historical M4a runner.
+Run source probes serially with exclusive product writer ownership and no other
+fixture suite. Each probe externally backs up actual source, requires a business
+assertion RED, restores in finally, invokes cmp and requires real PG GREEN.
+Parent borrowing, BC key rewriting, tenant SQL removal and live page rereading
+are bound to actual material query/snapshot/export paths. pytest may render a
+rewritten assertion as `E assert`; SQL/import errors are not successful probes.
+
+The model enumerates32 cases: two values for each of tenant, BC, connection,
+creative amount and later amount. Captured instance money and full identity
+must match the selected creative fact; parent100 stays separate; later source
+replacement cannot change page/detail/CSV. Broken parent/scope/freeze modes must
+fail. BC/connection are selection coordinates, not additional additive fact keys.
+Assumes existing authorized selection and atomic RR capture. It is not a proof
+of SQL authorization, unbounded concurrency, multi-instance allocation, five-state
+publisher evidence, maturity or production capacity.
+
+Real PG uses creative40, parent100 and another tenant's same remote IDs with700;
+source40→90 and directory removal preserve the old payload. Existing live harness
+runs original SDK transport→sync Worker→PG/Redis→Uvicorn/Vite/browser→original
+export button→original Celery Worker→CSV HTTP, with no business-service/browser
+response double. Broader duplicate/special-row/evidence/lifecycle properties
+belong to subsequent M4b tickets and require their own bindings. See
+[JB34 validation](../../../docs/validation/2026-11-14-jb34-material-instance-tracer.md).
