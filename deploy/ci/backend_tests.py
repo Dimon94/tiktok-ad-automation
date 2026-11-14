@@ -212,6 +212,7 @@ def main():
         help="验收独占阶段的并行组数",
     )
     parser.add_argument("--fast", action="store_true", help="只跑快速层，排除 slow 标记")
+    parser.add_argument("--isolate-files", action="store_true", help="测试文件之间恢复独立的 head 测试库")
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--durations", type=Path, action="append", default=[])
     parser.add_argument("--save-durations", type=Path)
@@ -219,6 +220,8 @@ def main():
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     base_env = dict(os.environ)
+    if args.isolate_files:
+        base_env["CI_ISOLATE_TEST_FILES"] = "1"
     durations = {}
     for path in args.durations:
         if path.exists():

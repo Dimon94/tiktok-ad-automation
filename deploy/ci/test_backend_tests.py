@@ -75,6 +75,18 @@ class PartitionTests(unittest.TestCase):
 
 
 class ProcessResultTests(unittest.TestCase):
+    def test_file_isolation_is_explicitly_requested_by_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for option in ([], ["--isolate-files"]):
+                with self.subTest(option=option), patch.dict(backend_tests.os.environ, {}, clear=True), patch.object(
+                    sys, "argv", ["backend_tests.py", "--work", directory, *option]
+                ), patch.object(backend_tests, "collect", return_value=[]) as collect:
+                    self.assertEqual(backend_tests.main(), 0)
+                    self.assertEqual(
+                        collect.call_args.args[1].get("CI_ISOLATE_TEST_FILES"),
+                        "1" if option else None,
+                    )
+
     def wait_for_result(self, returncode, outcomes):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

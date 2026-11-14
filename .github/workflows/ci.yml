@@ -95,7 +95,7 @@ jobs:
         working-directory: backend
       - name: Run all module tests in isolated groups
         if: matrix.suite == 'modules'
-        run: uv run python ../deploy/ci/backend_tests.py --shards 4 --work "$RUNNER_TEMP/backend-modules" --save-durations "$RUNNER_TEMP/backend-modules/durations.json" -- --ignore=tests/acceptance
+        run: uv run python ../deploy/ci/backend_tests.py --shards 4 --isolate-files --work "$RUNNER_TEMP/backend-modules" --save-durations "$RUNNER_TEMP/backend-modules/durations.json" -- --ignore=tests/acceptance
         working-directory: backend
       - name: Retain module failure details and timings
         if: always() && matrix.suite == 'modules'
