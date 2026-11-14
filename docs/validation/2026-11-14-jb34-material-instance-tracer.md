@@ -68,3 +68,9 @@
 - `material_probes.py` 四个真实源码探针分别得到业务断言RED：父值借入、BC身份改写、移除creative SQL tenant筛选、分页从冻结读改为实时重算。每个探针仓外备份、finally恢复、执行cmp并再次PG GREEN。跨租户探针由相同remote IDs的另一租户700触发观测数量断言，不是SQL/import错误。pytest重写assert会显示 `E assert` 而非字面AssertionError；工装已按实际业务断言形式识别，未减弱业务期望。
 - 隔离AC的最小“两个租户同remote IDs”路径已实测满足；额外BC/connection组合是更广覆盖的限制说明，不冒认为全组合证明。当前没有已知未闭合的首条单实例业务断言；官方语义、生产容量仍Unknown，root独立验收未执行。
 - 本轮没有新增迁移；原query15min/export24h owner未变。测试服务均由原harness finally关闭，没有清理他人进程、M4a库或共享依赖。原未跟踪`.venv`、`node_modules`软链保留。
+
+## Root 阶段验收
+
+Root独立运行首切/materialquery/nativeexports/exports四文件：22 passed/11.16s（包含真实浏览器点击导出、Celery、CSV）。核对RR分批冻结、原事实坐标、独立父范围及任务冻结/当前授权。发现本地creative-observed-v1被共用格式化器误标CONTRACT_MISMATCH，真实PG查询新增断言RED；在MetricCatalog定义该已知本地观测版本并仅对creative粒度识别，素材冻结/实例消费同一常量，不变更平台语义或数值。补验首切+未知合同/行合同冲突3 passed/0.83s，模型32案例PASS，Ruff/format/diff通过。前端源码未变，复用匹配构建与主链证据。
+
+此为JB34窄单实例阶段接受，不声称复杂实例/全BC连接组合/生产支持已验。JB35需厚化多引用、歧义/缺失明确解释、BC/连接碰撞和五态，JB36处理完整数值/对账。现有source-probe证据按实际未变目标继承。整个MMF未完成，不提前关闭Linear。

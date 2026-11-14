@@ -16,6 +16,8 @@ from app.core.errors import DomainError
 Unit = Literal["money", "count", "ratio", "multiple"]
 _PREFIX = "Native Growth "
 NATIVE_CONTRACT = "native-growth-day-v1"
+# 本地 creative 直接观测合同；不代表平台归因窗口或流量口径已确认。
+CREATIVE_OBSERVED_CONTRACT = "creative-observed-v1"
 
 
 @dataclass(frozen=True)

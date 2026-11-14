@@ -23,6 +23,7 @@ from app.modules.reporting.dimension_query import (
     metric_vector,
     scoped_rows,
 )
+from app.modules.reporting.metric_catalog import CREATIVE_OBSERVED_CONTRACT
 from app.modules.reporting.read_models.coverage import (
     projected_states,
     projection_coverage,
@@ -424,7 +425,7 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                                 | {
                                     "level": "creative",
                                     "source_kind": "PLATFORM_DIRECT",
-                                    "contract_revision": "creative-observed-v1",
+                                    "contract_revision": CREATIVE_OBSERVED_CONTRACT,
                                 },
                                 currency=f["currency"],
                                 timezone=f["timezone"],

@@ -74,6 +74,7 @@ def test_material_result_is_frozen_before_export(session, sync_seed):
     assert len(instance.observations) == 1
     assert instance.observations[0]["creative_id"] == "cr1"
     assert instance.metric_buckets[0].values["spend"] == Decimal("40")
+    assert instance.metric_buckets[0].reasons.get("spend") != "CONTRACT_MISMATCH"
     assert page.items[0].parent_controls[0].metric_buckets[0].values[
         "spend"
     ] == Decimal("100")

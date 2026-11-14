@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlmodel import Session, col, select
 
 from app.modules.reporting.metric_catalog import (
+    CREATIVE_OBSERVED_CONTRACT,
     METRIC_CATALOG,
     NATIVE_CONTRACT,
     semantics_for,
@@ -30,7 +31,7 @@ MATERIAL_RESULT_CONTRACT = {
     "revision": "material-instance-result-v1",
     "material_query_contract": 3,
     "creative_semantics": "UNCONFIRMED",
-    "creative_contract_revision": "creative-observed-v1",
+    "creative_contract_revision": CREATIVE_OBSERVED_CONTRACT,
     "d0_click_hours": None,
     "traffic_scope": "UNCONFIRMED",
     "total_maturity": "UNKNOWN",

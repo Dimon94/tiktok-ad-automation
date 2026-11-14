@@ -30,6 +30,7 @@ from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants, compile_filter
 from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
 from app.modules.reporting.metric_catalog import (
+    CREATIVE_OBSERVED_CONTRACT,
     DERIVED_RATIOS,
     NATIVE_CONTRACT,
     semantics_for,
@@ -121,6 +122,10 @@ def metric_vector(
             dict.fromkeys(resolved, "CONTRACT_MISMATCH")
             if values.get("contract_revision")
             not in (None, NATIVE_CONTRACT, "LEGACY_UNKNOWN")
+            and not (
+                values.get("level") == "creative"
+                and values.get("contract_revision") == CREATIVE_OBSERVED_CONTRACT
+            )
             else {}
         ),
         level=values.get("level"),

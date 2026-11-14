@@ -5553,3 +5553,7 @@ All six implementation slices and R1 fixes accepted; fresh Standards/Spec R2 PAS
 在指定共享集成树、基准1c987867上实施：素材query合同3与material-instance-result-v1显式冻结；精确单creative实例与独立FULL_PARENT_AD对照接入原素材详情/CSV，40/100/40不混算。事实坐标取原creative事实，收益语义未确认；旧合同重查、旧成品文件保留。原SQL成员/排序/汇总、授权、outbox/Worker及TTL owner复用，无新迁移或开关。
 
 真实SDKtransport→同步Worker→PG/Redis→Uvicorn/Vite/浏览器筛选展开→原导出按钮→Celery→CSV通过；相关22项、原Campaign浏览器1项，tsc/双构建/Ruff/diff通过。独立有界素材模型及四类真实源码RED/恢复cmp/GREEN记录在 `docs/validation/2026-11-14-jb34-material-instance-tracer.md`；形式维护独立提交。单实例payload测量不构成容量承诺，官方creative支持/D0/流量/成熟截止Unknown。只完成JB34可审首切，不代表整个M4b或生产验收；JB35由root验收后再启动。不push/PR/合main/部署，不改Linear。
+
+## 2026-11-14 JB34 root phase acceptance
+
+Root22 relevant checks passed including material browser/Celery/CSV. Corrected locally known creative observed contract mismatch via central constant, real PG RED then3 related GREEN; bounded32 PASS; Ruff/format/diff pass. JB34 narrow phase accepted for JB35; remaining identity/evidence/metrics/lifecycle slices and whole M4b review outstanding. No push/main merge/deploy.
