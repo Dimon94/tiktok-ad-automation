@@ -583,6 +583,13 @@ def live_campaign_workspace(
             )
 
         thread.start()
+        pending_exports = []
+        if snapshot_refresh:
+            import httpx
+
+            from tests.modules.reporting.native_export_harness import capture
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as http:
+                pending_exports = capture(http, seed)
         result = subprocess.run(
             [
                 "bun",
@@ -613,6 +620,9 @@ def live_campaign_workspace(
         )
         assert not snapshot_errors, snapshot_errors
         assert result.returncode == 0, result.stdout + result.stderr
+        if pending_exports:
+            from tests.modules.reporting.native_export_harness import complete
+            complete(f"http://127.0.0.1:{port}", seed, factory, pending_exports)
     finally:
         stop.set()
         cache_thread.join(timeout=10)

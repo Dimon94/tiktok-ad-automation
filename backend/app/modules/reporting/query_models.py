@@ -271,6 +271,12 @@ class ReportExport(FrozenQueryScope, table=True):
             name="ck_report_export_status",
         ),
     )
+    result_contract: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
+    publication_map: list[dict[str, Any]] = Field(
+        default_factory=list, sa_type=JSONB, nullable=False
+    )
     snapshot_id: UUID
     idempotency_key: str = Field(max_length=128)
     status: str = Field(default="QUEUED", max_length=16)

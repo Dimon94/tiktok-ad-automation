@@ -5505,3 +5505,27 @@ JB29 产品候选提交：`8f986018f3dc389aeebaf8002a82e86e1d1ff947`。
 ## 2026-11-14 JB29 root phase acceptance
 
 Root independently checked frozen payload/contract, RR build, page/detail and current authorization, legacy exit/migration; 19 snapshot/reuse checks passed and R9 normal/broken variant behaved as expected. No product changes. JB30 released locally; tracker remains open until whole M4a review/local merge.
+
+## 2026-11-14 — JB30 Native Growth frozen CSV local candidate
+
+- Sole writer Sol/high in approved shared `feat/jb24-native-growth-m4a`, start
+  `696d37c949a184d5ff9104c26cf2c8bdde5aa6c4`; original dependency symlinks kept.
+- Existing export creation/task/worker/download now copy the frozen ReportRow,
+  result contract, publication map, scope and evidence; no current-fact/native
+  directory recomputation. NULL/zero/Decimal and structured provenance survive
+  CSV. Account/Drama share it; material and business/automatic rules unchanged.
+- Additive `native_frozen_export`; old completed CSV kept, pending incompatible
+  task fails/reexport; original snapshot may expire/clean after legal creation.
+  Existing 24h cleanup also clears copied payload. Current grants rechecked.
+- 13 targeted tests pass; real SDK transport→existing sync Worker→PG/Redis→
+  HTTP/browser/query/detail→export→real Celery/Redis→download passes, including
+  post-refresh equality and HTTP revoke rejection. Six real source mutation
+  probes produce business RED→external/finally/cmp restoration→GREEN. Frontend
+  build/tsc passes; new strict typing issue fixed (three inherited task diagnostics).
+- Separate local DB actual old git-code writer→process exit→Alembic upgrade→
+  same-version SDK/HTTP/Worker/export seam passes; old 10/20 unchanged,
+  LEGACY_UNKNOWN and no parent backfill. Downgrade refuses; no production action.
+- Full 16AC and T1–T11/R1–R10 rollup, inherited measurements and limits:
+  `docs/validation/2026-11-14-jb30-native-growth-csv.md`.
+- Candidate only; no Linear change, push/PR/main merge, deploy or whole M4a release.
+  Root fresh Standards/Spec reviews and local integration remain outstanding.

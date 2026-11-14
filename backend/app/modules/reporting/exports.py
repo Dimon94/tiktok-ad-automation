@@ -1,7 +1,7 @@
 """冻结报表导出。
 
 导出创建时把快照成员与顺序复制到 ``ReportExport.frozen_rows``，后台生成阶段
-按这份成员分批补全行内容。下载和生成都重新检查当前租户、BC 与账户授权；
+直接读取冻结结果（素材仍沿原成员补全合同）。下载和生成都重新检查当前租户、BC 与账户授权；
 撤权后即使队列消息迟到也不会写出或下载旧报表。
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import tempfile
 from collections.abc import Iterable, Iterator
@@ -28,6 +29,7 @@ from app.modules.accounts.models import TenantBC
 from app.modules.materials.storage import make_s3
 from app.modules.reporting.dimension_query import materialize_rows
 from app.modules.reporting.filters import authorized_grants
+from app.modules.reporting.frozen_result import RESULT_CONTRACT, frozen_row
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     QuerySnapshotRow,
@@ -118,6 +120,10 @@ def _rows_for_snapshot(
     ).all()
     if len(rows) != snapshot.total:
         raise HTTPException(409, detail="query_snapshot_incomplete")
+    if snapshot.filters.get("dimension") != "material":
+        return [frozen_row(row).model_dump(mode="json") for row in rows], dict(
+            snapshot.naming_versions
+        )
     members = snapshot_members(session, snapshot=snapshot, rows=rows)
     frozen_rows = [
         {
@@ -185,6 +191,8 @@ def create_export(
         idempotency_key=idempotency_key.strip(),
         status="QUEUED",
         frozen_rows=frozen_rows,
+        result_contract=dict(snapshot.result_contract),
+        publication_map=list(snapshot.publication_map),
         coverage=dict(snapshot.coverage),
         expires_at=now.replace(microsecond=0) + timedelta(hours=24),
     )
@@ -293,12 +301,32 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         "balance_updated_at",
     ]
     fields.extend(balance_fields)
+    frozen = bool(export.result_contract)
+    evidence_fields = [
+        "snapshot_id",
+        "dimension",
+        "filter_digest",
+        "filters",
+        "result_contract",
+        "publication_map",
+        "metric_vector",
+        "report_display",
+    ]
+    if frozen:
+        fields.extend(evidence_fields)
     captured = export.created_at.astimezone(UTC).isoformat()
     out = io.StringIO(newline="")
     writer = csv.DictWriter(out, fieldnames=fields, lineterminator="\n")
     headers = {key: key for key in fields} | {
         key: metric_name_zh(key, "ad") for key in metric_fields
     }
+    if frozen and export.filters.get("dimension") != "material":
+        headers.update(
+            revenue_total="Native Growth 总展示价值（平台原字段）",
+            revenue_d0="Native Growth D0 收入（点击后24小时）",
+            roas_total="收益/花费（本地计算）",
+            roas_d0="D0收入/花费（本地计算）",
+        )
     writer.writerow(headers)
     for raw in rows:
         display = dict(raw.get("display") or {})
@@ -334,6 +362,26 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
             for key in balance_fields:
                 value = display.get(key)
                 data[key] = csv_safe_text(str(value)) if value is not None else ""
+            if frozen:
+                # 向量保留NULL/真零、availability、字段/公式、partial计数和逐日水位；不重算。
+                metadata = {
+                    "snapshot_id": str(export.snapshot_id),
+                    "dimension": export.filters.get("dimension"),
+                    "filter_digest": export.filter_digest,
+                    "filters": export.filters,
+                    "result_contract": export.result_contract,
+                    "publication_map": export.publication_map,
+                    "metric_vector": bucket,
+                    "report_display": display,
+                }
+                for field, cell in metadata.items():
+                    data[field] = csv_safe_text(
+                        cell
+                        if isinstance(cell, str)
+                        else json.dumps(
+                            cell, ensure_ascii=False, separators=(",", ":")
+                        )
+                    )
             writer.writerow(data)
     return out.getvalue().encode("utf-8")
 
@@ -405,7 +453,14 @@ def _delete_object(key: str) -> None:
 
 
 def _export_rows(session: Session, export: ReportExport) -> Iterator[dict[str, Any]]:
-    """按冻结成员与顺序分批补全行内容，内存与单次查询量只与批大小相关。"""
+    """普通报表只消费任务自有冻结结果；素材保留原有读取路径。"""
+    if export.filters.get("dimension") != "material":
+        if export.result_contract != RESULT_CONTRACT:
+            raise HTTPException(
+                409, detail="report_export_contract_incompatible_reexport"
+            )
+        yield from export.frozen_rows
+        return
     filters = ReportingFilter.model_validate(export.filters)
     members = [
         SnapshotMember(raw["row_key"], tuple(raw["refs"]), tuple(raw["material_uses"]))
@@ -464,6 +519,9 @@ def cleanup_expired_exports(
         if row.object_key and row.object_key == _expected_key(row):
             _delete_object(row.object_key)
         row.object_key = None
+        row.frozen_rows = []
+        row.result_contract = {}
+        row.publication_map = []
         row.status = "EXPIRED"
         session.add(row)
     session.flush()

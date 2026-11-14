@@ -1,4 +1,5 @@
 """本地 ads-reporting 队列中的导出 worker；不访问 TikTok 或 MCP。"""
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -65,7 +66,9 @@ def run_export(export_id: UUID) -> None:
         try:
             # 生成阶段再次重建上下文和授权，覆盖队列等待期间的撤权。
             with Session(engine) as verify_session:
-                verify_export = verify_session.get(ReportExport, export_id, populate_existing=True)
+                verify_export = verify_session.get(
+                    ReportExport, export_id, populate_existing=True
+                )
                 if verify_export is None:
                     return
                 verify_context = require_tenant(
@@ -82,11 +85,17 @@ def run_export(export_id: UUID) -> None:
                 )
                 generate_export(verify_session, verify_export)
                 verify_session.commit()
-        except Exception:
+        except Exception as exc:
             with Session(engine) as failed_session:
-                failed = failed_session.get(ReportExport, export_id, populate_existing=True)
+                failed = failed_session.get(
+                    ReportExport, export_id, populate_existing=True
+                )
                 if failed is not None:
                     failed.status = "FAILED"
+                    if isinstance(exc, HTTPException):
+                        failed.coverage = dict(failed.coverage) | {
+                            "export_error": str(exc.detail)
+                        }
                     failed.object_key = None
                     failed_session.add(failed)
                     failed_session.commit()
