@@ -3,6 +3,14 @@ import type { PreviewSummary } from "@/client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 
+type DirectoryObservation = {
+  coverage: string
+  observed_at: string | null
+  published_version: number | null
+  directory_coverage: string | null
+  directory_query: object | null
+}
+
 type Plan = {
   selection: {
     native_series_id: string
@@ -16,11 +24,11 @@ type Plan = {
   occupancy: {
     directory_request_available?: boolean
     coverage: string
-    observed_at: string | null
-    published_version: number | null
+    directories?: Record<string, DirectoryObservation>
+    directory_kind?: string
     scope_limits: string[]
     visible_conflicts: object[]
-  }
+  } & Partial<DirectoryObservation>
   ads: {
     base_ad_no: number
     creative_no: number
@@ -48,7 +56,7 @@ export function NativeFrozenPreview({
       selection: Plan["selection"]
       reason_codes: string[]
       request?: Plan
-      occupancy?: object
+      occupancy?: Plan["occupancy"] | null
     }[]
   }
   if (batch.revision === "native-series-batch-v1") {
@@ -93,6 +101,7 @@ export function NativeFrozenPreview({
                     {item.selection.regions.join("、")}
                   </p>
                   <p>排除原因：{item.reason_codes.join("、")}</p>
+                  {item.occupancy && <DirectoryCoverage occupancy={item.occupancy} />}
                   <pre className="whitespace-pre-wrap break-all text-xs">
                     {JSON.stringify(item, null, 2)}
                   </pre>
@@ -166,10 +175,7 @@ export function NativeFrozenPreview({
           )}
         </CardContent>
         <CardContent className="space-y-2 text-sm">
-          <p>
-            观察时间 {plan.occupancy.observed_at ?? "未知"} · 发布版本{" "}
-            {plan.occupancy.published_version ?? "未知"}
-          </p>
+          <DirectoryCoverage occupancy={plan.occupancy} />
           {plan.occupancy.scope_limits.map((x) => (
             <p key={x}>{x}</p>
           ))}
@@ -231,7 +237,22 @@ export function NativeBatchApproval({ preview }: { preview: PreviewSummary }) {
       <p>{p.status} · 账户 {p.selection.advertiser_id} · Series {p.selection.native_series_id} · 地区 {p.selection.regions.join("、")}</p>
       <p>Series 身份 {JSON.stringify(p.selection.series_identity)} · 创意身份 {JSON.stringify(p.selection.creative_identity)}</p>
       <p>观察覆盖 {p.occupancy ? `${p.occupancy.coverage} · ${p.occupancy.scope_limits.join("；")}` : "未取得观察证据；本项已排除"}</p>
+      {p.occupancy && <DirectoryCoverage occupancy={p.occupancy} />}
       {p.reason_codes.length > 0 && <p>{p.reason_codes.join("、")}</p>}
     </div>)}
+  </div>
+}
+
+function DirectoryCoverage({ occupancy }: { occupancy: Plan["occupancy"] }) {
+  return <div className="space-y-2">
+    {(["campaign", "adgroup"] as const).map(kind => {
+      const evidence = occupancy.directories?.[kind] ??
+        (occupancy.directory_kind === kind ? occupancy : undefined)
+      return <div key={kind}>
+        <p>{kind === "campaign" ? "Campaign 目录" : "Adgroup 目录"} · {evidence?.coverage ?? "UNKNOWN"}</p>
+        <p>目录同步覆盖 {evidence?.directory_coverage ?? "未知"} · 观察时间 {evidence?.observed_at ?? "未知"} · 发布版本 {evidence?.published_version ?? "未知"}</p>
+        <p>查询范围 {evidence?.directory_query ? JSON.stringify(evidence.directory_query) : "未取得该类目录的覆盖证据"}</p>
+      </div>
+    })}
   </div>
 }

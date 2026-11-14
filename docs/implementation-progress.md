@@ -1,3 +1,9 @@
+## 2026-11-14：JB-20 分类型目录覆盖本地修复
+
+从 `9bbe663f` 在授权任务树 `fix/jb20-directory-coverage` 修复 Campaign / Adgroup 共用最新 Run 的问题。每类保留查询范围、真实同步覆盖、观察时间和发布版本；缺失/过期仅作覆盖限制，精确 ACTIVE 冲突仍按原账户、Series、地区处理。预览与提交确认分别展示两类证据；历史冻结只按其已记录的目录类型展示原始证据，不改写历史或推断另一类覆盖。复用既有目录同步 owner，无迁移、无平台调用。
+
+真实 HTTP/PG/Redis 定向验证合计 13 passed（首轮 11 passed，另两条历史测试修正既有批次读回入口后 2 passed）；新增六场景先 RED，再 GREEN。前端正式/demo 构建通过，最终 TypeScript 与新旧冻结数据组件渲染通过。独立 Standards / Spec R1 均 PASS；两轴指出的同一历史展示 P2 已修复，并用实际组件渲染验证。浏览器及线上验收 Unknown。详见 [JB-20 验证记录](validation/2026-11-14-jb20-directory-coverage.md)。实现阶段未提交、未合并、未推送、未部署、未写 Linear。随后用户调用 `git-rebase-main` 授权聚焦提交、本地 main 集成与 JB-20 收尾；落地提交及关闭读回见 Git 历史和 JB-20 评论。目标分支不推送，不部署。
+
 ## 2026-11-13：M2 本地验收通过，准备集成
 
 JB-13 及 JB-14～JB-18 完成实现与本地验收。Standards R1 PASS；Spec R1 live-sibling P1 已在 `0d9c8846` 修复，经独立形式同步 `47d74d4c` 与 Spec R2 PASS。root 核对当前源码与证据，并直接复跑真实 HTTP/PG/Redis 的 native-ad-PENDING 回归，1 passed/22.58s。仅文档收尾，不再改产品源码。交付、验证矩阵、两项迁移及真实平台待验范围见 [M2 交付记录](validation/2026-11-13-native-m2-delivery.md)。本地 main 合入、Linear 完成及工作树回收以最终回读为准；无 push/PR/deploy/真实广告写入。总 Epic JB-19 保持进行中。

@@ -317,25 +317,26 @@ def test_partial_coverage_and_exact_decimal_sum(job_env, wire, redis_client, cov
     if coverage != "UNKNOWN":
         with Session(native.engine) as s, s.begin():
             for advertiser in ["actual-account", "second-account"]:
-                s.add(
-                    AdDirectoryRun(
-                        tenant_id=job_env["context"].tenant_id,
-                        bc_id=job_env["bc_id"],
-                        actor_id=job_env["context"].actor_id,
-                        connection_id=job_env["route"].connection_id,
-                        frozen_route=job_env["route"].model_dump(mode="json"),
-                        advertiser_id=advertiser,
-                        partition_key="a" * 64,
-                        query={},
-                        status="COMPLETE",
-                        observed_at=datetime.now(UTC)
-                        - timedelta(days=2 if coverage == "STALE" else 0),
-                        coverage="PARTIAL",
-                        published_version=1,
-                        kind="campaign",
-                        ad_type="SMART_PLUS",
+                for kind in ("campaign", "adgroup"):
+                    s.add(
+                        AdDirectoryRun(
+                            tenant_id=job_env["context"].tenant_id,
+                            bc_id=job_env["bc_id"],
+                            actor_id=job_env["context"].actor_id,
+                            connection_id=job_env["route"].connection_id,
+                            frozen_route=job_env["route"].model_dump(mode="json"),
+                            advertiser_id=advertiser,
+                            partition_key="a" * 64,
+                            query={},
+                            status="COMPLETE",
+                            observed_at=datetime.now(UTC)
+                            - timedelta(days=2 if coverage == "STALE" else 0),
+                            coverage="PARTIAL",
+                            published_version=1,
+                            kind=kind,
+                            ad_type="SMART_PLUS",
+                        )
                     )
-                )
     response = client.post(url + "/previews", json={"expected_revision": revision})
     assert response.status_code == 202, response.text
     response = client.get(
@@ -349,6 +350,93 @@ def test_partial_coverage_and_exact_decimal_sum(job_env, wire, redis_client, cov
         assert item["occupancy"]["coverage"] == coverage
         assert item["occupancy"]["scope_limits"]
         assert Decimal(item["request"]["campaign"]["budget"]) == Decimal("100.10")
+
+
+@pytest.mark.parametrize("newest_kind", ["campaign", "adgroup"])
+@pytest.mark.parametrize("older_state", ["STALE", "PARTIAL", "UNKNOWN"])
+def test_directory_kinds_keep_independent_frozen_coverage(
+    job_env, wire, redis_client, newest_kind, older_state
+):
+    from datetime import timedelta
+
+    from app.modules.ads.sync_models import AdDirectoryRun
+
+    client, url, _, _, revision, _, _ = two_account_workspace(
+        job_env, wire, redis_client
+    )
+    older_kind = "adgroup" if newest_kind == "campaign" else "campaign"
+    now = datetime.now(UTC)
+    old = now - timedelta(days=2 if older_state == "STALE" else 0)
+    with Session(native.engine) as session, session.begin():
+        for kind, observed, version in [(newest_kind, now, 9), (older_kind, old, 3)]:
+            if kind == older_kind and older_state == "UNKNOWN":
+                continue
+            session.add(
+                AdDirectoryRun(
+                    tenant_id=job_env["context"].tenant_id,
+                    bc_id=job_env["bc_id"],
+                    actor_id=job_env["context"].actor_id,
+                    connection_id=job_env["route"].connection_id,
+                    frozen_route=job_env["route"].model_dump(mode="json"),
+                    advertiser_id="actual-account",
+                    partition_key=kind[0] * 64,
+                    query={"ids": [f"visible-{kind}"], "ad_type": "SMART_PLUS"},
+                    status="COMPLETE",
+                    observed_at=observed,
+                    coverage="COMPLETE_MATERIALS" if kind == newest_kind else "PARTIAL",
+                    published_version=version,
+                    kind=kind,
+                    ad_type="SMART_PLUS",
+                )
+            )
+    response = client.post(url + "/previews", json={"expected_revision": revision})
+    assert response.status_code == 202, response.text
+    result = client.get(
+        f"/tenants/{job_env['context'].tenant_id}/build-previews/{response.json()['preview_id']}"
+    )
+    assert result.status_code == 200, result.text
+    plans = result.json()["native_request"]["plans"]
+    assert all(plan["status"] == "INCLUDED" for plan in plans)
+    occupancy = next(
+        p for p in plans if p["selection"]["advertiser_id"] == "actual-account"
+    )["occupancy"]
+    assert occupancy["coverage"] == older_state
+    directories = occupancy["directories"]
+    fresh = directories[newest_kind]
+    assert fresh["coverage"] == "PARTIAL"
+    assert fresh["directory_coverage"] == "COMPLETE_MATERIALS"
+    assert fresh["directory_query"] == {
+        "ids": [f"visible-{newest_kind}"],
+        "ad_type": "SMART_PLUS",
+    }
+    assert datetime.fromisoformat(fresh["observed_at"]) == now
+    assert fresh["published_version"] == 9
+    older = directories[older_kind]
+    assert older["coverage"] == older_state
+    assert older["directory_coverage"] == (
+        None if older_state == "UNKNOWN" else "PARTIAL"
+    )
+    assert older["directory_query"] == (
+        None
+        if older_state == "UNKNOWN"
+        else {"ids": [f"visible-{older_kind}"], "ad_type": "SMART_PLUS"}
+    )
+    assert older["published_version"] == (None if older_state == "UNKNOWN" else 3)
+    assert (
+        older["observed_at"] is None
+        if older_state == "UNKNOWN"
+        else datetime.fromisoformat(older["observed_at"]) == old
+    )
+    assert all(
+        key not in occupancy
+        for key in (
+            "observed_at",
+            "published_version",
+            "directory_kind",
+            "directory_query",
+            "directory_coverage",
+        )
+    )
 
 
 def test_budget_pure_decimal_precision():

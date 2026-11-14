@@ -406,7 +406,10 @@ def test_directory_coverage_retains_published_query_and_age(
         result = previews.get_preview_summary(
             session, context=job_env["context"], preview_id=pid
         )
-        observation = result.native_request["occupancy"]
+        occupancy = result.native_request["plans"][0]["occupancy"]
+        assert occupancy["coverage"] == "UNKNOWN"
+        assert occupancy["directories"]["campaign"]["coverage"] == "UNKNOWN"
+        observation = occupancy["directories"]["adgroup"]
         assert observation["coverage"] == ("STALE" if stale else "PARTIAL")
         assert observation["published_version"] == 7
         assert datetime.fromisoformat(observation["observed_at"]) == observed

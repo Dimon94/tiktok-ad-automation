@@ -74,42 +74,52 @@ def observe_occupancy(session, *, context, bc_id, selection, location_ids, route
                     "published_version": row.published_version,
                 }
             )
-    runs = session.exec(
-        select(AdDirectoryRun)
-        .where(
-            AdDirectoryRun.tenant_id == context.tenant_id,
-            AdDirectoryRun.bc_id == bc_id,
-            AdDirectoryRun.advertiser_id == selection.advertiser_id,
-            AdDirectoryRun.status == "COMPLETE",
-            AdDirectoryRun.frozen_route == route.model_dump(mode="json"),
-            AdDirectoryRun.actor_id == context.actor_id,
-            AdDirectoryRun.kind.in_(["campaign", "adgroup"]),
-            AdDirectoryRun.published_version.is_not(None),
-        )
-        .order_by(AdDirectoryRun.published_version.desc())
-        .limit(1)
-    ).first()
+    directories = {}
+    stale_before = datetime.now(UTC) - ACTIVE_INTERVAL
+    for kind in ("campaign", "adgroup"):
+        run = session.exec(
+            select(AdDirectoryRun)
+            .where(
+                AdDirectoryRun.tenant_id == context.tenant_id,
+                AdDirectoryRun.bc_id == bc_id,
+                AdDirectoryRun.advertiser_id == selection.advertiser_id,
+                AdDirectoryRun.status == "COMPLETE",
+                AdDirectoryRun.frozen_route == route.model_dump(mode="json"),
+                AdDirectoryRun.actor_id == context.actor_id,
+                AdDirectoryRun.kind == kind,
+                AdDirectoryRun.published_version.is_not(None),
+            )
+            .order_by(AdDirectoryRun.published_version.desc())
+            .limit(1)
+        ).first()
+        directories[kind] = {
+            "coverage": (
+                "UNKNOWN"
+                if run is None or run.observed_at is None
+                else "STALE"
+                if run.observed_at < stale_before
+                else "PARTIAL"
+            ),
+            "observed_at": run.observed_at.isoformat()
+            if run and run.observed_at
+            else None,
+            "published_version": run.published_version if run else None,
+            "directory_coverage": run.coverage if run else None,
+            "directory_query": run.query if run else None,
+        }
+    states = {entry["coverage"] for entry in directories.values()}
     return {
         "visible_conflicts": conflicts,
-        "coverage": (
-            "UNKNOWN"
-            if runs is None
-            else "STALE"
-            if runs.observed_at
-            and runs.observed_at < datetime.now(UTC) - ACTIVE_INTERVAL
-            else "PARTIAL"
-        ),
-        "observed_at": runs.observed_at.isoformat()
-        if runs and runs.observed_at
-        else None,
-        "published_version": runs.published_version if runs else None,
+        "directories": directories,
+        "coverage": "UNKNOWN"
+        if "UNKNOWN" in states
+        else "STALE"
+        if "STALE" in states
+        else "PARTIAL",
         "scope_limits": [
             "仅当前授权账户；不覆盖其他账户或BC及观察后的变化",
             "目录开关/审核状态不证明平台完整active语义；UNKNOWN需平台最终判定",
         ],
-        "directory_coverage": runs.coverage if runs else None,
-        "directory_query": runs.query if runs else None,
-        "directory_kind": runs.kind if runs else None,
         "directory_request_available": settings.ADS_SYNC_ENABLED
         and route.channel == "OFFICIAL_API",
     }
@@ -678,28 +688,32 @@ def read_batch(session, *, preview):
                 BuildUnit.tenant_id == preview.tenant_id,
             )
         ).all()
-        if (native_request_digest(payload) != preview.content_digest
-                or len(units) != 1
-                or units[0].scene_snapshot.get("native_request") != payload):
+        if (
+            native_request_digest(payload) != preview.content_digest
+            or len(units) != 1
+            or units[0].scene_snapshot.get("native_request") != payload
+        ):
             raise DomainError("preview_not_frozen", "历史原生冻结内容不一致")
-        plan, = NativeSeriesPlanSet.model_validate(payload["selection"]).plans
+        (plan,) = NativeSeriesPlanSet.model_validate(payload["selection"]).plans
         return {
             "revision": "native-series-batch-v1",
             "draft_revision": payload["draft_revision"],
             "route": payload["route"],
             "strategy": payload["config"],
             "daily_budget_sum": payload["campaign"]["budget"],
-            "plans": [{
-                "plan_key": str(plan.plan_key),
-                "selection": payload["selection"],
-                "readiness": payload["checkpoint"],
-                "status": "INCLUDED",
-                "reason_codes": [],
-                "unit_id": str(units[0].id),
-                "request_digest": preview.content_digest,
-                "occupancy": payload["occupancy"],
-                "request": payload,
-            }],
+            "plans": [
+                {
+                    "plan_key": str(plan.plan_key),
+                    "selection": payload["selection"],
+                    "readiness": payload["checkpoint"],
+                    "status": "INCLUDED",
+                    "reason_codes": [],
+                    "unit_id": str(units[0].id),
+                    "request_digest": preview.content_digest,
+                    "occupancy": payload["occupancy"],
+                    "request": payload,
+                }
+            ],
         }
     batch = deepcopy(preview.config["native_batch"])
     if native_request_digest(batch) != preview.content_digest:
