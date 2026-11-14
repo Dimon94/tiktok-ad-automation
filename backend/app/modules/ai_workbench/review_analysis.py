@@ -168,6 +168,13 @@ def analyze_for_task(
                             "filtered_spend": Decimal(0),
                             "filtered_revenue": Decimal(0),
                             "filtered_buckets": 0,
+                            "engagement_diagnostics": {
+                                "events": Decimal(0),
+                                "paired_spend": Decimal(0),
+                                "paired_revenue": Decimal(0),
+                                "eligible_buckets": 0,
+                                "excluded_buckets": 0,
+                            },
                         },
                     )
                     group["source_ids"].add(str(source.id))
@@ -179,6 +186,24 @@ def analyze_for_task(
                     else:
                         group["excluded_buckets"] += 1
                         coverage["excluded_buckets"] += 1
+                    # 回收拆为事件获取效率与单位事件价值，不能仅凭ROAS归因于素材/变现单价。
+                    diagnostic = group["engagement_diagnostics"]
+                    event_value = values.get("ad_impression_events")
+                    if (
+                        eligible
+                        and availability.get("ad_impression_events") == "AVAILABLE"
+                        and event_value is not None
+                    ):
+                        event_count = Decimal(str(event_value))
+                        if event_count.is_finite() and event_count >= 0:
+                            diagnostic["events"] += event_count
+                            diagnostic["paired_spend"] += spend
+                            diagnostic["paired_revenue"] += earned
+                            diagnostic["eligible_buckets"] += 1
+                        else:
+                            diagnostic["excluded_buckets"] += 1
+                    else:
+                        diagnostic["excluded_buckets"] += 1
                     roas = earned / spend if eligible and spend else None
                     has_threshold = any(v is not None for v in thresholds.values())
                     matches = not has_threshold or (
@@ -266,6 +291,20 @@ def analyze_for_task(
     for key in sorted(groups):
         group = groups[key]
         total_spend, total_revenue = group["spend"], group[revenue]
+        diag = group["engagement_diagnostics"]
+        events, paired_spend = diag["events"], diag["paired_spend"]
+        group["engagement_diagnostics"] = {
+            **{k: str(v) if isinstance(v, Decimal) else v for k, v in diag.items()},
+            "events_per_spend": str(events / paired_spend) if paired_spend else None,
+            "revenue_per_1000_events": str(diag["paired_revenue"] * 1000 / events)
+            if events
+            else None,
+            "complete": diag["excluded_buckets"] == 0,
+            "interpretation": "Paired available frozen IAA ad-impression events, spend and revenue only; missing buckets excluded, not zero. Associations do not identify causal funnel failure.",
+        }
+        if not diag["eligible_buckets"]:
+            for field in ("events", "paired_spend", "paired_revenue"):
+                group["engagement_diagnostics"][field] = None
         totals.append(
             {
                 **{k: v for k, v in group.items() if k != "source_ids"},
@@ -300,7 +339,9 @@ def analyze_for_task(
         "limit": limit,
         **{k: str(v) if v is not None else None for k, v in thresholds.items()},
     }
-    digest = _digest({"request": request, "sources": sources})
+    digest = _digest(
+        {"analysis_contract": "engagement-v2", "request": request, "sources": sources}
+    )
     identity = uuid5(task.id, f"analysis:{digest}")
     result = {
         "id": str(identity),

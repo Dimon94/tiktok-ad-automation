@@ -304,7 +304,12 @@ def test_exact_money_axes_maturity_thresholds_and_scoped_citations(
         )
 
 
-def test_preparation_is_bounded_idempotent_and_repairs_lost_dispatch(session, context):
+def test_preparation_is_bounded_idempotent_and_repairs_lost_dispatch(
+    session, context, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.modules.ai_workbench.review_preparation.ACCOUNT_BATCH_SIZE", 1
+    )
     task = create_task(session, context, 2)
     original = step(session, task)
     assert (
@@ -599,3 +604,31 @@ def test_catalog_does_not_mislabel_nested_business_as_empty(session, context):
         assert catalog[category]["source_count"] == 1
         assert catalog[category]["row_count"] is None
         assert catalog[category]["row_count_status"] == "UNKNOWN_READ_SOURCE"
+
+
+def test_iaa_diagnostics_pair_available_events_and_never_zero_fill(session, context):
+    task = create_task(session, context, 2)
+    for aid, event_value in (("acc-1", "10"), ("acc-2", None)):
+        payload = report(aid, spend="2", revenue="1")
+        bucket = payload["rows"][0]["metric_buckets"][0]
+        bucket["values"]["ad_impression_events"] = event_value
+        bucket["availability"]["ad_impression_events"] = (
+            "AVAILABLE" if event_value else "MISSING"
+        )
+        archive_source(
+            session,
+            task=task,
+            category="reporting",
+            payload=payload,
+            captured_at=datetime.now(UTC),
+        )
+    result = analyze_for_task(
+        session, task=task, dimension="campaign", maturity_horizon="d0"
+    )
+    diag = result["totals"][0]["engagement_diagnostics"]
+    assert diag["events"] == "10"
+    assert diag["paired_spend"] == "2" and diag["paired_revenue"] == "1"
+    assert diag["events_per_spend"] == "5"
+    assert diag["revenue_per_1000_events"] == "100"
+    assert diag["eligible_buckets"] == diag["excluded_buckets"] == 1
+    assert diag["complete"] is False

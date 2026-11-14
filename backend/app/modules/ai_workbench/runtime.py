@@ -503,8 +503,14 @@ class RuleBacktest(BaseModel):
 
 class DailyRuleBacktest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    rule_id: UUID
+    rule_id: UUID | None = None
     candidate_definitions: list[dict] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def candidate_or_baseline(self):
+        if self.rule_id is None and not self.candidate_definitions:
+            raise ValueError("新规则回测须提供完整候选定义，或指定绑定规则")
+        return self
 
 
 @router.post("/{task_id}/rules/daily-backtest")

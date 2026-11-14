@@ -17,7 +17,6 @@ from app.modules.reporting.filters import authorized_grants
 from app.modules.reporting.schemas import ReportingFilter
 
 WINDOW_DAYS = 7
-MAX_ROWS = 50
 
 
 def account_window(timezone: str, cutoff: datetime) -> dict:
@@ -58,14 +57,22 @@ def build_data_pack(
     cutoff: datetime | None = None,
     observed_cutoff: datetime | None = None,
     advertiser_ids: tuple[str, ...] | None = None,
+    authorized_ids: frozenset[str] | None = None,
 ) -> dict:
+    from sqlalchemy import text
+
+    from app.modules.ai_workbench.review_reporting import freeze_report
     from app.modules.business.models import (
         BusinessDay,
         BusinessPublication,
         BusinessRun,
     )
     from app.modules.operation_logs.models import OperationExport, OperationLogEvent
-    from app.modules.reporting.queries import freeze_review_page
+    from app.modules.reporting.read_models.models import (
+        AccountReportDayState,
+        ReadBucketState,
+    )
+    from app.modules.reporting.store_models import ReportSyncState
 
     cutoff = cutoff or datetime.now(UTC)
     observed_cutoff = observed_cutoff or cutoff
@@ -74,14 +81,21 @@ def build_data_pack(
     )
     if not set(selected).issubset(set(version.advertiser_ids)):
         raise HTTPException(403, "account_outside_review_scope")
-    grants = authorized_grants(
-        session,
-        context=context,
-        bc_id=version.bc_id,
-        advertiser_ids=selected,
+    # 后台批次已核验完整授权范围；普通直接调用仍独立鉴权。
+    allowed = (
+        set(authorized_ids)
+        if authorized_ids is not None
+        else {
+            grant.advertiser_id
+            for grant in authorized_grants(
+                session, context=context, bc_id=version.bc_id, advertiser_ids=selected
+            )
+        }
     )
-    allowed = {g.advertiser_id for g in grants}
     ids = sorted(allowed & set(selected))
+    from app.modules.reporting.read_models.evidence import begin_evidence_snapshot
+
+    begin_evidence_snapshot(session)
     accounts = []
     reports = []
     business = []
@@ -95,6 +109,41 @@ def build_data_pack(
         accounts.append(window)
         if window["status"] != "AVAILABLE":
             continue
+        start = date.fromisoformat(window["maturity_windows"]["d7"]["start_date"])
+        end = date.fromisoformat(window["complete_through"])
+        states = {}
+        state_queries = {}
+        state_fingerprints = {}
+        for key, model, day_column in (
+            ("account", AccountReportDayState, AccountReportDayState.stat_date),
+            ("publications", ReportSyncState, ReportSyncState.stat_date),
+            ("material", ReadBucketState, ReadBucketState.bucket),
+        ):
+            query = select(model).where(
+                model.tenant_id == context.tenant_id,
+                model.advertiser_id == advertiser_id,
+                day_column >= start,
+                day_column <= end,
+                *(
+                    [ReadBucketState.kind == "creative_material"]
+                    if key == "material"
+                    else []
+                ),
+            )
+            query = query.order_by(
+                day_column,
+                *([ReportSyncState.report_kind] if key == "publications" else []),
+            )
+            state_queries[key] = query
+            states[key] = session.exec(query).all()
+            state_fingerprints[key] = [
+                row.model_dump(mode="json") for row in states[key]
+            ]
+        states["campaign"] = states["drama"] = [
+            s for s in states["publications"] if s.report_kind == "ad_day"
+        ]
+        # 整个账户只设置一次查询参数，避免12份临时快照反复切换。
+        session.execute(text("SET LOCAL jit = off"))
         # 各归因周期独立取七个成熟完整日；D7 不能复用近七日未成熟合计。
         for horizon, mature_window in window["maturity_windows"].items():
             for dimension in ("account", "campaign", "drama", "material"):
@@ -107,13 +156,12 @@ def build_data_pack(
                 # 缺投影属于业务数据缺失；其他错误传播，不能把程序错误伪装为无数据。
                 try:
                     with session.begin_nested():
-                        report = freeze_review_page(
+                        report = freeze_report(
                             session,
                             context=context,
                             bc_id=version.bc_id,
                             filters=filters,
-                            limit=MAX_ROWS,
-                            freeze_all=True,
+                            states=states,
                             cutoff=observed_cutoff,
                         )
                 except HTTPException as error:
@@ -141,6 +189,7 @@ def build_data_pack(
                             window={**mature_window, "timezone": window["timezone"]},
                             report=report,
                             cutoff=observed_cutoff,
+                            source_states=states[dimension],
                         ),
                         **report,
                     }
@@ -167,16 +216,15 @@ def build_data_pack(
                 BusinessDay.stat_date <= date.fromisoformat(window["complete_through"]),
             )
             .order_by(BusinessDay.stat_date, BusinessDay.campaign_id)
-            .limit(MAX_ROWS + 1)
         ).all()
         business.append(
             {
                 "advertiser_id": advertiser_id,
                 "status": "AVAILABLE" if rows else "MISSING",
-                "rows_truncated": len(rows) > MAX_ROWS,
+                "rows_truncated": False,
                 "rows": [
                     r.model_dump(mode="json", exclude={"provider_rate", "rebate_rate"})
-                    for r in rows[:MAX_ROWS]
+                    for r in rows
                 ],
             }
         )
@@ -192,19 +240,32 @@ def build_data_pack(
                 OperationLogEvent.occurred_at < cutoff,
             )
             .order_by(col(OperationLogEvent.occurred_at).desc())
-            .limit(MAX_ROWS + 1)
         ).all()
         events.append(
             {
                 "advertiser_id": advertiser_id,
                 "status": "AVAILABLE" if logs else "MISSING",
-                "rows_truncated": len(logs) > MAX_ROWS,
+                "rows_truncated": False,
                 "rows": [
                     {**row.model_dump(mode="json"), "advertiser_id": aid}
-                    for row, aid in logs[:MAX_ROWS]
+                    for row, aid in logs
                 ],
             }
         )
+        # READ COMMITTED 下同步可能在各维度读取之间发布；发现任何源代数变化就
+        # 重试整个账户，不能把不同出版版本的金额/覆盖冻结成同一份来源。
+        from app.core.errors import DomainError
+
+        for key, query in state_queries.items():
+            current = session.exec(
+                query.execution_options(populate_existing=True)
+            ).all()
+            if [row.model_dump(mode="json") for row in current] != state_fingerprints[
+                key
+            ]:
+                raise DomainError(
+                    "ai_review_publication_changed", "冻结期间报表已更新，请重试"
+                )
     return sanitize_public(
         {
             "contract": "ai-review-data-v1",

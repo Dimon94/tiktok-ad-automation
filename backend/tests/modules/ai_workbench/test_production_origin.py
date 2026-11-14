@@ -174,14 +174,15 @@ def test_material_origin_mapping_is_exact_and_ambiguous_producer_excluded(
         )["rows"][0]["job_id"]
         == "job-one"
     )
-    assert (
-        next(
-            r["payload"]
-            for r in source_store(session, task).values()
-            if r["category"] == "attribution"
-        )["rows"][0]["version_id"]
-        == "creative-one"
-    )
+    # 同类来源包含基础空包及逐账户包，SQL 未承诺哪个先返回。
+    attribution_rows = [
+        row
+        for source in source_store(session, task).values()
+        if source["category"] == "attribution"
+        for row in source["payload"]["rows"]
+    ]
+    assert len(attribution_rows) == 1
+    assert attribution_rows[0]["version_id"] == "creative-one"
     session.add(
         MaterialPushItem(
             tenant_id=context.tenant_id,
@@ -206,14 +207,15 @@ def test_material_origin_mapping_is_exact_and_ambiguous_producer_excluded(
     assert conflict["rows"] == []
     assert conflict["conflicts"][0]["reason"] == "multiple_origin_versions"
     # 旧任务正文仍保留当时唯一的关联，后续冲突不悄悄改写历史。
-    assert (
-        next(
-            r["payload"]
-            for r in source_store(session, task).values()
-            if r["category"] == "attribution"
-        )["rows"][0]["version_id"]
-        == "creative-one"
-    )
+    # 同类来源包含基础空包及逐账户包，SQL 未承诺哪个先返回。
+    attribution_rows = [
+        row
+        for source in source_store(session, task).values()
+        if source["category"] == "attribution"
+        for row in source["payload"]["rows"]
+    ]
+    assert len(attribution_rows) == 1
+    assert attribution_rows[0]["version_id"] == "creative-one"
 
 
 def test_nested_producer_origin_is_discoverable_in_push_openapi():

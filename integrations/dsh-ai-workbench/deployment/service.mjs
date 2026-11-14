@@ -10,7 +10,7 @@ export function apply(ctx, config) {
       if (!['/health', '/ready'].includes(request.url)) { response.writeHead(404); response.end(); return }
       const ready = request.url === '/health' || connected
       response.writeHead(ready ? 200 : 503, { 'content-type': 'application/json' })
-      response.end(JSON.stringify({ ready, connected, plugin: '1.6.0' }))
+      response.end(JSON.stringify({ ready, connected, plugin: '1.7.0' }))
     }).listen(config.healthPort || 9080, '0.0.0.0')
     return () => new Promise(resolve => server.close(resolve))
   })

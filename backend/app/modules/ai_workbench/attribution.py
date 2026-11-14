@@ -21,17 +21,23 @@ MAX_MAPPINGS = 500
 MAX_GROUPS = 20
 
 
-def resolve_mappings(session: Session, *, context, optimizer_id, version, cutoff):
+def resolve_mappings(
+    session: Session, *, context, optimizer_id, version, cutoff, authorized_ids=None
+):
     from app.modules.reporting.filters import authorized_grants
 
-    accounts = tuple(
-        sorted(
-            g.advertiser_id
-            for g in authorized_grants(
-                session,
-                context=context,
-                bc_id=version.bc_id,
-                advertiser_ids=tuple(version.advertiser_ids),
+    accounts = (
+        tuple(sorted(authorized_ids))
+        if authorized_ids is not None
+        else tuple(
+            sorted(
+                g.advertiser_id
+                for g in authorized_grants(
+                    session,
+                    context=context,
+                    bc_id=version.bc_id,
+                    advertiser_ids=tuple(version.advertiser_ids),
+                )
             )
         )
     )
@@ -171,16 +177,21 @@ def build_attribution_pack(
     cutoff,
     account_windows,
     observed_cutoff=None,
+    mapping=None,
 ):
     from app.modules.ai_workbench.review_maturity import maturity_evidence
 
     observed_cutoff = observed_cutoff or cutoff
-    mapping = resolve_mappings(
-        session,
-        context=context,
-        optimizer_id=optimizer_id,
-        version=version,
-        cutoff=cutoff,
+    mapping = (
+        mapping
+        if mapping is not None
+        else resolve_mappings(
+            session,
+            context=context,
+            optimizer_id=optimizer_id,
+            version=version,
+            cutoff=cutoff,
+        )
     )
     windows = {
         row["advertiser_id"]: row

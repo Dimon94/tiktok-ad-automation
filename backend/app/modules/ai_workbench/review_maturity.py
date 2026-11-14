@@ -24,21 +24,26 @@ def maturity_evidence(
     window: dict,
     report: dict,
     cutoff: datetime,
+    source_states=None,
 ) -> dict:
     start = date.fromisoformat(window["start_date"])
     end = date.fromisoformat(window["end_date"])
     days = window["maturity_days"]
     model = AccountReportDayState if dimension == "account" else ReportSyncState
     if dimension == "material":
-        states = session.exec(
-            select(ReadBucketState).where(
-                ReadBucketState.tenant_id == context.tenant_id,
-                ReadBucketState.advertiser_id == advertiser_id,
-                ReadBucketState.kind == "creative_material",
-                ReadBucketState.bucket >= start,
-                ReadBucketState.bucket <= end,
-            )
-        ).all()
+        states = (
+            source_states
+            if source_states is not None
+            else session.exec(
+                select(ReadBucketState).where(
+                    ReadBucketState.tenant_id == context.tenant_id,
+                    ReadBucketState.advertiser_id == advertiser_id,
+                    ReadBucketState.kind == "creative_material",
+                    ReadBucketState.bucket >= start,
+                    ReadBucketState.bucket <= end,
+                )
+            ).all()
+        )
         source = {
             row.bucket: (
                 row.derived_status,
@@ -53,15 +58,19 @@ def maturity_evidence(
         conditions = (
             [] if dimension == "account" else [ReportSyncState.report_kind == "ad_day"]
         )
-        states = session.exec(
-            select(model).where(
-                model.tenant_id == context.tenant_id,
-                model.advertiser_id == advertiser_id,
-                model.stat_date >= start,
-                model.stat_date <= end,
-                *conditions,
-            )
-        ).all()
+        states = (
+            source_states
+            if source_states is not None
+            else session.exec(
+                select(model).where(
+                    model.tenant_id == context.tenant_id,
+                    model.advertiser_id == advertiser_id,
+                    model.stat_date >= start,
+                    model.stat_date <= end,
+                    *conditions,
+                )
+            ).all()
+        )
         source = {
             row.stat_date: (
                 row.status,
