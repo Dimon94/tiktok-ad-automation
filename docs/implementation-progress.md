@@ -1,3 +1,9 @@
+## 2026-11-14：JB-22 无报表目录导航本地候选
+
+从 `55ee37146d7275b8c308161bce1986f9fbbb1670` 在唯一 M3 集成树 `feat/jb21-native-series-m3` 实现并提交 `2701fbfad95c316d8d5a49d8918fafdb2164edf4`：原目录 owner 新增绑定 tenant/BC/账户/kind/父范围的稳定分页 HTTP，工作区通过授权账户进入系列→广告组→广告→创意与父级返回。详情直接消费 EntityRef，不生成 ReportRow/snapshot/管理选择；显示来源、观察时间和发布版本。复用原查询、详情与账户选择器，无新同步器、迁移或业务开关。
+
+独立 M3 PostgreSQL、本地真实页面→HTTP 主 Seam 通过；相关套件 21 passed，扩展浏览器缓存撤权检查后新增套件 3 passed，旧报表详情回归 4 passed，正式/demo 构建及 scoped lint 通过。重复页/跳过授权两种源码错误探针均拒绝，finally/cmp 恢复后 GREEN。详见 [JB-22 验证与 JB-23 消费合同](validation/2026-11-14-jb22-directory-navigation.md)。本票本地 AC 满足，仍是同一 MMF 的实现候选；JB-23 原生识别、M3 独立两轴审查与最终集成未完成。真实平台/生产 Unknown；无 push、PR、部署、Linear 写入、main 合并或工作树删除。
+
 ## 2026-11-14：JB-20 分类型目录覆盖本地修复
 
 从 `9bbe663f` 在授权任务树 `fix/jb20-directory-coverage` 修复 Campaign / Adgroup 共用最新 Run 的问题。每类保留查询范围、真实同步覆盖、观察时间和发布版本；缺失/过期仅作覆盖限制，精确 ACTIVE 冲突仍按原账户、Series、地区处理。预览与提交确认分别展示两类证据；历史冻结只按其已记录的目录类型展示原始证据，不改写历史或推断另一类覆盖。复用既有目录同步 owner，无迁移、无平台调用。
