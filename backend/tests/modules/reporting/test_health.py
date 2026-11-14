@@ -33,7 +33,13 @@ def test_missing_current_data_is_degraded_and_repaired_without_fake_success(
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert {j.kind for j in jobs} == {"ad_day", "creative_day"}
+    # M4a三层日报各自调度，素材日报保留原义。
+    assert {j.kind for j in jobs} == {
+        "campaign_day",
+        "adgroup_day",
+        "ad_day",
+        "creative_day",
+    }
     assert all(j.advertiser_ids == ["acc-2"] for j in jobs)
     assert (
         session.get(
@@ -42,9 +48,19 @@ def test_missing_current_data_is_degraded_and_repaired_without_fake_success(
         is None
     )
     observe_health(session, p, now=now + timedelta(seconds=60))
-    assert len(session.exec(select(ReportSyncHealthEvent)).all()) == 1
-    assert len(session.exec(select(ReportSyncJob)).all()) == 2
-    for kind in ["ad_day", "creative_day"]:
+    # 首次补修登记了父级scope：下一次观测新增两个明确缺水位的告警。
+    events = session.exec(
+        select(ReportSyncHealthEvent).order_by(ReportSyncHealthEvent.created_at)
+    ).all()
+    assert len(events) == 2
+    assert set(events[1].issues) == set(events[0].issues) | {
+        "stale_campaign_day_accounts",
+        "stale_adgroup_day_accounts",
+    }
+    observe_health(session, p, now=now + timedelta(seconds=90))
+    assert len(session.exec(select(ReportSyncHealthEvent)).all()) == 2
+    assert len(session.exec(select(ReportSyncJob)).all()) == 4
+    for kind in ["campaign_day", "adgroup_day", "ad_day", "creative_day"]:
         session.add(
             ReportSyncState(
                 tenant_id=sync_seed.tenant_id,
@@ -58,7 +74,22 @@ def test_missing_current_data_is_degraded_and_repaired_without_fake_success(
     session.flush()
     health = observe_health(session, p, now=now + timedelta(minutes=2))
     assert health.status == "HEALTHY" and not health.issues
-    assert len(session.exec(select(ReportSyncHealthEvent)).all()) == 2
+    assert len(session.exec(select(ReportSyncHealthEvent)).all()) == 3
+    # M4a R7：广告/素材成功不能掩盖单独过期的广告组水位。
+    group = session.get(
+        ReportSyncState, (sync_seed.tenant_id, "acc-2", "adgroup_day", now.date())
+    )
+    group.last_success_at = now - timedelta(hours=1)
+    session.flush()
+    from app.modules.reporting.health import measure_health
+
+    metrics, issues, repairs = measure_health(
+        session, p, now=now + timedelta(minutes=2)
+    )
+    assert metrics["stale_adgroup_day_accounts"] == 1
+    assert "stale_adgroup_day_accounts" in issues
+    assert repairs["adgroup_day"] == {"acc-2"}
+    assert repairs["campaign_day"] == repairs["ad"] == repairs["material"] == set()
 
 
 def test_no_spend_scope_does_not_raise_false_staleness(session, sync_seed):
@@ -82,7 +113,12 @@ def test_unknown_empty_active_scope_is_not_healthy(session, sync_seed):
     assert "ACCOUNT_SCREEN_STALE" in health.issues
     jobs = session.exec(select(ReportSyncJob)).all()
     assert {adv for job in jobs for adv in job.advertiser_ids} == {"acc-1", "acc-2"}
-    assert {job.kind for job in jobs} == {"ad_day", "creative_day"}
+    assert {job.kind for job in jobs} == {
+        "campaign_day",
+        "adgroup_day",
+        "ad_day",
+        "creative_day",
+    }
 
 
 def test_zero_spend_facts_are_monitored_before_active_screen_catches_up(
@@ -131,6 +167,7 @@ def test_health_observation_survives_contended_repair_lock(committed_sync_seed):
             resource="ad_day",
             query={"campaign_ids": []},
             timezone="UTC",
+            metric_contract="native-growth-day-v1",
         )
         scope_id = scope.id
         session.commit()
@@ -301,7 +338,7 @@ def test_health_allows_realtime_cycle_and_execution_margin(
     session.flush()
     health = observe_health(session, plan, now=now)
     assert health.status == expected
-    assert len(session.exec(select(ReportSyncJob)).all()) == (2 if age > 20 else 0)
+    assert len(session.exec(select(ReportSyncJob)).all()) == (4 if age > 20 else 0)
 
 
 @pytest.mark.parametrize(
@@ -374,7 +411,17 @@ def test_normal_hot_cycles_wait_for_directory_completion_without_ad_repairs(
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
     start = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
     job = prepared(session, sync_seed, day=start.date())
-    job.status = "COMPLETE"
+    initial_jobs = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
+    ).all()
+    assert {item.kind for item in initial_jobs} == {
+        "campaign_day",
+        "adgroup_day",
+        "ad_day",
+    }
+    for item in initial_jobs:
+        item.status = "COMPLETE"
+    expected_job_ids = {item.id for item in initial_jobs}
     # 模拟每次发布后完成目录，覆盖半周期边界并连续验证多轮不漂移。
     directory_objects(session, sync_seed, start + timedelta(minutes=elapsed))
     objects = {
@@ -397,7 +444,8 @@ def test_normal_hot_cycles_wait_for_directory_completion_without_ad_repairs(
     plan = session.get(AdSyncBc, (sync_seed.tenant_id, "bc-a"))
     plan.last_active_advertiser_ids, plan.active_screened_at = ["acc-2"], start
     states = []
-    for kind in ("ad_day", "creative_day"):
+    # 正常热轮应已完成三层及素材；父级缺水位另有负向覆盖。
+    for kind in ("campaign_day", "adgroup_day", "ad_day", "creative_day"):
         state = session.get(
             ReportSyncState, (sync_seed.tenant_id, "acc-2", kind, start.date())
         )
@@ -441,7 +489,9 @@ def test_normal_hot_cycles_wait_for_directory_completion_without_ad_repairs(
         health = observe_health(session, plan, now=now)
         assert health.status == "HEALTHY"
         assert health.last_repair_at is None
-        assert session.exec(select(ReportSyncJob)).all() == [job]
+        assert {
+            item.id for item in session.exec(select(ReportSyncJob)).all()
+        } == expected_job_ids
     # 规则账户每轮三层；普通账户广告每30分钟、上级每60分钟，规划频率不变。
     assert planned == ([3] * 12 if rule else [0, 1, 0, 3] * 3)
 

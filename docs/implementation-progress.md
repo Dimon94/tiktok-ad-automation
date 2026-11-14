@@ -5397,3 +5397,8 @@ Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接
 从7d987d8在共享集成树串行加厚Adgroup，新增统一日层级注册、原SDK/需求/Worker/PG发布、Adgroup selected view、三层独立状态HTTP与工作区；保留父级direct与旧广告派生writer隔离。真实刷新HTTP→三层各两页SDKtransport→Worker函数→PG/Redis→query/status HTTP→工作区各父级40/Ad dash通过；空发布/失败回滚、真实广告发布/重建/账户恢复及源码错误探针通过。R4/R10专属有限模型48状态通过，非全MMF形式验收。
 
 验证与未闭合项详见 `docs/validation/2026-11-14-jb26-native-growth-levels.md`。frontend build/Ruff/diff通过；严格mypy最终410条既有诊断未全绿（精确起点412，诊断集合无新增）；旧planner/health任务种类断言已独立起点源码/独立库复现，另外三层健康夹具的合同差异留root审定，未改旧断言。未自标Done、启动后票、改Linear、push/PR/合main/部署或操作真实广告。保留原软链。
+
+
+### 2026-11-14 JB-26 root消费者验收
+
+已核对2662522d候选并修复未知范围遗漏creative探测；其余测试按三层合同准备精确scope/水位与四类调度任务，没有放宽隔离/去重。health+planner83通过，closeout/dedup/正常热轮74通过，关键复验3通过；两个源码探针红→恢复绿，R4/R10 48状态模型及错误变体亲跑。可交JB-27/JB-28继续，完整M4a未完成；无push/PR/部署。

@@ -59,3 +59,25 @@ JB27消费：LEVELS/PARENT_KINDS/DAY_KINDS、ParentReportDay、publish_parent_da
 JB28消费：campaign_selected_day/adgroup_selected_day、query_kind/state_sql、report_provenance、SQL过滤排序路径；完整子集范围/分桶金额/快照冻结/详情CSV仍按后票合同，不把本片页面结果冒充冻结快照完成。平台ratio是Decimal字符串观察，money只持有于Numeric，不增加证据money副本。
 
 仍需root独立验收：完整消费者行为回归（上述旧健康夹具/新合同差异）、正式Standards/Spec审查；本票局部形式检查不覆盖全MMF。不得据本文标Done、合main、开放后票或声称M4a完成。没有生产验收结论。
+
+
+## Root 消费者阶段验收与收口
+
+root亲核2662522d9f1020d49206322c9e4704260b358342，统一注册/独立state/需求与health/closeout接线；主线程实跑发现旧planner/health断言及fixture仍按Ad+creative两类。按已批准三层合同更新明确预期，未降低水位、授权、去重或原子性要求：
+
+- hot/daily/closeout明确包含Campaign、Adgroup、Ad及creative（daily另保留account）；昨日两个时区的实际8个任务按账户×kind逐项核对。Ad已闭日成功时，两个未观测父级仍须独立补拉。历史dedup六状态夹具对四kind均准备匹配/不匹配scope，不用遗漏父级任务制造假失败。
+- 正常热轮fixture先完成实际登记的三个日任务和三层水位，验证整轮不增加任务；父级过期负向检查仍必须返回独立stale/repair，成功Ad不能掩盖它。
+- 锁竞争fixture原先锁report-v2，已改为当前native-growth-day-v1精确scope；500ms数据库预算内仍记录健康、锁释放后可补修，原断言保留。
+- 新登记父级scope会带来第二次真实告警变化；事件数检查保留了相同issue集合不重复发事件，四层成功后恢复HEALTHY。
+
+发现一处本票真实消费者回归：未知账户的修复此前隐含借plan_hot触发creative；拆分kind修复后漏掉creative。root恢复unknown范围同时进入原广告/素材修复集合（父级随完整广告需求登记），不新增owner、不写成功水位。新合同检查先因缺creative实际失败，修复后绿。
+
+实跑结果：
+1. health+planner（除正常热轮）83 passed/119.37s，包括真实scope锁、时区边界、查询索引历史噪声等。
+2. day_closeout＋历史dedup六状态/八种scope＋正常热轮74 passed/18.17s。
+3. 最终health关键缺失/未知/锁竞争3 passed/1.04s。
+4. root另一批运行中native_levels六条及health status/known-scope等通过；该批的失败均已被上述明确scope/数量夹具收口，未把整批称全绿。三层主Seam保留真实SDK transport→HTTP/Worker函数/PG/工作区证据。
+5. 两个真实源码探针：去掉未知素材探测、忽略父级freshness，均行为RED→finally字节恢复→GREEN。外仓jb26-root-*-red.log/green.log；未重复未改的四个旧探针。48状态R4/R10模型正常通过，broken-selector命中direct-authority反例；不覆盖完整R7。
+6. Ruff check/format和diff check通过。root没有改前端，复用匹配前端源码的build/TypeScript证据；未声称严格mypy全绿，未运行全仓套件。
+
+当前可作JB-27/JB-28前置集成基线，票保持InProgress直至完整MMF验收合main。正式两轴审查、独立Celery投递、R7完整可靠性、快照/CSV仍待后票，不宣称整个M4a完成。

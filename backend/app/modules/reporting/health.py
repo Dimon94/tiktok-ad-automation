@@ -825,7 +825,13 @@ def _repair_health(session, plan, row, repairs, now, *, screen_unknown=False):
                 "limit": MAX_REPAIR_ACCOUNTS,
             },
         ).scalars()
-        repairs = {**repairs, "ad": repairs["ad"] | set(unknown)}
+        # 未知账户需要恢复原广告和素材两条事实探测；父级由完整广告需求登记。
+        unknown_accounts = set(unknown)
+        repairs = {
+            **repairs,
+            "ad": repairs["ad"] | unknown_accounts,
+            "material": repairs["material"] | unknown_accounts,
+        }
     report_repairs = {
         "ad_day": repairs["ad"],
         "creative_day": repairs["material"],

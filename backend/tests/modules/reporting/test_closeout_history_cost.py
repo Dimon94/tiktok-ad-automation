@@ -163,7 +163,7 @@ def test_history_dedup_preserves_all_statuses_and_exact_scope(
 ):
     plan = plan_for(session, sync_seed)
     day, _midnight = seed_yesterday(session, sync_seed)
-    for kind in ("ad_day", "creative_day"):
+    for kind in ("campaign_day", "adgroup_day", "ad_day", "creative_day"):
         session.add(
             ReportSyncJob(
                 tenant_id=uuid4() if mismatch == "tenant" else plan.tenant_id,
