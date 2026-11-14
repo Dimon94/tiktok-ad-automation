@@ -5596,3 +5596,5 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - 本轮真实存储/PG/HTTP阶段撤权、并发/重复、snapshot删除后生成、源更新/目录删除后的重复下载；原完整浏览器→Redis/Celery→五类CSV，357311 bytes，sha256 `78df6695657f2886e01386b8b095c9e50cdc49d8db9fa99290ec14d1f0bc238b`。最初空夹具及异步轮询工装错误已记录并由有效payload结果替代。
 - 详见 `docs/validation/2026-11-14-jb38-material-export-lifecycle.md`，含整个M4b T1–T12/R1–R10的新/继承证据、限制、具体命令与root审阅包。formal单独提交；root fresh Standards/Spec、整个MMF接受/本地集成/关闭仍待执行。平台creative支持/口径/成熟度与生产容量Unknown；没有Linear写入、推送、PR、main合并、部署、平台操作或补写源数据。
 - JB38产品候选提交 `e400e45e86be7acacfb3464ab8a5531b7279c425`；formal扩展以此为sync_commit，64组合与四类破坏模型、五个实际源码拒错/外部finally恢复/cmp以及各轮15项GREEN。最终三次真实队列重复投递浏览器纵切1 passed /13.11s；Ruff/py_compile/diff check通过。formal独立提交于其后。
+
+- M4b JB38 root阶段接受：候选ff62f283，独立export_lifecycle+tracer21 passed（含真实完整CSV和导出故障/权限/到期），64有限组合通过；五票阶段均接受。下一整M4b fresh Standards/Spec R1，审查前不合main/关闭票。无push/deploy。
