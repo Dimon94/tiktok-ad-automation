@@ -130,6 +130,7 @@ def materialize_material_rows(
         SELECT u.* FROM unnest(CAST(:videos AS text[])) v(id)
         CROSS JOIN LATERAL (
             SELECT * FROM current_ad_material WHERE tenant_id=:tenant AND platform_material_id=v.id
+                AND advertiser_id=ANY(CAST(:advs AS text[]))
                 AND complete AND material_type='VIDEO' OFFSET 0
         ) u WHERE u.advertiser_id=ANY(CAST(:advs AS text[]))
     """)

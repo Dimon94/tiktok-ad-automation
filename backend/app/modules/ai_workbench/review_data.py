@@ -142,6 +142,54 @@ def build_data_pack(
         states["campaign"] = states["drama"] = [
             s for s in states["publications"] if s.report_kind == "ad_day"
         ]
+        states["account_name"] = account.name if account else advertiser_id
+        states["review_labels"] = {
+            row.remote_id: {
+                "name": row.name or row.remote_id,
+                "campaign_name": row.name or row.remote_id,
+                "provider": row.provider_label,
+                "naming_status": row.naming_status,
+                "drama_name": row.drama_name,
+                "ad_type": row.ad_type,
+                "operation_status": row.operation_status,
+                "review_status": row.review_status,
+                "secondary_status": row.delivery_status,
+                "target_roas": str(row.target_roas)
+                if row.target_roas is not None
+                else None,
+                "campaign_budget": str(row.budget_value)
+                if row.budget_value is not None
+                else None,
+            }
+            for row in session.execute(
+                text("""
+                SELECT ids.remote_id, COALESCE(NULLIF(e.name,''), p.raw_name, f.campaign_name) AS name,
+                    p.provider_label,p.status AS naming_status,p.drama_name,
+                    e.ad_type,e.operation_status,e.review_status,e.delivery_status,
+                    COALESCE(NULLIF(e.roas_bid,0),e.target_roas) AS target_roas,e.budget_value
+                FROM (
+                    SELECT DISTINCT campaign_id AS remote_id FROM campaign_metric_day
+                    WHERE tenant_id=:tenant AND advertiser_id=:adv AND stat_date BETWEEN :start AND :end
+                ) ids
+                LEFT JOIN ad_entity_read e ON e.tenant_id=:tenant AND e.advertiser_id=:adv
+                    AND e.kind='campaign' AND e.remote_id=ids.remote_id
+                LEFT JOIN campaign_name_current p ON p.tenant_id=:tenant AND p.advertiser_id=:adv
+                    AND p.campaign_remote_id=ids.remote_id
+                LEFT JOIN LATERAL (
+                    SELECT campaign_name FROM campaign_report_day
+                    WHERE tenant_id=:tenant AND advertiser_id=:adv AND campaign_id=ids.remote_id
+                        AND stat_date BETWEEN :start AND :end AND campaign_name IS NOT NULL
+                    ORDER BY stat_date DESC,fetched_at DESC LIMIT 1
+                ) f ON TRUE
+            """),
+                {
+                    "tenant": context.tenant_id,
+                    "adv": advertiser_id,
+                    "start": start,
+                    "end": end,
+                },
+            )
+        }
         # 整个账户只设置一次查询参数，避免12份临时快照反复切换。
         session.execute(text("SET LOCAL jit = off"))
         # 各归因周期独立取七个成熟完整日；D7 不能复用近七日未成熟合计。

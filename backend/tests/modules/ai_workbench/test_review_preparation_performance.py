@@ -29,6 +29,30 @@ def _measured(session, call):
     return result, len(counts), elapsed
 
 
+def _assert_financial_parity(actual, expected):
+    for key in (
+        "status",
+        "filters",
+        "publication_versions",
+        "summary",
+        "coverage",
+        "metrics_observed_at",
+        "total",
+        "rows_truncated",
+    ):
+        assert actual[key] == expected[key], key
+    assert actual["projection_contract"] == "financial-review-v1"
+    assert len(actual["rows"]) == len(expected["rows"])
+    for a, e in zip(actual["rows"], expected["rows"], strict=True):
+        assert a["row_key"] == e["row_key"]
+        assert a["metric_buckets"] == e["metric_buckets"], a["row_key"]
+        assert a["display"]["name"] == e["display"]["name"]
+        if e["coverage"].get("status") == "INCOMPLETE":
+            assert a["coverage"]["status"] == "INCOMPLETE"
+        assert a["coverage"]["action_evidence"] == "NOT_INCLUDED"
+        assert not a.get("refs") and not a.get("material_uses")
+
+
 def test_direct_freeze_parity_and_query_budget(session, context):
     version = _version(session, context)
     _publish(session, context)
@@ -54,13 +78,7 @@ def test_direct_freeze_parity_and_query_budget(session, context):
 
     old, old_count, old_seconds = _measured(session, baseline)
     for actual, expected in zip(pack["reporting"], old, strict=True):
-        for key, value in expected.items():
-            if key != "id":
-                assert actual[key] == value, (
-                    actual["dimension"],
-                    actual["maturity_horizon"],
-                    key,
-                )
+        _assert_financial_parity(actual, expected)
     print(  # noqa: T201
         f"REPORT_BENCH direct={direct_count} SQL/{direct_seconds:.3f}s baseline={old_count} SQL/{old_seconds:.3f}s"
     )
@@ -153,9 +171,7 @@ def test_material_full_population_parity_with_unmapped_and_unallocated(
         freeze_all=True,
     )
     assert report["total"] > 50
-    for key, value in baseline.items():
-        if key != "id":
-            assert report[key] == value, key
+    _assert_financial_parity(report, baseline)
 
 
 def test_batch_retry_keeps_successful_predecessor_checkpoint(

@@ -894,7 +894,12 @@ def _material_rows(filters: ReportingFilter, params: _Params) -> tuple[str, str]
 
 
 def _ctes(
-    filters: ReportingFilter, *, tenant_id: UUID, advertisers: Sequence[str], bc_id: str
+    filters: ReportingFilter,
+    *,
+    tenant_id: UUID,
+    advertisers: Sequence[str],
+    bc_id: str,
+    review_labels: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     params = _Params()
     params.add("tenant", tenant_id)
@@ -915,6 +920,8 @@ def _ctes(
         retained.append(f"r.{filters.sort_by}")
         if filters.sort_by == "balance":
             retained.append("r.balance_currency")
+    if review_labels and filters.dimension == "material":
+        retained.append("r.name")
     projection = ",".join(retained)
     if filters.dimension == "material":
         body, base = _material_rows(filters, params)
@@ -943,6 +950,7 @@ def _ctes(
     ordered = f"""ordered AS (
         SELECT r.row_key,'[]'::jsonb AS refs,'[]'::jsonb AS material_uses,
             {keys} AS member_keys,{count} AS member_count,{evidence} AS evidence_versions,{version},
+            {"r.name AS review_name," if review_labels and filters.dimension == "material" else ""}
             (row_number() OVER (ORDER BY {_order_by(filters)}) - 1)::int AS seq
         FROM fr r LEFT JOIN rv v ON v.row_key = r.row_key
     )"""
@@ -950,7 +958,11 @@ def _ctes(
 
 
 def _summary_select(
-    unsupported: frozenset[str], *, individual: bool = False, all_rows: bool = False
+    unsupported: frozenset[str],
+    *,
+    individual: bool = False,
+    all_rows: bool = False,
+    per_row: bool = False,
 ) -> str:
     """汇总只算最终行：值为全部成员合计，部分合计规则同 merge_metric_buckets。"""
     columns = ", ".join(
@@ -967,10 +979,10 @@ def _summary_select(
         else "bool_or(mb.incomplete) OVER (PARTITION BY mb.row_key)"
     )
     source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
-    return f"""SELECT x.currency,
+    return f"""SELECT {"x.row_key, bool_or(x.row_incomplete) AS incomplete," if per_row else ""} x.currency,
             CASE WHEN count(DISTINCT x.tz) = 1 THEN min(x.tz) ELSE 'MIXED' END AS tz, {columns}
         FROM (SELECT mb.*, {incomplete} AS row_incomplete FROM {source}) x
-        GROUP BY x.currency ORDER BY x.currency"""
+        GROUP BY {"x.row_key," if per_row else ""} x.currency ORDER BY {"x.row_key," if per_row else ""} x.currency"""
 
 
 def ordered_members(

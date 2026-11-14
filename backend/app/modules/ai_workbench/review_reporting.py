@@ -1,20 +1,20 @@
 """复盘直接冻结领域报表结果，不建立供浏览器分页的短期快照。
 
-身份、聚合、空值、素材残差均复用报表领域 SQL 和物化器。只省略临时快照的
-写入、命名版本绑定、分页重读和重复鉴权；调用者必须先校验整个复盘账户范围。
+身份、聚合、空值、素材残差复用报表领域 SQL；分析投影不展开页面动作成员，
+也不重复读取同一份指标。调用者必须先校验整个复盘账户范围。
 """
 
-from uuid import UUID, uuid4
+import json
+from collections import defaultdict
+from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from app.modules.reporting.dimension_query import materialize_rows
 from app.modules.reporting.queries import _summary
 from app.modules.reporting.read_models.coverage import projection_coverage
 from app.modules.reporting.row_set import SnapshotTotals, _ctes, _summary_select
 from app.modules.reporting.schemas import MATERIAL_QUERY_CONTRACT
-from app.modules.reporting.snapshot_members import members_from_data
 
 
 def freeze_report(session, *, context, bc_id, filters, cutoff, states):
@@ -24,10 +24,17 @@ def freeze_report(session, *, context, bc_id, filters, cutoff, states):
         raise ValueError("review_report_requires_one_account")
     dimension = filters.dimension
     ctes, params = _ctes(
-        filters, tenant_id=context.tenant_id, advertisers=advertisers, bc_id=bc_id
+        filters,
+        tenant_id=context.tenant_id,
+        advertisers=advertisers,
+        bc_id=bc_id,
+        review_labels=True,
     )
     summary_sql = _summary_select(
         frozenset(), individual=dimension not in {"drama", "material"}, all_rows=True
+    )
+    row_sql = _summary_select(
+        frozenset(), individual=dimension not in {"drama", "material"}, per_row=True
     )
     # 各维度全部行和合计来自同一 SQL 语句；不分页，不截断，也不在 Python 重算金额。
     coverage_source = (
@@ -44,6 +51,7 @@ def freeze_report(session, *, context, bc_id, filters, cutoff, states):
         SELECT
           (SELECT COALESCE(jsonb_agg(to_jsonb(o) ORDER BY seq), '[]'::jsonb) FROM ordered o) AS members,
           (SELECT COALESCE(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM ({summary_sql}) s) AS buckets,
+          (SELECT COALESCE(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM ({row_sql}) s) AS row_buckets,
           (SELECT COALESCE(array_agg(adv), ARRAY[]::text[]) FROM bad) AS bad_advs,
           (SELECT COALESCE(array_agg(DISTINCT d.day::date ORDER BY d.day::date), ARRAY[]::date[])
            FROM bad b CROSS JOIN generate_series(CAST(:start AS date), CAST(:end AS date), interval '1 day') d(day)
@@ -54,30 +62,10 @@ def freeze_report(session, *, context, bc_id, filters, cutoff, states):
         params,
     ).one()
     member_data = data.members
-    # jsonb 中 UUID 是字符串，领域成员解析器依然按真实 UUID 校验不可变来源。
-    for member in member_data:
-        member["evidence_versions"] = [
-            UUID(value) for value in member["evidence_versions"]
-        ]
-        if member["account_membership_version_id"]:
-            member["account_membership_version_id"] = UUID(
-                member["account_membership_version_id"]
-            )
     if dimension == "account" and not member_data:
         raise HTTPException(409, "query_membership_unavailable")
-    members = members_from_data(
-        session,
-        tenant_id=context.tenant_id,
-        advertisers=advertisers,
-        dimension=dimension,
-        rows=member_data,
-    )
-    items = materialize_rows(
-        session,
-        tenant_id=context.tenant_id,
-        filters=filters,
-        members=members,
-        advertisers=advertisers,
+    items = _analysis_rows(
+        member_data, data.row_buckets, dimension, advertisers[0], states
     )
     selected_states = [
         s
@@ -143,18 +131,84 @@ def freeze_report(session, *, context, bc_id, filters, cutoff, states):
         versions["max"] = int(max(published).timestamp() * 1_000_000)
     return {
         "id": str(uuid4()),
+        "projection_contract": "financial-review-v1",
         "status": coverage["status"],
         "filters": filters.model_dump(mode="json"),
         "publication_versions": versions,
         "summary": _summary(totals),
         "coverage": coverage,
         "metrics_observed_at": observed.isoformat() if observed else None,
-        "rows": [
-            item.model_copy(update={"refs": ()}).model_dump(mode="json")
-            if dimension == "account"
-            else item.model_dump(mode="json")
-            for item in items
-        ],
+        "rows": items,
         "rows_truncated": False,
         "total": len(items),
     }
+
+
+def _analysis_rows(members, buckets, dimension, advertiser_id, states):
+    """复盘只冻结分析身份和指标，不携带可执行 refs/使用位置/实时余额。
+
+    金额在 SQL 中转文本，避免 jsonb 数值经过 float 丢精度；派生指标继续复用
+    报表的 Decimal 口径。目录名称是辅助标签，不作为历史可执行性证据。
+    """
+    by_key = defaultdict(list)
+    for bucket in buckets:
+        by_key[bucket["row_key"]].append(bucket)
+    labels = states.get("review_labels", {})
+    account_name = states.get("account_name") or advertiser_id
+    result = []
+    for member in members:
+        key = member["row_key"]
+        values = by_key[key]
+        display = {"advertiser_id": advertiser_id, "account_name": account_name}
+        if dimension == "account":
+            display.update(name=account_name, remote_id=advertiser_id)
+        elif dimension == "material":
+            identity = json.loads(key)
+            name = member["review_name"] or identity[2]
+            display.update(
+                name=name,
+                material_name=name,
+                main_material_id=identity[2],
+                material_type=identity[1]
+                if identity[0] == "material"
+                else identity[0].upper(),
+            )
+        else:
+            rid = (
+                key.split(":campaign:", 1)[1]
+                if dimension == "campaign"
+                else member["member_keys"][0][1]
+            )
+            display.update(labels.get(rid, {}))
+            name = display.get("name") or rid
+            if dimension == "drama" and ":drama:" in key:
+                name = json.loads(key.split(":drama:", 1)[1])[0]
+            display.update(name=name, remote_id=rid)
+            if dimension == "drama":
+                display["drama_name"] = name
+        coverage = {
+            "status": "INCOMPLETE"
+            if any(b["incomplete"] for b in values)
+            else "COMPLETE",
+            "advertiser_ids": [advertiser_id],
+            "action_evidence": "NOT_INCLUDED",
+        }
+        if dimension == "material":
+            identity = json.loads(key)
+            if identity[0] != "material":
+                coverage["reason"] = {
+                    "unattributed": "group_reconciliation_difference",
+                    "unmapped_creative": "creative_identity_unmapped",
+                    "carousel": "composite_creative_not_allocated_to_images",
+                }.get(identity[0], "creative_identity_unavailable")
+        result.append(
+            {
+                "row_key": key,
+                "display": display,
+                "metric_buckets": _summary(
+                    SnapshotTotals(1, tuple(values), (), (), True)
+                )["buckets"],
+                "coverage": coverage,
+            }
+        )
+    return result
