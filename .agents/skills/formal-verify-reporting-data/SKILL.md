@@ -305,3 +305,37 @@ export button→original Celery Worker→CSV HTTP, with no business-service/brow
 response double. Broader duplicate/special-row/evidence/lifecycle properties
 belong to subsequent M4b tickets and require their own bindings. See
 [JB34 validation](../../../docs/validation/2026-11-14-jb34-material-instance-tracer.md).
+
+## JB35 identity and creative field evidence
+
+sync_commit: `4c07e42a` (product source inspected). Outcome **updated** for
+bounded multi-creative/two-instance/duplicate-reference/five-state/special-bucket
+properties. Existing M4a models keep their original scope; none prove creative
+platform semantics. Reuse the guarded **M4b** environment above, serial fixtures.
+
+`material.py` now additionally enumerates 12 combinations: 1–3 references per
+fact, special versus exact identity, legacy versus observed fifth fact. Five
+facts independently carry 10/NULL/DASH/ABSENT/7, aggregating to17 with five state
+counts; a separate instance contributes7, total24, or7 when the first belongs to
+a special bucket. Fact identity excludes BC/connection/contract/publication.
+Atomic committed publication, correct authorized selection, and immutable RR
+capture remain explicit assumptions, not new SQL/concurrency proofs.
+
+Run `material.py`, then `--broken-double-count` and `--broken-null-to-zero`;
+normal passes and both broken modes must exit1 with a business AssertionError.
+Run `scripts/material_identity_probes.py` for real PG binding. It mutates actual
+material_query source to duplicate money or replace missing spend with0; requires
+business assertion RED, restores external backup in finally, invokes cmp, and
+requires unchanged GREEN. Both mutations were rejected. Never run concurrently
+with another source writer or fixture suite. Source sensitivity covers the
+actual frozen observation/vector results, not only the arithmetic abstraction.
+
+Real bindings: test_material_instance_tracer exercises raw publisher states,
+exact targeted scope/version0 without borrowing account observation, duplicate
+pages, multi-creative sum17, distinct known MID instances2/8, carousel11,
+conflict13, unmapped17, historical MID19, tenant and BC/connection identity,
+old frozen observations and same-snapshot CSV. SDK transport replay uses original
+sync/export Workers and PGRedis plus actual browser and HTTP. See
+[JB35 validation](../../../docs/validation/2026-11-14-jb35-material-identity-evidence.md).
+No production scale, unbounded liveness, platform attribution/maturity or strict
+parent reconciliation proof; final grain and five CSV classes remain JB36.
