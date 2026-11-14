@@ -7,10 +7,11 @@
 
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.errors import DomainError
-from app.modules.reporting.metric_catalog import basic_fields
+from app.modules.reporting.metric_catalog import NATIVE_CONTRACT, basic_fields
 
 _BASIC = basic_fields()
 COLUMNS = tuple(_BASIC)
@@ -25,7 +26,60 @@ AD_DAY_METRICS = (
     "ad_name",
     "campaign_automation_type",
 )
-CAMPAIGN_METRICS = (*_BASIC.values(), "campaign_name")
+CAMPAIGN_METRICS = (
+    *_BASIC.values(),
+    "native_growth_ad_revenue_roas",
+    "native_growth_ad_revenue_roas_d0",
+    "campaign_name",
+)
+# 小时报只取适用的成本/计数，日点击归因收入不能混入小时桶。
+CAMPAIGN_HOUR_METRICS = ("spend", "impressions", "clicks", "campaign_name")
+PLATFORM_RATIOS = {
+    "platform_roas_total": "native_growth_ad_revenue_roas",
+    "platform_roas_d0": "native_growth_ad_revenue_roas_d0",
+}
+
+
+def metric_evidence(metrics: dict[str, Any], *, level: str = "ad") -> dict[str, Any]:
+    # 保存请求合同和逐字段状态，不保存响应行、令牌或客户素材。
+    fields = _BASIC | PLATFORM_RATIOS
+    evidence = {}
+    for key, field in fields.items():
+        raw = metrics.get(field)
+        value = parse_decimal(raw)
+        evidence[key] = {
+            "field": field,
+            "status": "ABSENT"
+            if field not in metrics
+            else "NULL"
+            if raw is None
+            else "DASH"
+            if raw == "-"
+            else "VALUE",
+            "value": str(value) if value is not None else None,
+        }
+    return {
+        "contract_revision": NATIVE_CONTRACT,
+        "level": level,
+        "field_states": {key: item["status"] for key, item in evidence.items()},
+        "platform_roas": {key: evidence[key]["value"] for key in PLATFORM_RATIOS},
+        "source_kind": "PLATFORM_DIRECT",
+        "request": {
+            "report_type": "BASIC",
+            "service_type": "AUCTION",
+            "data_level": "AUCTION_CAMPAIGN" if level == "campaign" else "AUCTION_AD",
+            "dimensions": [
+                "campaign_id" if level == "campaign" else "ad_id_v2",
+                "stat_time_day",
+            ],
+        },
+        "traffic_scope": "UNCONFIRMED",
+        "d0_window": "CLICK_24H",
+        "total_maturity": "UNKNOWN",
+        "fields": evidence,
+    }
+
+
 ACCOUNT_METRICS = ("spend", "native_growth_total_ad_impression_value")
 
 

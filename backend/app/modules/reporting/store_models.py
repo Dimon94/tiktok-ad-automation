@@ -38,6 +38,19 @@ METRIC_COLUMNS = (
 )
 
 
+# 与 Campaign 数值选择同桶；直接发布完成后不再借广告层完成状态。
+CAMPAIGN_STATE_SQL = """
+SELECT s.tenant_id,s.advertiser_id,'campaign_day' AS report_kind,s.stat_date,
+       s.status,s.row_count,s.last_success_at,s.observed_at,s.publication_version,s.active_contract,s.publication_digest,s.error_code,s.updated_at
+FROM report_sync_state s WHERE
+(s.report_kind='campaign_day' AND s.last_success_at IS NOT NULL)
+OR (s.report_kind='ad_day' AND NOT EXISTS (
+ SELECT 1 FROM report_sync_state direct WHERE direct.tenant_id=s.tenant_id
+ AND direct.advertiser_id=s.advertiser_id AND direct.stat_date=s.stat_date
+ AND direct.report_kind='campaign_day' AND direct.last_success_at IS NOT NULL))
+"""
+
+
 def _num() -> Any:
     return Field(default=None, sa_type=Numeric, nullable=True)
 
@@ -85,9 +98,35 @@ class AdReportDay(_Fact, table=True):
     campaign_id: str = Field(max_length=64)
     adgroup_id: str = Field(max_length=64)
     campaign_automation_type: str | None = Field(default=None, max_length=64)
+    evidence: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
     ad_name: str | None = None
     campaign_name: str | None = None
     adgroup_name: str | None = None
+
+
+class ParentReportDay(_Fact, table=True):
+    """父级平台直接事实，与广告派生表及 qem trigger 物理隔离。"""
+
+    __tablename__ = "parent_report_day"
+    __table_args__ = (
+        Index(
+            "ix_parent_report_period",
+            "tenant_id",
+            "advertiser_id",
+            "level",
+            "stat_date",
+        ),
+        CheckConstraint(
+            "level IN ('campaign','adgroup')", name="ck_parent_report_level"
+        ),
+    )
+    level: str = Field(primary_key=True, max_length=16)
+    remote_id: str = Field(primary_key=True, max_length=128)
+    stat_date: date = Field(primary_key=True)
+    object_name: str | None = None
+    evidence: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
 
 
 class CreativeReportDay(_Fact, table=True):
@@ -224,6 +263,8 @@ class ReportSyncState(SQLModel, table=True):
     # 完成时间只描述发布延迟；覆盖比较使用实际首页观测时点。
     observed_at: datetime | None = Field(default=None, sa_type=AwareDateTime)
     publication_version: int = Field(default=0, sa_type=BigInteger)
+    active_contract: str | None = Field(default=None, max_length=128)
+    publication_digest: str | None = Field(default=None, max_length=64)
     error_code: str | None = Field(default=None, max_length=128)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=AwareDateTime

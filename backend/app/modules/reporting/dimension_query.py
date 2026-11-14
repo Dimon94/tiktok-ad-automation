@@ -28,7 +28,7 @@ from app.modules.ads.models import AdObject as CanonicalAdObject
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants, compile_filter
-from app.modules.reporting.metric_catalog import DERIVED_RATIOS
+from app.modules.reporting.metric_catalog import DERIVED_RATIOS, NATIVE_CONTRACT
 from app.modules.reporting.models import AccountBalanceObservation
 from app.modules.reporting.read_models.models import AdEntityRead as AdObject
 from app.modules.reporting.read_models.models import AdgroupReportDay
@@ -38,11 +38,14 @@ from app.modules.reporting.read_models.models import (
 from app.modules.reporting.row_set import SnapshotMember, entity_ref, ordered_members
 from app.modules.reporting.schemas import (
     Availability,
+    BucketStamp,
+    MetricProvenance,
     MetricVector,
     ReportingFilter,
     ReportRow,
 )
 from app.modules.reporting.store_models import (
+    CAMPAIGN_STATE_SQL,
     METRIC_COLUMNS,
     AccountReconciliationDay,
     AdReportDay,
@@ -616,9 +619,34 @@ def materialize_rows(
             ReportSyncState.stat_date <= filters.end_date,
         )
     ).all()
+    if filters.dimension == "campaign":
+        states = [
+            ReportSyncState.model_validate(r)
+            for r in session.connection()
+            .execute(
+                text(
+                    f"SELECT * FROM ({CAMPAIGN_STATE_SQL}) selected WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs) AND stat_date BETWEEN :start AND :end"
+                ),
+                {
+                    "tenant": tenant_id,
+                    "advs": advertisers,
+                    "start": filters.start_date,
+                    "end": filters.end_date,
+                },
+            )
+            .mappings()
+        ]
     model = (
-        CampaignReportDay
-        if kind in {"account", "campaign"}
+        aliased(
+            CampaignReportDay,
+            text("SELECT * FROM campaign_selected_day")
+            .columns(*cast(Any, CampaignReportDay).__table__.columns)
+            .subquery(),
+            adapt_on_names=True,
+        )
+        if filters.dimension == "campaign"
+        else CampaignReportDay
+        if kind == "account"
         else AdgroupReportDay
         if kind == "adgroup"
         else AdReportDay
@@ -723,7 +751,9 @@ def materialize_rows(
     # 只遍历自身日期，避免N个账户各重扫整个页面的N×日期×报表种类状态。
     states_by_adv: dict[str, list[ReportSyncState]] = defaultdict(list)
     for state in states:
-        if state.report_kind == "ad_day":
+        if state.report_kind == (
+            "campaign_day" if filters.dimension == "campaign" else "ad_day"
+        ):
             states_by_adv[state.advertiser_id].append(state)
     # 覆盖状态只取决于账户集合与日期，同一账户集合复用计算结果。
     coverage_cache: dict[frozenset[str], dict[str, Any]] = {}
@@ -735,6 +765,7 @@ def materialize_rows(
                 [state for adv in cache_key for state in states_by_adv[adv]],
                 advertisers=cache_key,
                 filters=filters,
+                kind="campaign_day" if filters.dimension == "campaign" else "ad_day",
             )
         return dict(coverage_cache[cache_key])
 
@@ -745,7 +776,11 @@ def materialize_rows(
             complete = coverage_for({adv})["status"] == "COMPLETE"
             # 用户裁定：完整覆盖的无事实对象才为零；缺覆盖不能填零。
             empty_cache[adv] = {
-                name: Decimal(0) if complete else None for name in METRIC_COLUMNS
+                name: Decimal(0)
+                if complete
+                and not (filters.dimension == "campaign" and name.startswith("revenue"))
+                else None
+                for name in METRIC_COLUMNS
             }
         return empty_cache[adv]
 
@@ -838,6 +873,8 @@ def materialize_rows(
                     "display": _drama_status_display(row.display, statuses, providers)
                 }
             )
+        if filters.dimension in {"campaign", "ad"}:
+            row = report_provenance(session, row, tenant_id=tenant_id, filters=filters)
         result.append(row)
     return tuple(result)
 
@@ -1086,3 +1123,151 @@ def _drama_status_display(
         "campaign_count": str(len(statuses)),
         "enabled_campaign_count": str(enabled),
     }
+
+
+def report_provenance(
+    session: Session, row: ReportRow, *, tenant_id: UUID, filters: ReportingFilter
+) -> ReportRow:
+    """只读取当前页对象的证据；数值/筛选由共同 SQL selected view 决定。"""
+    ref = row.refs[0]
+    level = ref.kind
+    # 两个固定已知表，不接受用户提供 SQL 标识符。
+    source_table = "parent_report_day" if level == "campaign" else "ad_report_day"
+    identity = (
+        "p.level='campaign' AND p.remote_id=:rid"
+        if level == "campaign"
+        else "p.ad_id=:rid"
+    )
+    records = (
+        session.connection()
+        .execute(
+            text(f"""
+        SELECT s.stat_date,s.observed_at,s.publication_version,s.last_success_at,s.status,s.active_contract,p.evidence
+        FROM report_sync_state s LEFT JOIN {source_table} p
+          ON p.tenant_id=s.tenant_id AND p.advertiser_id=s.advertiser_id
+          AND p.stat_date=s.stat_date AND {identity}
+        WHERE s.tenant_id=:tenant AND s.advertiser_id=:adv
+          AND s.report_kind=:kind AND s.last_success_at IS NOT NULL
+          AND s.stat_date BETWEEN :start AND :end ORDER BY s.stat_date
+    """),
+            {
+                "tenant": tenant_id,
+                "adv": ref.advertiser_id,
+                "rid": ref.remote_id,
+                "kind": f"{level}_day",
+                "start": filters.start_date,
+                "end": filters.end_date,
+            },
+        )
+        .mappings()
+        .all()
+    )
+    daily: list[dict[str, Any]] = [
+        {
+            "local_day": str(r["stat_date"]),
+            "observed_at": r["observed_at"].isoformat() if r["observed_at"] else None,
+            "publication_version": r["publication_version"],
+            "fields": r["evidence"]["fields"] if r["evidence"] else {},
+            "reason": None
+            if r["evidence"]
+            else "LEGACY_UNKNOWN"
+            if level == "ad"
+            else "NO_RETURNED_ROW",
+        }
+        for r in records
+    ]
+    source = "PLATFORM_DIRECT" if records or level == "ad" else "CHILD_DERIVED"
+    revision = (
+        records[0]["active_contract"]
+        if records and records[0]["active_contract"]
+        else NATIVE_CONTRACT
+        if any(r["evidence"] for r in records)
+        else "LEGACY_UNKNOWN"
+    )
+    scope = sha256(
+        json.dumps(
+            [
+                str(tenant_id),
+                ref.advertiser_id,
+                level,
+                ref.remote_id,
+                str(filters.start_date),
+                str(filters.end_date),
+            ]
+        ).encode()
+    ).hexdigest()
+    stamps = tuple(
+        BucketStamp(
+            advertiser_id=ref.advertiser_id,
+            level=cast(Any, level),
+            stat_date=r["stat_date"],
+            contract_revision=revision,
+            publication_version=r["publication_version"],
+            observed_at=r["observed_at"],
+            published_at=r["last_success_at"],
+            last_attempt_status=r["status"],
+        )
+        for r in records
+    )
+    provenance = {}
+    for name in row.metric_buckets[0].values if row.metric_buckets else ():
+        counts: dict[str, int] = {}
+        ratio = next((r for r in DERIVED_RATIOS if r[0] == name), None)
+        source_fields = (ratio[1], ratio[2]) if ratio else (name,)
+        for observation in daily:
+            for source_field in source_fields:
+                field_state = (
+                    observation["fields"]
+                    .get(source_field, {})
+                    .get("status", "LEGACY_UNKNOWN")
+                )
+                counts[field_state] = counts.get(field_state, 0) + 1
+        reason = (
+            "NO_RETURNED_ROW"
+            if records
+            and not any(r["evidence"] for r in records)
+            and level == "campaign"
+            else "LEGACY_UNKNOWN"
+            if revision == "LEGACY_UNKNOWN"
+            else None
+        )
+        provenance[name] = MetricProvenance(
+            level=cast(Any, level),
+            source_kind=cast(Any, source),
+            contract_revision=revision,
+            scope_digest=scope,
+            buckets=stamps,
+            field_state_counts=counts,
+            reason=reason,
+            formula="SAME_SCOPE_REVENUE / SAME_SCOPE_SPEND"
+            if name.startswith("roas_")
+            else None,
+        )
+    display = dict(row.display)
+    display.update(
+        report_source=source,
+        report_local_days=f"{filters.start_date} — {filters.end_date}",
+        report_window="D0 点击后24h；total成熟截止未知",
+        report_semantics="UNCONFIRMED · 自然＋付费口径待确认 · 非结算",
+        report_observed_at=" / ".join(str(r["observed_at"]) for r in records)
+        or "LEGACY_UNKNOWN",
+    )
+    for key in ("platform_roas_total", "platform_roas_d0"):
+        field = (
+            daily[0]["fields"].get(key, {})
+            if len(daily) == 1 and filters.start_date == filters.end_date
+            else {}
+        )
+        display[key] = field.get("value")
+        display[key + "_reason"] = field.get(
+            "status", "NON_ADDITIVE" if daily else "LEGACY_UNKNOWN"
+        )
+    return row.model_copy(
+        update={
+            "display": display,
+            "metric_buckets": tuple(
+                v.model_copy(update={"provenance": provenance})
+                for v in row.metric_buckets
+            ),
+        }
+    )

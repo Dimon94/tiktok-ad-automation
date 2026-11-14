@@ -749,6 +749,44 @@ export type Body_login_login_access_token = {
 };
 
 /**
+ * BucketStamp
+ */
+export type BucketStamp = {
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Level
+     */
+    level: 'campaign' | 'adgroup' | 'ad';
+    /**
+     * Stat Date
+     */
+    stat_date: string;
+    /**
+     * Contract Revision
+     */
+    contract_revision: string;
+    /**
+     * Publication Version
+     */
+    publication_version: number;
+    /**
+     * Observed At
+     */
+    observed_at: string | null;
+    /**
+     * Published At
+     */
+    published_at: string | null;
+    /**
+     * Last Attempt Status
+     */
+    last_attempt_status: 'PENDING' | 'COMPLETE' | 'STALE' | 'FAILED';
+};
+
+/**
  * BusinessRow
  */
 export type BusinessRow = {
@@ -5597,6 +5635,52 @@ export type Message = {
 };
 
 /**
+ * MetricContract
+ */
+export type MetricContract = {
+    /**
+     * Revision
+     */
+    revision: string;
+    /**
+     * Field
+     */
+    field: string | null;
+    /**
+     * Unit
+     */
+    unit: 'MONEY' | 'RATIO' | 'COUNT';
+    /**
+     * Traffic Scope
+     */
+    traffic_scope: 'ALL_TRAFFIC' | 'PAID' | 'UNCONFIRMED';
+    /**
+     * Window
+     */
+    window: 'NOT_APPLICABLE' | 'TOTAL_CUTOFF_UNKNOWN' | 'CLICK_HOURS' | 'CALENDAR_DAY';
+    /**
+     * Click Hours
+     */
+    click_hours: number | null;
+    /**
+     * Aggregation
+     */
+    aggregation: 'SUM_SAME_LEVEL' | 'RATIO_OF_SUMS' | 'SINGLE_OBSERVATION_ONLY';
+    /**
+     * Definition Ref
+     */
+    definition_ref: string;
+    /**
+     * Numerator
+     */
+    numerator?: string | null;
+    /**
+     * Denominator
+     */
+    denominator?: string | null;
+};
+
+/**
  * MetricDefinitionPublic
  */
 export type MetricDefinitionPublic = {
@@ -5637,6 +5721,16 @@ export type MetricDefinitionPublic = {
      */
     material_name_en: string | null;
     /**
+     * Levels
+     */
+    levels?: Array<'campaign' | 'adgroup' | 'ad'>;
+    /**
+     * Source Kind
+     */
+    source_kind: 'PLATFORM_DIRECT' | 'LOCAL_CALCULATION';
+    contract: MetricContract;
+    platform_observation?: MetricContract | null;
+    /**
      * Basic Label
      */
     basic_label: string;
@@ -5644,6 +5738,46 @@ export type MetricDefinitionPublic = {
      * Material Label
      */
     material_label: string | null;
+};
+
+/**
+ * MetricProvenance
+ */
+export type MetricProvenance = {
+    /**
+     * Level
+     */
+    level: 'campaign' | 'adgroup' | 'ad';
+    /**
+     * Source Kind
+     */
+    source_kind: 'PLATFORM_DIRECT' | 'CHILD_DERIVED';
+    /**
+     * Contract Revision
+     */
+    contract_revision: string;
+    /**
+     * Scope Digest
+     */
+    scope_digest: string;
+    /**
+     * Buckets
+     */
+    buckets: Array<BucketStamp>;
+    /**
+     * Field State Counts
+     */
+    field_state_counts: {
+        [key: string]: number;
+    };
+    /**
+     * Reason
+     */
+    reason: string | null;
+    /**
+     * Formula
+     */
+    formula: string | null;
 };
 
 /**
@@ -5677,6 +5811,12 @@ export type MetricVector = {
      */
     availability?: {
         [key: string]: 'AVAILABLE' | 'PARTIAL' | 'MISSING' | 'UNAVAILABLE' | 'UNSUPPORTED' | 'FAILED';
+    };
+    /**
+     * Provenance
+     */
+    provenance?: {
+        [key: string]: MetricProvenance;
     };
 };
 

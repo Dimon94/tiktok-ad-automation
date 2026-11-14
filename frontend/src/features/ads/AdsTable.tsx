@@ -25,8 +25,8 @@ import {
   metricOf,
   nameKeyFor,
   type ParentLink,
-  rowOptimizationGoal,
   rowBidStrategy,
+  rowOptimizationGoal,
   rowTargetRoas,
   unavailableReason,
 } from "./search"
@@ -461,6 +461,27 @@ export function AdsTable({
                         onDrill={onDrill}
                         onFilterParent={onFilterParent}
                       />
+                      {dimension === "campaign" &&
+                        row.display?.report_source && (
+                          <div className="mt-2 space-y-1 text-[10px] text-muted-foreground">
+                            <p>
+                              {row.display.report_source} · Campaign ·
+                              账户本地日 {row.display.report_local_days}
+                            </p>
+                            <p>{row.display.report_window}</p>
+                            <p>{row.display.report_semantics}</p>
+                            <p>观测 {row.display.report_observed_at}</p>
+                            <p>
+                              平台 ROAS{" "}
+                              {row.display.platform_roas_total ??
+                                row.display.platform_roas_total_reason}{" "}
+                              · D0{" "}
+                              {row.display.platform_roas_d0 ??
+                                row.display.platform_roas_d0_reason}
+                            </p>
+                            <p>表内 ROAS：本地同范围收益 / 花费</p>
+                          </div>
+                        )}
                     </TableCell>
                     <TableCell>
                       <Badge

@@ -350,7 +350,10 @@ def _read_page(
         conditions = (
             []
             if filters.dimension == "account"
-            else [ReportSyncState.report_kind == "ad_day"]
+            else [
+                ReportSyncState.report_kind
+                == ("campaign_day" if filters.dimension == "campaign" else "ad_day")
+            ]
         )
         observed = session.exec(
             select(

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.integrations.tiktok.contracts.ads import EntityRef, MaterialUseRef
 from app.integrations.tiktok.contracts.carousel import CarouselCreativeIdentity
+from app.modules.reporting.metric_catalog import MetricContract
 
 # 素材经济事实源与行键已切换；缓存和冻结快照必须使用同一合同代数。
 MATERIAL_QUERY_CONTRACT = 2
@@ -131,6 +132,30 @@ class ReportingFilter(BaseModel):
         return self
 
 
+class BucketStamp(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    advertiser_id: str
+    level: Literal["campaign", "adgroup", "ad"]
+    stat_date: date
+    contract_revision: str
+    publication_version: int
+    observed_at: datetime | None
+    published_at: datetime | None
+    last_attempt_status: Literal["PENDING", "COMPLETE", "STALE", "FAILED"]
+
+
+class MetricProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    level: Literal["campaign", "adgroup", "ad"]
+    source_kind: Literal["PLATFORM_DIRECT", "CHILD_DERIVED"]
+    contract_revision: str
+    scope_digest: str
+    buckets: tuple[BucketStamp, ...]
+    field_state_counts: dict[str, int]
+    reason: str | None
+    formula: str | None
+
+
 class MetricVector(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -141,6 +166,7 @@ class MetricVector(BaseModel):
     optimization_goal: str | None = None
     values: dict[str, Decimal | None] = Field(default_factory=dict)
     availability: dict[str, Availability] = Field(default_factory=dict)
+    provenance: dict[str, MetricProvenance] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_published_metrics(self) -> MetricVector:
@@ -342,6 +368,14 @@ class MetricDefinitionPublic(BaseModel):
     material_name_zh: str | None
     basic_name_en: str
     material_name_en: str | None
+    levels: tuple[Literal["campaign", "adgroup", "ad"], ...] = (
+        "campaign",
+        "adgroup",
+        "ad",
+    )
+    source_kind: Literal["PLATFORM_DIRECT", "LOCAL_CALCULATION"]
+    contract: MetricContract
+    platform_observation: MetricContract | None = None
     basic_label: str
     material_label: str | None
 

@@ -29,7 +29,7 @@ from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.filters import CONFIG_SORT_FIELDS, NAME_SORT_FIELDS
 from app.modules.reporting.schemas import ReportingFilter
-from app.modules.reporting.store_models import METRIC_COLUMNS
+from app.modules.reporting.store_models import CAMPAIGN_STATE_SQL, METRIC_COLUMNS
 
 # 派生比率：名称 -> (分子, 分母, 倍数)，与 dimension_query.metric_vector 一致。
 DERIVED_METRICS: dict[str, tuple[str, str, int]] = {
@@ -69,7 +69,7 @@ NAME_FIELDS = (
 
 _FACT_TABLE = {
     "account": ("campaign_report_day", None),
-    "campaign": ("campaign_report_day", "campaign_id"),
+    "campaign": ("campaign_selected_day", "campaign_id"),
     "drama": ("campaign_report_day", "campaign_id"),
     "adgroup": ("adgroup_report_day", "adgroup_id"),
     "ad": ("ad_report_day", "ad_id"),
@@ -77,6 +77,7 @@ _FACT_TABLE = {
 _FACT_META = {
     "account_report_day": ("campaign_id", "campaign_name"),
     "campaign_report_day": ("campaign_id", "campaign_name"),
+    "campaign_selected_day": ("campaign_id", "campaign_name"),
     "ad_report_day": (
         "campaign_id",
         "adgroup_id",
@@ -265,6 +266,8 @@ def _common_ctes(cov_kind: str, *, account: bool = False) -> str:
     period = ""
     if account:
         state = "SELECT tenant_id,advertiser_id,stat_date,status FROM account_report_day_state"
+    elif cov_kind == "campaign_day":
+        state = CAMPAIGN_STATE_SQL
     elif cov_kind == "creative_material":
         from app.modules.reporting.creative_query import PERIOD_SQL
 
@@ -415,13 +418,15 @@ def _dir_hits(filters: ReportingFilter, params: _Params, kind: str) -> str | Non
     )"""
 
 
-def _member_buckets(members: str, *, unsupported: frozenset[str]) -> str:
+def _member_buckets(
+    members: str, *, unsupported: frozenset[str], campaign: bool = False
+) -> str:
     """成员级指标桶：有事实取事实合计，否则按覆盖填 0 或空（用户裁定）。"""
     values = ", ".join(
         f"NULL::numeric AS {m}, false AS {m}_hn"
         if m in unsupported
         else (
-            f"CASE WHEN f.adv IS NULL THEN CASE WHEN c.complete THEN 0::numeric END ELSE f.{m} END AS {m}, "
+            f"CASE WHEN f.adv IS NULL THEN {'NULL::numeric' if campaign and m.startswith('revenue') else 'CASE WHEN c.complete THEN 0::numeric END'} ELSE f.{m} END AS {m}, "
             f"COALESCE(f.{m}_hn, false) AS {m}_hn"
         )
         for m in METRIC_COLUMNS
@@ -544,7 +549,7 @@ def _metric_dimension_rows(
     """纯指标候选本身就是事实成员，避免身份集合再回连同一份大聚合。"""
     dim = filters.dimension
     fact = _facts_cte(
-        f"{dim}_metric_day",
+        "campaign_selected_day" if dim == "campaign" else f"{dim}_metric_day",
         f"{dim}_id",
         include_metadata=False,
         period_scan=period_scan,
@@ -552,7 +557,7 @@ def _metric_dimension_rows(
     values = ", ".join(f"f.{m}, f.{m}_hn" for m in METRIC_COLUMNS)
     return ",\n".join(
         [
-            _common_ctes("ad_day"),
+            _common_ctes("campaign_day" if dim == "campaign" else "ad_day"),
             fact,
             f"""mb AS (
             SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.currency,f.tz,
@@ -837,8 +842,18 @@ def _dimension_rows(
                 1::int AS member_count, ARRAY[]::uuid[] AS evidence_versions
             FROM ent e
         )""")
-    ctes.append(_member_buckets("members", unsupported=frozenset()))
-    return ",\n".join([_common_ctes("ad_day", account=dim == "account"), *ctes]), "base"
+    ctes.append(
+        _member_buckets("members", unsupported=frozenset(), campaign=dim == "campaign")
+    )
+    return ",\n".join(
+        [
+            _common_ctes(
+                "campaign_day" if dim == "campaign" else "ad_day",
+                account=dim == "account",
+            ),
+            *ctes,
+        ]
+    ), "base"
 
 
 def _material_rows(filters: ReportingFilter, params: _Params) -> tuple[str, str]:
@@ -1031,6 +1046,8 @@ def insert_snapshot_rows(
         if filters.dimension == "material"
         else "SELECT tenant_id,advertiser_id,report_kind,stat_date,status FROM report_sync_state"
     )
+    if filters.dimension == "campaign":
+        coverage_source = CAMPAIGN_STATE_SQL
     if filters.dimension == "account":
         coverage_source = "SELECT tenant_id,advertiser_id,'ad_day' AS report_kind,stat_date,status FROM account_report_day_state"
     account_versions = (
@@ -1073,7 +1090,7 @@ def insert_snapshot_rows(
         (SELECT COALESCE(array_agg(DISTINCT d.day::date ORDER BY d.day::date), ARRAY[]::date[])
            FROM bad b CROSS JOIN generate_series(CAST(:start AS date), CAST(:end AS date), interval '1 day') d(day)
            WHERE NOT EXISTS (SELECT 1 FROM ({coverage_source}) s WHERE s.tenant_id = :tenant
-               AND s.advertiser_id = b.adv AND s.report_kind = '{"creative_material" if filters.dimension == "material" else "ad_day"}'
+               AND s.advertiser_id = b.adv AND s.report_kind = '{"creative_material" if filters.dimension == "material" else "campaign_day" if filters.dimension == "campaign" else "ad_day"}'
                AND s.stat_date = d.day::date AND s.status = 'COMPLETE')) AS bad_dates,
         {account_versions} AS account_versions,
         {"(SELECT count(DISTINCT (advertiser_id,adgroup_id,currency,timezone)) FROM unallocated_groups)" if filters.dimension == "material" else "0"} AS unallocated_group_count

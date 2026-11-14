@@ -11,7 +11,9 @@ from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.report_reader import RawReportPage
 from app.modules.reporting.store_models import ReportSyncPage
 
-BASIC_KINDS = frozenset({"ad_day", "creative_day", "account_day", "campaign_hour"})
+BASIC_KINDS = frozenset(
+    {"ad_day", "creative_day", "account_day", "campaign_hour", "campaign_day"}
+)
 _METHODS = BASIC_KINDS | {"campaign_day"}
 
 

@@ -26,12 +26,12 @@ def current_day_predicate(alias: str = "report_sync_job") -> str:
 
 def closeout_predicate(alias: str = "report_sync_job") -> str:
     yesterday = _day_predicate(alias, days_ago=1)
-    return f"({alias}.priority={CLOSEOUT_PRIORITY} AND {alias}.kind IN ('ad_day','creative_day') AND {yesterday})"
+    return f"({alias}.priority={CLOSEOUT_PRIORITY} AND {alias}.kind IN ('ad_day','creative_day','campaign_day') AND {yesterday})"
 
 
 def live_predicate(alias: str = "report_sync_job") -> str:
     day = current_day_predicate(alias)
-    return f"({alias}.priority BETWEEN 1 AND 2 AND {alias}.kind IN ('ad_day','creative_day','campaign_hour') AND {day})"
+    return f"({alias}.priority BETWEEN 1 AND 2 AND {alias}.kind IN ('ad_day','creative_day','campaign_day','campaign_hour') AND {day})"
 
 
 def lane_predicate(*, lane: str, alias: str = "report_sync_job") -> str:

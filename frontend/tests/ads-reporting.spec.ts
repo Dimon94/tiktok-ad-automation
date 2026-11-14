@@ -793,3 +793,36 @@ test("空结果和首次加载提示显示在表头下方的列表内", async ({
   const cell = await empty.boundingBox()
   expect(Math.abs(cell!.y - (header!.y + header!.height))).toBeLessThan(2)
 })
+
+test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
+  test.skip(
+    !process.env.NATIVE_CAMPAIGN_TENANT,
+    "由 JB25 专用 PG/Redis runner 启动",
+  )
+  await page.addInitScript(() =>
+    localStorage.setItem("access_token", "local-test-actor"),
+  )
+  await page.goto(
+    `/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads?bc_id=123456&dimension=campaign&start_date=2026-11-13&end_date=2026-11-13`,
+  )
+  await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
+  await page.getByRole("option", { name: /123456/ }).click()
+  await page.getByRole("tab", { name: "系列", exact: true }).click()
+  await page
+    .getByRole("textbox", { name: "开始日期", exact: true })
+    .fill("2026-11-13")
+  await page
+    .getByRole("textbox", { name: "结束日期", exact: true })
+    .fill("2026-11-13")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("button", { name: "Campaign 1", exact: true }),
+  })
+  await expect(row).toBeVisible()
+  await expect(row).toContainText("PLATFORM_DIRECT")
+  await expect(row).toContainText("自然＋付费口径待确认")
+  await expect(row).toContainText("点击后24h")
+  await expect(row).toContainText("0.801234567890123456789")
+  await expect(row.locator('[data-metric="revenue_total"]')).toContainText("40")
+  await expect(row.locator('[data-metric="revenue_d0"]')).toContainText("30")
+})

@@ -15,6 +15,7 @@ from app.integrations.tiktok.contracts.report_reader import (
 from app.modules.reporting.metrics import (
     ACCOUNT_METRICS,
     AD_DAY_METRICS,
+    CAMPAIGN_HOUR_METRICS,
     CAMPAIGN_METRICS,
 )
 
@@ -151,7 +152,7 @@ class SdkReportReader(SdkChangeLogReader):
             advertiser_ids=advertiser_ids,
             data_level="AUCTION_CAMPAIGN",
             dimensions=("campaign_id", "stat_time_hour"),
-            metrics=CAMPAIGN_METRICS,
+            metrics=CAMPAIGN_HOUR_METRICS,
             start=day,
             end=day,
             page=page,

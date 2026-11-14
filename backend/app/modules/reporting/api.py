@@ -42,7 +42,14 @@ from app.modules.reporting.exports import (
     list_exports,
 )
 from app.modules.reporting.filters import authorized_grants
-from app.modules.reporting.metric_catalog import METRIC_CATALOG, table_label
+from app.modules.reporting.metric_catalog import (
+    DERIVED_RATIOS,
+    METRIC_CATALOG,
+    NATIVE_CONTRACT,
+    platform_ratio_contract,
+    semantics_for,
+    table_label,
+)
 from app.modules.reporting.page_cache import query_cached_ads
 from app.modules.reporting.planner import (
     backfill_allowed,
@@ -280,6 +287,11 @@ def metric_catalog_route(
     return tuple(
         MetricDefinitionPublic(
             **asdict(item),
+            source_kind="LOCAL_CALCULATION"
+            if any(r[0] == item.key for r in DERIVED_RATIOS)
+            else "PLATFORM_DIRECT",
+            contract=semantics_for(item.key, NATIVE_CONTRACT),
+            platform_observation=platform_ratio_contract(item.key),
             basic_label=table_label(item.basic_name_zh),
             material_label=table_label(item.material_name_zh)
             if item.material_name_zh

@@ -191,6 +191,23 @@ def enqueue_report_requirements(
             )
         ).all()
     }
+    # 新父级需求必须在写 scope / outbox 之前核验当前权限，不能只相信冻结 BC。
+    from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
+
+    contract = NATIVE_CONTRACT if kind == "campaign_day" else "report-v2"
+    if kind == "campaign_day":
+        from app.core.context import TenantContext
+        from app.modules.accounts.routing import verify_route
+
+        context = TenantContext(tenant_id=tenant_id, actor_id=actor_id, role="operator")
+        for advertiser in advertisers:
+            verify_route(
+                session,
+                context=context,
+                route=route,
+                advertiser_id=advertiser,
+                capability="read",
+            )
     query = {"campaign_ids": sorted(campaign_ids)}
     scope_values, classes = [], {}
     for advertiser in advertisers:
@@ -203,7 +220,7 @@ def enqueue_report_requirements(
             advertiser,
             kind,
             query,
-            "report-v2",
+            contract,
             timezone=account.timezone,
         )
         scope_values.append(
@@ -218,7 +235,7 @@ def enqueue_report_requirements(
                 resource=kind,
                 timezone=account.timezone,
                 identity_digest=key.digest,
-                query_contract={"query": query, "metrics": "report-v2"},
+                query_contract={"query": query, "metrics": contract},
             ).model_dump()
         )
         local_today = now.astimezone(ZoneInfo(account.timezone)).date()

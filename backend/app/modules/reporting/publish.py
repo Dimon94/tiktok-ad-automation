@@ -5,19 +5,25 @@
 汇总规则：任一成员指标为 NULL（平台 '-'）时合计为 NULL，绝不显示部分合计。
 """
 
+import hashlib
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import MetaData, delete, insert, or_, text, tuple_
+from sqlalchemy.sql import ColumnElement
 from sqlmodel import Session, col, select
 
 from app.core.errors import DomainError
+from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.modules.reporting import diagnostics
+from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
 from app.modules.reporting.metrics import (
     basic_metric_values,
+    metric_evidence,
     parse_decimal,
     parse_local_day,
     parse_local_hour,
@@ -102,7 +108,9 @@ def _writable_buckets(session, *, tenant_id, accounts, kind, start, end, request
     } - protected
 
 
-def _bucket_filter(model, buckets):
+def _bucket_filter(
+    model: Any, buckets: Iterable[tuple[str, date]]
+) -> ColumnElement[bool]:
     return tuple_(model.advertiser_id, model.stat_date).in_(sorted(buckets))
 
 
@@ -314,6 +322,7 @@ def publish_ad_day(
                     "advertiser_id": advertiser,
                     "stat_date": day,
                     "ad_id": str(ad_id),
+                    "evidence": metric_evidence(metrics),
                     "campaign_id": str(campaign),
                     "adgroup_id": str(adgroup),
                     "campaign_automation_type": metrics.get("campaign_automation_type"),
@@ -722,3 +731,137 @@ def _refresh_reconciliation_sums(session, tenant_id, buckets):
         """),
                 {"t": tenant_id, "a": advertiser, "days": days},
             )
+
+
+def publish_campaign_day(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    job_id: UUID,
+    accounts: dict[str, AccountMeta],
+    start: date,
+    end: date,
+    rows: Iterable[dict[str, Any]],
+    requested_at: datetime,
+    route: FrozenTikTokRoute,
+) -> int:
+    """同一 ReportingData 发布父级直接向量，绝不进入广告派生 writer。"""
+    from app.modules.reporting.metrics import metric_evidence
+    from app.modules.reporting.store_models import ParentReportDay
+
+    staged = []
+    seen = set()
+    counts: dict[tuple[str, date], int] = {}
+    now = _database_now(session)
+    for row in rows:
+        adv = _account(row, accounts)
+        dimensions, metrics = row.get("dimensions", {}), row.get("metrics", {})
+        day = _in_range(parse_local_day(dimensions.get("stat_time_day")), start, end)
+        rid = dimensions.get("campaign_id")
+        if not isinstance(rid, str) or not rid or (adv, rid, day) in seen:
+            raise DomainError("report_row_invalid", "系列日报身份缺失或重复")
+        seen.add((adv, rid, day))
+        evidence = metric_evidence(metrics, level="campaign")
+        evidence.update(
+            source_connection_id=str(route.connection_id),
+            source_channel=route.channel,
+            source_bc_id=route.bc_id,
+            route_revision=str(route.binding_revision),
+            request_digest=hashlib.sha256(
+                json.dumps(
+                    [
+                        str(tenant_id),
+                        adv,
+                        str(start),
+                        str(end),
+                        route.model_dump(mode="json"),
+                        evidence["request"],
+                        evidence["contract_revision"],
+                    ],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest(),
+            response_row_digest=hashlib.sha256(
+                json.dumps(row, sort_keys=True).encode()
+            ).hexdigest(),
+        )
+        staged.append(
+            ParentReportDay(
+                tenant_id=tenant_id,
+                advertiser_id=adv,
+                level="campaign",
+                remote_id=rid,
+                object_name=metrics.get("campaign_name"),
+                stat_date=day,
+                currency=accounts[adv].currency,
+                timezone=accounts[adv].timezone,
+                fetched_at=now,
+                sync_job_id=job_id,
+                evidence=evidence,
+                **basic_metric_values(metrics),
+            )
+        )
+        counts[(adv, day)] = counts.get((adv, day), 0) + 1
+    buckets = _writable_buckets(
+        session,
+        tenant_id=tenant_id,
+        accounts=accounts,
+        kind="campaign_day",
+        start=start,
+        end=end,
+        requested_at=requested_at,
+    )
+    if not buckets:
+        return 0
+    session.exec(
+        delete(ParentReportDay).where(
+            col(ParentReportDay.tenant_id) == tenant_id,
+            col(ParentReportDay.level) == "campaign",
+            _bucket_filter(ParentReportDay, buckets),
+        )
+    )
+    session.add_all([r for r in staged if (r.advertiser_id, r.stat_date) in buckets])
+    session.flush()
+    _set_state(
+        session,
+        tenant_id=tenant_id,
+        kind="campaign_day",
+        buckets=buckets,
+        counts=counts,
+        observed_at=requested_at,
+        job_id=job_id,
+    )
+    # 空发布也保存合同/摘要；没有事实行不等于历史来源未知。
+    for advertiser, day in sorted(buckets):
+        state = cast(
+            ReportSyncState,
+            session.get(ReportSyncState, (tenant_id, advertiser, "campaign_day", day)),
+        )
+        state.active_contract = NATIVE_CONTRACT
+        payload = sorted(
+            (fact.remote_id, fact.evidence["response_row_digest"])
+            for fact in staged
+            if fact.advertiser_id == advertiser and fact.stat_date == day
+        )
+        state.publication_digest = hashlib.sha256(
+            json.dumps(payload).encode()
+        ).hexdigest()
+        session.add(state)
+    for fact in staged:
+        if (fact.advertiser_id, fact.stat_date) in buckets:
+            state = cast(
+                ReportSyncState,
+                session.get(
+                    ReportSyncState,
+                    (tenant_id, fact.advertiser_id, "campaign_day", fact.stat_date),
+                ),
+            )
+            fact.evidence = fact.evidence | {
+                "observed_at": requested_at.isoformat(),
+                "publication_version": state.publication_version,
+                "local_day": fact.stat_date.isoformat(),
+                "currency": fact.currency,
+                "timezone": fact.timezone,
+            }
+    session.flush()
+    return len(staged)

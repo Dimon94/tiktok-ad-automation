@@ -9,8 +9,13 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict
+
+from app.core.errors import DomainError
+
 Unit = Literal["money", "count", "ratio", "multiple"]
 _PREFIX = "Native Growth "
+NATIVE_CONTRACT = "native-growth-day-v1"
 
 
 @dataclass(frozen=True)
@@ -310,3 +315,68 @@ DERIVED_RATIOS: tuple[tuple[str, str, str, int], ...] = (
     ("cpc", "spend", "clicks", 1),
     ("cost_per_ad_impression_event", "spend", "ad_impression_events", 1),
 )
+
+
+class MetricContract(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    revision: str
+    field: str | None
+    unit: Literal["MONEY", "RATIO", "COUNT"]
+    traffic_scope: Literal["ALL_TRAFFIC", "PAID", "UNCONFIRMED"]
+    window: Literal[
+        "NOT_APPLICABLE", "TOTAL_CUTOFF_UNKNOWN", "CLICK_HOURS", "CALENDAR_DAY"
+    ]
+    click_hours: int | None
+    aggregation: Literal["SUM_SAME_LEVEL", "RATIO_OF_SUMS", "SINGLE_OBSERVATION_ONLY"]
+    definition_ref: str
+    numerator: str | None = None
+    denominator: str | None = None
+
+
+def semantics_for(key: str, revision: str) -> MetricContract:
+    """未知版本拒绝解释；不按当前命名追认历史金额。"""
+    if revision != NATIVE_CONTRACT:
+        raise DomainError("report_query_invalid", "未知指标合同修订")
+    item = next(item for item in METRIC_CATALOG if item.key == key)
+    ratio = next((r for r in DERIVED_RATIOS if r[0] == key), None)
+    native = key.startswith(("revenue_", "roas_"))
+    window_days = next((n for n in (0, 3, 7, 14, 30) if key.endswith(f"_d{n}")), None)
+    return MetricContract(
+        revision=revision,
+        field=None if ratio else item.basic_field,
+        unit="MONEY"
+        if item.unit == "money"
+        else "COUNT"
+        if item.unit == "count"
+        else "RATIO",
+        traffic_scope="UNCONFIRMED" if native else "PAID",
+        window="CLICK_HOURS"
+        if native and window_days is not None
+        else "TOTAL_CUTOFF_UNKNOWN"
+        if native
+        else "NOT_APPLICABLE",
+        click_hours=24
+        if window_days == 0
+        else window_days * 24
+        if window_days is not None
+        else None,
+        aggregation="RATIO_OF_SUMS" if ratio else "SUM_SAME_LEVEL",
+        definition_ref="tiktok-basic-report-metrics/v1.3.zh.md",
+        numerator=ratio[1] if ratio else None,
+        denominator=ratio[2] if ratio else None,
+    )
+
+
+def platform_ratio_contract(key: str) -> MetricContract | None:
+    if key not in {"roas_total", "roas_d0"}:
+        return None
+    return semantics_for(key, NATIVE_CONTRACT).model_copy(
+        update={
+            "field": "native_growth_ad_revenue_roas_d0"
+            if key == "roas_d0"
+            else "native_growth_ad_revenue_roas",
+            "aggregation": "SINGLE_OBSERVATION_ONLY",
+            "numerator": None,
+            "denominator": None,
+        }
+    )
