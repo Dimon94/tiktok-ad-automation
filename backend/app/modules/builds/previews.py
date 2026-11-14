@@ -927,17 +927,34 @@ def _expand_unit(
             ["field_limits_unverified"],
         )
     else:
-        # 本地读取仍限 50 条；平台数量限制按排除不可用素材后的实际组校验。
-        materials = session.exec(
-            select(col(PreviewGroupMaterial.material_id))
+        from .preview_models import PreviewCreativeUnitItem
+
+        # 此处只展开V2合同，按本组冻结单元批读成员，不经过带全组窗口编号的历史视图。
+        # 先保留单元次序，再按成员position展开；相同素材/单元的逻辑复用不能去重。
+        group_units = session.exec(
+            select(col(PreviewGroupCreativeUnit.creative_unit_id))
             .where(
-                col(PreviewGroupMaterial.tenant_id) == preview.tenant_id,
-                col(PreviewGroupMaterial.preview_id) == preview.id,
-                col(PreviewGroupMaterial.drama_id) == drama.drama_id,
-                col(PreviewGroupMaterial.group_no) == group.group_no,
+                col(PreviewGroupCreativeUnit.tenant_id) == preview.tenant_id,
+                col(PreviewGroupCreativeUnit.preview_id) == preview.id,
+                col(PreviewGroupCreativeUnit.drama_id) == drama.drama_id,
+                col(PreviewGroupCreativeUnit.group_no) == group.group_no,
             )
-            .order_by(col(PreviewGroupMaterial.position))
+            .order_by(col(PreviewGroupCreativeUnit.position))
         ).all()
+        group_members = session.exec(
+            select(PreviewCreativeUnitItem.creative_unit_id, PreviewCreativeUnitItem.material_id)
+            .where(
+                col(PreviewCreativeUnitItem.tenant_id) == preview.tenant_id,
+                col(PreviewCreativeUnitItem.preview_id) == preview.id,
+                col(PreviewCreativeUnitItem.creative_unit_id).in_(group_units),
+            )
+            .order_by(col(PreviewCreativeUnitItem.position))
+        ).all()
+        materials_by_unit = {}
+        for identity, material in group_members:
+            materials_by_unit.setdefault(identity, []).append(material)
+        materials = [material for identity in group_units
+                     for material in materials_by_unit.get(identity, [])]
         from .carousel_readiness import image_preview_readiness
 
         readiness = (
