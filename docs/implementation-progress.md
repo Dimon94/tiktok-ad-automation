@@ -5585,3 +5585,5 @@ JB36最终入口补证：Playwright查看vid1指标及轮播后清空筛选，�
 亲跑JB36最终payload/五CSV前置13 passed；三类PG存储故障各两次失败/完整回滚、HTTP503和失败ID导出404，修复后新ID；过期和旧合同page/detail/新export拒绝，旧成品字节/原24小时期限保持，旧待生成合同不重解。真实浏览器持续错误→重查失败→修复成功以及原Worker同冻结CSV通过。最终相关四模块35 passed/1清理测试夹具随机游标失败；只固定其自身扫描窗口后定向1 passed，业务清理未改。最终tsc/Vite构建、Ruff和diff检查通过。
 
 现有reporting-data skill新增24有界生命周期组合及3种broken模型拒错；四个实际源码探针和既有四个隔离探针均RED→外部备份/finally/cmp→GREEN。详情、准确命令/日志/计数/digest/失败修复、继承证据及JB38消费合同见 [JB37验证](validation/2026-11-14-jb37-material-query-lifecycle.md)。本地AC闭合；JB38完整导出故障/重试/幂等/阶段权限/24小时矩阵和整个MMF fresh两轴审查/集成由root继续。JB35/JB36阶段接受不改，Linear状态/依赖不动；未推送、PR、合并或部署，平台语义/生产容量Unknown。
+
+JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化模型和现有skill同步单独随后提交。没有main集成或整个MMF完成声明。

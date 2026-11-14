@@ -54,3 +54,5 @@ JB37为本地可审阅候选；整个M4b的fresh Standards/Spec独立审查、�
 - `/tmp/jb37-build-final.log`：`bun run --cwd frontend build`（tsc +生产/演示Vite）通过；最后只作TSX换行排版。修改Python产品/测试文件Ruff全部通过，`git diff --check`通过。不重跑无关巨型suite或历史410诊断mypy。
 
 本票所列本地AC已闭合。独立审查、整个MMF集成/关闭、JB38完整导出矩阵、真实平台语义及生产容量不包含在此结论中。
+
+实现与验收提交：`96d041d27c3fdb633e707e1de45253aa3f26624b`。形式化合同/模型/探针单独提交于其后；最终tip由交付回复提供。提交前无关未跟踪仅原 `.venv` / `node_modules` 链接，保持不暂存。

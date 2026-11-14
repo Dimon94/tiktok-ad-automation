@@ -363,3 +363,52 @@ exports and actual PG/browser/Worker tests inspected). Source probes last passed
 against these arithmetic/selection owners; later residual observations and
 frontend formatting do not alter their mutated branches. Final browser replay
 also checks the enriched residual evidence. No claim about JB37/JB38 lifecycle.
+
+## JB37 material query lifecycle
+
+Outcome **updated**: query_models shares the current-contract predicate with all
+query_reuse candidate branches; explicit reads reject old identities, while new
+queries create a new identity. page_cache's existing lease fences a generic failure
+notification using its existing CACHE_SECONDS, never a partial result. Its RR still
+commits all rows, evidence, parents, summary, coverage and publication_map together.
+No replacement query, recovery, reporting or TTL owner is introduced.
+
+Run through the dedicated M4b guard, serially from repository root:
+
+```bash
+python3 /tmp/tkada-native-series-20261112/m4b-implementation/run-test.py python .agents/skills/formal-verify-reporting-data/scripts/material_lifecycle.py
+python3 /tmp/tkada-native-series-20261112/m4b-implementation/run-test.py python .agents/skills/formal-verify-reporting-data/scripts/material_lifecycle_probes.py
+```
+
+The finite model enumerates24 cases: failure at either of two batches or success,
+valid/expired query clock, current/old contract, and later source40/90. Atomic
+visibility, expiry refusal and immutable old/new identities are checked. Each
+`--broken-atomic`, `--broken-ttl`, `--broken-isolation` must exit1. Batches abstract
+complete row evidence, not individual SQL statements. Query TTL remains15 minutes;
+model clocks are only two abstract instants, not a production timing proof.
+
+The source probes mutate actual frozen_result commit placement, query_models TTL,
+query_reuse contract candidate selection and page_cache failure notification;
+external backup, finally restoration, cmp and business assertion RED/GREEN are
+required. The pre-existing material_probes binds live rereading to an actual
+source40→90 change; its inherited model is not used as a new SQL proof.
+
+Actual PG/Redis/HTTP bindings are test_material_query_lifecycle (101 rows to cross
+the100-row freeze boundary, creative evidence and independent parent read faults,
+rollback, repeated failure, new identity, scope, detail/page/export expiry and
+old completed versus pending exports). The existing browser tracer now exercises
+real Worker storage faults, explicit requery, expired/old-contract HTTP reads and
+the same five-kind frozen CSV through the original sync/export Workers.
+
+Assumptions: committed authorized source facts, existing PG RR semantics, bounded
+fixtures and local healthy PG/Redis except the stated injected failures. The
+model does not prove SQL isolation, arbitrary crashes, unbounded liveness,
+production capacity, platform attribution or the full24-hour export lifecycle.
+JB38 retains full export fault/retry/current-grants/24-hour expiry ownership.
+See docs/validation/2026-11-14-jb37-material-query-lifecycle.md for actual run evidence.
+
+JB37 sync_commit: `96d041d27c3fdb633e707e1de45253aa3f26624b` (query_models,
+query_reuse, page_cache, actual PG/Redis/HTTP and browser/Worker tests personally
+inspected and exercised). Four lifecycle source probes and the existing four
+material isolation probes passed before this source commit; subsequent changes
+were evidence logging, fixture-window isolation, comments and formatting only.
