@@ -230,9 +230,19 @@ def creative_unit_drain(connection=None):
     if len(heads) != 1:
         raise RuntimeError("Unknown creative contract schema; review release plan")
     if heads[0] not in LEGACY_CREATIVE_HEADS | V2_CREATIVE_HEADS:
-        # 已完成后续迁移的数据库已经脱离 0060–0067 旧合同；继续执行旧
-        # creative-unit SQL 只会误报 schema，不应阻断候选发布。
-        return {"drained": True, "schema": heads[0], "reason": "modern_schema"}
+        from pathlib import Path
+
+        import app
+        from alembic.script import ScriptDirectory
+
+        graph = ScriptDirectory(str(Path(app.__file__).resolve().parent / "alembic"))
+        known = {
+            revision.revision
+            for revision in graph.iterate_revisions("heads", "0067_merge_directory_turn")
+        }
+        if heads[0] not in known:
+            raise RuntimeError("Unknown creative contract schema; review release plan")
+        # 已知后继仍可能保存V1冻结任务，继续检查其排空事实，不能按版本号直接放行。
     legacy = heads[0] in LEGACY_CREATIVE_HEADS
     # 0060 已给每个旧预览写入显式 descriptor；缺失不是 V1，必须单独阻断。
     join = (
