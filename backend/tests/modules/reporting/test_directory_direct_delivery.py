@@ -482,6 +482,22 @@ def test_refill_failure_keeps_publication_and_beat_can_resume(
     assert sent == [("ads.targeted_step",)]
 
 
+def test_unbacked_directory_due_remains_at_creation_across_outcomes(committed_sync_seed):
+    from app.modules.sync_control.models import SyncSchedule
+    from app.modules.sync_control.schedule import pending_execution_dues
+
+    seed, factory = committed_sync_seed
+    with factory() as db, db.begin():
+        run = directory(db, seed)
+        register_pending(db, seed)
+        heads = db.exec(select(SyncSchedule).where(SyncSchedule.tenant_id == seed.tenant_id)).all()
+        expected = run.created_at
+        now = datetime.now(UTC)
+        for observed in (now, now + timedelta(minutes=1)):
+            dues = pending_execution_dues(db, heads, "directory", now=observed)
+            assert set(dues.values()) == {expected}
+
+
 def test_concurrent_completions_preserve_global_directory_window(
     committed_sync_seed, monkeypatch, redis_client
 ):
@@ -491,7 +507,12 @@ def test_concurrent_completions_preserve_global_directory_window(
         completed = [directory(db, seed, terminal=True).id for _ in range(2)]
         waiting = {directory(db, seed).id for _ in range(20)}
         register_pending(db, seed)
-    monkeypatch.setattr(outbox.celery_app, "send_task", lambda *a, **k: None)
+    # 此例观察并发领取后的持久outbox；真实成功发送会立即删除该行，
+    # 两个线程谁先进入发送不确定。固定broker暂不可用，保留领取证据。
+    def broker_unavailable(*_args, **_kwargs):
+        raise ConnectionError("test broker unavailable")
+
+    monkeypatch.setattr(outbox.celery_app, "send_task", broker_unavailable)
     barrier = Barrier(2)
 
     def finish(identity):

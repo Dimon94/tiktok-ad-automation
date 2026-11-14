@@ -334,7 +334,10 @@ def pending_execution_dues(
             func.coalesce(col(ReportSyncJob.claimed_until), now),
         )
         if kind == "report" and respect_claims
-        else func.coalesce(getattr(model, due_field), now)
+        # 目录未设退避即从创建时到期，不能每次outcome向当前时刻推移；
+        # 否则并发完成会把另一个已开始的补位轮次挡在未来due之外。
+        else func.coalesce(getattr(model, due_field),
+                           col(AdDirectoryRun.created_at) if kind == "directory" else now)
     )
     rows = session.exec(
         select(
