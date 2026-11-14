@@ -240,19 +240,30 @@ def test_random_short_number_uses_all_digits_and_uppercase_letters(monkeypatch):
 
 @pytest.mark.parametrize("frozen", [False, True])
 def test_previous_two_template_preview_cannot_mix_naming_rules(
-    session, context, prepared, frozen
+    session, context, prepared, frozen, monkeypatch
 ):
     identity = previews.generate_preview(
         session, context=context, draft_id=prepared, expected_revision=1
     )
     row = session.get(BuildPreview, identity)
-    row.config = row.config | {
+    legacy_config = row.config | {
         "campaign_suffix": "-{YYYYMMDD}-{batch_short_id}",
         "campaign_name_template": "{provider_pinyin}-{drama_name}-{drama_id}-{random}",
     }
     if frozen:
-        row.status = "FROZEN"
-        row.content_digest = "a" * 64
+        original_digest = previews._digest_units
+
+        def freeze_legacy_config(db, value, scope):
+            complete = original_digest(db, value, scope)
+            if complete:
+                # 先完整构建冻结源，再在同一冻结事务保存历史命名合同。
+                value.config = legacy_config
+            return complete
+
+        monkeypatch.setattr(previews, "_digest_units", freeze_legacy_config)
+        drain(session, context, identity)
+    else:
+        row.config = legacy_config
     session.add(row)
     session.flush()
     session.refresh(row)

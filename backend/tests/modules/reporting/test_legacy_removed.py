@@ -32,7 +32,7 @@ def test_legacy_tables_are_removed_by_migration(session):
     } <= columns
     assert {
         "ad_report_day",
-        "material_report_day",
+        "creative_report_day",
         "report_sync_job",
         "account_balance_observation",
     } <= set(inspect(session.connection()).get_table_names())

@@ -556,6 +556,7 @@ def test_receipt_single_database_failure_retries_before_client_cleanup(
 def test_nested_source_info_uses_bounded_read_budget_and_shared_quota(
     remote_env, redis_client, wire
 ):
+    from app.integrations.tiktok.platform_quotas import sdk_endpoint
     from app.jobs.admission import admission_keys, admission_policy
     from app.modules.materials.source_uploads import READ_HARD_LIMIT, UPLOAD_HARD_LIMIT
 
@@ -563,7 +564,7 @@ def test_nested_source_info_uses_bounded_read_budget_and_shared_quota(
     policy = admission_policy(operation)
     keys = admission_keys(
         settings.TIKTOK_APP_ID,
-        operation,
+        sdk_endpoint(operation),
         remote_env["context"].tenant_id,
         "actual-account",
     )

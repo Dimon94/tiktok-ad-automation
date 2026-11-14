@@ -211,9 +211,11 @@ def test_historical_migration_adds_layout_without_changing_frozen_bytes(monkeypa
         PreviewAdMaterial,
         PreviewGroupMaterial,
     )
-    from tests.migration_database import historical_database
+    from tests.migration_database import historical_database, insert_historical_row
     from tests.modules.builds.test_drafts import create_intent
-    from tests.modules.builds.test_image_composition_migration import scaffold
+    from tests.modules.builds.test_image_composition_migration import (
+        historical_scaffold,
+    )
     from tests.modules.conftest import create_context
     from tests.modules.materials.test_tenant_materials import material
 
@@ -225,7 +227,7 @@ def test_historical_migration_adds_layout_without_changing_frozen_bytes(monkeypa
         with Session(engine) as db:
             context = create_context(db)
             intent = create_intent(db, context)
-            draft, drama = scaffold(db, context, intent)
+            draft, drama = historical_scaffold(db, context, intent)
             for number, layout in enumerate(("GROUP", "AD"), 1):
                 original = material(db, context, f"{layout}.mp4")
                 value = preview(db, context, draft.id, intent, revision=number)
@@ -234,7 +236,8 @@ def test_historical_migration_adds_layout_without_changing_frozen_bytes(monkeypa
                     "preview_id": value.id,
                     "bc_id": draft.bc_id,
                 }
-                db.add(
+                insert_historical_row(
+                    db,
                     PreviewDrama(
                         **shared,
                         drama_id=drama.drama_id,
@@ -242,7 +245,7 @@ def test_historical_migration_adds_layout_without_changing_frozen_bytes(monkeypa
                         title=drama.title,
                         url="https://example.com",
                         protected_base="frozen",
-                    )
+                    ),
                 )
                 db.flush()
                 db.add(PreviewDramaGroup(**shared, drama_id=drama.drama_id, group_no=1))

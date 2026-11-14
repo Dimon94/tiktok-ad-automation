@@ -7,7 +7,6 @@ from uuid import UUID, uuid4
 import pytest
 from sqlmodel import select
 
-from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.builds import VideoCreative
 from app.modules.builds import previews
 from app.modules.builds.drafts import create_draft, edit_material_groups, prepare_draft
@@ -59,19 +58,28 @@ def test_preview_readiness_requires_scene_currency_and_every_material_path():
 
 
 def seed_targeting_directory(
-    session, context, advertisers, minis_id="fixture-mini", route=None
+    session,
+    context,
+    advertisers,
+    minis_id="fixture-mini",
+    route=None,
+    media_kind="VIDEO",
 ):
     # 持久化离线目录，预览/执行继续使用合成场景，绝不调用真实 TikTok。
     from datetime import UTC, datetime, timedelta
 
+    from app.modules.accounts.models import TikTokConnection
     from app.modules.accounts.routing import freeze_route
     from app.modules.builds.scene import scene_scope_basis
     from app.modules.builds.scene_job_models import SceneJob, SceneJobPage
 
     route = route or freeze_route(session, context=context, bc_id="bc-draft")
+    connection = session.get(TikTokConnection, route.connection_id)
+    assert connection is not None
     for advertiser in advertisers:
         basis = scene_scope_basis(
             route=route,
+            media_kind=media_kind,
             business={
                 "advertiser_id": advertiser,
                 "currency": "USD",
@@ -85,23 +93,28 @@ def seed_targeting_directory(
             bc_id=route.bc_id,
             advertiser_id=advertiser,
             connection_id=route.connection_id,
-            credential_revision=0,
+            credential_revision=connection.credential_revision,
             frozen_route=route.model_dump(mode="json"),
             minis_id=minis_id,
             scope_basis=basis,
+            media_kind=media_kind,
             status="COMPLETE",
             resource="done",
             first_observed_at=datetime.now(UTC),
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             facts={
                 "identity": {
+                    # 完整计数与下方末页回执共同证明目录已读完。
+                    "seen": 1,
+                    "total_number": 1,
+                    "total_page": 1,
                     "options": [
                         {
                             "identity_id": "identity-1",
                             "identity_type": "BC_AUTH_TT",
                             "identity_authorized_bc_id": "bc-draft",
                         }
-                    ]
+                    ],
                 },
                 "minis": {
                     "matches": [
@@ -1529,7 +1542,7 @@ def test_failed_preview_retry_rejects_changed_draft(session, context, prepared):
         )
 
 
-def test_batch_cap_blocks_before_any_account_expansion(session, context, prepared):
+def test_large_batch_is_accepted_before_account_expansion(session, context, prepared):
     draft = session.get(BuildDraft, prepared)
     draft.structure_override = {
         "group_generation_mode": "FIXED",
@@ -1543,16 +1556,17 @@ def test_batch_cap_blocks_before_any_account_expansion(session, context, prepare
         "creative_count": 1,
     }
     session.flush()
-    with pytest.raises(DomainError, match="拆批"):
-        previews.generate_preview(
-            session,
-            context=context,
-            draft_id=prepared,
-            expected_revision=draft.revision,
-        )
-    assert not session.exec(
-        select(BuildPreview).where(BuildPreview.draft_id == prepared)
-    ).all()
+    # 整批总量不是准入上限；冻结后由现有队列与单广告边界控制执行。
+    identity = previews.generate_preview(
+        session,
+        context=context,
+        draft_id=prepared,
+        expected_revision=draft.revision,
+    )
+    preview = session.get(BuildPreview, identity)
+    assert preview.status == "BUILDING"
+    assert preview.config["group_count"] == 100
+    assert preview.config["ads_per_group"] == 20
 
 
 def test_preview_freezes_effective_structure_override(session, context, prepared):

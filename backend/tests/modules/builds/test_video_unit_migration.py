@@ -1,7 +1,5 @@
 """真实历史 PostgreSQL 升级保持旧分组顺序、请求身份和冻结正文。"""
 
-from uuid import uuid4
-
 import pytest
 from alembic import command
 from sqlmodel import Session, select
@@ -10,10 +8,7 @@ from app.core.errors import DomainError
 from app.modules.accounts.resolver import encode_cursor
 from app.modules.builds.catalog import materials_page
 from app.modules.builds.drafts import (
-    continue_draft,
-    create_draft,
     edit_material_groups,
-    prepare_draft,
 )
 from app.modules.builds.image_composition_models import (
     DraftCreativeUnit,
@@ -21,9 +16,7 @@ from app.modules.builds.image_composition_models import (
 )
 from app.modules.builds.models import (
     BuildDraft,
-    DraftDrama,
     DraftGroupMaterial,
-    DraftPreparation,
 )
 from app.modules.builds.preview_models import BuildPreview
 from app.modules.builds.video_units import (
@@ -33,7 +26,7 @@ from app.modules.builds.video_units import (
 )
 from tests.migration_database import historical_database
 from tests.modules.builds.test_draft_catalog import preview
-from tests.modules.builds.test_drafts import account, create_intent, ready_links
+from tests.modules.builds.test_drafts import create_intent
 from tests.modules.conftest import create_context
 from tests.modules.materials.test_tenant_materials import material
 
@@ -46,20 +39,13 @@ def test_video_backfill_preserves_order_request_and_frozen_bytes(monkeypatch):
         with Session(engine) as db:
             context = create_context(db)
             intent = create_intent(db, context)
-            account(db, context)
-            draft_id = create_draft(db, context=context, **intent)
-            task = prepare_draft(
-                db, context=context, draft_id=draft_id, request_id=uuid4()
+            from tests.modules.builds.test_image_composition_migration import (
+                historical_scaffold,
             )
-            ready_links(db, context, task, intent)
-            for _ in range(20):
-                if db.get(DraftPreparation, task).phase == "materials":
-                    break
-                continue_draft(db, context=context, task_id=task)
-            draft = db.get(BuildDraft, draft_id)
-            drama = db.exec(
-                select(DraftDrama).where(DraftDrama.draft_id == draft_id)
-            ).first()
+
+            draft, drama = historical_scaffold(db, context, intent)
+            draft.media_kind = "VIDEO"
+            draft_id = draft.id
             files = [
                 material(db, context, name, bc="bc-draft")
                 for name in ("Z.mp4", "A.mp4", "M.mp4")

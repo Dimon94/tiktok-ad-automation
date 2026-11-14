@@ -269,79 +269,76 @@ def test_report_evidence_migration_round_trip_preserves_scope_and_payload(monkey
                         ).scalars()
                     )
                     assert not current_ids & {item["id"] for item in evidence}
-            # 上面独立核对0106历史结构；今日解析器在当前head运行，不能用新增列读取旧schema。
-            command.upgrade(config, "head")
-            with Session(engine) as session:
-                for identity, seed, bc in cases:
-                    snapshot = session.get(QuerySnapshot, identity)
-                    if snapshot.filters["dimension"] == "material":
-                        # 旧素材快照保留审计证据，但新查询合同必须拒绝重用旧补链身份。
-                        with pytest.raises(HTTPException) as retired:
-                            read_snapshot(
-                                session,
-                                context=seed.context,
-                                bc_id=bc,
-                                snapshot_id=identity,
-                            )
-                        assert retired.value.status_code == 409
-                        assert retired.value.detail == "query_snapshot_contract_changed"
-                    else:
-                        snapshot = read_snapshot(
-                            session,
-                            context=seed.context,
-                            bc_id=bc,
-                            snapshot_id=identity,
-                        )
-                    assert snapshot.id == identity
-                    rows = session.exec(
-                        select(QuerySnapshotRow).where(
-                            QuerySnapshotRow.snapshot_id == identity
-                        )
-                    ).all()
-                    if snapshot.filters["dimension"] == "material":
-                        with pytest.raises(HTTPException) as retired_members:
-                            snapshot_members(session, snapshot=snapshot, rows=rows)
-                        assert retired_members.value.status_code == 409
-                    else:
-                        # 迁移可逆还不够：真实分页/选择/导出解析器必须立即接受旧证据。
-                        members = snapshot_members(
-                            session, snapshot=snapshot, rows=rows
-                        )
-                        for key, member in members.items():
-                            assert (
-                                list(member.refs) == before_rows[identity, key]["refs"]
-                            )
-                            assert (
-                                list(member.material_uses)
-                                == before_rows[identity, key]["material_uses"]
-                            )
-                        assert (
-                            snapshot_names(
-                                session, snapshot=snapshot, rows=rows, members=members
-                            )
-                            == before_headers[identity]["naming_versions"]
-                        )
-                    with pytest.raises(HTTPException) as denied_bc:
-                        read_snapshot(
-                            session,
-                            context=seed.context,
-                            bc_id="bc-b" if bc == "bc-a" else "bc-a",
-                            snapshot_id=identity,
-                        )
-                    assert denied_bc.value.status_code == 404
-                    wrong_tenant = other if seed is first else first
-                    with pytest.raises(HTTPException) as denied_tenant:
-                        read_snapshot(
-                            session,
-                            context=wrong_tenant.context,
-                            bc_id=bc,
-                            snapshot_id=identity,
-                        )
-                    assert denied_tenant.value.status_code == 404
             command.downgrade(config, "0105_entity_metric_days")
             with engine.connect() as connection:
                 # 全部旧列逐值比较：数组顺序、冻结名称、展示/指标及权限字段均不能漂移。
                 assert _stored(connection) == (before_headers, before_rows)
+
+        # 上面独立核对0106历史结构；今日解析器在当前head运行，不能用新增列读取旧schema。
+        command.upgrade(config, "head")
+        with Session(engine) as session:
+            for identity, seed, bc in cases:
+                snapshot = session.get(QuerySnapshot, identity)
+                if snapshot.filters["dimension"] == "material":
+                    # 旧素材快照保留审计证据，但新查询合同必须拒绝重用旧补链身份。
+                    with pytest.raises(HTTPException) as retired:
+                        read_snapshot(
+                            session,
+                            context=seed.context,
+                            bc_id=bc,
+                            snapshot_id=identity,
+                        )
+                    assert retired.value.status_code == 409
+                    assert retired.value.detail == "query_snapshot_contract_changed"
+                else:
+                    snapshot = read_snapshot(
+                        session,
+                        context=seed.context,
+                        bc_id=bc,
+                        snapshot_id=identity,
+                    )
+                assert snapshot.id == identity
+                rows = session.exec(
+                    select(QuerySnapshotRow).where(
+                        QuerySnapshotRow.snapshot_id == identity
+                    )
+                ).all()
+                if snapshot.filters["dimension"] == "material":
+                    with pytest.raises(HTTPException) as retired_members:
+                        snapshot_members(session, snapshot=snapshot, rows=rows)
+                    assert retired_members.value.status_code == 409
+                else:
+                    # 迁移可逆还不够：真实分页/选择/导出解析器必须立即接受旧证据。
+                    members = snapshot_members(session, snapshot=snapshot, rows=rows)
+                    for key, member in members.items():
+                        assert list(member.refs) == before_rows[identity, key]["refs"]
+                        assert (
+                            list(member.material_uses)
+                            == before_rows[identity, key]["material_uses"]
+                        )
+                    assert (
+                        snapshot_names(
+                            session, snapshot=snapshot, rows=rows, members=members
+                        )
+                        == before_headers[identity]["naming_versions"]
+                    )
+                with pytest.raises(HTTPException) as denied_bc:
+                    read_snapshot(
+                        session,
+                        context=seed.context,
+                        bc_id="bc-b" if bc == "bc-a" else "bc-a",
+                        snapshot_id=identity,
+                    )
+                assert denied_bc.value.status_code == 404
+                wrong_tenant = other if seed is first else first
+                with pytest.raises(HTTPException) as denied_tenant:
+                    read_snapshot(
+                        session,
+                        context=wrong_tenant.context,
+                        bc_id=bc,
+                        snapshot_id=identity,
+                    )
+                assert denied_tenant.value.status_code == 404
 
 
 def test_report_evidence_migration_rejects_mismatched_scalar_atomically(monkeypatch):

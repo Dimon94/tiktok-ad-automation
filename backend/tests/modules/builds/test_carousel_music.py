@@ -884,7 +884,10 @@ def test_schema_upgrade_preserves_selected_unit_and_requires_draft_scope(monkeyp
     from alembic import command
     from sqlalchemy.exc import IntegrityError
 
-    from tests.modules.builds.test_image_composition_migration import unit
+    from tests.modules.builds.test_image_composition_migration import (
+        historical_scaffold,
+        unit,
+    )
 
     with historical_database(monkeypatch, "0052_image_candidate_build") as (
         engine,
@@ -892,7 +895,9 @@ def test_schema_upgrade_preserves_selected_unit_and_requires_draft_scope(monkeyp
     ):
         with Session(engine) as session, session.begin():
             context = create_context(session)
-            draft, drama = scaffold(session, context, create_intent(session, context))
+            draft, drama = historical_scaffold(
+                session, context, create_intent(session, context)
+            )
             existing = unit(draft, drama, music_id="existing", music_revision=3)
             existing.music_status = "READY"
             session.add(existing)

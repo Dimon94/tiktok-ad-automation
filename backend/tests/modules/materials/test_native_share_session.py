@@ -302,13 +302,21 @@ def test_new_owner_after_share_admission_stops_exact_physical_send(
     replacement = uuid4()
     operation_id = state(prepared.task_id)[1].id
     channel = gateway_case[1].channel
+    from app.integrations.tiktok.platform_quotas import sdk_endpoint
+
+    endpoint = (
+        sdk_endpoint("materials.share_assets")
+        if channel == "OFFICIAL_API"
+        else "materials.share_assets"
+    )
     keys = admission_keys(
         f"official-mcp:{settings.MCP_SERVICE_QUOTA_SCOPE}"
         if channel == "OFFICIAL_MCP"
         else settings.TIKTOK_APP_ID,
-        "materials.share_assets",
+        endpoint,
         share_case["context"].tenant_id,
         share_case["source"],
+        rate_group=endpoint if channel == "OFFICIAL_API" else None,
     )
     replaced = []
 

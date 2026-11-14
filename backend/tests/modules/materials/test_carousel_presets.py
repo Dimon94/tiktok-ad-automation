@@ -662,22 +662,39 @@ def test_concurrent_same_name_saves_allocate_distinct_immutable_versions(
 
 def test_0054_upgrade_preserves_units_and_installs_reference_constraints(monkeypatch):
     from alembic import command
+    from alembic.script import ScriptDirectory
     from sqlalchemy import inspect
     from sqlmodel import Session
 
     from tests.migration_database import historical_database
+    from tests.modules.builds.test_image_composition_migration import (
+        historical_scaffold,
+    )
     from tests.modules.conftest import create_context
 
     with historical_database(monkeypatch, "0054_music_preparation") as (engine, config):
         with Session(engine) as session:
             context = create_context(session)
-            case = image_draft.__wrapped__(session, context)
-            source = apply_rule(session, case)[0]
-            scope = case[2]
+            from tests.modules.builds.test_drafts import create_intent
+            from tests.modules.builds.test_image_composition_migration import unit
+
+            draft, drama = historical_scaffold(
+                session, context, create_intent(session, context)
+            )
+            source = unit(draft, drama)
+            session.add(source)
+            draft.active_image_generation = 1
+            session.flush()
+            source_id, draft_id, drama_id = source.id, draft.id, drama.drama_id
             session.commit()
         command.upgrade(config, "head")
         with Session(engine) as session:
-            assert list_creative_units(session, scope).items[0]["id"] == source["id"]
+            from app.modules.builds.image_composition_models import DraftCreativeUnit
+
+            restored = session.get(
+                DraftCreativeUnit, (context.tenant_id, draft_id, 1, source_id)
+            )
+            assert restored is not None and restored.drama_id == drama_id
             keys = inspect(session.connection()).get_foreign_keys(
                 "carousel_preset_item"
             )
@@ -689,7 +706,7 @@ def test_0054_upgrade_preserves_units_and_installs_reference_constraints(monkeyp
                 session.execute(
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
-                == "0057_carousel_copy_integrity"
+                == ScriptDirectory.from_config(config).get_current_head()
             )
 
 
