@@ -102,6 +102,7 @@ jobs:
           --serial-file tests/modules/builds/test_carousel_freeze.py
           --serial-file tests/modules/reporting/test_planning_commits.py
           --serial-file tests/modules/business/test_prefix_large_inputs.py
+          --serial-file tests/modules/materials/test_seed_resume_capacity.py
           --work "$RUNNER_TEMP/backend-modules"
           --save-durations "$RUNNER_TEMP/backend-modules/durations.json"
           -- --ignore=tests/acceptance
