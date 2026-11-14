@@ -158,18 +158,19 @@ WITH sources AS MATERIALIZED (
     AND EXISTS (SELECT 1 FROM draft_input d WHERE d.tenant_id=u.tenant_id AND d.draft_id=u.draft_id
       AND d.kind='drama' AND d.status='ready' AND d.drama_id=u.drama_id)
 ), content AS MATERIALIZED (
-  SELECT u.id,c.* FROM sources u CROSS JOIN LATERAL (
-    SELECT count(i.position) AS count, min(i.position) AS first, max(i.position) AS last,
-      bool_and(f.media_type=CASE WHEN u.kind='VIDEO' THEN 'VIDEO' ELSE 'IMAGE' END) AS correct_type,
-      bool_and(f.sha256 IS NOT NULL) AS has_digest,
-      json_agg(json_build_array(f.id::text,f.sha256) ORDER BY i.position) FILTER (WHERE i.position IS NOT NULL) AS members
-    FROM draft_creative_unit_item i LEFT JOIN LATERAL (
-      SELECT f.id,f.sha256,f.media_type FROM material_file f
-      WHERE f.tenant_id=:tenant AND f.id=i.material_id OFFSET 0
-    ) f ON true
-    WHERE i.tenant_id=:tenant AND i.draft_id=:draft AND i.generation=:generation AND i.unit_id=u.id
-    OFFSET 0
-  ) c
+  -- 一次聚合整批成员；逐单元LATERAL会在冷统计下重复扫描同一万条成员。
+  SELECT u.id,count(i.position) AS count,min(i.position) AS first,max(i.position) AS last,
+    bool_and(f.media_type=CASE WHEN u.kind='VIDEO' THEN 'VIDEO' ELSE 'IMAGE' END) AS correct_type,
+    bool_and(f.sha256 IS NOT NULL) AS has_digest,
+    json_agg(json_build_array(f.id::text,f.sha256) ORDER BY i.position)
+      FILTER (WHERE i.position IS NOT NULL) AS members
+  FROM sources u LEFT JOIN draft_creative_unit_item i
+    ON i.tenant_id=:tenant AND i.draft_id=:draft AND i.generation=:generation AND i.unit_id=u.id
+  LEFT JOIN LATERAL (
+    SELECT f.id,f.sha256,f.media_type FROM material_file f
+    WHERE f.tenant_id=:tenant AND f.id=i.material_id OFFSET 0
+  ) f ON true
+  GROUP BY u.id
 )
 
 """
