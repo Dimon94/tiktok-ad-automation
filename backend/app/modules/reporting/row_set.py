@@ -69,9 +69,9 @@ NAME_FIELDS = (
 )
 
 _FACT_TABLE = {
-    "account": ("campaign_report_day", None),
+    "account": ("campaign_selected_day", None),
     "campaign": ("campaign_selected_day", "campaign_id"),
-    "drama": ("campaign_report_day", "campaign_id"),
+    "drama": ("campaign_selected_day", "campaign_id"),
     "adgroup": ("adgroup_selected_day", "adgroup_id"),
     "ad": ("ad_report_day", "ad_id"),
 }
@@ -472,21 +472,23 @@ def _material_member_buckets() -> str:
 
 def _row_buckets() -> str:
     return f"""rb AS (
-        SELECT row_key, currency, {", ".join(f"sum({m}) AS {m}" for m in METRIC_COLUMNS)}
+        SELECT row_key, currency, {", ".join(f"sum({m}) AS {m}, bool_or({m}_hn OR {m} IS NULL) AS {m}_hn" for m in METRIC_COLUMNS)}
         FROM mb GROUP BY row_key, currency
     ),
     rv AS (
         -- 只有单一币种桶的行有排序值；多口径行与无值行统一排在末尾。
         SELECT row_key, count(*) AS bucket_count, min(currency) AS currency,
-            {", ".join(f"min({m}) AS {m}" for m in METRIC_COLUMNS)}
+            {", ".join(f"min({m}) AS {m}, bool_or({m}_hn) AS {m}_hn" for m in METRIC_COLUMNS)}
         FROM rb GROUP BY row_key
     )"""
 
 
-def _metric_expr(field: str, alias: str) -> str:
+def _metric_expr(field: str, alias: str, *, strict: bool = True) -> str:
     if field in DERIVED_METRICS:
         numerator, denominator, scale = DERIVED_METRICS[field]
-        return f"({alias}.{numerator} / NULLIF({alias}.{denominator}, 0) * {scale})"
+        if not strict:
+            return f"({alias}.{numerator} / NULLIF({alias}.{denominator}, 0) * {scale})"
+        return f"(CASE WHEN NOT {alias}.{denominator}_hn THEN {alias}.{numerator} / NULLIF({alias}.{denominator}, 0) * {scale} END)"
     return f"{alias}.{field}"
 
 
@@ -496,7 +498,7 @@ def _metric_bounds(filters: ReportingFilter, params: _Params) -> str | None:
         ("spend", filters.min_spend, filters.max_spend),
         ("roas_d0", filters.min_d0_roas, filters.max_d0_roas),
     ):
-        expr = _metric_expr(field, "b")
+        expr = _metric_expr(field, "b", strict=filters.dimension != "material")
         if low is not None:
             checks.append(f"{expr} >= {params.add(f'min_{field}', low)}")
         if high is not None:
@@ -537,7 +539,7 @@ def _order_by(filters: ReportingFilter) -> str:
         currency = "COALESCE(r.balance_currency, '')" if field == "balance" else "''"
         value = f"r.{field}"
         return f'({value} IS NULL), {currency} COLLATE "C" {direction}, {value} {direction}, {tie}'
-    value = f"(CASE WHEN v.bucket_count = 1 THEN {_metric_expr(field, 'v')} END)"
+    value = f"(CASE WHEN v.bucket_count = 1 THEN {_metric_expr(field, 'v', strict=filters.dimension != 'material')} END)"
     currency = (
         'v.currency COLLATE "C" ' + direction + ", "
         if field in MONEY_SORT_FIELDS
@@ -591,9 +593,9 @@ def _drama_metric_rows(params: _Params, bc_id: str) -> tuple[str, str]:
     key = _drama_row_key(params, bc_id, "p.status", "p.drama_name")
     return ",\n".join(
         [
-            _common_ctes("ad_day"),
+            _common_ctes("campaign_day"),
             _facts_cte(
-                "campaign_metric_day",
+                "campaign_selected_day",
                 "campaign_id",
                 include_metadata=False,
                 period_scan=len(params.values["advs"]) >= 1000,
@@ -611,7 +613,7 @@ def _drama_metric_rows(params: _Params, bc_id: str) -> tuple[str, str]:
                         ORDER BY adv COLLATE "C",rid COLLATE "C") AS member_keys
                 FROM members GROUP BY row_key
             )""",
-            _member_buckets("members", unsupported=frozenset()),
+            _member_buckets("members", unsupported=frozenset(), campaign=True),
         ]
     ), "base"
 
@@ -648,8 +650,7 @@ def _dimension_rows(
     # 账户页的余额只参与余额排序，版权方只参与文字/命名筛选；展示由页补全读取。
     # ent 被成员与指标多次消费，会物化所有选择列，不能依赖外层投影消除无用查询。
     account_projection = bool(_search_terms(filters) or filters.naming_status)
-    if dim == "account" and not account_projection:
-        table = "account_report_day"
+
     if dim == "account":
         idn = "idn AS (SELECT adv, adv AS rid FROM acc)"
         balance_columns = "NULL::numeric AS balance, NULL::text AS balance_currency"
@@ -856,7 +857,7 @@ def _dimension_rows(
         [
             _common_ctes(
                 query_kind(dim),
-                account=dim == "account",
+                account=False,
             ),
             *ctes,
         ]
@@ -977,6 +978,7 @@ def _summary_select(
     """汇总只算最终行：值为全部成员合计，部分合计规则同 merge_metric_buckets。"""
     columns = ", ".join(
         f"sum(x.{m})::text AS {m}, "
+        f"bool_or(x.{m} IS NULL OR x.{m}_hn) AS {m}_missing, "
         f"(sum(x.{m}) IS NOT NULL AND (bool_or(x.row_incomplete) OR bool_or(x.{m} IS NULL) "
         f"OR bool_or(x.{m}_hn))) AS {m}_partial"
         for m in METRIC_COLUMNS
@@ -1055,8 +1057,7 @@ def insert_snapshot_rows(
     )
     if query_kind(filters.dimension) in PARENT_KINDS:
         coverage_source = state_sql(query_kind(filters.dimension))
-    if filters.dimension == "account":
-        coverage_source = "SELECT tenant_id,advertiser_id,'ad_day' AS report_kind,stat_date,status FROM account_report_day_state"
+
     account_versions = (
         "(SELECT COALESCE(array_agg(account_membership_version_id),ARRAY[]::uuid[]) FROM fr)"
         if filters.dimension == "account"

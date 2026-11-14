@@ -55,3 +55,20 @@ Source sync: JB27 changes built on 7941c17662c2980284491c7fb1548a0638fa07dc;
 final commands and limits in docs/validation/2026-11-14-jb27-native-growth-publication.md.
 R4/R10's existing 48-state check remains unchanged; R7 is an additional model,
 not a retroactive claim about that check.
+
+## JB28 partial R6 arithmetic extension (WIP)
+
+`python3 .agents/skills/formal-verify-reporting-data/scripts/denominator.py`
+checks six independently hand-calculated two-member examples (complete numerator,
+partial numerator, missing divisor, zero divisor, all unknown, real zero).
+`--broken-denominator` must fail. This is a bounded example oracle, **not** the
+required exhaustive R2/R5/R6/R8 scope/Decimal model; that work remains pending.
+Do not reuse the R4/R7 models to claim that coverage.
+
+`python3 .agents/skills/formal-verify-reporting-data/scripts/denominator_probes.py`
+mutates Python denominator completeness, SQL threshold completeness, and account
+summary source selection. Each mutation runs the real PG regression, restores an
+external byte backup in finally, checks byte equality, and reruns green. Serial
+execution only. See `docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`.
+These three probes do not cover subset handling, mixed source/contract buckets,
+parent/child addition, platform ratios, permission, or frozen snapshots.

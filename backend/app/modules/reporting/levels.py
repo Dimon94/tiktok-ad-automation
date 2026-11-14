@@ -52,4 +52,6 @@ def state_sql(kind: str) -> str:
 
 
 def query_kind(dimension: str) -> str:
+    if dimension in {"account", "drama"}:
+        return "campaign_day"
     return next((k for k, v in LEVELS.items() if v.level == dimension), "ad_day")

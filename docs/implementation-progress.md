@@ -5411,3 +5411,16 @@ Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接
 ### 2026-11-14 JB-27 root阶段验收
 
 亲核b17b9b36，publication/levels/watermark84项通过（含独立Celery投递），R7有界正常模型及四错误变体亲跑符合预期；无需追加产品修复。继续JB-28筛选范围/ROAS，完整M4a与正式两轴review仍待后续。无推送、PR或部署。
+
+## 2026-11-14 JB-28 partial WIP
+
+From d72d5837967fc5619f2dcbd8f5a577f2a94f6ae1, same authorized integration tree.
+Implemented daily denominator completeness in SQL threshold/order/summary and
+MetricVector; account/drama now route Campaign selected-day facts. Real PG107
+passed; after isolating material legacy behavior31 passed. Three real-source
+mutations red/byte-restore/green; bounded six-example arithmetic oracle only.
+Strict mypy remains410, exact-start normalized diagnostics unchanged. Full
+JB28 source/contract/scope buckets, subset handling, aggregate provenance, UI,
+performance and exhaustive formal coverage remain incomplete. Do not accept
+JB28, start JB29, release this WIP, or mark M4a complete. Details and AC matrix:
+`docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`.

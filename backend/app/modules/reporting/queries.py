@@ -85,7 +85,9 @@ def _decode_cursor(value: str) -> dict[str, Any]:
         raise HTTPException(404, detail="query_cursor_not_found") from exc
 
 
-def _summary(totals: SnapshotTotals) -> dict[str, Any]:
+def _summary(
+    totals: SnapshotTotals, *, strict_denominators: bool = True
+) -> dict[str, Any]:
     """汇总按币种分桶，与行内合并共用部分合计规则（数据库内按成员计算）。
 
     混口径/混币种桶仍按桶展示，不偷偷换汇。缺覆盖的成员不当成 0：已同步部分照常
@@ -106,6 +108,11 @@ def _summary(totals: SnapshotTotals) -> dict[str, Any]:
             timezone=bucket["tz"],
             unsupported=unsupported,
             partial={name for name in values if bucket.get(f"{name}_partial")},
+            missing_denominators={
+                name
+                for name in values
+                if strict_denominators and bucket.get(f"{name}_missing")
+            },
         )
         buckets.append(vector.model_dump(mode="json"))
     return {
@@ -246,7 +253,9 @@ def _build_snapshot(
         else pin_snapshot_names(session, snapshot=snapshot)
     )
     snapshot.total = totals.total
-    snapshot.summary = _summary(totals)
+    snapshot.summary = _summary(
+        totals, strict_denominators=filters.dimension != "material"
+    )
     snapshot.coverage = {
         "status": "EMPTY"
         if not totals.total

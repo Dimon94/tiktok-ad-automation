@@ -66,6 +66,7 @@ def metric_vector(
     timezone: str,
     unsupported: Collection[str] = (),
     partial: Collection[str] = frozenset(),
+    missing_denominators: Collection[str] = frozenset(),
 ) -> MetricVector:
     resolved: dict[str, Decimal | None] = {
         name: None if name in unsupported else values.get(name)
@@ -83,7 +84,12 @@ def metric_vector(
     }
     for name, numerator, denominator, scale in DERIVED_RATIOS:
         a, b = resolved.get(numerator), resolved.get(denominator)
-        resolved[name] = a / b * scale if a is not None and b else None
+        # 收益可部分合计，分母必须完整；旧观测提示与数值缺项分别传递。
+        resolved[name] = (
+            a / b * scale
+            if a is not None and b and denominator not in missing_denominators
+            else None
+        )
         # 派生比率由合计重算，状态跟随分子、分母中较差的一个。
         states[name] = (
             "UNSUPPORTED"
@@ -108,7 +114,10 @@ COMPLETE_COVERAGE_STATUSES = frozenset({"COMPLETE", "COMPLETE_EMPTY"})
 
 
 def aggregate_metrics(
-    vectors: Sequence[MetricVector], *, incomplete: bool = False
+    vectors: Sequence[MetricVector],
+    *,
+    incomplete: bool = False,
+    strict_denominators: bool = False,
 ) -> MetricVector:
     """合计同币种向量（部分合计规则，设计 7.3）。
 
@@ -122,6 +131,7 @@ def aggregate_metrics(
     values: dict[str, Decimal | None] = {}
     unsupported: set[str] = set()
     partial_names: set[str] = set()
+    missing_names: set[str] = set()
     for name in METRIC_COLUMNS:
         states = [v.availability.get(name) for v in vectors]
         if all(s == "UNSUPPORTED" for s in states):
@@ -135,6 +145,8 @@ def aggregate_metrics(
             and v.availability.get(name) in ("AVAILABLE", "PARTIAL")
         ]
         values[name] = sum(present, Decimal(0)) if present else None
+        if len(present) < len(vectors) or "PARTIAL" in states:
+            missing_names.add(name)
         if present and (
             incomplete or len(present) < len(vectors) or "PARTIAL" in states
         ):
@@ -146,11 +158,14 @@ def aggregate_metrics(
         timezone=next(iter(zones)) if len(zones) == 1 else "MIXED",
         unsupported=unsupported,
         partial=partial_names,
+        missing_denominators=missing_names if strict_denominators else (),
     )
 
 
 def merge_metric_buckets(
     members: Iterable[tuple[Sequence[MetricVector], bool]],
+    *,
+    strict_denominators: bool = False,
 ) -> tuple[MetricVector, ...]:
     """按口径键合并多个成员的指标桶；成员为 (向量, 覆盖是否不完整)。
 
@@ -165,7 +180,9 @@ def merge_metric_buckets(
             buckets[key].append(vector)
             incomplete[key] = incomplete[key] or member_incomplete
     return tuple(
-        aggregate_metrics(values, incomplete=incomplete[key])
+        aggregate_metrics(
+            values, incomplete=incomplete[key], strict_denominators=strict_denominators
+        )
         for key, values in sorted(buckets.items())
     )
 
@@ -514,6 +531,9 @@ def fact_vector(
         timezone=item["zone_min"] if item["zone_min"] == item["zone_max"] else "MIXED",
         unsupported=unsupported,
         partial={name for name in METRIC_COLUMNS if item[f"{name}_has_null"]},
+        missing_denominators={
+            name for name in METRIC_COLUMNS if item[f"{name}_has_null"]
+        },
     )
 
 
@@ -636,11 +656,15 @@ def materialize_rows(
             )
             .mappings()
         ]
-    parent_model = CampaignReportDay if kind == "campaign" else AdgroupReportDay
+    parent_model = (
+        CampaignReportDay if kind in {"campaign", "account"} else AdgroupReportDay
+    )
     model = (
         aliased(
             parent_model,
-            text(f"SELECT * FROM {kind}_selected_day")
+            text(
+                f"SELECT * FROM {'campaign' if kind == 'account' else kind}_selected_day"
+            )
             .columns(*cast(Any, parent_model).__table__.columns)
             .subquery(),
             adapt_on_names=True,
@@ -858,7 +882,8 @@ def materialize_rows(
                             r.display.get("advertiser_id") in incomplete_ids,
                         )
                         for r in rows
-                    )
+                    ),
+                    strict_denominators=True,
                 ),
                 "coverage": coverage,
                 "membership_digest": ref_digest(refs),
