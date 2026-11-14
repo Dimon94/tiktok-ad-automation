@@ -104,6 +104,7 @@ jobs:
           --serial-file tests/modules/reporting/test_health_directory_repair.py
           --serial-file tests/modules/business/test_prefix_large_inputs.py
           --serial-file tests/modules/materials/test_seed_resume_capacity.py
+          --serial-file tests/modules/accounts/test_discovery_worker.py
           --work "$RUNNER_TEMP/backend-modules"
           --save-durations "$RUNNER_TEMP/backend-modules/durations.json"
           -- --ignore=tests/acceptance
