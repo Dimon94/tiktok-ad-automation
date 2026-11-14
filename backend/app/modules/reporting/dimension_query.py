@@ -1278,6 +1278,8 @@ def vector_provenance(
                     "NO_RETURNED_ROW"
                     # SQL 空桶保留坐标和 NULL 列，不能用非空字典冒充实际返回行。
                     if not r.get("returned", bool(r["fact"]))
+                    else "LEGACY_UNKNOWN"
+                    if r["contract_revision"] == "LEGACY_UNKNOWN"
                     else "VALUE"
                     if r["fact"].get(field) is not None
                     else "ABSENT"
@@ -1437,6 +1439,9 @@ def report_provenance(
     display["report_observed_at"] = " / ".join(
         sorted({str(r["publication"].get("observed_at")) for r in records})
     )
+    from app.modules.reporting.levels import LEVELS
+
+    # 是否请求由固定层级合同决定；没请求比率不等于没返回广告行。
     # 聚合或多日只有原观察，没有一个可加或可平均的平台比率。
     for key in PLATFORM_RATIOS:
         field = (
@@ -1445,8 +1450,18 @@ def report_provenance(
             else {}
         )
         display[key] = field.get("value")
-        display[key + "_reason"] = field.get(
-            "status", "NON_ADDITIVE" if len(records) > 1 else "NO_RETURNED_ROW"
+        display[key + "_reason"] = (
+            "NON_ADDITIVE"
+            if len(records) > 1
+            else field["status"]
+            if field
+            else "NO_RETURNED_ROW"
+            if not records or not records[0].get("returned", bool(records[0]["fact"]))
+            else records[0]["contract_revision"]
+            if records[0]["contract_revision"] != NATIVE_CONTRACT
+            else "NOT_REQUESTED"
+            if PLATFORM_RATIOS[key] not in LEVELS[f"{records[0]['level']}_day"].metrics
+            else "ABSENT"
         )
     from app.modules.reporting.levels import DAY_KINDS
 

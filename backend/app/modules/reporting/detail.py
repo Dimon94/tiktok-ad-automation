@@ -314,6 +314,8 @@ def get_ad_detail(
     ref: EntityRef,
     snapshot_id: UUID | None = None,
 ) -> AdDetailPublic:
+    from app.modules.reporting.queries import _snapshot_public
+
     snapshot = None
     report_result = None
     if snapshot_id is not None:
@@ -327,7 +329,7 @@ def get_ad_detail(
         raise HTTPException(404, detail="ad_not_found") from exc
     if ref.kind in {"campaign", "adgroup", "ad"}:
         from app.modules.reporting.frozen_result import frozen_row
-        from app.modules.reporting.queries import _snapshot_public, query_ads
+        from app.modules.reporting.queries import query_ads
 
         if snapshot is None:
             from app.modules.accounts.models import AdvertiserAccount
