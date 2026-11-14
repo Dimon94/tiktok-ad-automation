@@ -241,6 +241,7 @@ class ReportRow(BaseModel):
     # 描述性轮播组合；指标仍以广告行唯一键发布。
     material_instances: tuple[MaterialInstanceResult, ...] = ()
     parent_controls: tuple[ParentAdControl, ...] = ()
+    reconciliation_rows: tuple[dict[str, Any], ...] = ()
     evidence_digest: str = ""
     carousel_creatives: tuple[CarouselCreativeIdentity, ...] = ()
     display: dict[str, str | None] = Field(default_factory=dict)

@@ -237,10 +237,16 @@ def materialize_material_rows(
                 != "COMPLETE"
             )
             vector = metric_vector(
-                f,
+                dict(f)
+                | {
+                    "level": "creative",
+                    "source_kind": "PLATFORM_DIRECT",
+                    "contract_revision": CREATIVE_OBSERVED_CONTRACT,
+                },
                 currency=f["currency"],
                 timezone=f["timezone"],
                 partial={m for m in METRIC_COLUMNS if f[f"{m}_has_null"]},
+                missing_denominators={m for m in METRIC_COLUMNS if f[f"{m}_has_null"]},
             )
             buckets.append(
                 (
@@ -339,7 +345,7 @@ def materialize_material_rows(
                 },
                 refs=tuple(entity_ref(r) for r in member.refs),
                 material_uses=uses,
-                metric_buckets=merge_metric_buckets(buckets),
+                metric_buckets=merge_metric_buckets(buckets, strict_denominators=True),
                 coverage=coverage,
                 membership_digest=sha256(
                     json.dumps(member.material_uses, sort_keys=True).encode()
@@ -403,6 +409,7 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
     result = []
     for report in reports:
         instances, controls = [], {}
+        reconciliation = []
         for (row_key, adv, parent, mid, kind, vid, special), items in sorted(
             grouped.items(), key=lambda pair: str(pair[0])
         ):
@@ -481,12 +488,16 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                                 partial={
                                     m for m in METRIC_COLUMNS if f[f"{m}_has_null"]
                                 },
+                                missing_denominators={
+                                    m for m in METRIC_COLUMNS if f[f"{m}_has_null"]
+                                },
                             ),
                         ),
                         f["source_status"] != "COMPLETE",
                     )
                     for f in items
-                ]
+                ],
+                strict_denominators=True,
             )
             observations = []
             for f in sorted(
@@ -623,6 +634,38 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                         ).model_dump(mode="json")
                     ),
                 )
+        for control in controls.values():
+            reconciliation.extend(
+                reconcile_parent(
+                    session,
+                    snapshot=snapshot,
+                    filters=filters,
+                    control=control,
+                )
+            )
+        # 广告组残差保留原粒度，绝不能冒充父 Ad 差额或素材实例。
+        if json.loads(report.row_key)[0] == "unattributed":
+            reconciliation.append(
+                {
+                    "row_kind": "RECONCILIATION_DIFFERENCE",
+                    "key": {"row_key": report.row_key},
+                    "status": "NOT_COMPARABLE",
+                    "reason": "ADGROUP_RESIDUAL_NOT_PARENT_CONTROL",
+                    "scope": "ADGROUP_RESIDUAL",
+                    "metric_buckets": [],
+                    "coverage": report.coverage,
+                    "observations": [
+                        {
+                            "source": "ADGROUP_RESIDUAL_PROJECTION",
+                            "scope": "ADGROUP_RESIDUAL",
+                            "metric_buckets": [
+                                v.model_dump(mode="json") for v in report.metric_buckets
+                            ],
+                        }
+                    ],
+                    "evidence_digest": digest(report.model_dump(mode="json")),
+                }
+            )
         for instance in instances:
             for observation in instance.observations:
                 coordinate = dict(observation) | {
@@ -642,8 +685,201 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
             },
             "material_instances": [i.model_dump(mode="json") for i in instances],
             "parent_controls": [c.model_dump(mode="json") for c in controls.values()],
+            "reconciliation_rows": reconciliation,
         }
         result.append(
             ReportRow.model_validate(payload | {"evidence_digest": digest(payload)})
         )
     return result
+
+
+def reconcile_parent(session, *, snapshot, filters, control):
+    """独立完整父范围与选中事实对比；逐指标合同未知时不产生数字。"""
+    from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
+    from app.modules.reporting.schemas import ReportingFilter
+
+    adv, parent = control.key["advertiser_id"], control.key["parent_ad_id"]
+    full_filter = ReportingFilter(
+        dimension="material",
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+        advertiser_ids=(adv,),
+    )
+    full = read_facts(
+        session,
+        tenant_id=snapshot.tenant_id,
+        advertisers=[adv],
+        filters=full_filter,
+        exact_ad=parent,
+        observations=True,
+    )
+    selected = read_facts(
+        session,
+        tenant_id=snapshot.tenant_id,
+        advertisers=[adv],
+        filters=filters,
+        exact_ad=parent,
+        observations=True,
+    )
+
+    def fact_key(f):
+        return (f["advertiser_id"], f["creative_id"], str(f["stat_date"]))
+
+    full = list({fact_key(f): f for f in full if f["creative_id"]}.values())
+    selected_keys = {fact_key(f) for f in selected if f["creative_id"]}
+    output = []
+    for bucket in control.metric_buckets:
+        facts = [
+            f
+            for f in full
+            if (f["currency"], f["timezone"]) == (bucket.currency, bucket.timezone)
+        ]
+        reasons = []
+        if control.coverage.get("status") not in {"COMPLETE", "COMPLETE_EMPTY"}:
+            reasons.append("PARENT_NOT_READY")
+        if not facts or {fact_key(f) for f in facts} - selected_keys:
+            reasons.append("SELECTED_MATERIAL_SUBSET_OR_MISSING_CREATIVE")
+        if any(f["source_status"] != "COMPLETE" for f in facts):
+            reasons.append("CREATIVE_COVERAGE_INCOMPLETE")
+        if bucket.source_kind != "PLATFORM_DIRECT" or not bucket.provenance:
+            reasons.append("PARENT_DIRECT_OBSERVATION_MISSING")
+        if bucket.contract_revision != NATIVE_CONTRACT:
+            reasons.append("PARENT_CONTRACT_UNCONFIRMED")
+        # 只接受发布 owner 明确记载的完整账户日；不从投影水位或当前时钟制造证据。
+        days = {str(f["stat_date"]) for f in facts}
+        expected_days = set()
+        from datetime import timedelta
+
+        day = filters.start_date
+        while day <= filters.end_date:
+            expected_days.add(str(day))
+            day += timedelta(days=1)
+        if days != expected_days:
+            reasons.append("LOCAL_DAY_COVERAGE_MISMATCH")
+        if any(
+            (f.get("evidence") or {}).get("contract_revision")
+            != CREATIVE_OBSERVED_CONTRACT
+            for f in facts
+        ):
+            reasons.append("CREATIVE_CONTRACT_UNCONFIRMED")
+        if any(not (f.get("evidence") or {}).get("publication") for f in facts):
+            reasons.append("CREATIVE_OBSERVATION_UNKNOWN")
+        from datetime import datetime
+
+        stamps = {
+            str(b.stat_date): b for p in bucket.provenance.values() for b in p.buckets
+        }
+        for f in facts:
+            publication = (f.get("evidence") or {}).get("publication") or {}
+            stamp = stamps.get(str(f["stat_date"]))
+            if (publication.get("scope") or {}).get("kind") != "ACCOUNT_DAY":
+                reasons.append("CREATIVE_PUBLICATION_SCOPE_NOT_FULL")
+                break
+            observed = publication.get("observed_at")
+            if (
+                not stamp
+                or not stamp.observed_at
+                or not observed
+                or stamp.last_attempt_status != "COMPLETE"
+            ):
+                reasons.append("OBSERVATION_COVERAGE_UNKNOWN")
+                break
+            if (
+                abs(
+                    (
+                        stamp.observed_at - datetime.fromisoformat(observed)
+                    ).total_seconds()
+                )
+                > 1800
+            ):
+                reasons.append("OBSERVATION_WINDOW_MISMATCH")
+                break
+        child = merge_metric_buckets(
+            [
+                (
+                    (
+                        metric_vector(
+                            dict(f)
+                            | {
+                                "level": "creative",
+                                "source_kind": "PLATFORM_DIRECT",
+                                "contract_revision": CREATIVE_OBSERVED_CONTRACT,
+                            },
+                            currency=f["currency"],
+                            timezone=f["timezone"],
+                            partial={m for m in METRIC_COLUMNS if f[f"{m}_has_null"]},
+                            missing_denominators={
+                                m for m in METRIC_COLUMNS if f[f"{m}_has_null"]
+                            },
+                        ),
+                    ),
+                    False,
+                )
+                for f in facts
+            ],
+            strict_denominators=True,
+        )
+        values, metric_reasons = {}, {}
+        for m in METRIC_COLUMNS:
+            if reasons:
+                metric_reasons[m] = ";".join(reasons)
+            elif m.startswith("revenue_") or m == "ad_impression_events":
+                metric_reasons[m] = (
+                    "CREATIVE_NATIVE_WINDOW_TRAFFIC_MATURITY_UNCONFIRMED"
+                )
+            elif (
+                bucket.availability.get(m) != "AVAILABLE"
+                or child[0].availability.get(m) != "AVAILABLE"
+            ):
+                metric_reasons[m] = "FIELD_COVERAGE_INCOMPLETE"
+            else:
+                values[m] = bucket.values[m] - child[0].values[m]
+        # 比率不能相减，也不能用金额差额重算；差额只包含可加原始量。
+        from app.modules.reporting.metric_catalog import DERIVED_RATIOS
+
+        difference_buckets = []
+        if values:
+            vector = metric_vector(
+                values, currency=bucket.currency, timezone=bucket.timezone
+            )
+            ratios = {r[0] for r in DERIVED_RATIOS}
+            vector = vector.model_copy(
+                update={
+                    "values": vector.values | dict.fromkeys(ratios),
+                    "availability": vector.availability
+                    | dict.fromkeys(ratios, "MISSING"),
+                    "reasons": vector.reasons
+                    | dict.fromkeys(ratios, "NON_ADDITIVE_DIFFERENCE"),
+                }
+            )
+            difference_buckets.append(vector.model_dump(mode="json"))
+        payload = {
+            "row_kind": "RECONCILIATION_DIFFERENCE",
+            "key": control.key,
+            "scope": "FULL_PARENT_AD",
+            "currency": bucket.currency,
+            "timezone": bucket.timezone,
+            "status": "COMPARABLE" if values else "NOT_COMPARABLE",
+            "reason": ";".join(reasons) if reasons else "PER_METRIC_CONTRACT_CHECK",
+            "metric_reasons": metric_reasons,
+            "metric_buckets": difference_buckets,
+            "coverage": {
+                "parent": control.coverage,
+                "selected_fact_count": len(selected_keys),
+                "full_parent_fact_count": len(full),
+                "metric_reasons": metric_reasons,
+            },
+            "observations": {
+                "parent": bucket.model_dump(mode="json"),
+                "creative": [dict(f.get("evidence") or {}) for f in facts],
+            },
+            "fact_keys": [
+                json.dumps([str(snapshot.tenant_id), *fact_key(f)]) for f in facts
+            ],
+            "parent_digest": control.evidence_digest,
+        }
+        payload["evidence_digest"] = sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        output.append(payload)
+    return output

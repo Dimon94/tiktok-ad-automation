@@ -326,7 +326,11 @@ class MetricContract(BaseModel):
     unit: Literal["MONEY", "RATIO", "COUNT"]
     traffic_scope: Literal["ALL_TRAFFIC", "PAID", "UNCONFIRMED"]
     window: Literal[
-        "NOT_APPLICABLE", "TOTAL_CUTOFF_UNKNOWN", "CLICK_HOURS", "CALENDAR_DAY"
+        "NOT_APPLICABLE",
+        "TOTAL_CUTOFF_UNKNOWN",
+        "CLICK_HOURS",
+        "CALENDAR_DAY",
+        "UNCONFIRMED",
     ]
     click_hours: int | None
     aggregation: Literal["SUM_SAME_LEVEL", "RATIO_OF_SUMS", "SINGLE_OBSERVATION_ONLY"]
@@ -335,13 +339,25 @@ class MetricContract(BaseModel):
     denominator: str | None = None
 
 
-def semantics_for(key: str, revision: str) -> MetricContract:
+def semantics_for(
+    key: str,
+    revision: str,
+    *,
+    grain: Literal["campaign", "adgroup", "ad", "creative", "material_instance"]
+    | None = None,
+) -> MetricContract:
     """未知版本拒绝解释；不按当前命名追认历史金额。"""
-    if revision != NATIVE_CONTRACT:
+    creative = (
+        grain in {"creative", "material_instance"}
+        and revision == CREATIVE_OBSERVED_CONTRACT
+    )
+    if revision != NATIVE_CONTRACT and not creative:
         raise DomainError("report_query_invalid", "未知指标合同修订")
     item = next(item for item in METRIC_CATALOG if item.key == key)
     ratio = next((r for r in DERIVED_RATIOS if r[0] == key), None)
-    native = key.startswith(("revenue_", "roas_"))
+    native = key.startswith(("revenue_", "roas_")) or (
+        creative and key in {"ad_impression_events", "cost_per_ad_impression_event"}
+    )
     window_days = next((n for n in (0, 3, 7, 14, 30) if key.endswith(f"_d{n}")), None)
     return MetricContract(
         revision=revision,
@@ -352,18 +368,24 @@ def semantics_for(key: str, revision: str) -> MetricContract:
         if item.unit == "count"
         else "RATIO",
         traffic_scope="UNCONFIRMED" if native else "PAID",
-        window="CLICK_HOURS"
+        window="UNCONFIRMED"
+        if creative and native
+        else "CLICK_HOURS"
         if native and window_days is not None
         else "TOTAL_CUTOFF_UNKNOWN"
         if native
         else "NOT_APPLICABLE",
-        click_hours=24
+        click_hours=None
+        if creative
+        else 24
         if window_days == 0
         else window_days * 24
         if window_days is not None
         else None,
         aggregation="RATIO_OF_SUMS" if ratio else "SUM_SAME_LEVEL",
-        definition_ref="tiktok-basic-report-metrics/v1.3.zh.md",
+        definition_ref="local-observed-fields; platform creative definition UNCONFIRMED"
+        if creative and native
+        else "tiktok-basic-report-metrics/v1.3.zh.md",
         numerator=ratio[1] if ratio else None,
         denominator=ratio[2] if ratio else None,
     )

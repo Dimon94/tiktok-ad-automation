@@ -5286,9 +5286,22 @@ export type MappingInput = {
  * MaterialInstanceResult
  */
 export type MaterialInstanceResult = {
+    /**
+     * Row Kind
+     */
     row_kind?: 'INSTANCE' | 'COMPOSITE' | 'UNMAPPED_CREATIVE';
+    /**
+     * Identity Reason
+     */
     identity_reason?: string | null;
-    field_state_counts?: { [key: string]: { [state: string]: number } };
+    /**
+     * Field State Counts
+     */
+    field_state_counts?: {
+        [key: string]: {
+            [key: string]: number;
+        };
+    };
     /**
      * Key
      */
@@ -5764,7 +5777,7 @@ export type MetricContract = {
     /**
      * Window
      */
-    window: 'NOT_APPLICABLE' | 'TOTAL_CUTOFF_UNKNOWN' | 'CLICK_HOURS' | 'CALENDAR_DAY';
+    window: 'NOT_APPLICABLE' | 'TOTAL_CUTOFF_UNKNOWN' | 'CLICK_HOURS' | 'CALENDAR_DAY' | 'UNCONFIRMED';
     /**
      * Click Hours
      */
@@ -8877,6 +8890,12 @@ export type ReportRow = {
      * Parent Controls
      */
     parent_controls?: Array<ParentAdControl>;
+    /**
+     * Reconciliation Rows
+     */
+    reconciliation_rows?: Array<{
+        [key: string]: unknown;
+    }>;
     /**
      * Evidence Digest
      */

@@ -164,6 +164,33 @@ def complete(base_url, seed, factory, pending):
                                 csvrow["evidence_digest"] == instance["evidence_digest"]
                             )
                             assert csvrow["result_digest"] == report["evidence_digest"]
+                        differences = [
+                            r
+                            for r in rows
+                            if r["row_kind"] == "RECONCILIATION_DIFFERENCE"
+                        ]
+                        assert differences
+                        frozen_differences = {
+                            d["evidence_digest"]: d
+                            for r in page["items"]
+                            for d in r.get("reconciliation_rows", [])
+                        }
+                        for csvrow in differences:
+                            d = frozen_differences[csvrow["evidence_digest"]]
+                            assert json.loads(csvrow["identity"]) == d["key"]
+                            assert (
+                                json.loads(csvrow["observations"]) == d["observations"]
+                            )
+                            if d["status"] == "NOT_COMPARABLE":
+                                assert csvrow["消耗"] == ""
+                        if any(i["row_kind"] == "COMPOSITE" for _, i in expected):
+                            assert {r["row_kind"] for r in rows} == {
+                                "INSTANCE",
+                                "PARENT_CONTROL",
+                                "COMPOSITE",
+                                "UNMAPPED_CREATIVE",
+                                "RECONCILIATION_DIFFERENCE",
+                            }
                         assert (
                             sum(
                                 float(r["消耗"])

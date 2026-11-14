@@ -35,6 +35,12 @@ MATERIAL_RESULT_CONTRACT = {
     "d0_click_hours": None,
     "traffic_scope": "UNCONFIRMED",
     "total_maturity": "UNKNOWN",
+    "metrics": {
+        m.key: semantics_for(
+            m.key, CREATIVE_OBSERVED_CONTRACT, grain="creative"
+        ).model_dump(mode="json")
+        for m in METRIC_CATALOG
+    },
 }
 
 
@@ -50,6 +56,7 @@ def freeze_material_results(session, snapshot, filters):
     )
     from app.modules.reporting.snapshot_members import snapshot_members
 
+    ordinary = []
     after = -1
     while True:
         rows = session.exec(
@@ -86,10 +93,24 @@ def freeze_material_results(session, snapshot, filters):
             session, snapshot=snapshot, filters=filters, reports=reports, facts=facts
         )
         for row, report in zip(rows, reports, strict=True):
+            ordinary.extend(
+                (i.metric_buckets, i.coverage.get("status") != "COMPLETE")
+                for i in report.material_instances
+                if i.row_kind == "INSTANCE"
+            )
             row.frozen_result = report.model_dump(mode="json")
             session.add(row)
         session.flush()
         after = rows[-1].stable_sequence
+    from app.modules.reporting.dimension_query import merge_metric_buckets
+
+    snapshot.summary = snapshot.summary | {
+        "scope": "SELECTED_MATERIALS",
+        "buckets": [
+            v.model_dump(mode="json")
+            for v in merge_metric_buckets(ordinary, strict_denominators=True)
+        ],
+    }
 
 
 def frozen_row(row: QuerySnapshotRow) -> ReportRow:

@@ -5563,3 +5563,11 @@ Root22 relevant checks passed including material browser/Celery/CSV. Corrected l
 在feat/jb33-native-material-m4b、起点cf20640上串行厚化原contract3冻结结果：多creative、精确MID、COMPOSITE/UNMAPPED_CREATIVE、连接歧义、publisher五态与自身观测scope/version/digest；原UI/CSV共源。新增本地additive creative_fact_evidence迁移，旧事实保留NULL证据。真实SDKtransport/原sync与export Workers/PGRedis/浏览器/HTTP/CSV通过，21相关检查绿；creative_reporting既有调度期望失配单列。窄mypy新增0，未宣称全仓绿。详见docs/validation/2026-11-14-jb35-material-identity-evidence.md。等待root阶段接受/全MMF审查，未写tracker/推送/合并/部署；JB36完整指标与对账仍待实施。
 
 - M4b JB35 root阶段接受：候选6454a666，独立核心21 passed、creative_reporting修正M4a旧数量断言后6 passed；32+12有限案例通过。产品调度不改，原软链保留。下一fresh Sol/high推进JB36指标/父Ad对账；M4b整体未放行。
+
+## 2026-11-14 JB36 / M4B-03 本地候选
+
+从root接受的8a743863开始，在指定feat/jb33-native-material-m4b共享树串行实现。素材行/实例启用Decimal完整分母，原冻结owner保存逐指标creative未知合同、独立FULL_PARENT_AD控制和严格逐字段对账；普通实例summary不含特殊/父/差额。原CSV Worker输出最终五类及身份/证据/coverage/digest，原素材Sheet展示ROAS/availability与不可比原因。无新owner、表、开关或平台调用。
+
+新鲜验证：metrics+tracer13 passed（真实browser→HTTP→PG/Redis→原同步/导出Worker→CSV），受影响既有四文件25 passed，tsc+双Vite/Ruff/diff通过。32有界模型和四种破坏模型；四个实际源码探针业务RED→外部备份finally恢复/cmp→PG GREEN。官方creative支持/D0/流量/成熟及生产容量Unknown，合成437107-byte完整payload不作容量承诺。详见 `docs/validation/2026-11-14-jb36-material-metrics-reconciliation.md`。
+
+JB37消费完整contract3/material-instance-result-v1及新增metrics/reconciliation_rows，负责查询原子失败/TTL/重查；JB38消费同一export.frozen_rows，负责幂等/故障/撤权/到期。Linear状态和依赖未改；未push/PR/merge/deploy。MMF仍待root独立Standards/Spec和最终本地集成。

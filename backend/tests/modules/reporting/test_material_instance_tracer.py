@@ -103,8 +103,12 @@ def test_material_result_is_frozen_before_export(session, sync_seed):
         session, context=sync_seed.context, bc_id="bc-a", export_id=export.id
     )
     rows = list(csv.DictReader(io.StringIO(content.decode())))
-    assert [r["row_kind"] for r in rows] == ["INSTANCE", "PARENT_CONTROL"]
-    assert [r["消耗"] for r in rows] == ["40", "100"]
+    assert [r["row_kind"] for r in rows] == [
+        "INSTANCE",
+        "PARENT_CONTROL",
+        "RECONCILIATION_DIFFERENCE",
+    ]
+    assert [r["消耗"] for r in rows] == ["40", "100", ""]
     assert rows[0]["evidence_digest"] == instance.evidence_digest
     assert rows[0]["result_digest"] == page.items[0].evidence_digest
     import json
@@ -216,7 +220,15 @@ def test_material_workspace_sdk_worker_csv(
                         "list": (
                             [
                                 dict(
-                                    creative_row(c, amount, "4"),
+                                    creative_row(
+                                        c,
+                                        amount,
+                                        "1"
+                                        if c == "cr1"
+                                        else "8"
+                                        if c == "cr2"
+                                        else "4",
+                                    ),
                                     dimensions={
                                         "ad_id": c,
                                         "stat_time_day": str(live_day),

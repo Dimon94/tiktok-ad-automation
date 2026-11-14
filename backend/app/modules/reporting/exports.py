@@ -330,8 +330,8 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         for bucket in buckets:
             bucket = bucket or {}
             values = dict(bucket.get("values") or {})
-            currency = bucket.get("currency")
-            timezone = bucket.get("timezone")
+            currency = bucket.get("currency") or raw.get("currency")
+            timezone = bucket.get("timezone") or raw.get("timezone")
             data: dict[str, Any] = {
                 "row_key": csv_safe_text(str(raw.get("row_key", ""))),
                 "name": csv_safe_text(
@@ -376,7 +376,18 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                     "observations": raw.get("observations", []),
                     "field_state_counts": raw.get("field_state_counts", {}),
                     "identity_reason": raw.get("identity_reason"),
-                    "row_coverage": coverage,
+                    "row_coverage": coverage
+                    | {
+                        k: raw[k]
+                        for k in (
+                            "scope",
+                            "status",
+                            "reason",
+                            "parent_digest",
+                            "metric_reasons",
+                        )
+                        if k in raw
+                    },
                 }
                 for field, cell in metadata.items():
                     data[field] = csv_safe_text(
@@ -464,11 +475,10 @@ def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, 
         yield from export.frozen_rows
         return
     seen_parents = set()
+    seen_reconciliation = set()
     for row in export.frozen_rows:
         common = {"display": row["display"], "result_digest": row["evidence_digest"]}
         instances = row.get("material_instances", [])
-        if not instances:
-            yield row | {"row_kind": "SUMMARY"}
         for instance in instances:
             yield (
                 common
@@ -487,6 +497,11 @@ def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, 
                     | control
                     | {"row_key": identity, "row_kind": "PARENT_CONTROL"}
                 )
+        for difference in row.get("reconciliation_rows", []):
+            identity = difference["evidence_digest"]
+            if identity not in seen_reconciliation:
+                seen_reconciliation.add(identity)
+                yield common | difference | {"row_key": identity}
 
 
 def generate_export(session: Session, export: ReportExport) -> None:

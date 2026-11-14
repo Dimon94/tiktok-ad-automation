@@ -463,7 +463,8 @@ function CreativeFacts({ rows }: { rows: ReportRow[] }) {
           <div className="font-medium">{row.display?.name}</div>
           {row.metric_buckets?.map((bucket) => (
             <div key={bucket.currency}>
-              {bucket.currency} · 消耗 {bucket.values?.spend ?? "未知"} · 收入{" "}
+              {bucket.currency} · {bucket.timezone} · 消耗{" "}
+              {bucket.values?.spend ?? "未知"} · 收入{" "}
               {bucket.values?.revenue_total ?? "未知"}
               {bucket.availability?.spend === "PARTIAL" && (
                 <Badge variant="outline" className="ml-2">
@@ -553,7 +554,8 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
             <p key={`${bucket.currency}:${bucket.timezone}`}>
               {bucket.currency} · {bucket.timezone} · 消耗{" "}
               {bucket.values?.spend ?? "未知"} · 收入{" "}
-              {bucket.values?.revenue_total ?? "未知"}
+              {bucket.values?.revenue_total ?? "未知"} · ROAS{" "}
+              {bucket.values?.roas_total ?? "未知"}（{bucket.availability?.roas_total}）
             </p>
           ))}
           <p className="text-muted-foreground">
@@ -609,12 +611,14 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
             父广告对照 · {control.key.parent_ad_id}
           </h3>
           <p className="text-muted-foreground">
-            完整父广告范围；不计入素材合计，不计算差额。
+            FULL_PARENT_AD 完整父广告范围；不计入素材合计。
           </p>
           {control.metric_buckets.map((bucket) => (
             <p key={`${bucket.currency}:${bucket.timezone}`}>
-              {bucket.currency} · 消耗 {bucket.values?.spend ?? "未知"} · 收入{" "}
-              {bucket.values?.revenue_total ?? "未知"}
+              {bucket.currency} · {bucket.timezone} · 消耗{" "}
+              {bucket.values?.spend ?? "未知"} · 收入{" "}
+              {bucket.values?.revenue_total ?? "未知"} · ROAS{" "}
+              {bucket.values?.roas_total ?? "未知"}（{bucket.availability?.roas_total}）
             </p>
           ))}
           <details>
@@ -622,6 +626,17 @@ function MaterialInstanceEvidence({ row }: { row: ReportRow }) {
             <pre className="whitespace-pre-wrap break-all text-xs">
               {JSON.stringify(control, null, 2)}
             </pre>
+          </details>
+        </section>
+      ))}
+      {(row.reconciliation_rows ?? []).map((difference, index) => (
+        <section key={String(difference.evidence_digest ?? index)} className="rounded-md border p-3 text-sm">
+          <p>父级对账：{String(difference.status)} · {String(difference.reason)}</p>
+          <p className="text-xs text-muted-foreground">差额不计入素材合计；Native Growth 口径未确认时不计算收益差额。</p>
+          <p>{String(difference.currency ?? "")} · {String(difference.timezone ?? "")} · 消耗差额 {String((difference.metric_buckets as { values?: Record<string, string | null> }[] | undefined)?.[0]?.values?.spend ?? "未知")} · 收益差额：口径未确认</p>
+          <details>
+            <summary className="cursor-pointer">查看差额、逐字段原因与来源</summary>
+            <pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(difference, null, 2)}</pre>
           </details>
         </section>
       ))}
