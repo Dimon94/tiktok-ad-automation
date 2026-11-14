@@ -66,3 +66,14 @@
 JB28 沿用 LEVELS/PARENT_KINDS/DAY_KINDS、Parent/ad 独立事实、ReportSyncState active_contract/publication_digest/publication_version/observed_at。直接 dash/empty 权威；平台比率仍 Decimal 字符串，money 只 Numeric，未请求比率无 ABSENT。
 
 JB29 消费 query dependency 的三层证据变化和 display.report_refresh_status/report_layer_status（最后成功/尝试/原因）；继续完成 frozen metrics、旧 snapshot/CSV 合同。本票未启动这些工作。整 M4a 正式两轴审查、root 验收、合 main/收票、生产环境及真实平台均未完成。
+
+
+## Root 阶段验收
+
+root核对候选b17b9b36b208514ee4028b5871cb980ff2244e71及其相对7941c176的diff：同观测payload裁决在既有账户锁内；单页快路径已移到分页/duplicate校验之后；重试失败保留旧事实并更新本层状态；三层证据/状态加入query dependency。核对Celery宿主使用fork后dispose继承DB连接和专属队列，未把函数调用冒充独立进程。
+
+root亲跑：`python3 /tmp/tkada-native-series-20261112/m4a-implementation/run-jb26.py python -m pytest backend/tests/modules/reporting/test_native_publication.py backend/tests/modules/reporting/test_native_levels.py backend/tests/modules/reporting/test_publish_watermark.py -q --tb=short`，84 passed/32.35s，17条既有弃用warning。包含真实主Seam与独立Celery投递。
+
+另亲跑publication.py正常和broken-fence/watermark/duplicate/atomic四变体：正常PASS、四变体均预期AssertionError；日志位于外仓jb27-root-model-*.log。该模型仍只有文内有界分量假设，不是整个系统证明。未重复未修改的五组源码探针，继承候选的精确源码证据。root未修改本票产品代码，未重跑匹配前端源码的build，未声称mypy或全仓全绿。
+
+JB-27可作为后续集成基线；正式独立两轴审查、JB28筛选计算、JB29快照和JB30 CSV及整个M4a验收仍未完成。前票在Linear保持InProgress直到整体合入，不移除阻塞关系。无push/PR/部署/生产变更。
