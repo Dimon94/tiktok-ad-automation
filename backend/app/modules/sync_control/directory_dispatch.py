@@ -192,6 +192,9 @@ def _dispatch_directories_due(
     background_blocked = False
     lock_retries = 0
     periodic_reviews: dict[UUID, int] = {}
+    # 每次调用仅保留各租户/接口未获选的两个类候选；模式切换即替换，
+    # 最多64租户×6接口。这里只复用发现结果，正式领取仍做完整短锁复验。
+    discoveries: dict[tuple[UUID, str], tuple[bool, str, EndpointDiscovery]] = {}
     # 共享池拒绝后台候选后，额外一轮直接SQL筛选独立live/publisher；
     # 不能逐条跳过历史积压，也不能让最老后台头遮住有空闲执行池的候选。
     # 领取失败可继续跳过本轮锁冲突；搜索次数有界，真实派发上限仍是claim_limit。
@@ -229,19 +232,30 @@ def _dispatch_directories_due(
                 if periodic_reviews.get(tenant_id, 0) >= claim_limit + 1:
                     break  # 多接口仍共享本租户维护上限，不能扩大事务持锁扫描。
                 policy_before = budgets.peek_directory_policy(tenant_id, endpoint)
-                candidates, scan_positions, completion_id, policy_after = (
-                    _discover_endpoint(
-                        session,
-                        redis,
-                        tenant_id=tenant_id,
-                        endpoint=endpoint,
-                        now=now,
-                        independent_only=background_blocked,
-                        policy=policy_before,
-                        excluded=unavailable_run_ids,
-                        phase=phase,
-                    )
+                saved = discoveries.get((tenant_id, endpoint))
+                previous = (
+                    saved[2]
+                    if saved and saved[:2] == (background_blocked, phase)
+                    else None
                 )
+                discovery = _discover_endpoint(
+                    session,
+                    redis,
+                    tenant_id=tenant_id,
+                    endpoint=endpoint,
+                    now=now,
+                    independent_only=background_blocked,
+                    policy=policy_before,
+                    excluded=unavailable_run_ids,
+                    phase=phase,
+                    previous=previous,
+                )
+                discoveries[tenant_id, endpoint] = (
+                    background_blocked,
+                    phase,
+                    discovery,
+                )
+                candidates, scan_positions, completion_id, policy_after = discovery
                 if not candidates and policy_after == policy_before:
                     continue
                 cursor = budgets.acquire(tenant_id, endpoint)
@@ -250,19 +264,19 @@ def _dispatch_directories_due(
                 policy = budgets.directory_policy(tenant_id, endpoint)
                 if policy != policy_before:
                     # 发现阶段不持锁；只按锁内最新机会状态重新发现。
-                    candidates, scan_positions, completion_id, policy_after = (
-                        _discover_endpoint(
-                            session,
-                            redis,
-                            tenant_id=tenant_id,
-                            endpoint=endpoint,
-                            now=now,
-                            independent_only=background_blocked,
-                            policy=policy,
-                            excluded=unavailable_run_ids,
-                            phase=phase,
-                        )
+                    discovery = _discover_endpoint(
+                        session,
+                        redis,
+                        tenant_id=tenant_id,
+                        endpoint=endpoint,
+                        now=now,
+                        independent_only=background_blocked,
+                        policy=policy,
+                        excluded=unavailable_run_ids,
+                        phase=phase,
+                        previous=discovery,
                     )
+                    candidates, scan_positions, completion_id, policy_after = discovery
                 policy.clear()
                 policy.update(policy_after)
                 if not candidates:
@@ -284,6 +298,22 @@ def _dispatch_directories_due(
                 )
                 head, run = next(
                     row for row in eligible if row[0].work_class == chosen_class
+                )
+                # 获选候选无论领取成功、锁跳过或准入拒绝，都回到原发现路径；
+                # 仅未获选类保留本轮扫描结果和未消费的位置。
+                peers = [row for row in candidates if row[0].work_class != chosen_class]
+                discoveries[tenant_id, endpoint] = (
+                    background_blocked,
+                    phase,
+                    discovery._replace(
+                        candidates=peers,
+                        positions={
+                            k: v for k, v in scan_positions.items() if k != chosen_class
+                        },
+                        completion_id=completion_id
+                        if any(row[1].id == completion_id for row in peers)
+                        else None,
+                    ),
                 )
                 # 只让公平获选的头消费发现位置，未获选类保留机会。
                 # 领取中的SQL回滚仍越过本次尝试；预期后台槽拒绝则在下方归还位置。
@@ -487,6 +517,7 @@ def _discover_endpoint(
     policy: dict[str, float],
     excluded: set[UUID],
     phase: Literal["all", "read", "publish"] = "all",
+    previous: EndpointDiscovery | None = None,
 ) -> EndpointDiscovery:
     from copy import deepcopy
 
@@ -495,9 +526,34 @@ def _discover_endpoint(
     positions: dict[str, ScanPosition] = {}
     completion_id = None
     for work_class in ("realtime", "directory"):
-        row = None
+        # realtime不消费完成机会；directory须保证turn、账户轮转及扫描状态未变。
+        # last_granted_at只决定接口顺序，不能使未获选类重新扫描整段积压。
+        reusable = previous is not None and (
+            work_class == "realtime"
+            or {k: v for k, v in previous.policy.items() if k != "last_granted_at"}
+            == {k: v for k, v in policy.items() if k != "last_granted_at"}
+        )
+        row = (
+            next(
+                (
+                    candidate
+                    for candidate in previous.candidates
+                    if candidate[0].work_class == work_class
+                    and candidate[1].id not in excluded
+                ),
+                None,
+            )
+            if reusable and previous is not None
+            else None
+        )
+        if row is not None and previous is not None:
+            if work_class in previous.positions:
+                positions[work_class] = previous.positions[work_class]
+            if row[1].id == previous.completion_id:
+                completion_id = row[1].id
         if (
-            work_class == "directory"
+            row is None
+            and work_class == "directory"
             and not independent_only
             and phase != "publish"
             and completion_opportunity(policy_after)
@@ -527,7 +583,10 @@ def _discover_endpoint(
                 phase=phase,
             )
         if row is not None:
-            if row[0].physical_endpoint != directory_endpoint(row[1]):
+            if (
+                row[0].physical_endpoint != endpoint
+                or directory_endpoint(row[1]) != endpoint
+            ):
                 excluded.add(row[1].id)
                 continue
             candidates.append(row)
