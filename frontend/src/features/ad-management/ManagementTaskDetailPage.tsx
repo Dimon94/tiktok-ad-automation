@@ -216,7 +216,8 @@ export function ManagementTaskDetailPage() {
             {restorePreview.items?.map((item, index) => (
               <div key={index} className="space-y-1 rounded border p-3" data-testid="restore-budget-item">
                 <BudgetFacts item={item} />
-                <p>{receiptLabel(item.execution_result)}</p>
+                {item.restore_observation && <p>原任务：{item.restore_observation.source_task_id} · 当前比例：{item.restore_observation.value ?? "缺失"} · 观察时间：{item.restore_observation.observed_at ? displayTime(item.restore_observation.observed_at) : "缺失"} · 连接：{item.restore_observation.source_connection_id ?? "缺失"}</p>}
+                <p>{receiptLabel(item.execution_result)}{item.reason ? ` · ${item.reason}` : ""}</p>
               </div>
             ))}
             <Button

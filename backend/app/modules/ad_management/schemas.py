@@ -185,6 +185,13 @@ class RoasFactsPublic(BaseModel):
     affected_refs: tuple[EntityRef, ...]
 
 
+class RestoreObservationPublic(BaseModel):
+    source_task_id: UUID
+    value: str | None
+    observed_at: datetime | None
+    source_connection_id: UUID | None
+
+
 class ManagementItemPublic(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -197,6 +204,7 @@ class ManagementItemPublic(BaseModel):
     final_value: Decimal | str | None = None
     budget_facts: BudgetFactsPublic | None = None
     roas_facts: RoasFactsPublic | None = None
+    restore_observation: RestoreObservationPublic | None = None
     reason: str | None = None
     execution_result: Literal[
         "PENDING",

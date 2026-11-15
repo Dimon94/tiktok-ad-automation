@@ -5031,6 +5031,7 @@ export type ManagementItemPublic = {
      */
     final_value?: string | string | null;
     budget_facts?: BudgetFactsPublic | null;
+    restore_observation?: { source_task_id: string; value: string | null; observed_at: string | null; source_connection_id: string | null } | null;
     roas_facts?: {
         budget_strategy: 'CBO' | 'ABO';
         mode: string;

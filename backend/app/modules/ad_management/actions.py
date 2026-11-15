@@ -647,9 +647,28 @@ def prepare_restore(
     )
     session.add(preview)
     session.flush()
+    # 一次读取各来源的最后实际 attempt，每个成员保留自己的发送时间。
+    source_attempts = {
+        a.task_item_id: a
+        for a in session.exec(
+            select(ManagementRequestAttempt)
+            .where(
+                ManagementRequestAttempt.tenant_id == task.tenant_id,
+                col(ManagementRequestAttempt.task_item_id).in_(
+                    [i.id for i in old_items]
+                ),
+            )
+            .distinct(col(ManagementRequestAttempt.task_item_id))
+            .order_by(
+                col(ManagementRequestAttempt.task_item_id),
+                col(ManagementRequestAttempt.attempt).desc(),
+            )
+        ).all()
+    }
     public_items: list[ManagementItemPublic] = []
     for position, old in enumerate(old_items):
         conflict = False
+        conflict_reason = "configuration_conflict"
         already_target = False
         ref = old.ref
         current = session.get(
@@ -679,35 +698,67 @@ def prepare_restore(
         else:
             key = "roas_bid" if operation == "update_roas" else "budget"
             value = (current.configuration or {}).get(key)
-            if not same_management_value(operation, value, old.final_value):
+            if operation == "update_roas" and same_management_value(
+                operation, value, old.original_value
+            ):
+                already_target = True
+            elif not same_management_value(operation, value, old.final_value):
                 conflict = True
         capability = dict(old.capability)
-        if operation == "update_budget":
+        if operation in {"update_budget", "update_roas"}:
             # 复用发送前 owner 校验，恢复仍是新意图，原 UNKNOWN 回执保持不变。
-            latest = session.exec(
-                select(ManagementRequestAttempt)
-                .where(
-                    ManagementRequestAttempt.tenant_id == old.tenant_id,
-                    ManagementRequestAttempt.task_item_id == old.id,
-                )
-                .order_by(col(ManagementRequestAttempt.attempt).desc())
-                .limit(1)
-            ).first()
-            if latest is None or old.execution_result not in {"ACCEPTED", "UNKNOWN"}:
+            latest = source_attempts.get(old.id)
+            if (
+                latest is None
+                or latest.outcome not in {"ACCEPTED", "UNKNOWN"}
+                or old.execution_result not in {"ACCEPTED", "UNKNOWN"}
+            ):
                 conflict = True
             else:
                 capability["restore_after"] = latest.request_at.isoformat()
+                if operation == "update_roas":
+                    # 冻结独立反向意图的每个成员；不从第一项推断兄弟的原值或受理。
+                    facts = capability.get("roas_facts") or {}
+                    members = [
+                        i for i in old_items if i.capability.get("roas_facts") == facts
+                    ]
+                    if facts.get("budget_strategy") == "CBO":
+                        capability["restore_roas_members"] = [
+                            {
+                                "ref": i.ref,
+                                "original_value": i.original_value,
+                                "final_value": i.final_value,
+                                "eligible": i.execution_result
+                                in {"ACCEPTED", "UNKNOWN"},
+                                "sent": i.id in source_attempts
+                                and source_attempts[i.id].outcome
+                                in {"ACCEPTED", "UNKNOWN"},
+                                "request_at": source_attempts[
+                                    i.id
+                                ].request_at.isoformat()
+                                if i.id in source_attempts
+                                else None,
+                            }
+                            for i in members
+                        ]
                 candidate = old.model_copy(
-                    update={"original_value": old.final_value, "capability": capability}
+                    update={
+                        "original_value": old.original_value
+                        if already_target
+                        else old.final_value,
+                        "capability": capability,
+                    }
                 )
                 try:
                     _same_frozen_value(session, candidate, _item_public(old).ref)
-                except DomainError:
+                except DomainError as error:
                     conflict = True
+                    conflict_reason = error.code
+        if operation == "update_roas" and not capability.get("roas_facts"):
+            conflict = True
+            conflict_reason = "roas_restore_evidence_missing"
         reason = (
-            "configuration_conflict"
-            if conflict
-            else ("no_change" if already_target else None)
+            conflict_reason if conflict else ("no_change" if already_target else None)
         )
         execution_result = (
             "CONFLICT" if conflict else ("NO_CHANGE" if already_target else "PENDING")
@@ -732,6 +783,19 @@ def prepare_restore(
                 original_value=old.final_value,
                 final_value=old.original_value,
                 budget_facts=capability.get("budget_facts"),
+                roas_facts=capability.get("roas_facts"),
+                restore_observation={
+                    "source_task_id": task.id,
+                    "value": str(current.configuration.get("roas_bid"))
+                    if current and current.configuration.get("roas_bid") is not None
+                    else None,
+                    "observed_at": current.observed_at if current else None,
+                    "source_connection_id": current.source_connection_id
+                    if current
+                    else None,
+                }
+                if operation == "update_roas"
+                else None,
                 reason=reason,
                 execution_result=cast(Any, execution_result),
             )

@@ -330,6 +330,64 @@ def same_management_value(operation: str, actual: Any, expected: Any) -> bool:
     return str(actual) == str(expected)
 
 
+def _verify_roas_restore_scope(session, item, ref):
+    """CBO 反向写必须覆盖同一完整成员集合；任何兄弟冲突都禁止部分恢复。"""
+    capability = item.capability
+    facts = capability.get("roas_facts") or {}
+    if facts.get("budget_strategy") != "CBO" or not capability.get("restore_after"):
+        return
+    members = capability.get("restore_roas_members", [])
+    rows = session.exec(
+        select(AdObject).where(
+            AdObject.tenant_id == ref.tenant_id,
+            AdObject.advertiser_id == ref.advertiser_id,
+            AdObject.kind == "adgroup",
+            AdObject.parent_kind == "campaign",
+            AdObject.parent_remote_id == facts["campaign_ref"]["remote_id"],
+        )
+    ).all()
+    expected = {r["remote_id"] for r in facts["affected_refs"]}
+    if (
+        not expected
+        or {r.remote_id for r in rows} != expected
+        or {m["ref"]["remote_id"] for m in members} != expected
+        or len(members) != len(expected)
+    ):
+        raise DomainError(
+            "roas_restore_scope_conflict", "CBO 恢复影响成员已变化或不完整"
+        )
+    directions = set()
+    for member in members:
+        row = next(r for r in rows if r.remote_id == member["ref"]["remote_id"])
+        value = (row.configuration or {}).get("roas_bid")
+        if (
+            not member["eligible"]
+            or not member["sent"]
+            or not same_management_value(
+                "update_roas", member["original_value"], members[0]["original_value"]
+            )
+            or not same_management_value(
+                "update_roas", member["final_value"], members[0]["final_value"]
+            )
+            or row.source_channel != capability.get("source_channel")
+            or str(row.source_connection_id)
+            != str(capability.get("source_connection_id"))
+            or row.observed_at <= datetime.fromisoformat(member["request_at"])
+            or row.configuration.get("deep_bid_type") != facts["mode"]
+        ):
+            raise DomainError("roas_restore_member_conflict", "CBO 恢复成员证据无效")
+        if same_management_value("update_roas", value, member["final_value"]):
+            directions.add("target")
+        elif same_management_value("update_roas", value, member["original_value"]):
+            directions.add("original")
+        else:
+            raise DomainError(
+                "roas_restore_member_conflict", "CBO 恢复成员当前比例冲突"
+            )
+    if len(directions) != 1:
+        raise DomainError("roas_restore_member_conflict", "CBO 恢复成员当前比例不一致")
+
+
 def _same_frozen_value(
     session: Session, item: ManagementTaskItem, ref: EntityRef
 ) -> None:
@@ -393,12 +451,14 @@ def _same_frozen_value(
             expected_connection
         ):
             raise DomainError("management_source_conflict", "目录对象来源连接已变化")
-        # 恢复预算只消费原写请求之后的新鲜目录；发送前再次核验同一证据边界。
+        # 恢复只消费原写请求之后的新鲜目录；发送前再次核验同一证据边界。
         restore_after = capability.get("restore_after")
         if restore_after and row.observed_at <= datetime.fromisoformat(restore_after):
             raise DomainError(
-                "management_observation_conflict", "恢复预算缺少发送后的目录证据"
+                "management_observation_conflict", "恢复缺少发送后的目录证据"
             )
+        if restore_after and capability.get("operation") == "update_roas":
+            _verify_roas_restore_scope(session, item, ref)
         facts = capability.get("roas_facts")
         if facts:
             parent = session.get(
