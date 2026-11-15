@@ -988,3 +988,48 @@ test("原生三层直接启停与实际目录回读 @native-management-live", as
   await openObject()
   await expect(page.getByRole("dialog").getByTitle(final, { exact: true }).first()).toBeVisible()
 })
+
+test("原生 UNKNOWN 只读核查与安全恢复预览 @native-recovery-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 M5a 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: "广告", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  await page.getByRole("button", { name: "object-ad-native", exact: true }).click()
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("dialog").getByRole("button", { name: "暂停", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByRole("cell", { name: "结果待核查", exact: true }).first()).toBeVisible()
+  const queued = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith(`/ad-management-tasks/${task}/reconcile`))
+  await page.getByRole("button", { name: "核查本地状态", exact: true }).click()
+  expect((await queued).status()).toBe(200)
+  expect((await page.request.post(`/api/test-native-management/${task}/reconcile`)).ok()).toBeTruthy()
+  await page.reload()
+  const observation = process.env.NATIVE_RECOVERY_OBSERVATION!
+  const observedLabel = observation === "match" ? "观察值符合目标，受理仍未知" : observation === "different" ? "观察值与目标不同，受理仍未知" : "核查未取得新鲜证据，需人工检查"
+  await expect(page.getByText(observedLabel, { exact: true }).first()).toBeVisible()
+  const item = (await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]
+  expect(item).toMatchObject({ execution_result: "UNKNOWN", original_value: "ENABLE", final_value: "DISABLE" })
+  expect(item.attempts[0].request_id).toBeNull()
+  expect((await page.request.post(`/api/test-native-management/${task}/publish`)).ok()).toBeTruthy()
+  await page.getByRole("button", { name: "生成恢复预览", exact: true }).click()
+  await expect(page.getByText("恢复预览", { exact: true })).toBeVisible()
+  const submitted = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-tasks"))
+  await page.getByRole("button", { name: "提交恢复任务", exact: true }).click()
+  const restore = (await (await submitted).json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${restore}/restore`)).ok()).toBeTruthy()
+  const restored = (await (await page.request.get(`${base}/ad-management-tasks/${restore}`)).json()).items[0]
+  expect(restored.execution_result).toBe("ACCEPTED")
+  expect(restored.final_value).toBe("ENABLE")
+  expect(restored.observation_state).toBe("ACCEPTED")
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]).toEqual(item)
+})

@@ -550,18 +550,6 @@ def test_native_status_workspace(
     native_status_env, redis_client, monkeypatch, kind, final
 ):
     """同一真实详情操作直达 Worker，再由工作区和任务页读取结果。"""
-    import os
-    import socket
-    import subprocess
-    import threading
-    from pathlib import Path
-
-    import uvicorn
-    from fastapi.routing import APIRoute
-
-    from app.main import app
-    from app.models import User
-
     env = native_status_env
     original = "ENABLE" if final == "DISABLE" else "DISABLE"
     with Session(engine) as db, db.begin():
@@ -576,12 +564,7 @@ def test_native_status_workspace(
         )
         row.operation_status = original
         db.add(row)
-        actor = db.get(User, env.context.actor_id)
-        db.expunge(actor)
     calls, _ = install_wire(monkeypatch, env, kind, final)
-    previous = app.dependency_overrides.copy()
-    app.dependency_overrides[get_db] = env.app.dependency_overrides[get_db]
-    app.dependency_overrides[get_current_user] = lambda: actor
 
     def advance(task_id: str, phase: str):
         if phase == "write":
@@ -591,6 +574,38 @@ def test_native_status_workspace(
             drive_management(env, task_id)
         return {"advanced": True}
 
+    run_native_workspace(env, kind, final, advance)
+    assert len([c for c in calls if c[0] == "POST"]) == 1
+    assert any(c[0] == "GET" for c in calls)
+
+
+def run_native_workspace(
+    env,
+    kind,
+    final,
+    advance,
+    *,
+    grep="@native-management-live",
+    extra_env=None,
+):
+    import os
+    import socket
+    import subprocess
+    import threading
+    from pathlib import Path
+
+    import uvicorn
+    from fastapi.routing import APIRoute
+
+    from app.main import app
+    from app.models import User
+
+    with Session(engine) as db:
+        actor = db.get(User, env.context.actor_id)
+        db.expunge(actor)
+    previous = app.dependency_overrides.copy()
+    app.dependency_overrides[get_db] = env.app.dependency_overrides[get_db]
+    app.dependency_overrides[get_current_user] = lambda: actor
     driver = APIRoute(
         "/api/test-native-management/{task_id}/{phase}", advance, methods=["POST"]
     )
@@ -636,7 +651,7 @@ def test_native_status_workspace(
                 "--project=workspace",
                 "tests/ads-detail.spec.ts",
                 "-g",
-                "@native-management-live",
+                grep,
                 "--workers=1",
                 "--reporter=line",
             ],
@@ -649,6 +664,7 @@ def test_native_status_workspace(
                 "NATIVE_MANAGEMENT_BC": env.bc.bc_id,
                 "NATIVE_MANAGEMENT_KIND": kind,
                 "NATIVE_MANAGEMENT_FINAL": final,
+                **(extra_env or {}),
             },
             capture_output=True,
             text=True,
@@ -656,8 +672,6 @@ def test_native_status_workspace(
         )
         assert not cache_errors, cache_errors
         assert result.returncode == 0, result.stdout + result.stderr
-        assert len([c for c in calls if c[0] == "POST"]) == 1
-        assert any(c[0] == "GET" for c in calls)
     finally:
         stop_cache.set()
         cache_thread.join(timeout=10)

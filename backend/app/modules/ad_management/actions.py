@@ -646,7 +646,7 @@ def prepare_restore(
     public_items: list[ManagementItemPublic] = []
     for position, old in enumerate(old_items):
         conflict = False
-        already_disabled = False
+        already_target = False
         ref = old.ref
         current = session.get(
             AdObject,
@@ -664,8 +664,12 @@ def prepare_restore(
             status = current.operation_status
             if status is None:
                 conflict = True
-            elif status == "DISABLE":
-                already_disabled = True
+            # 恢复目标来自冻结原值，启用和暂停必须对称；UNKNOWN 也不盲重放。
+            elif (
+                old.original_value in {"ENABLE", "DISABLE"}
+                and status == old.original_value
+            ):
+                already_target = True
             elif str(status) != str(old.final_value):
                 conflict = True
         else:
@@ -676,10 +680,10 @@ def prepare_restore(
         reason = (
             "configuration_conflict"
             if conflict
-            else ("already_disabled" if already_disabled else None)
+            else ("no_change" if already_target else None)
         )
         execution_result = (
-            "CONFLICT" if conflict else ("NO_CHANGE" if already_disabled else "PENDING")
+            "CONFLICT" if conflict else ("NO_CHANGE" if already_target else "PENDING")
         )
         session.add(
             ManagementPreviewItem(
