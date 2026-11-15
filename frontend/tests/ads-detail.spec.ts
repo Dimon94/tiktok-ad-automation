@@ -944,3 +944,47 @@ test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
       .every((url) => !url.includes("snapshot_id")),
   ).toBe(true)
 })
+
+if (process.env.NATIVE_MANAGEMENT_TENANT) test.use({ channel: "chrome" })
+
+test("原生三层直接启停与实际目录回读 @native-management-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 M5a 隔离数据库 runner 启动")
+  test.setTimeout(90000)
+  page.setDefaultTimeout(15000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const final = process.env.NATIVE_MANAGEMENT_FINAL!
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  const base = `/api/tenants/${tenant}`
+  page.on("response", r => { if (r.url().includes("/api/") && r.status() >= 400) void r.text().then(body => console.log("HTTP failure", r.status(), r.url(), body)) })
+  async function openObject() {
+    await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+    await page.getByRole("tab", { name: { campaign: "系列", adgroup: "广告组", ad: "广告" }[kind]!, exact: true }).click()
+    await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+    await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+    await page.getByRole("button", { name: new RegExp(`^object-${kind}-native$|^native observed$`) }).first().click()
+
+  }
+  await openObject()
+  const response = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("dialog").getByRole("button", { name: final === "ENABLE" ? "启用" : "暂停", exact: true }).click()
+  const accepted = await response
+  expect(accepted.status()).toBe(202)
+  const task = (await accepted.json()).task_id
+  const sentBody = accepted.request().postDataJSON()
+  expect(sentBody.mutation).toEqual({ field: "status", mode: "set", value: final })
+  expect((await page.request.post(`${base}/ad-management-requests`, { data: sentBody })).status()).toBe(202)
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  const detailUrl = `${base}/ads/${kind}/${kind}-native?bc_id=${bc}&advertiser_id=management-race-account`
+  expect((await (await page.request.get(detailUrl)).json()).statuses.operation).toBe(final === "ENABLE" ? "DISABLE" : "ENABLE")
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByRole("cell", { name: "平台已接收", exact: true }).first()).toBeVisible()
+  expect((await page.request.post(`/api/test-native-management/${task}/read`)).ok()).toBeTruthy()
+  expect((await (await page.request.get(detailUrl)).json()).statuses.operation).toBe(final)
+  const completed = await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()
+  expect(completed.status).toBe("SUCCEEDED")
+  expect(completed.items[0]).toMatchObject({ original_value: final === "ENABLE" ? "DISABLE" : "ENABLE", final_value: final, execution_result: "ACCEPTED", observation_state: "ACCEPTED" })
+  await openObject()
+  await expect(page.getByRole("dialog").getByTitle(final, { exact: true }).first()).toBeVisible()
+})

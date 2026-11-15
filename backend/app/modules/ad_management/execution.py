@@ -142,8 +142,12 @@ def _public(item: ManagementTaskItem) -> ManagementItemPublic:
 
     original: Decimal | str | None
     final: Decimal | str | None = item.final_value
-    if (item.capability or {}).get("operation") == "rename":
-        # 改名的原值与最终值都是系列名称，原样展示；纯数字名称也不能被转成数值。
+    if (item.capability or {}).get("operation") in {
+        "rename",
+        "set_status",
+        "set_material_status",
+    }:
+        # 名称和启停原值是文本事实，不能因数值转换变成空值。
         original = item.original_value
     else:
         original = decimal(item.original_value)
@@ -491,6 +495,8 @@ def _update_task(session: Session, task_id: UUID, tenant_id: UUID) -> None:
         task.status = "RUNNING"
     elif "UNKNOWN" in statuses:
         task.status = "NEEDS_REVIEW"
+    elif counts["refresh_pending"]:
+        task.status = "RUNNING"
     elif statuses and statuses <= {"ACCEPTED", "NO_CHANGE"}:
         task.status = "SUCCEEDED"
     elif statuses:
@@ -639,7 +645,12 @@ def _persist_outcome(
         item.reason = response.get("reason")
         item.delivery_status = "DELIVERED" if outcome == "ACCEPTED" else outcome
         item.observation_state = (
-            "ACCEPTED"
+            (
+                "REFRESH_PENDING"
+                if settings.ADS_SYNC_ENABLED
+                and (item.capability or {}).get("operation") == "set_status"
+                else "ACCEPTED"
+            )
             if outcome == "ACCEPTED"
             else ("NEEDS_REVIEW" if outcome == "UNKNOWN" else None)
         )
@@ -704,6 +715,25 @@ def _refresh_many_after_commit(
         )
 
 
+def _status_observed(session: Session, item: ManagementTaskItem) -> bool:
+    """启停回读只认发送后的同连接目录事实，不把排队或平台回执当观察。"""
+    ref = _ref(item.ref)
+    row = session.get(
+        AdObject, (ref.tenant_id, ref.advertiser_id, ref.kind, ref.remote_id)
+    )
+    task = session.get(ManagementTask, item.task_id)
+    attempts = _attempts(session, item)
+    return bool(
+        row is not None
+        and task is not None
+        and attempts
+        and row.observed_at > attempts[-1].request_at
+        and str(row.source_connection_id) == task.route["connection_id"]
+        and row.source_channel == task.route["channel"]
+        and row.operation_status == item.final_value
+    )
+
+
 def _set_refresh_state(
     database_engine: Engine,
     item_id: UUID,
@@ -716,22 +746,40 @@ def _set_refresh_state(
         item = _locked_item(session, item_id)
         if item is None or item.execution_result != "ACCEPTED":
             return
+        refresh_failed = pending
+        if (
+            not pending
+            and settings.ADS_SYNC_ENABLED
+            and (item.capability or {}).get("operation") == "set_status"
+        ):
+            pending = not _status_observed(session, item)
         item.observation_state = "REFRESH_PENDING" if pending else "ACCEPTED"
         if pending:
-            item.reason = error or "targeted_refresh_failed"
+            item.reason = error or (
+                "targeted_refresh_failed" if refresh_failed else None
+            )
             task = session.get(ManagementTask, item.task_id)
             if task is not None:
-                enqueue_after_commit(
-                    session,
-                    context=TenantContext(
-                        tenant_id=task.tenant_id,
-                        actor_id=task.actor_id,
-                        role="operator",
-                    ),
-                    task_name="ad_management.execute",
-                    task_key=f"ad_management.refresh:{item.id}:{uuid4()}",
-                    payload={"task_id": str(task.id), "generation": 1},
-                )
+                from app.modules.ad_management.recovery_dispatch import schedule_wakeup
+
+                if refresh_failed:
+                    enqueue_after_commit(
+                        session,
+                        context=TenantContext(
+                            task.tenant_id, task.actor_id, "operator"
+                        ),
+                        task_name="ad_management.execute",
+                        task_key=f"ad_management.refresh:{item.id}:{uuid4()}",
+                        payload={"task_id": str(task.id), "generation": 1},
+                    )
+                else:
+                    schedule_wakeup(
+                        session,
+                        task,
+                        _now() + timedelta(seconds=30),
+                        kind="refresh",
+                        quantum=30,
+                    )
         elif item.reason == "targeted_refresh_failed":
             item.reason = None
         session.add(item)
@@ -752,7 +800,13 @@ def _retry_targeted_refresh(database_engine: Engine, item_id: UUID) -> None:
             tenant_id=task.tenant_id, actor_id=task.actor_id, role="operator"
         )
         ref = _ref(item.ref)
+        observed = (item.capability or {}).get(
+            "operation"
+        ) == "set_status" and _status_observed(session, item)
         session.commit()
+    if observed:
+        _set_refresh_state(database_engine, item_id, pending=False)
+        return
     try:
         _refresh_after_commit(database_engine, context=context, route=route, ref=ref)
     except Exception:
