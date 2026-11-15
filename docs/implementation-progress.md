@@ -5610,3 +5610,8 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - M4b整体：fresh Standards/Spec R1均PASS，P0/P1=0；root直接修复JB41旧投影时间、JB42残差CSV坐标、JB43实例导航。数据回归2绿与两项源码RED/cmp/GREEN；真实浏览器导航/原Worker完整CSV1绿，相关14项沿用有效结果；TS/build/Ruff通过。验收见2026-11-14-native-m4b-acceptance.md。准备本地main集成/直接票关闭，无push/deploy/生产迁移。
 
 - M5a JB59 root阶段接受：候选5f4b0166，独立native HTTP子集12passed/31.35s，Ruff/diff通过；浏览器6场景/119回归/6拒错继承。START已有SQL计数26>25单列未改，不报全绿。专用PG17已恢复运行，供fresh Sol/high JB60接续；整体未放行。
+
+
+- M5a JB60 本地候选：START `2e3a52b6fb278fb924b3f21cbc0fe31e01243662`；源码 `c6694ca837650c77efc0f21db2d8b51dddd10ccc`；有界验证说明 `f4c8fd50dd58c2e67f49cb707f53870e12723df5`；queued restore 撤权增强 `24548ccf75a5243710f9ac9eb927b16527eb15c4`。仅原 prepare_restore 修复硬编码 DISABLE，使用冻结原值对称判断；不改直接受理/异步框架/预算ROAS改名，无迁移。
+- 自有64针对性检查，最终4类UNKNOWN观察→实际反向恢复UI加1个JB59代表UI共5 passed；20个真实owner有限状态组合、12个read/queued restore撤权、六类实际源码RED/外部finally恢复/cmp/逐项GREEN。UNKNOWN来自官方SDK传输发送后丢失响应；核查误写2!=1、自动重放4!=3均被物理写数断言拒绝。
+- 审阅包 `docs/validation/2026-11-15-jb60-native-status-recovery.md` 覆盖全部JB60 AC和整个C01–C10，区分本轮与继承。保留早期目录一次pump后待刷新/一次预览NO_CHANGE的时序Unknown，后续绿跑不宣称根因已修复；原START SQL26>25失败不改阈值、不隐藏。Root阶段接受、fresh Standards/Spec整体审查、本地main集成和关闭仍待执行；两票保持InProgress与依赖，不报M5a Done。无push/PR/Linear/部署/生产或真实平台操作，专用PG17/Redis保留供root收尾。
