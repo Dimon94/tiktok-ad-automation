@@ -504,7 +504,9 @@ def test_native_unknown_workspace_restore(
     "boundary", ["grant", "connection", "actor", "route", "account", "bc"]
 )
 @pytest.mark.parametrize("phase", ["read", "restore"])
-def test_native_recovery_revocation(native_status_env, monkeypatch, boundary, phase):
+def test_native_recovery_revocation(
+    native_status_env, redis_client, monkeypatch, boundary, phase
+):
     from app.modules.accounts.connection_models import BCConnectionBinding
     from app.modules.accounts.models import BCAccountAccess, TikTokConnection
     from app.modules.tenants.models import TenantMembership
@@ -514,6 +516,36 @@ def test_native_recovery_revocation(native_status_env, monkeypatch, boundary, ph
     with TestClient(env.app) as client:
         base, task = submit(client, env, target)
         drive_management(env, task)
+        if phase == "restore":
+            from app.modules.ads.directory_requests import request_directory
+
+            with Session(engine) as db, db.begin():
+                request_directory(
+                    db,
+                    tenant_id=env.context.tenant_id,
+                    bc_id=env.bc.bc_id,
+                    frozen_route=env.route.model_dump(mode="json"),
+                    actor_id=env.context.actor_id,
+                    advertiser_ids=[env.account.advertiser_id],
+                    scope="targeted",
+                    refs=[env.refs["ad"]],
+                )
+            drive_directory(env, redis_client)
+            response = client.post(base + f"/ad-management-tasks/{task}/restore")
+            assert response.status_code == 201, response.text
+            preview = response.json()
+            assert preview["items"][0]["execution_result"] == "PENDING"
+            response = client.post(
+                base + "/ad-management-tasks",
+                json={
+                    "preview_id": preview["preview_id"],
+                    "preview_digest": preview["digest"],
+                    "idempotency_key": str(uuid4()),
+                },
+            )
+            assert response.status_code == 202, response.text
+            restore_task = response.json()["task_id"]
+            state["unknown"] = False
         before = len(calls)
         with Session(engine) as db, db.begin():
             if boundary in {"grant", "account"}:
@@ -554,17 +586,5 @@ def test_native_recovery_revocation(native_status_env, monkeypatch, boundary, ph
         if phase == "read":
             reconcile(env)
         else:
-            response = client.post(base + f"/ad-management-tasks/{task}/restore")
-            if response.status_code == 201:
-                preview = response.json()
-                response = client.post(
-                    base + "/ad-management-tasks",
-                    json={
-                        "preview_id": preview["preview_id"],
-                        "preview_digest": preview["digest"],
-                        "idempotency_key": str(uuid4()),
-                    },
-                )
-                if response.status_code == 202:
-                    drive_management(env, response.json()["task_id"])
+            drive_management(env, restore_task)
         assert len(calls) == before
