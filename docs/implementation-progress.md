@@ -1,3 +1,11 @@
+## 2026-11-15：JB-59 / M5A-01 原生启停与回读本地候选
+
+在唯一授权集成树 `feat/m5a-native-status-validation` 从 `9d51cc9b37faf1b6a830fa025cbd377ace716048` 形成源码/测试提交 `20709eb550c07d4fc2e67eec7f7d6863594c73a6`。保留现有点击直接受理与异步准备，实际 RED 仅修复原管理 execution owner：公开启停原值被数值转换丢失、写接受/目录排队冒充已观察。原 REFRESH_PENDING 现在等待发送后同连接目录事实；冻结原值与受理回执保持独立，不新增 Native executor、资格门槛、预览或迁移。
+
+本地新增 18 个场景（六个真实工作区→HTTP→PG/Redis→原 Worker→官方 SDK transport double→实际目录发布→任务/当前工作区）；加厚跨租户同平台 ID、跨 BC 拒绝、receipt 和未来消息后 12 个 HTTP 场景独立 GREEN。受影响既有回归 119 passed；六个源码错误探针全部 RED→finally/cmp→GREEN，静态/语法通过。保留一项 START 即存在的 SQL 数量阈值失败（10748 项受理，26>25），不放宽旧断言，不把整组报全绿。无管理形式模型，不用 Native Build TLC 替代管理证明。详细 AC、证据窗口、环境修正/执行偏差和 JB-60 精确消费合同见 [JB-59 验证记录](validation/2026-11-15-jb59-native-status-readback.md)。
+
+仅候选，不标 Done。Root 仍拥有阶段验收、基线失败裁定、JB-60 启动、fresh Standards/Spec 和本地集成。无子代理、main 合并、fetch/rebase、push、PR、tracker 写入、部署、生产迁移、真实平台授权或广告写。原 `.venv`/`node_modules` 链接保留；本轮新建专用 PG17 收口停止，原 PG16/Redis 和其它树不动。真实平台/生产 Unknown。
+
 ## 2026-11-14：JB-22 无报表目录导航本地候选
 
 从 `55ee37146d7275b8c308161bce1986f9fbbb1670` 在唯一 M3 集成树 `feat/jb21-native-series-m3` 实现并提交 `2701fbfad95c316d8d5a49d8918fafdb2164edf4`：原目录 owner 新增绑定 tenant/BC/账户/kind/父范围的稳定分页 HTTP，工作区通过授权账户进入系列→广告组→广告→创意与父级返回。详情直接消费 EntityRef，不生成 ReportRow/snapshot/管理选择；显示来源、观察时间和发布版本。复用原查询、详情与账户选择器，无新同步器、迁移或业务开关。
