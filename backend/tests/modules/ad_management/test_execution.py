@@ -750,7 +750,8 @@ def test_targeted_refresh_failure_is_durable_and_retry_does_not_resend(
             item = session.get(ManagementTaskItem, item_id)
             assert item is not None
             assert item.execution_result == "ACCEPTED"
-            assert item.observation_state == "ACCEPTED"
+            # 目录请求排队不证明预算已生效；真实发布由 Native 纵链覆盖。
+            assert item.observation_state == "REFRESH_PENDING"
         assert calls == [True]
         assert len(refreshes) == 1
     finally:

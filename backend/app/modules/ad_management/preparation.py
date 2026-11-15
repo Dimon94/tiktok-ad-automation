@@ -120,6 +120,19 @@ def prepare_direct_chunk(session: Session, task_id: UUID) -> bool:
             and item.execution_result == "PENDING"
         )
         if previous is not None and not promote:
+            # CBO 来源可能跨准备块；只合并审计映射，绝不覆盖首次冻结金额/币种。
+            facts = previous.capability.get("budget_facts")
+            incoming = item.capability.get("budget_facts")
+            if facts and incoming:
+                sources = list(facts["sources"])
+                for source in incoming["sources"]:
+                    if source not in sources:
+                        sources.append(source)
+                previous.capability = {
+                    **previous.capability,
+                    "budget_facts": {**facts, "sources": sources},
+                }
+                session.add(previous)
             continue
         row = ManagementTaskItem(
             tenant_id=task.tenant_id,

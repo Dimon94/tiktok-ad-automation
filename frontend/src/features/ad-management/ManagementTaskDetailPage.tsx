@@ -341,6 +341,7 @@ export function ManagementTaskDetailPage() {
                   <thead>
                     <tr className="border-b text-left">
                       <th className="p-2">目标</th>
+                      <th className="p-2">预算与影响范围</th>
                       <th className="p-2">执行</th>
                       <th className="p-2">请求送达</th>
                       <th className="p-2">数据核对</th>
@@ -359,6 +360,23 @@ export function ManagementTaskDetailPage() {
                         >
                           {KIND_LABEL[item.ref.kind] ?? "对象"} ·{" "}
                           {item.ref.remote_id}
+                        </td>
+                        <td className="min-w-64 p-2">
+                          {item.budget_facts ? (
+                            <div className="space-y-1">
+                              <p>预算归属：{KIND_LABEL[item.ref.kind]} · {item.ref.remote_id}</p>
+                              <p>账户：{item.ref.advertiser_id}</p>
+                              <p>原预算 {item.original_value} → 目标预算 {item.final_value} {item.budget_facts.currency}</p>
+                              <p>影响：{item.budget_facts.affected_refs.map(ref => `${KIND_LABEL[ref.kind]} · ${ref.remote_id}`).join("、")}</p>
+                              {item.budget_facts.sources.map(source => (
+                                <p key={`${source.ref.kind}:${source.ref.remote_id}`}>
+                                  来源：{KIND_LABEL[source.ref.kind]} · {source.ref.remote_id}（{
+                                    { owner_selected: "直接选择预算归属对象", campaign_budget_owner: "归并至系列预算", adgroup_budget_owner: "归并至广告组预算", campaign_adgroups_expanded: "系列展开已观察广告组" }[source.reason]
+                                  }）
+                                </p>
+                              ))}
+                            </div>
+                          ) : "—"}
                         </td>
                         <td
                           className="p-2"

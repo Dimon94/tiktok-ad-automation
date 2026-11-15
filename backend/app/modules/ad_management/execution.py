@@ -157,6 +157,7 @@ def _public(item: ManagementTaskItem) -> ManagementItemPublic:
             except InvalidOperation, ValueError:
                 pass
     return ManagementItemPublic(
+        budget_facts=item.capability.get("budget_facts"),
         ref=_ref(item.ref),
         material_use=_material(item.material_use),
         original_value=original,
@@ -650,8 +651,11 @@ def _persist_outcome(
         item.observation_state = (
             (
                 "REFRESH_PENDING"
-                if settings.ADS_SYNC_ENABLED
-                and (item.capability or {}).get("operation") == "set_status"
+                if (item.capability or {}).get("operation") == "update_budget"
+                or (
+                    settings.ADS_SYNC_ENABLED
+                    and (item.capability or {}).get("operation") == "set_status"
+                )
                 else "ACCEPTED"
             )
             if outcome == "ACCEPTED"
@@ -692,19 +696,26 @@ def _refresh_many_after_commit(
     refs: tuple[EntityRef, ...],
 ) -> None:
     # 一个物理批次只登记一份定向回读，不能再按20成员重复锁BC和投递。
-    del context
     if not settings.ADS_SYNC_ENABLED:
         return
     with Session(database_engine) as session, session.begin():
         plan = session.get(AdSyncBc, (route.tenant_id, route.bc_id))
         if plan is None or not plan.enabled:
             return
+        for advertiser in dict.fromkeys(ref.advertiser_id for ref in refs):
+            verify_route(
+                session,
+                context=context,
+                route=route,
+                advertiser_id=advertiser,
+                capability="read",
+            )
         request_directory(
             session,
             tenant_id=route.tenant_id,
             bc_id=route.bc_id,
-            frozen_route=plan.frozen_route,
-            actor_id=plan.actor_id,
+            frozen_route=route.model_dump(mode="json"),
+            actor_id=context.actor_id,
             advertiser_ids=list(dict.fromkeys(ref.advertiser_id for ref in refs)),
             scope="targeted",
             refs=list(refs),
@@ -718,23 +729,43 @@ def _refresh_many_after_commit(
         )
 
 
-def _status_observed(session: Session, item: ManagementTaskItem) -> bool:
-    """启停回读只认发送后的同连接目录事实，不把排队或平台回执当观察。"""
+def _target_observed(session: Session, item: ManagementTaskItem) -> bool | None:
+    """启停/预算只认发送后的同连接目录事实，不把排队或回执当观察。"""
     ref = _ref(item.ref)
     row = session.get(
         AdObject, (ref.tenant_id, ref.advertiser_id, ref.kind, ref.remote_id)
     )
     task = session.get(ManagementTask, item.task_id)
     attempts = _attempts(session, item)
-    return bool(
+    if task is None:
+        return None
+    try:
+        verify_route(
+            session,
+            context=TenantContext(task.tenant_id, task.actor_id, "operator"),
+            route=_route(task),
+            advertiser_id=ref.advertiser_id,
+            capability="read",
+        )
+    except DomainError:
+        return None
+    if not (
         row is not None
-        and task is not None
         and attempts
         and row.observed_at > attempts[-1].request_at
         and str(row.source_connection_id) == task.route["connection_id"]
         and row.source_channel == task.route["channel"]
-        and row.operation_status == item.final_value
-    )
+    ):
+        return None
+    if item.capability.get("operation") == "update_budget":
+        # 比较观察时的实际金额，不借 SDK 回执或旧目录宣称生效。
+        try:
+            return Decimal(str((row.configuration or {}).get("budget"))) == Decimal(
+                str(item.final_value)
+            )
+        except InvalidOperation:
+            return False
+    return row.operation_status == item.final_value
 
 
 def _set_refresh_state(
@@ -749,14 +780,50 @@ def _set_refresh_state(
         item = _locked_item(session, item_id)
         if item is None or item.execution_result != "ACCEPTED":
             return
+        if item.capability.get("operation") == "update_budget":
+            task = session.get(ManagementTask, item.task_id)
+            try:
+                verify_route(
+                    session,
+                    context=TenantContext(task.tenant_id, task.actor_id, "operator"),
+                    route=_route(task),
+                    advertiser_id=item.ref["advertiser_id"],
+                    capability="read",
+                )
+            except DomainError as error:
+                item.observation_state = "NEEDS_REVIEW"
+                item.reason = error.code
+                session.add(item)
+                _update_task(session, item.task_id, item.tenant_id)
+                return
+            if not settings.ADS_SYNC_ENABLED:
+                item.observation_state = "NEEDS_REVIEW"
+                item.reason = "targeted_refresh_unavailable"
+                session.add(item)
+                _update_task(session, item.task_id, item.tenant_id)
+                return
         refresh_failed = pending
         if (
             not pending
             and settings.ADS_SYNC_ENABLED
-            and (item.capability or {}).get("operation") == "set_status"
+            and (item.capability or {}).get("operation")
+            in {"set_status", "update_budget"}
         ):
-            pending = not _status_observed(session, item)
-        if pending and (item.capability or {}).get("operation") == "set_status":
+            observed = _target_observed(session, item)
+            if (
+                observed is False
+                and item.capability.get("operation") == "update_budget"
+            ):
+                item.observation_state = "NEEDS_REVIEW"
+                item.reason = "budget_observed_different"
+                session.add(item)
+                _update_task(session, item.task_id, item.tenant_id)
+                return
+            pending = not observed
+        if pending and (item.capability or {}).get("operation") in {
+            "set_status",
+            "update_budget",
+        }:
             bc_id = session.exec(
                 select(ManagementTask.bc_id).where(ManagementTask.id == item.task_id)
             ).one()
@@ -815,9 +882,10 @@ def _retry_targeted_refresh(database_engine: Engine, item_id: UUID) -> None:
             tenant_id=task.tenant_id, actor_id=task.actor_id, role="operator"
         )
         ref = _ref(item.ref)
-        observed = (item.capability or {}).get(
-            "operation"
-        ) == "set_status" and _status_observed(session, item)
+        observed = (item.capability or {}).get("operation") in {
+            "set_status",
+            "update_budget",
+        } and _target_observed(session, item)
         session.commit()
     if observed:
         _set_refresh_state(database_engine, item_id, pending=False)

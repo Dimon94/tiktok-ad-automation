@@ -160,6 +160,22 @@ class ManagementAttemptPublic(BaseModel):
     retryable: bool = False
 
 
+class BudgetSourcePublic(BaseModel):
+    ref: EntityRef
+    reason: Literal[
+        "owner_selected",
+        "campaign_budget_owner",
+        "adgroup_budget_owner",
+        "campaign_adgroups_expanded",
+    ]
+
+
+class BudgetFactsPublic(BaseModel):
+    currency: str
+    sources: tuple[BudgetSourcePublic, ...]
+    affected_refs: tuple[EntityRef, ...]
+
+
 class ManagementItemPublic(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -170,6 +186,7 @@ class ManagementItemPublic(BaseModel):
     # 数值动作为原数值；改名动作为原系列名。
     original_value: Decimal | str | None = None
     final_value: Decimal | str | None = None
+    budget_facts: BudgetFactsPublic | None = None
     reason: str | None = None
     execution_result: Literal[
         "PENDING",

@@ -30,7 +30,7 @@ from app.modules.accounts.management_rules import (
     MANAGEMENT_ENTITY_KINDS,
     management_allowed,
 )
-from app.modules.accounts.models import BCAccountAccess
+from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
 from app.modules.ad_management.schemas import MutationSpec
 from app.modules.ads.directory import locate, locate_material_use
 from app.modules.ads.models import AdObject
@@ -905,6 +905,8 @@ def _expand(
                 return None
             raise
 
+    budget_sources: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+
     def add_item(row, *, use=None, linked=False, force_field=None):
         try:
             add_item_unchecked(row, use=use, linked=linked, force_field=force_field)
@@ -977,6 +979,22 @@ def _expand(
             "observed_at": row.observed_at.isoformat(),
             "configuration": deepcopy(row.configuration or {}),
         }
+        if field == "budget":
+            # 币种属于预算 owner 的账户，随原值冻结，历史回执不查后来元数据。
+            account = session.get(
+                AdvertiserAccount, (context.tenant_id, row.advertiser_id)
+            )
+            if (
+                account is None
+                or not account.currency.strip()
+                or not account.timezone.strip()
+            ):
+                raise DomainError("account_metadata_incomplete", "账户信息尚未完整")
+            capability["budget_facts"] = {
+                "currency": account.currency,
+                "sources": budget_sources.get(_ref_key(row.ref), []),
+                "affected_refs": [_ref_dict(row.ref)],
+            }
         grouping_revision = grouping_revision_for(row)
         if grouping_revision is None:
             items.append(
@@ -1305,7 +1323,20 @@ def _expand(
                     observed_before=selection_record.created_at,
                 )
                 for owner in found:
-                    owners[_ref_key(owner.ref)] = owner
+                    key = _ref_key(owner.ref)
+                    owners[key] = owner
+                    reason = (
+                        "owner_selected"
+                        if owner.ref == row.ref
+                        else "campaign_adgroups_expanded"
+                        if row.kind == "campaign"
+                        else "campaign_budget_owner"
+                        if owner.kind == "campaign"
+                        else "adgroup_budget_owner"
+                    )
+                    budget_sources.setdefault(key, []).append(
+                        {"ref": _ref_dict(row.ref), "reason": reason}
+                    )
                 if not found:
                     items.append(
                         ExpandedItem(

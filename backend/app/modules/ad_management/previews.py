@@ -65,6 +65,7 @@ def _stored_value(value: Decimal | str | None) -> str | None:
 
 def _public_item(item: ExpandedItem) -> ManagementItemPublic:
     return ManagementItemPublic(
+        budget_facts=item.capability.get("budget_facts"),
         ref=item.ref,
         name=item.name,
         material_use=item.material_use,

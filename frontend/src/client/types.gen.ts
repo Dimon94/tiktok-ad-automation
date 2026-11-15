@@ -809,6 +809,35 @@ export type BucketStamp = {
 };
 
 /**
+ * BudgetFactsPublic
+ */
+export type BudgetFactsPublic = {
+    /**
+     * Currency
+     */
+    currency: string;
+    /**
+     * Sources
+     */
+    sources: Array<BudgetSourcePublic>;
+    /**
+     * Affected Refs
+     */
+    affected_refs: Array<EntityRef>;
+};
+
+/**
+ * BudgetSourcePublic
+ */
+export type BudgetSourcePublic = {
+    ref: EntityRef;
+    /**
+     * Reason
+     */
+    reason: 'owner_selected' | 'campaign_budget_owner' | 'adgroup_budget_owner' | 'campaign_adgroups_expanded';
+};
+
+/**
  * BusinessRow
  */
 export type BusinessRow = {
@@ -5001,6 +5030,7 @@ export type ManagementItemPublic = {
      * Final Value
      */
     final_value?: string | string | null;
+    budget_facts?: BudgetFactsPublic | null;
     /**
      * Reason
      */
