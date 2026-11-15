@@ -57,3 +57,9 @@ root 已成立的环境 6 passed 和 START direct10748 SQL 26>25 仅继承，本
 root 独立验收本候选后才释放 JB-63。消费本树源码提交 84db9974b69af5eb97ca82a66f30590803db350b，无需另起 executor 或重新设计预算入口。预算原/目标值和预算事实冻结在原任务项，恢复路径现有 capability 复制继续保留 currency/source；不能拿后来账户元数据改历史含义。DTO `budget_facts` 可空（旧任务），reason 枚举为 owner_selected / campaign_budget_owner / adgroup_budget_owner / campaign_adgroups_expanded。不要为展示复制执行项。
 
 JB-63 专项覆盖预算 mixed results、UNKNOWN 只读新鲜证据、原事实不变、显式反向恢复、当前预算冲突和 grant gates；不得自动 UNKNOWN 重发。现有 `test_native_status` 的 fixture、`drive_management`、`drive_directory`、`run_native_workspace` 可继续复用。预算新观察不匹配可出现 NEEDS_REVIEW，不等于明确写失败；SDK ACCEPTED 和 observed ACCEPTED 仍是两份事实。root 保留阶段验收、whole-scope Standards/Spec、集成和票据关闭权。
+
+## Root 独立阶段接受
+
+Root在精确候选959bc8198aec326c579701ddc4f7120b9988ef4e核对实际预算展开/跨块冻结/公开DTO/任务页/读取授权与新鲜观察差异，亲跑chain、multi_account、readback_revocation：7 passed、62 deselected/25.58s。Ruff覆盖五个产品owner及Native预算检查，diff通过。其余75检查、146普通通过及旧刷新断言的定向复验、浏览器/五探针/build/tsc按匹配源码继承，未冒称亲跑。affected_refs仅标识实际预算修改对象，不声称穷尽未选择后代。共享读取owner的非预算调用方继续纳入整片审查。
+
+结论：JB62阶段接受，可在同一集成树释放JB63；两票保持未关闭，直到whole-M5b审查与本地合入。不推送/部署/真实平台操作；旧SQL计数失败与平台未知边界保留。
