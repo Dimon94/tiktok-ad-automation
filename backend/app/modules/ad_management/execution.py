@@ -493,7 +493,10 @@ def _update_task(session: Session, task_id: UUID, tenant_id: UUID) -> None:
         pass  # 取消后仍可记录在途回执，但不能复活任务或发送剩余项。
     elif "PENDING" in statuses or retry_pending:
         task.status = "RUNNING"
-    elif "UNKNOWN" in statuses:
+    elif "UNKNOWN" in statuses or any(
+        result == "ACCEPTED" and observation == "NEEDS_REVIEW"
+        for result, observation, _total in rows
+    ):
         task.status = "NEEDS_REVIEW"
     elif counts["refresh_pending"]:
         task.status = "RUNNING"
@@ -753,6 +756,18 @@ def _set_refresh_state(
             and (item.capability or {}).get("operation") == "set_status"
         ):
             pending = not _status_observed(session, item)
+        if pending and (item.capability or {}).get("operation") == "set_status":
+            bc_id = session.exec(
+                select(ManagementTask.bc_id).where(ManagementTask.id == item.task_id)
+            ).one()
+            plan = session.get(AdSyncBc, (item.tenant_id, bc_id))
+            if plan is None or not plan.enabled:
+                # 平台已受理，但当前无观察来源；保留回执，不能不断排队或冒充已回读。
+                item.observation_state = "NEEDS_REVIEW"
+                item.reason = "targeted_refresh_unavailable"
+                session.add(item)
+                _update_task(session, item.task_id, item.tenant_id)
+                return
         item.observation_state = "REFRESH_PENDING" if pending else "ACCEPTED"
         if pending:
             item.reason = error or (

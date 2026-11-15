@@ -137,6 +137,7 @@ const RECEIPT_LABEL: Record<string, string> = {
   DELIVERED: "已送达",
   ATTEMPT_RECORDED: "已记录请求",
   REFRESH_PENDING: "等待数据刷新",
+  targeted_refresh_unavailable: "目录同步未启用，需检查当前状态",
   NEEDS_REVIEW: "需要核查",
   RECONCILE_REQUESTED: "等待平台只读核查",
   OBSERVED_MATCH: "观察值符合目标，受理仍未知",

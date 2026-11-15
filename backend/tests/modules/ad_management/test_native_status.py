@@ -10,6 +10,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 from sqlmodel import Session, select
 from urllib3.response import HTTPResponse
 
@@ -154,7 +155,7 @@ def native_status_env(committed_management_env, monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         id=context.actor_id
     )
-    return SimpleNamespace(
+    yield SimpleNamespace(
         app=app,
         context=context,
         bc=bc,
@@ -163,6 +164,33 @@ def native_status_env(committed_management_env, monkeypatch):
         selection=selection,
         refs=refs,
     )
+    # 本夹具提交真实事务；断言和线程退出后收回自己的调度资格，避免后续用例
+    # 为旧租户领取目录槽却无法消费其 SDK 替身。业务事实、回执和快照均保留。
+    from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.sync_control.models import SyncSchedule
+
+    with Session(engine) as db, db.begin():
+        db.exec(
+            update(AdDirectoryRun)
+            .where(
+                AdDirectoryRun.tenant_id == context.tenant_id,
+                AdDirectoryRun.status.in_(
+                    ["QUEUED", "RUNNING", "ADMISSION_WAIT", "WAITING_REMOTE"]
+                ),
+            )
+            .values(status="CANCELLED", claimed_until=None, claim_token=None)
+        )
+        db.exec(
+            update(SyncSchedule)
+            .where(SyncSchedule.tenant_id == context.tenant_id)
+            .values(
+                active=False,
+                lease_token=None,
+                lease_execution_id=None,
+                lease_execution_generation=None,
+                leased_until=None,
+            )
+        )
 
 
 def install_wire(monkeypatch, env, target, final):
@@ -300,6 +328,89 @@ def drive_directory(env, redis_client, *, allow_failure=False):
                     raise
                 continue
             assert allow_failure or result != "FAILED", (name, payload, result)
+
+
+@pytest.mark.parametrize("plan_state", ["missing", "disabled", "disabled_after_send"])
+@pytest.mark.parametrize("kind", ["campaign", "ad"])
+def test_native_status_without_observation_plan(
+    native_status_env, monkeypatch, kind, plan_state
+):
+    """已受理不等于已观察；无同步计划需明确结束等待，重投不能空转或重写。"""
+    env = native_status_env
+    with Session(engine) as db, db.begin():
+        selection = db.get(FrozenSelectionRecord, env.selection.id)
+        _set_selection(selection, [env.refs[kind]])
+        db.add(selection)
+        plan = db.get(AdSyncBc, (env.context.tenant_id, env.bc.bc_id))
+        if plan_state == "missing":
+            db.delete(plan)
+        elif plan_state == "disabled":
+            plan.enabled = False
+            db.add(plan)
+    calls, _ = install_wire(monkeypatch, env, kind, "DISABLE")
+    base = f"/api/tenants/{env.context.tenant_id}"
+    with TestClient(env.app) as client:
+        receipt = client.post(
+            base + "/ad-management-requests",
+            json={
+                "bc_id": env.bc.bc_id,
+                "selection_id": str(env.selection.id),
+                "mutation": {"field": "status", "mode": "set", "value": "DISABLE"},
+                "idempotency_key": str(uuid4()),
+            },
+        )
+        assert receipt.status_code == 202, receipt.text
+        task_id = receipt.json()["task_id"]
+        drive_management(env, task_id)
+        if plan_state == "disabled_after_send":
+            pending = client.get(base + f"/ad-management-tasks/{task_id}").json()
+            assert pending["items"][0]["observation_state"] == "REFRESH_PENDING"
+            with Session(engine) as db, db.begin():
+                plan = db.get(AdSyncBc, (env.context.tenant_id, env.bc.bc_id))
+                plan.enabled = False
+                db.add(plan)
+            drive_management(env, task_id)
+        # 批量发送复用已持久化的下一次唤醒来处理观察阶段，不要求同步写后立即回读。
+        drive_management(env, task_id)
+        result = client.get(base + f"/ad-management-tasks/{task_id}").json()
+        assert result["status"] == "NEEDS_REVIEW", result
+        item = result["items"][0]
+        assert item["execution_result"] == "ACCEPTED"
+        assert item["observation_state"] == "NEEDS_REVIEW"
+        assert item["reason"] == "targeted_refresh_unavailable"
+        assert item["original_value"] == "ENABLE"
+        assert item["final_value"] == "DISABLE"
+        assert len(item["attempts"]) == 1 and item["attempts"][0]["request_id"]
+        with Session(engine) as db:
+            messages = db.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.tenant_id == env.context.tenant_id
+                )
+            ).all()
+            dispatch_ids = {row.id for row in messages}
+        for _ in range(3):
+            drive_management(env, task_id)
+        assert client.get(base + f"/ad-management-tasks/{task_id}").json() == result
+        with Session(engine) as db:
+            assert {
+                row.id
+                for row in db.exec(
+                    select(PendingDispatch).where(
+                        PendingDispatch.tenant_id == env.context.tenant_id
+                    )
+                ).all()
+            } == dispatch_ids
+            row = db.get(
+                AdObject,
+                (
+                    env.context.tenant_id,
+                    env.account.advertiser_id,
+                    kind,
+                    env.refs[kind].remote_id,
+                ),
+            )
+            assert row.operation_status == "ENABLE"
+        assert len(calls) == 1 and calls[0][0] == "POST"
 
 
 @pytest.mark.parametrize("kind", ["campaign", "adgroup", "ad"])
