@@ -5663,3 +5663,8 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 JB62/JB63按用户批准的预算两票完成，保留原直接受理/异步准备和通用owner；冻结金额币种/来源映射、真实预算回读、UNKNOWN只读及显式恢复门禁已贯通。root阶段亲跑7与17项通过；其它源码匹配预算/浏览器/构建/实际源码拒错证据继承。固定0e7cf885...d033bd243整片fresh Codex gpt-6.1-sol/high Standards/Spec R1均PASS、四级问题均0。详见[本地接受记录](validation/2026-11-15-native-m5b-acceptance.md)。
 
 后续按项目规则快进本地main、最小原工作区恢复纵链检查与两票闭合/专用环境清理；实际读回保存在外部closeout.json。旧SQL26>25断言和状态stale间歇根因Unknown保留；无push/PR/deploy/真实平台/生产验收，不关闭EpicJB19。
+
+
+## 2026-11-15 — JB64 root 阶段接受
+
+候选43b21ea9的 CBO/ABO、Decimal、新鲜逐成员回读经源审与12项HTTP/PG17/Redis复验通过。root 补现并修复同准备块 ABO 选择来源混入兄弟组的问题；来源与正常链10项通过，近似错误 CBO 来源共享探针实际 RED→finally/cmp恢复→2项GREEN。固定Ruff/diff通过，详见[JB64验收追加](validation/2026-11-15-jb64-native-roas-readback.md)。释放同树 fresh Codex gpt-6.1-sol/high JB65，64不提前Done；整个M5c待恢复、两轴独立审查与本地集成。无push/PR/deploy/真实平台操作。

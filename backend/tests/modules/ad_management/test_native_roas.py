@@ -396,3 +396,46 @@ def test_roas_each_member_observed(
             boundary == "already_target"
         ), peer
         assert len([c for c in calls if c[0] == "POST"]) == 1
+
+
+@pytest.mark.parametrize("cbo", [True, False])
+def test_roas_sources_follow_actual_owner(native_status_env, cbo):
+    """同批两组选中来源：CBO 联动共享，ABO 独立，不串入兄弟来源。"""
+    env = native_status_env
+    configure(env, cbo)
+    peer = EntityRef(
+        env.context.tenant_id, env.account.advertiser_id, "adgroup", "adgroup-peer"
+    )
+    with Session(engine) as db, db.begin():
+        record = db.get(FrozenSelectionRecord, env.selection.id)
+        _set_selection(record, [env.refs["adgroup"], peer])
+        db.add(record)
+    with TestClient(env.app) as client:
+        base = f"/api/tenants/{env.context.tenant_id}"
+        response = client.post(
+            base + "/ad-management-requests",
+            json={
+                "bc_id": env.bc.bc_id,
+                "selection_id": str(env.selection.id),
+                "mutation": {
+                    "field": "roas",
+                    "mode": "increase_percent",
+                    "value": "10",
+                },
+                "idempotency_key": str(uuid4()),
+            },
+        )
+        assert response.status_code == 202, response.text
+        task = response.json()["task_id"]
+        prepare_direct_task(engine, task)
+        items = client.get(base + f"/ad-management-tasks/{task}").json()["items"]
+        assert len(items) == 2
+        for item in items:
+            expected = (
+                {"adgroup-native", "adgroup-peer"}
+                if cbo
+                else {item["ref"]["remote_id"]}
+            )
+            assert {
+                source["remote_id"] for source in item["roas_facts"]["sources"]
+            } == expected

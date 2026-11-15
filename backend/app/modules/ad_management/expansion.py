@@ -909,6 +909,36 @@ def _expand(
             raise
 
     budget_sources: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    roas_campaign_sources: dict[tuple[Any, ...], list[dict[str, str]]] = {}
+    roas_owner_sources: dict[tuple[Any, ...], list[dict[str, str]]] = {}
+    if mutation.field == "roas":
+        # 选择来源按真实影响归属：CBO 共享系列，ABO 仅共享明确选中的父系列。
+        for ref in refs:
+            source = objects.get(_ref_key(ref))
+            if source is None:
+                continue
+            campaign = _campaign_ancestor(
+                session,
+                context=context,
+                bc_id=bc_id,
+                row=source,
+                objects=objects,
+                route=route,
+            )
+            if campaign is None:
+                continue
+            if source.kind == "campaign" or (
+                (campaign.configuration or {}).get("budget_optimize_on") is True
+            ):
+                roas_campaign_sources.setdefault(_ref_key(campaign.ref), []).append(
+                    _ref_dict(ref)
+                )
+            else:
+                owner = source.ref if source.kind == "adgroup" else source.parent_ref
+                if owner is not None and owner.kind == "adgroup":
+                    roas_owner_sources.setdefault(_ref_key(owner), []).append(
+                        _ref_dict(ref)
+                    )
 
     def add_item(row, *, use=None, linked=False, force_field=None):
         try:
@@ -1035,7 +1065,8 @@ def _expand(
                 "mode": "VO_MIN_ROAS",
                 "campaign_ref": _ref_dict(parent.ref),
                 "parent_configuration": deepcopy(parent.configuration or {}),
-                "sources": [_ref_dict(ref) for ref in refs],
+                "sources": roas_campaign_sources.get(_ref_key(parent.ref), [])
+                + roas_owner_sources.get(_ref_key(row.ref), []),
                 "affected_refs": [_ref_dict(member.ref) for member in affected],
             }
         grouping_revision = grouping_revision_for(row)

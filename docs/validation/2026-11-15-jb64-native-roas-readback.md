@@ -55,3 +55,16 @@ M5a/M5b 接受记录按匹配源码继承，只覆盖原启停/预算，不能�
 JB65 仍需实现/验收 UNKNOWN 有界只读轮次、显式反向 restore/current 原值/目标/第三方值、完整 CBO 成员冲突、freshness/current权限双门禁和恢复预览UI。不得把本次事实DTO等同于恢复资格；原 sent UNKNOWN 可按已批准合同在新鲜证据足够时准备独立反向意图，不能自动重放。没有在本票扩展恢复行为或开启下一票。
 
 部署提示：虽然没有数据库结构迁移，持久任务 capability/公共 DTO 新增冻结事实，属于语义合同变化。后续发布必须按仓库部署合同审查具体方案；本票没有发布授权。ADS_SYNC_ENABLED 仍是原开关，没有新增开关或扩大开关语义。
+
+
+## Root 阶段验收与来源归属修复（2026-11-15）
+
+候选 `43b21ea9d82299a22c835a5a351b6ff7e9443fa7` 经 root 源审，亲跑原 suite 的 all-chain、unverified-zero-write、逐成员观察共 12 passed /37.31s。其余 UI、SDK wire、回归和构建证据继承前述匹配源码结果，不计为 root 亲跑。
+
+发现并修复真实来源映射缺陷：同一准备块选择两个 ABO 组时，每个 owner 的冻结 `roas_facts.sources` 都携带两组来源；应只保留其自身来源。现按父系列与组 owner 建立来源索引：CBO 共享该系列的选择来源，ABO 除显式选中系列外按各组（或所选广告的父组）独立归属，不混入其它 owner。没有改变物理发送、预算、排期、模式门禁或历史冻结内容。
+
+新增公开 HTTP→真实 PG/异步准备→任务详情检查 `test_roas_sources_follow_actual_owner`（CBO/ABO）。独立预期来自已批准 CBO 联动/ABO 独立及任务来源审计合同。初始误用 DTO 字段 object_id 的 KeyError 已改为现有 remote_id，不算行为 RED；随后真实 RED 为 ABO 多出兄弟来源（1 failed,1 passed）。修复后来源与全部八条正常链 10 passed /52.17s。近似错误探针删除 CBO 来源共享分支，实际业务断言 RED（1 failed,1 passed），仓外备份 finally/cmp 恢复后 2 passed /0.56s。日志在外部 m5c-implementation/jb64-sources-{red,green,probe,restored}.log。
+
+静态检查使用项目固定 venv Ruff 通过、diff check 通过。一次误调用系统旧 Ruff 对 fixture 重名及格式报错，改用固定 venv 后通过；未改 fixture 或弱化检查。无前端变更，不重复 UI build。上述验证彼此重叠，不累加计数。
+
+JB64 阶段接受，释放同树 fresh Codex gpt-6.1-sol/high JB65；不提前 Done，不代表 M5c 整片放行。JB65 继承原始/目标比例、按实际范围归属的 sources、CBO/ABO、affected_refs 及逐成员新鲜观察合同。整片仍须 UNKNOWN/显式恢复、fresh Standards/Spec 审查与本地集成。真实 Native 平台适用性、生效与生产仍 Unknown；旧 SQL26>25 和旧间歇 UI 根因边界保留。无 provider 写、push、PR 或 deploy。
