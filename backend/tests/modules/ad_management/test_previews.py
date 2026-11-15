@@ -19,9 +19,9 @@ def test_percentage_and_budget_owner_previews(session, management_env):
     group_a = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "group-a")
     group_b = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "group-b")
     session.add_all([
-        _row(campaign, configuration={"budget": "100"}, connection_id=route.connection_id),
-        _row(group_a, parent=campaign, configuration={"roas_bid": "1.20", "budget_mode": "CAMPAIGN"}, connection_id=route.connection_id),
-        _row(group_b, parent=campaign, configuration={"roas_bid": "1.20", "budget_mode": "CAMPAIGN"}, connection_id=route.connection_id),
+        _row(campaign, configuration={"budget_optimize_on": True, "budget": "100"}, connection_id=route.connection_id),
+        _row(group_a, parent=campaign, configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20", "budget_mode": "CAMPAIGN"}, connection_id=route.connection_id),
+        _row(group_b, parent=campaign, configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20", "budget_mode": "CAMPAIGN"}, connection_id=route.connection_id),
     ])
     session.flush()
     _set_selection(selection, [group_a])
@@ -54,9 +54,9 @@ def test_same_series_divergent_roas_rejected(session, management_env):
     a = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "group-c")
     b = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "group-d")
     session.add_all([
-        _row(campaign, connection_id=route.connection_id),
-        _row(a, parent=campaign, configuration={"roas_bid": "1.20"}, connection_id=route.connection_id),
-        _row(b, parent=campaign, configuration={"roas_bid": "1.30"}, connection_id=route.connection_id),
+        _row(campaign, configuration={"budget_optimize_on": True}, connection_id=route.connection_id),
+        _row(a, parent=campaign, configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id),
+        _row(b, parent=campaign, configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.30"}, connection_id=route.connection_id),
     ])
     session.flush()
     _set_selection(selection, [a, b])
@@ -75,8 +75,8 @@ def test_source_fence_and_grouping_revision_are_frozen(session, management_env):
     campaign = EntityRef(context.tenant_id, account.advertiser_id, "campaign", "fenced-series")
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "fenced-group")
     session.add_all([
-        _row(campaign, ad_type="SMART_PLUS", configuration={"budget": "10"}, connection_id=route.connection_id),
-        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=wrong_connection.id),
+        _row(campaign, ad_type="SMART_PLUS", configuration={"budget_optimize_on": True, "budget": "10"}, connection_id=route.connection_id),
+        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=wrong_connection.id),
         CampaignNameProjection(
             tenant_id=context.tenant_id,
             advertiser_id=account.advertiser_id,
@@ -109,8 +109,8 @@ def test_child_inherits_grouping_revision_from_frozen_route_ancestor(session, ma
     campaign = EntityRef(context.tenant_id, account.advertiser_id, "campaign", "revision-series")
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "revision-group")
     session.add_all([
-        _row(campaign, connection_id=route.connection_id, observed_at=selection.created_at - timedelta(minutes=1)),
-        _row(group, parent=campaign, configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=selection.created_at - timedelta(minutes=1)),
+        _row(campaign, configuration={"budget_optimize_on": True}, connection_id=route.connection_id, observed_at=selection.created_at - timedelta(minutes=1)),
+        _row(group, parent=campaign, configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=selection.created_at - timedelta(minutes=1)),
         CampaignNameProjection(
             tenant_id=context.tenant_id,
             advertiser_id=account.advertiser_id,
@@ -149,10 +149,10 @@ def test_smart_plus_series_expands_only_preselection_siblings_and_conflicts(sess
     old = cutoff - timedelta(minutes=1)
     future = cutoff + timedelta(minutes=1)
     session.add_all([
-        _row(campaign, ad_type="SMART_PLUS", connection_id=route.connection_id, observed_at=old),
-        _row(selected, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
-        _row(sibling, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
-        _row(late, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "9.00"}, connection_id=route.connection_id, observed_at=future),
+        _row(campaign, configuration={"budget_optimize_on": True}, ad_type="SMART_PLUS", connection_id=route.connection_id, observed_at=old),
+        _row(selected, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
+        _row(sibling, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
+        _row(late, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "9.00"}, connection_id=route.connection_id, observed_at=future),
     ])
     session.flush()
     _set_selection(selection, [selected])
@@ -162,7 +162,7 @@ def test_smart_plus_series_expands_only_preselection_siblings_and_conflicts(sess
     # A divergent historical sibling is a fail-closed series conflict.
     sibling_row = session.get(AdObject, (context.tenant_id, account.advertiser_id, "adgroup", sibling.remote_id))
     assert sibling_row is not None
-    sibling_row.configuration = {"roas_bid": "1.80"}
+    sibling_row.configuration = {"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.80"}
     session.flush()
     _set_selection(selection, [selected])
     with pytest.raises(DomainError, match="最终 ROAS") as error:
@@ -176,8 +176,8 @@ def test_campaign_selection_expands_existing_smart_plus_groups(session, manageme
     campaign = EntityRef(context.tenant_id, account.advertiser_id, "campaign", "campaign-selection")
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "campaign-smart-group")
     session.add_all([
-        _row(campaign, ad_type="REGULAR", connection_id=route.connection_id, observed_at=cutoff - timedelta(minutes=1)),
-        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=cutoff - timedelta(minutes=1)),
+        _row(campaign, configuration={"budget_optimize_on": True}, ad_type="REGULAR", connection_id=route.connection_id, observed_at=cutoff - timedelta(minutes=1)),
+        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=cutoff - timedelta(minutes=1)),
     ])
     session.flush()
     _set_selection(selection, [campaign])
@@ -199,8 +199,8 @@ def test_account_selection_fallback_expands_route_fenced_series(session, managem
     campaign = EntityRef(context.tenant_id, account.advertiser_id, "campaign", "account-series")
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "account-group")
     session.add_all([
-        _row(campaign, ad_type="REGULAR", connection_id=route.connection_id, observed_at=old),
-        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
+        _row(campaign, configuration={"budget_optimize_on": True}, ad_type="REGULAR", connection_id=route.connection_id, observed_at=old),
+        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
     ])
     session.flush()
     # Account rows can be aggregate B selections with no synthetic account ref.
@@ -224,8 +224,8 @@ def test_excluding_campaign_does_not_fallback_to_full_account_scope(session, man
     campaign = EntityRef(context.tenant_id, account.advertiser_id, "campaign", "excluded-account-series")
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "excluded-account-group")
     session.add_all([
-        _row(campaign, connection_id=route.connection_id, observed_at=old),
-        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
+        _row(campaign, configuration={"budget_optimize_on": True}, connection_id=route.connection_id, observed_at=old),
+        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
     ])
     session.flush()
     selection.filters = {"dimension": "account"}
@@ -252,8 +252,8 @@ def test_account_series_fallback_honors_excluded_campaign_and_group(session, man
     campaign = EntityRef(context.tenant_id, account.advertiser_id, "campaign", "excluded-series-fallback")
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "excluded-group-fallback")
     session.add_all([
-        _row(campaign, connection_id=route.connection_id, observed_at=old),
-        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
+        _row(campaign, configuration={"budget_optimize_on": True}, connection_id=route.connection_id, observed_at=old),
+        _row(group, parent=campaign, ad_type="SMART_PLUS", configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id, observed_at=old),
     ])
     session.flush()
     selection.filters = {"dimension": "account"}
@@ -513,7 +513,7 @@ def test_disabled_default_connection_asks_to_switch_default(session, management_
 
     context, bc, account, route, selection = management_env
     group = EntityRef(context.tenant_id, account.advertiser_id, "adgroup", "group-a")
-    session.add(_row(group, configuration={"roas_bid": "1.20"}, connection_id=route.connection_id))
+    session.add(_row(group, configuration={"deep_bid_type": "VO_MIN_ROAS", "roas_bid": "1.20"}, connection_id=route.connection_id))
     _set_selection(selection, [group])
     # 生产现场：报表读取仍走可用连接，默认执行连接指向另一个已停用的连接。
     disabled = TikTokConnection(tenant_id=context.tenant_id, status="DISABLED", kind="OFFICIAL_MCP")

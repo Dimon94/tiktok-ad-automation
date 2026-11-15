@@ -103,13 +103,13 @@ export function actionScope(
     const target: Partial<Record<AdsDimension, string>> = {
       campaign: "将修改所选系列下的全部广告组。",
       adgroup:
-        "将修改所选广告组；Smart+ 系列会连同同系列的其它广告组一起修改。",
-      ad: "将修改广告所属的广告组；Smart+ 系列会连同同系列的其它广告组一起修改。",
+        "将修改所选广告组；CBO 系列会连同同系列的其它广告组一起修改。",
+      ad: "将修改广告所属的广告组；CBO 系列会连同同系列的其它广告组一起修改。",
     }
     return [
       "目标 ROAS 只设置在广告组上，系列和广告没有单独的目标 ROAS。",
       target[dimension] ?? "",
-      "TikTok 要求同一系列下所有广告组的目标 ROAS 相同。",
+      "CBO 系列的目标 ROAS 必须一致；ABO 广告组独立修改。",
     ].filter(Boolean)
   }
   const target: Partial<Record<AdsDimension, string>> = {

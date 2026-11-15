@@ -176,6 +176,15 @@ class BudgetFactsPublic(BaseModel):
     affected_refs: tuple[EntityRef, ...]
 
 
+class RoasFactsPublic(BaseModel):
+    budget_strategy: Literal["CBO", "ABO"]
+    mode: str
+    campaign_ref: EntityRef
+    parent_configuration: dict[str, Any]
+    sources: tuple[EntityRef, ...]
+    affected_refs: tuple[EntityRef, ...]
+
+
 class ManagementItemPublic(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -187,6 +196,7 @@ class ManagementItemPublic(BaseModel):
     original_value: Decimal | str | None = None
     final_value: Decimal | str | None = None
     budget_facts: BudgetFactsPublic | None = None
+    roas_facts: RoasFactsPublic | None = None
     reason: str | None = None
     execution_result: Literal[
         "PENDING",

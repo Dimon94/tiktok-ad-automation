@@ -1,3 +1,11 @@
+## 2026-11-15：JB-64 / M5C-01 正常目标 ROAS 本地候选
+
+唯一写者复用 root-owned `feat/m5c-native-roas-validation`，START `26ea29fd374848d687b35a3c086838202aff533a`，用户指定 Codex gpt-6.1-sol/high，自行实现，无下级。沿原工作区/ROAS 表单直接202、异步准备、通用管理Worker、官方SDK与真实目录发布；明确冻结 CBO/ABO、模式、parent/source/全影响成员，CBO 去重和跨块冲突只消费显式证据，ABO 各owner独立。Decimal 等值表示不冲突；受理与逐成员新鲜观察分开，原任务详情显示比例与影响来源。无创建字段bundle硬门槛、新经营限制、执行器或开关语义变化。
+
+真实浏览器/HTTP/PG17/Redis/原Worker、仅SDK传输替身；CBO/ABO两条工作区已通过。相关86项与六条最初chain通过，最终20项ROAS专项通过（含两条真实浏览器），实际去重/比例/新鲜时间/CBO已等目标兄弟源码探针均拒错且finally/cmp还原。精确最终专项结果、逐AC、夹具失败修正、官方更新模型与真实传播Unknown、JB65消费边界见 [JB64验证记录](validation/2026-11-15-jb64-native-roas-readback.md)。沿用M5a/M5b匹配证据，不重跑全仓；已知direct10748 SQL26>25未修改，旧间歇失败根因Unknown。现有依赖链接与root服务保留。
+
+这是本地候选，root仍需阶段接受和独立审查；JB65未启动，M5c/Epic未完成。无其它树/main/Linear/远端/PR/deploy/真实平台或授权广告操作。新增公共roas_facts DTO保存在原capability JSON，无迁移；历史缺项不补造，JB65仍需UNKNOWN只读与显式反向恢复资格/UI验收。
+
 ## 2026-11-15：JB-62 / M5B-01 原生预算事实与实际回读候选
 
 在 root 唯一授权树 `feat/m5b-native-budget-validation` 从 START `0e7cf885018922bc111c28de49a99f4b163c9f3e` 形成源码提交 `84db9974b69af5eb97ca82a66f30590803db350b`。复用原预算归属、去重、直接受理/异步准备、官方 SDK 和定向目录发布；补齐冻结的账户币种、选择来源/实际预算影响映射及原任务页金额展示，广告列表复用已有预算表单。修复预算 SDK 接受即标观察成功的实际缺口：等待发送后同连接的真实预算观察，比较实际值，撤权/代次变化拒绝复用，重复刷新不重写。不新增预览门禁、executor、队列、迁移或经营限制。

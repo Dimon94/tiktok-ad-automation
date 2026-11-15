@@ -1115,3 +1115,36 @@ test("原生预算 UNKNOWN 与反向恢复 @native-budget-recovery-live", async 
   expect(restored).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", budget_facts: frozen.budget_facts })
   expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]).toEqual(frozen)
 })
+
+test("原生 ROAS 比例及逐成员回读 @native-roas-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 JB62 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: kind === "ad" ? "广告" : kind === "adgroup" ? "广告组" : "系列", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `object-${kind}-native`, exact: true }) })
+  await row.getByRole("checkbox").check()
+  await page.getByRole("button", { name: "修改目标 ROAS", exact: true }).click()
+  await page.getByRole("textbox", { name: "管理新值" }).fill("1.32")
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("button", { name: "提交管理任务", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByText(/原比例 .* → 目标比例 1.32/).first()).toBeVisible()
+  await expect(page.getByText(/来源：(系列 · campaign-native|广告 · ad-native)/).first()).toBeVisible()
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0].observation_state).toBe("REFRESH_PENDING")
+  expect((await page.request.post(`/api/test-native-management/${task}/read`)).ok()).toBeTruthy()
+  await page.reload()
+  const result = await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()
+  expect(result.items[0]).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", final_value: "1.32" })
+  await expect(page.getByText(/原比例 .* → 目标比例 1.32/).first()).toBeVisible()
+})

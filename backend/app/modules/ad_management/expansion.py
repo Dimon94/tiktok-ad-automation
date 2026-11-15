@@ -866,7 +866,10 @@ def _expand(
             )
             if campaign is None and row.kind == "campaign":
                 campaign = row
-            if campaign is not None:
+            if campaign is not None and (
+                row.kind == "campaign"
+                or (campaign.configuration or {}).get("budget_optimize_on") is True
+            ):
                 campaigns[_ref_key(campaign.ref)] = campaign
         for campaign in campaigns.values():
             for sibling in _child_adgroups(
@@ -911,7 +914,7 @@ def _expand(
         try:
             add_item_unchecked(row, use=use, linked=linked, force_field=force_field)
         except DomainError as exc:
-            if frozen_record is None:
+            if frozen_record is None and mutation.field != "roas":
                 raise
             # 后台准备逐项记录不可用，不因单个坏数值中断整批任务。
             items.append(
@@ -994,6 +997,46 @@ def _expand(
                 "currency": account.currency,
                 "sources": budget_sources.get(_ref_key(row.ref), []),
                 "affected_refs": [_ref_dict(row.ref)],
+            }
+        if field == "roas":
+            parent = _campaign_ancestor(
+                session,
+                context=context,
+                bc_id=bc_id,
+                row=row,
+                objects=objects,
+                route=route,
+            )
+            strategy = (
+                (parent.configuration or {}).get("budget_optimize_on")
+                if parent
+                else None
+            )
+            # 更新只要求已存在的目标 ROAS 模式与父预算策略证据；创建字段不回写。
+            if type(strategy) is not bool:
+                raise DomainError(
+                    "roas_budget_strategy_unverified", "系列预算策略尚未核实"
+                )
+            if (row.configuration or {}).get("deep_bid_type") != "VO_MIN_ROAS":
+                raise DomainError("roas_mode_unverified", "当前目标 ROAS 模式尚未核实")
+            affected = (
+                _child_adgroups(
+                    session,
+                    context=context,
+                    campaign=parent,
+                    route=route,
+                    observed_before=selection_record.created_at,
+                )
+                if strategy
+                else [row]
+            )
+            capability["roas_facts"] = {
+                "budget_strategy": "CBO" if strategy else "ABO",
+                "mode": "VO_MIN_ROAS",
+                "campaign_ref": _ref_dict(parent.ref),
+                "parent_configuration": deepcopy(parent.configuration or {}),
+                "sources": [_ref_dict(ref) for ref in refs],
+                "affected_refs": [_ref_dict(member.ref) for member in affected],
             }
         grouping_revision = grouping_revision_for(row)
         if grouping_revision is None:
@@ -1170,6 +1213,11 @@ def _expand(
             )
             return
         command = _command(row, field=field, final=final, use=use)
+        if field == "roas":
+            command = replace(
+                command,
+                original={**command.original, "roas_facts": capability["roas_facts"]},
+            )
         key = (_ref_key(row.ref), _use_key(use) if use else None, field)
         if key in command_by_ref:
             return
@@ -1483,9 +1531,81 @@ def _expand(
                 )
             )
 
+    # CBO 一次写影响全部成员；任一成员未核实/被排除时禁止部分发送。
+    if mutation.field == "roas":
+        valid_refs = {
+            _ref_key(i.ref)
+            for i in items
+            if i.execution_result in {"PENDING", "NO_CHANGE"}
+            and i.final_value is not None
+        }
+        blocked = set()
+        for item in items:
+            facts = item.capability.get("roas_facts") or {}
+            if facts.get("budget_strategy") == "CBO" and any(
+                _ref_key(
+                    EntityRef(
+                        UUID(ref["tenant_id"]),
+                        ref["advertiser_id"],
+                        ref["kind"],
+                        ref["remote_id"],
+                    )
+                )
+                not in valid_refs
+                for ref in facts["affected_refs"]
+            ):
+                blocked.add(item.ref)
+        items = [
+            replace(
+                i,
+                command=None,
+                execution_result="UNSUPPORTED",
+                reason="roas_members_unverified",
+            )
+            if i.ref in blocked
+            else i
+            for i in items
+        ]
+        commands = [i.command for i in items if i.command is not None]
+
+    # CBO 有实际写入时，已等于目标的兄弟仍需登记这次写的受理与独立回读。
+    if mutation.field == "roas":
+        writing_series = {
+            (i.ref.advertiser_id, i.parent_ref.remote_id)
+            for i in items
+            if i.execution_result == "PENDING"
+            and (i.capability.get("roas_facts") or {}).get("budget_strategy") == "CBO"
+        }
+        for index, item in enumerate(items):
+            if (
+                item.execution_result == "NO_CHANGE"
+                and item.reason == "no_change"
+                and item.parent_ref
+                and (item.ref.advertiser_id, item.parent_ref.remote_id)
+                in writing_series
+                and item.capability.get("roas_facts")
+            ):
+                command = _command(
+                    objects[_ref_key(item.ref)],
+                    field="roas",
+                    final=item.final_value,
+                    use=None,
+                )
+                command = replace(
+                    command,
+                    original={
+                        **command.original,
+                        "roas_facts": item.capability["roas_facts"],
+                    },
+                )
+                items[index] = replace(
+                    item, command=command, execution_result="PENDING", reason=None
+                )
+        commands = [i.command for i in items if i.command is not None]
+
     # Same series cannot receive divergent ROAS values in one management task.
     if mutation.field == "roas":
-        by_series: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+        by_series: dict[tuple[Any, ...], set[Decimal]] = defaultdict(set)
         for item in items:
             if item.final_value is None:
                 continue
@@ -1502,7 +1622,10 @@ def _expand(
                 if row is not None
                 else (item.ref.advertiser_id, item.ref.remote_id)
             )
-            by_series[series].add(str(item.final_value))
+            if (item.capability.get("roas_facts") or {}).get(
+                "budget_strategy"
+            ) == "CBO":
+                by_series[series].add(Decimal(str(item.final_value)))
         conflicts = {key for key, values in by_series.items() if len(values) > 1}
         if conflicts and frozen_record is None:
             raise DomainError(

@@ -110,6 +110,8 @@ def _command(item: ManagementTaskItem) -> ManagementCommand:
         original["material_type"] = item.material_use["material_type"]
     if capability.get("ad_type") is not None:
         original.setdefault("ad_type", capability["ad_type"])
+    if capability.get("roas_facts"):
+        original["roas_facts"] = capability["roas_facts"]
     final = item.final_value
     if final is None:
         raise DomainError("management_request_invalid", "冻结最终值缺失")
@@ -158,6 +160,7 @@ def _public(item: ManagementTaskItem) -> ManagementItemPublic:
                 pass
     return ManagementItemPublic(
         budget_facts=item.capability.get("budget_facts"),
+        roas_facts=item.capability.get("roas_facts"),
         ref=_ref(item.ref),
         material_use=_material(item.material_use),
         original_value=original,
@@ -315,10 +318,10 @@ def _recover_cancelled_claims(session: Session, task: ManagementTask) -> None:
 
 
 def same_management_value(operation: str, actual: Any, expected: Any) -> bool:
-    """金额按十进制数值比较，等额的不同文本表示不会造成预算冲突。"""
+    """金额/ROAS 比例按十进制比较，等值文本不会造成发送冲突。"""
     if actual is None or expected is None:
         return False
-    if operation == "update_budget":
+    if operation in {"update_budget", "update_roas"}:
         try:
             left, right = Decimal(str(actual)), Decimal(str(expected))
             return left.is_finite() and right.is_finite() and left == right
@@ -396,6 +399,24 @@ def _same_frozen_value(
             raise DomainError(
                 "management_observation_conflict", "恢复预算缺少发送后的目录证据"
             )
+        facts = capability.get("roas_facts")
+        if facts:
+            parent = session.get(
+                AdObject,
+                (
+                    ref.tenant_id,
+                    ref.advertiser_id,
+                    "campaign",
+                    facts["campaign_ref"]["remote_id"],
+                ),
+            )
+            if (
+                (row.configuration or {}).get("deep_bid_type") != facts["mode"]
+                or parent is None
+                or (parent.configuration or {}).get("budget_optimize_on")
+                is not (facts["budget_strategy"] == "CBO")
+            ):
+                raise DomainError("roas_mode_changed", "冻结 ROAS 模式或预算策略已变化")
         operation = str(capability.get("operation"))
         if operation == "rename":
             # 改名的冻结原值是目录名称；名称已被他人修改则不覆盖。
@@ -672,7 +693,8 @@ def _persist_outcome(
         item.observation_state = (
             (
                 "REFRESH_PENDING"
-                if (item.capability or {}).get("operation") == "update_budget"
+                if (item.capability or {}).get("operation")
+                in {"update_budget", "update_roas"}
                 or (
                     settings.ADS_SYNC_ENABLED
                     and (item.capability or {}).get("operation") == "set_status"
@@ -778,12 +800,18 @@ def _target_observed(session: Session, item: ManagementTaskItem) -> bool | None:
         and row.source_channel == task.route["channel"]
     ):
         return None
-    if item.capability.get("operation") == "update_budget":
+    if item.capability.get("operation") in {"update_budget", "update_roas"}:
         # 比较观察时的实际金额，不借 SDK 回执或旧目录宣称生效。
         try:
-            return Decimal(str((row.configuration or {}).get("budget"))) == Decimal(
-                str(item.final_value)
-            )
+            return Decimal(
+                str(
+                    (row.configuration or {}).get(
+                        "roas_bid"
+                        if item.capability.get("operation") == "update_roas"
+                        else "budget"
+                    )
+                )
+            ) == Decimal(str(item.final_value))
         except InvalidOperation:
             return False
     return row.operation_status == item.final_value
@@ -801,7 +829,7 @@ def _set_refresh_state(
         item = _locked_item(session, item_id)
         if item is None or item.execution_result != "ACCEPTED":
             return
-        if item.capability.get("operation") == "update_budget":
+        if item.capability.get("operation") in {"update_budget", "update_roas"}:
             task = session.get(ManagementTask, item.task_id)
             try:
                 verify_route(
@@ -828,22 +856,29 @@ def _set_refresh_state(
             not pending
             and settings.ADS_SYNC_ENABLED
             and (item.capability or {}).get("operation")
-            in {"set_status", "update_budget"}
+            in {"set_status", "update_budget", "update_roas"}
         ):
             observed = _target_observed(session, item)
-            if (
-                observed is False
-                and item.capability.get("operation") == "update_budget"
-            ):
+            if observed is False and item.capability.get("operation") in {
+                "update_budget",
+                "update_roas",
+            }:
                 item.observation_state = "NEEDS_REVIEW"
-                item.reason = "budget_observed_different"
+                item.reason = (
+                    "roas_observed_different"
+                    if item.capability.get("operation") == "update_roas"
+                    else "budget_observed_different"
+                )
                 session.add(item)
                 _update_task(session, item.task_id, item.tenant_id)
                 return
+            if observed is None and item.capability.get("operation") == "update_roas":
+                error = "roas_observation_unavailable"
             pending = not observed
         if pending and (item.capability or {}).get("operation") in {
             "set_status",
             "update_budget",
+            "update_roas",
         }:
             bc_id = session.exec(
                 select(ManagementTask.bc_id).where(ManagementTask.id == item.task_id)
@@ -906,6 +941,7 @@ def _retry_targeted_refresh(database_engine: Engine, item_id: UUID) -> None:
         observed = (item.capability or {}).get("operation") in {
             "set_status",
             "update_budget",
+            "update_roas",
         } and _target_observed(session, item)
         session.commit()
     if observed:

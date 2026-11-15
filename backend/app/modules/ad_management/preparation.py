@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import Numeric, cast, func
 from sqlmodel import Session, select
 
 from app.core.errors import DomainError
@@ -121,18 +121,19 @@ def prepare_direct_chunk(session: Session, task_id: UUID) -> bool:
         )
         if previous is not None and not promote:
             # CBO 来源可能跨准备块；只合并审计映射，绝不覆盖首次冻结金额/币种。
-            facts = previous.capability.get("budget_facts")
-            incoming = item.capability.get("budget_facts")
-            if facts and incoming:
-                sources = list(facts["sources"])
-                for source in incoming["sources"]:
-                    if source not in sources:
-                        sources.append(source)
-                previous.capability = {
-                    **previous.capability,
-                    "budget_facts": {**facts, "sources": sources},
-                }
-                session.add(previous)
+            for fact_key in ("budget_facts", "roas_facts"):
+                facts = previous.capability.get(fact_key)
+                incoming = item.capability.get(fact_key)
+                if facts and incoming:
+                    sources = list(facts["sources"])
+                    for source in incoming["sources"]:
+                        if source not in sources:
+                            sources.append(source)
+                    previous.capability = {
+                        **previous.capability,
+                        fact_key: {**facts, "sources": sources},
+                    }
+                    session.add(previous)
             continue
         row = ManagementTaskItem(
             tenant_id=task.tenant_id,
@@ -204,10 +205,19 @@ def prepare_direct_chunk(session: Session, task_id: UUID) -> bool:
                     ManagementTaskItem.tenant_id == task.tenant_id,
                     ManagementTaskItem.task_id == task.id,
                     ManagementTaskItem.execution_result == "PENDING",
+                    ManagementTaskItem.capability["roas_facts"][
+                        "budget_strategy"
+                    ].astext
+                    == "CBO"
+                    if mutation.field == "roas"
+                    else True,
                 )
                 .group_by(account, group)
                 .having(
-                    func.count(func.distinct(ManagementTaskItem.final_value)) > 1
+                    func.count(
+                        func.distinct(cast(ManagementTaskItem.final_value, Numeric))
+                    )
+                    > 1
                     if mutation.field == "roas"
                     else func.count() > 1
                 )

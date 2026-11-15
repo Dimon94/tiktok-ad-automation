@@ -19,8 +19,11 @@ import {
   targetText,
 } from "./presentation"
 
+import { RoasFacts } from "./RoasFacts"
+
 function BudgetFacts({ item }: { item: ManagementItemPublic }) {
   const facts = item.budget_facts
+  if (item.roas_facts) return <RoasFacts item={item} />
   if (!facts) return "—"
   return (
     <div className="space-y-1">
@@ -406,7 +409,7 @@ export function ManagementTaskDetailPage() {
                           className="p-2"
                           title={item.observation_state ?? undefined}
                         >
-                          {receiptLabel(item.observation_state)}
+                          {item.roas_facts && item.observation_state === "ACCEPTED" ? "已观察目标" : receiptLabel(item.observation_state)}
                         </td>
                         <td className="p-2">
                           {item.attempts?.length

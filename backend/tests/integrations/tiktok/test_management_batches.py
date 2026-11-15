@@ -508,7 +508,7 @@ def test_smart_roas_series_sends_one_group_and_shares_receipt(_sdk_boundary):
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         )
         for i in ("one", "two")
     )
@@ -536,7 +536,7 @@ def test_smart_roas_series_conflicting_targets_rejected_before_sending(_sdk_boun
         smart=True,
         kind="adgroup",
         field="roas",
-        original={"campaign_id": "campaign"},
+        original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
     )
     two = replace(
         command(
@@ -544,7 +544,7 @@ def test_smart_roas_series_conflicting_targets_rejected_before_sending(_sdk_boun
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         ),
         desired={"roas_bid": "1.30"},
     )
@@ -566,7 +566,7 @@ def test_roas_groups_keep_all_41_audit_members_without_planning_duplicate_reques
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         )
         for i in range(41)
     )
@@ -588,7 +588,7 @@ def test_roas_without_verified_same_smart_series_stays_single(smart, campaigns):
             smart=smart,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": campaign},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": campaign},
         )
         for i, campaign in enumerate(campaigns)
     )
@@ -604,7 +604,7 @@ def test_roas_series_group_is_tenant_account_scoped_and_decimal_normalized():
         smart=True,
         kind="adgroup",
         field="roas",
-        original={"campaign_id": "campaign"},
+        original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
     )
     two = replace(
         command(
@@ -612,7 +612,7 @@ def test_roas_series_group_is_tenant_account_scoped_and_decimal_normalized():
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         ),
         desired={"roas_bid": "1.2000"},
     )
@@ -632,7 +632,7 @@ def test_linked_roas_transport_failure_propagates_to_every_member(_sdk_boundary)
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         )
         for i in ("one", "two")
     )
@@ -649,7 +649,7 @@ def test_21_linked_roas_audit_members_still_send_only_one_platform_id(_sdk_bound
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         )
         for i in range(21)
     )
@@ -676,7 +676,7 @@ def test_roas_mixed_campaign_audit_batch_is_not_sent(_sdk_boundary):
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": str(i)},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": str(i)},
         )
         for i in range(21)
     )
@@ -703,7 +703,7 @@ def test_mcp_linked_roas_uses_one_single_group_tool_call():
             smart=True,
             kind="adgroup",
             field="roas",
-            original={"campaign_id": "campaign"},
+            original={"roas_facts": {"budget_strategy": "CBO"}, "campaign_id": "campaign"},
         )
         for i in range(21)
     )
@@ -750,3 +750,8 @@ def test_campaign_list_wrong_status_never_proves_requested_pause():
         },
     )
     assert receipts[0].outcome == "UNKNOWN"
+
+
+def test_old_roas_commands_do_not_invent_cbo():
+    commands = tuple(command(identity, field="roas", kind="adgroup", smart=True, original={"campaign_id": "same"}) for identity in ("one", "two"))
+    assert batches.plan_batches(commands) == ((commands[0],), (commands[1],))

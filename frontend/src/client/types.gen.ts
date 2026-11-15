@@ -5031,6 +5031,14 @@ export type ManagementItemPublic = {
      */
     final_value?: string | string | null;
     budget_facts?: BudgetFactsPublic | null;
+    roas_facts?: {
+        budget_strategy: 'CBO' | 'ABO';
+        mode: string;
+        campaign_ref: EntityRef;
+        parent_configuration: Record<string, unknown>;
+        sources: EntityRef[];
+        affected_refs: EntityRef[];
+    } | null;
     /**
      * Reason
      */
