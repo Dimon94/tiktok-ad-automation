@@ -5639,3 +5639,12 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 ## 2026-11-15 — JB62 root阶段验收
 
 精确候选959bc8198aec326c579701ddc4f7120b9988ef4e的预算归属、冻结金额/币种、来源及实际预算对象映射、新鲜回读经root源审及7项HTTP/PG17/Redis定向复验通过（25.58s）。其余匹配源码证据继承，详见JB62验证记录。释放同树JB63 fresh Codex gpt-6.1-sol/high；不提前关闭JB62，不改变原生依赖边。整个M5b仍待异常/恢复、fresh两轴审查与本地集成；无push/PR/deploy/真实平台操作。
+
+
+## 2026-11-15 — JB63 Native预算异常与恢复本地候选
+
+- START `34b1e0cf5b4fa7670995390d99504a0ca1684c48`；产品源码 `208ef0302872ed9e365656cc961b67337fbf6abe`。fresh Codex gpt-6.1-sol/high，指定原树唯一 writer，无子代理或checkout。
+- 恢复预览与任务详情共用冻结预算owner/原目标→原原值/账户币种/sources/affected_refs；预算Decimal相等比较接入原预览与发送前核验；冻结原请求时间以拒绝旧目录恢复。UNKNOWN来源补入既有管理权限核验，保留显式反向恢复而不重发原UNKNOWN。
+- 最终预算专项32通过（真实HTTP/PG17/Redis/原Worker/目录发布/SDK transport替身，含两个真实工作区场景）；最新权限回归10通过；七个源码RED探针finally/cmp还原；tsc、正式/demo build、Ruff、diff通过。原大组122通过/1个旧状态stale浏览器失败，隔离单例通过，保留间歇失败及根因Unknown；不称全历史绿跑。
+- 详细七AC、独立Decimal预期、命令、RED/GREEN、继承证据和限制：[JB63验证记录](validation/2026-11-15-jb63-native-budget-recovery.md)。旧SQL26>25失败未改；真实平台/生产/独立broker投递Unknown。
+- 只交本地候选给root整片M5b Standards/Spec两轴审查；JB62/JB63不提前关闭，不宣称整个M5b完成。无tracker写、push、PR、main合并、部署或真实广告操作；服务与原共享链接保留。
