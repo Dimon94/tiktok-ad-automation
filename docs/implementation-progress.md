@@ -5648,3 +5648,10 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - 最终预算专项32通过（真实HTTP/PG17/Redis/原Worker/目录发布/SDK transport替身，含两个真实工作区场景）；最新权限回归10通过；七个源码RED探针finally/cmp还原；tsc、正式/demo build、Ruff、diff通过。原大组122通过/1个旧状态stale浏览器失败，隔离单例通过，保留间歇失败及根因Unknown；不称全历史绿跑。
 - 详细七AC、独立Decimal预期、命令、RED/GREEN、继承证据和限制：[JB63验证记录](validation/2026-11-15-jb63-native-budget-recovery.md)。旧SQL26>25失败未改；真实平台/生产/独立broker投递Unknown。
 - 只交本地候选给root整片M5b Standards/Spec两轴审查；JB62/JB63不提前关闭，不宣称整个M5b完成。无tracker写、push、PR、main合并、部署或真实广告操作；服务与原共享链接保留。
+
+
+## 2026-11-15 — M5b 本地接受与集成收口
+
+JB62/JB63按用户批准的预算两票完成，保留原直接受理/异步准备和通用owner；冻结金额币种/来源映射、真实预算回读、UNKNOWN只读及显式恢复门禁已贯通。root阶段亲跑7与17项通过；其它源码匹配预算/浏览器/构建/实际源码拒错证据继承。固定0e7cf885...d033bd243整片fresh Codex gpt-6.1-sol/high Standards/Spec R1均PASS、四级问题均0。详见[本地接受记录](validation/2026-11-15-native-m5b-acceptance.md)。
+
+后续按项目规则快进本地main、最小原工作区恢复纵链检查与两票闭合/专用环境清理；实际读回保存在外部closeout.json。旧SQL26>25断言和状态stale间歇根因Unknown保留；无push/PR/deploy/真实平台/生产验收，不关闭EpicJB19。
