@@ -159,6 +159,8 @@ def test_slow_account_is_retained_and_does_not_block_other_accounts(
     assert datetime.fromisoformat(state["deferred"]["acc-1"]) == now + timedelta(
         minutes=5
     )
+    # 紧片仅用于制造慢户延期；后续恢复实际配置，验证其他账户与延期游标继续推进。
+    monkeypatch.setattr(job_tasks, "DIRECTORY_PLAN_SECONDS", 3)
     job_tasks._plan_directory_step(
         session, plan, accounts=["acc-1", "acc-2"], now=now + timedelta(seconds=5)
     )
@@ -167,7 +169,6 @@ def test_slow_account_is_retained_and_does_not_block_other_accounts(
         "acc-1"
         in plan.screening_progress[job_tasks.DIRECTORY_PLAN_PROGRESS]["deferred"]
     )
-    monkeypatch.setattr(job_tasks, "DIRECTORY_PLAN_SECONDS", 3)
     job_tasks._plan_directory_step(
         session, plan, accounts=["acc-1", "acc-2"], now=now + timedelta(seconds=10)
     )

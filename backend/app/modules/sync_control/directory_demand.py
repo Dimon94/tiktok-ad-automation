@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from datetime import UTC, datetime
+from typing import cast as typing_cast
 from uuid import UUID
 
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.integrations.tiktok.platform_quotas import sdk_endpoint
@@ -48,7 +50,7 @@ def promote_directory_heads(session: Session, run_ids: Collection[UUID]) -> None
         col(SyncExecutionScope.directory_run_id).in_(run_ids),
         col(SyncExecutionScope.status) == "PENDING",
     )
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         update(SyncRequirement)
         .where(
             col(SyncRequirement.id).in_(references),
@@ -111,7 +113,7 @@ def promote_directory_heads(session: Session, run_ids: Collection[UUID]) -> None
             .correlate(SyncSchedule)
             .exists()
         )
-        session.execute(
+        typing_cast(SQLAlchemySession, session).execute(
             update(SyncSchedule)
             .where(
                 col(SyncSchedule.scope_id).in_([row["scope_id"] for row in values]),

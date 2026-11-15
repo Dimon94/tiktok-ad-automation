@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal
+from typing import cast as typing_cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -20,6 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.orm import aliased
 from sqlmodel import Field, Session, SQLModel, col, select
 
@@ -65,11 +67,23 @@ class KnowledgeVersion(SQLModel, table=True):
     )
     conflict_key: str | None = Field(default=None, max_length=100)
     status: str = Field(default="CONFIRMED", max_length=16)
-    expires_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    expires_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(
+            DateTime(timezone=True), index=False, unique=False, nullable=True
+        ),
+    )
     sharing_review: str | None = None
     created_by: UUID = Field(foreign_key="user.id")
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC), sa_type=DateTime(timezone=True)
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=lambda: datetime.now(UTC),
+        ),
     )
 
 
@@ -104,11 +118,14 @@ class KnowledgeInput(BaseModel):
 
 def _scope_clause(context, bc_id=None):
     return or_(
-        KnowledgeVersion.scope == "PUBLIC",
-        (KnowledgeVersion.tenant_id == context.tenant_id)
+        col(KnowledgeVersion.scope) == "PUBLIC",
+        (col(KnowledgeVersion.tenant_id) == context.tenant_id)
         & (
-            (KnowledgeVersion.scope == "TENANT")
-            | ((KnowledgeVersion.scope == "BC") & (KnowledgeVersion.bc_id == bc_id))
+            (col(KnowledgeVersion.scope) == "TENANT")
+            | (
+                (col(KnowledgeVersion.scope) == "BC")
+                & (col(KnowledgeVersion.bc_id) == bc_id)
+            )
         ),
     )
 
@@ -118,8 +135,8 @@ def latest_query():
     return select(KnowledgeVersion).where(
         ~exists(
             select(newer.id).where(
-                newer.asset_id == KnowledgeVersion.asset_id,
-                newer.version > KnowledgeVersion.version,
+                newer.asset_id == col(KnowledgeVersion.asset_id),
+                newer.version > col(KnowledgeVersion.version),
             )
         )
     )
@@ -148,7 +165,7 @@ def create_version(
     number = 1
     if asset_id is None:
         # 初次导入按逻辑 key 串行并幂等；重复运行不能产生第二个公共知识资产。
-        session.execute(
+        typing_cast(SQLAlchemySession, session).execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
             {
                 "key": f"ai-knowledge-key:{body.scope}:{tenant_id}:{body.bc_id}:{body.key}"
@@ -156,10 +173,10 @@ def create_version(
         )
         existing = session.exec(
             latest_query().where(
-                KnowledgeVersion.scope == body.scope,
-                KnowledgeVersion.tenant_id == tenant_id,
-                KnowledgeVersion.bc_id == body.bc_id,
-                KnowledgeVersion.key == body.key,
+                col(KnowledgeVersion.scope) == body.scope,
+                col(KnowledgeVersion.tenant_id) == tenant_id,
+                col(KnowledgeVersion.bc_id) == body.bc_id,
+                col(KnowledgeVersion.key) == body.key,
             )
         ).all()
         if existing:
@@ -172,13 +189,13 @@ def create_version(
             )
     if asset_id:
         # 同一资产版本发布串行，避免并发覆盖；不允许借更新移动私有范围到公共库。
-        session.execute(
+        typing_cast(SQLAlchemySession, session).execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
             {"key": f"ai-knowledge:{asset_id}"},
         )
         previous = session.exec(
             latest_query().where(
-                KnowledgeVersion.asset_id == asset_id,
+                col(KnowledgeVersion.asset_id) == asset_id,
                 _scope_clause(context, body.bc_id),
             )
         ).one_or_none()
@@ -221,8 +238,8 @@ def promote_public(
         raise DomainError("action_forbidden", "共享提炼需平台管理员审核")
     original = session.exec(
         select(KnowledgeVersion).where(
-            KnowledgeVersion.id == version_id,
-            KnowledgeVersion.tenant_id == context.tenant_id,
+            col(KnowledgeVersion.id) == version_id,
+            col(KnowledgeVersion.tenant_id) == context.tenant_id,
         )
     ).one_or_none()
     if original is None or not review.strip() or body.strip() == original.body.strip():
@@ -233,15 +250,17 @@ def promote_public(
     return create_version(
         session,
         context=context,
-        body=KnowledgeInput(
-            key=f"general-{uuid4().hex}",
-            scope="PUBLIC",
-            title="已审核通用投放经验",
-            body=body,
-            source="explicit-sharing-review",
-            sharing_review=review,
-            tags=original.tags,
-            source_verified=True,
+        body=KnowledgeInput.model_validate(
+            {
+                "key": f"general-{uuid4().hex}",
+                "scope": "PUBLIC",
+                "title": "已审核通用投放经验",
+                "body": body,
+                "source": "explicit-sharing-review",
+                "sharing_review": review,
+                "tags": original.tags,
+                "source_verified": True,
+            }
         ),
     )
 
@@ -256,13 +275,13 @@ def select_knowledge(
 ) -> list[dict]:
     now = now or datetime.now(UTC)
     query = latest_query().where(
-        _scope_clause(context, bc_id), KnowledgeVersion.status == "CONFIRMED"
+        _scope_clause(context, bc_id), col(KnowledgeVersion.status) == "CONFIRMED"
     )
     if tags:
         query = query.where(
             or_(
-                KnowledgeVersion.tags == [],
-                or_(*(KnowledgeVersion.tags.contains([tag]) for tag in tags)),
+                col(KnowledgeVersion.tags) == [],
+                or_(*(col(KnowledgeVersion.tags).contains([tag]) for tag in tags)),
             )
         )
     rows = session.exec(

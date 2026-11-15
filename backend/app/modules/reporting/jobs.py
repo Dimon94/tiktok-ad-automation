@@ -12,12 +12,14 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from random import randint
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import delete
 from sqlmodel import Session, col, select
 
 from app.core.errors import DomainError
+from app.integrations.tiktok.contracts.change_log_reader import ChangeLogReader
 from app.integrations.tiktok.contracts.report_reader import RawReportPage, ReportReader
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
 from app.modules.accounts.models import AdvertiserAccount
@@ -194,7 +196,7 @@ def enqueue_jobs(
 def _accounts(session, tenant_id, advertiser_ids) -> dict[str, publish.AccountMeta]:
     rows = session.exec(
         select(AdvertiserAccount).where(
-            AdvertiserAccount.tenant_id == tenant_id,
+            col(AdvertiserAccount.tenant_id) == tenant_id,
             col(AdvertiserAccount.advertiser_id).in_(advertiser_ids),
         )
     ).all()
@@ -233,7 +235,7 @@ def request_time(job: ReportSyncJob) -> datetime:
 
 def _split(session, job: ReportSyncJob) -> bool:
     """多账户截断拆成独立账户；单账户在一次事务内读完所有系列批再发布。"""
-    common = {
+    common: dict[str, Any] = {
         "tenant_id": job.tenant_id,
         "bc_id": job.bc_id,
         "kind": job.kind,
@@ -280,7 +282,13 @@ def _run(
     if job.kind == "operation_log":
         from app.modules.operation_logs.worker import run_step
 
-        return run_step(session, job, reader, accounts, external=reader.reader.external)
+        return run_step(
+            session,
+            job,
+            cast(ChangeLogReader, reader),
+            accounts,
+            external=reader.reader.external,
+        )
     if job.kind in BASIC_KINDS:
         reader = CheckpointReader(
             session, job, reader, scope=_basic_scope(job), row_limit=TRUNCATION_ROWS
@@ -424,7 +432,7 @@ class _CountingReader:
         self.successful_queries: set[str] = set()
         self.failed_query: str | None = None
 
-    def __getattr__(self, name) -> Callable[..., RawReportPage]:
+    def __getattr__(self, name) -> Callable[..., Any]:
         read = getattr(self.reader, name)
 
         def counted(**kwargs):
@@ -512,7 +520,7 @@ def execute_job(
 ) -> str:
     with session_factory() as session:
         job = session.exec(
-            select(ReportSyncJob).where(ReportSyncJob.id == job_id)
+            select(ReportSyncJob).where(col(ReportSyncJob.id) == job_id)
         ).one()
         if job.claim_token != claim_token or job.status != "RUNNING":
             return "FAILED"  # 旧领取者：不得改写新领取的任务
@@ -631,7 +639,7 @@ def _handle_error(session, job: ReportSyncJob, error: DomainError) -> str:
         if job.start_date < job.end_date:
             job.status, job.finished_at = "COMPLETE", datetime.now(UTC)
             session.flush()
-            common = {
+            common: dict[str, Any] = {
                 "tenant_id": job.tenant_id,
                 "bc_id": job.bc_id,
                 "kind": job.kind,

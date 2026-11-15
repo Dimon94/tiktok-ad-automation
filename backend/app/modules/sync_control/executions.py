@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
+from typing import cast as typing_cast
 
 from sqlalchemy import select as sa_select
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -55,17 +57,21 @@ class TransactionBoundaryReader:
             .with_for_update()
             .execution_options(populate_existing=True)
         ).all()
-        current = self.session.execute(
-            sa_select(
-                col(ReportSyncJob.status),
-                col(ReportSyncJob.claim_token),
-                col(ReportSyncJob.claim_generation),
-                col(ReportSyncJob.owner_epoch),
-                col(ReportSyncJob.claimed_until),
+        current = (
+            typing_cast(SQLAlchemySession, self.session)
+            .execute(
+                sa_select(
+                    col(ReportSyncJob.status),
+                    col(ReportSyncJob.claim_token),
+                    col(ReportSyncJob.claim_generation),
+                    col(ReportSyncJob.owner_epoch),
+                    col(ReportSyncJob.claimed_until),
+                )
+                .where(col(ReportSyncJob.id) == self.job_id)
+                .with_for_update()
             )
-            .where(col(ReportSyncJob.id) == self.job_id)
-            .with_for_update()
-        ).one_or_none()
+            .one_or_none()
+        )
         if (
             current is None
             or current.status != "RUNNING"

@@ -39,6 +39,7 @@ interface Destination {
   search: Record<string, unknown>
 }
 interface PageTab {
+  scope: string
   path: string
   href: string
   title: string
@@ -153,6 +154,7 @@ export function WorkspaceTabsProvider({
   const router = useRouter()
   const location = useRouterState({ select: (state) => state.location })
   const current: PageTab = {
+    scope: scopeOf(location),
     path: location.pathname,
     href: location.href,
     title: titleFor(location.pathname, groups),
@@ -173,7 +175,10 @@ export function WorkspaceTabsProvider({
 
   // 同步登记已提交的 URL，确保新页面与标签选中态在同一帧切换。
   const existing = tabs.find((tab) => tab.path === current.path)
-  if (
+  // BC 切换清空旧标签；当前租户素材页由下方稳定 key 保留上传控制器。
+  if (tabs.some((tab) => tab.scope !== scope)) {
+    setTabs([current])
+  } else if (
     !existing ||
     existing.href !== current.href ||
     existing.title !== current.title
@@ -344,7 +349,14 @@ export function WorkspaceTabPages() {
           aria-labelledby={`workspace-tab-${encodeURIComponent(tab.path)}`}
           className="flex min-w-0 flex-col gap-6"
         >
-          <TabPage href={tab.href} />
+          <TabPage
+            key={
+              /^\/tenants\/[^/]+\/materials$/.test(tab.path)
+                ? tab.path
+                : tab.scope
+            }
+            href={tab.href}
+          />
         </div>
       </PageContext.Provider>
     </Activity>
@@ -371,10 +383,12 @@ export function useWorkspacePageGuard(dirty: boolean, retainOnSwitch = true) {
     [path, id],
   )
   useEffect(() => {
-    if (context && path) context.markDirty(path, id, dirty)
-  }, [context, path, id, dirty])
+    if (context && path) context.markDirty(path, id, dirty && retainOnSwitch)
+  }, [context, path, id, dirty, retainOnSwitch])
+  // 本地传输不交给通用丢弃提示：原页面负责暂停、取消请求和跨租户离开。
   return (next: Destination) =>
+    retainOnSwitch &&
     !!context &&
     !!path &&
-    (!context.sameScope(next) || (retainOnSwitch && next.pathname !== path))
+    (!context.sameScope(next) || next.pathname !== path)
 }

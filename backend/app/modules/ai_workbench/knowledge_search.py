@@ -23,12 +23,12 @@ def _query(task):
     # 截止后发布的版本不替换旧任务的政策；同资产在截止前的退休版本会阻止旧版复活。
     return select(KnowledgeVersion).where(
         _scope_clause(context, task.evidence["optimizer"]["bc_id"]),
-        KnowledgeVersion.created_at <= cutoff,
-        KnowledgeVersion.status == "CONFIRMED",
+        col(KnowledgeVersion.created_at) <= cutoff,
+        col(KnowledgeVersion.status) == "CONFIRMED",
         ~exists(
             select(newer.id).where(
-                newer.asset_id == KnowledgeVersion.asset_id,
-                newer.version > KnowledgeVersion.version,
+                newer.asset_id == col(KnowledgeVersion.asset_id),
+                newer.version > col(KnowledgeVersion.version),
                 newer.created_at <= cutoff,
             )
         ),
@@ -65,15 +65,17 @@ def search_for_task(session: Session, *, task, query: str, offset: int = 0) -> d
                     column.icontains(word, autoescape=True)
                     for word in words
                     for column in (
-                        KnowledgeVersion.title,
-                        KnowledgeVersion.body,
-                        KnowledgeVersion.applicability,
+                        col(KnowledgeVersion.title),
+                        col(KnowledgeVersion.body),
+                        col(KnowledgeVersion.applicability),
                     )
                 )
             )
         )
     rows = session.exec(
-        statement.order_by(col(KnowledgeVersion.created_at).desc(), KnowledgeVersion.id)
+        statement.order_by(
+            col(KnowledgeVersion.created_at).desc(), col(KnowledgeVersion.id)
+        )
         .offset(offset)
         .limit(11)
     ).all()
@@ -98,7 +100,7 @@ def read_for_task(session: Session, *, task, knowledge_id: UUID) -> dict:
     if cached:
         return cached
     row = session.exec(
-        _query(task).where(KnowledgeVersion.id == knowledge_id)
+        _query(task).where(col(KnowledgeVersion.id) == knowledge_id)
     ).one_or_none()
     if row is None:
         raise HTTPException(404, "knowledge_not_available_in_task_scope")
@@ -112,7 +114,7 @@ def read_for_task(session: Session, *, task, knowledge_id: UUID) -> dict:
     conflict_count = (
         session.exec(
             _query(task)
-            .where(KnowledgeVersion.conflict_key == row.conflict_key)
+            .where(col(KnowledgeVersion.conflict_key) == row.conflict_key)
             .limit(2)
         ).all()
         if row.conflict_key

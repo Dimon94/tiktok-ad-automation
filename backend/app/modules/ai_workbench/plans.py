@@ -51,8 +51,26 @@ class AIDailyPlan(SQLModel, table=True):
     revision: int = 1
     created_by: UUID = Field(foreign_key="user.id")
     updated_by: UUID = Field(foreign_key="user.id")
-    created_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
-    updated_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
 
 
 class AIDailyPlanRow(SQLModel, table=True):
@@ -113,7 +131,13 @@ class AIDailyPlanRow(SQLModel, table=True):
     timezone: str = Field(default="Asia/Shanghai", max_length=64)
     next_dispatch_at: datetime = Field(
         default_factory=lambda: datetime(1970, 1, 1, tzinfo=UTC),
-        sa_type=DateTime(timezone=True),
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=lambda: datetime(1970, 1, 1, tzinfo=UTC),
+        ),
     )
     last_dispatch_error: str | None = Field(default=None, max_length=128)
     position: int = Field(default=0, ge=0)

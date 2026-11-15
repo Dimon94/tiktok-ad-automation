@@ -8,6 +8,7 @@ immutable version snapshot created by these short database transactions.
 import hashlib
 import json
 from typing import Any, cast
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -72,8 +73,8 @@ def _optimizer(
     session: Session, context: TenantContext, optimizer_id: UUID, *, lock: bool = False
 ) -> AIOptimizer:
     query = select(AIOptimizer).where(
-        AIOptimizer.tenant_id == context.tenant_id,
-        AIOptimizer.id == optimizer_id,
+        col(AIOptimizer.tenant_id) == context.tenant_id,
+        col(AIOptimizer.id) == optimizer_id,
     )
     if lock:
         query = query.with_for_update()
@@ -102,8 +103,8 @@ def _validate_strategy(
 ) -> StrategyVersion:
     row = session.exec(
         select(StrategyVersion).where(
-            StrategyVersion.tenant_id == tenant_id,
-            StrategyVersion.id == strategy_version_id,
+            col(StrategyVersion.tenant_id) == tenant_id,
+            col(StrategyVersion.id) == strategy_version_id,
         )
     ).one_or_none()
     if row is None:
@@ -125,8 +126,8 @@ def _guard_shared_strategy(
     strategy = session.exec(
         select(StrategyVersion)
         .where(
-            StrategyVersion.tenant_id == tenant_id,
-            StrategyVersion.id == strategy_version_id,
+            col(StrategyVersion.tenant_id) == tenant_id,
+            col(StrategyVersion.id) == strategy_version_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -137,8 +138,8 @@ def _guard_shared_strategy(
     existing = session.exec(
         select(AIOptimizerStrategyBinding)
         .where(
-            AIOptimizerStrategyBinding.tenant_id == tenant_id,
-            AIOptimizerStrategyBinding.strategy_version_id == strategy_version_id,
+            col(AIOptimizerStrategyBinding.tenant_id) == tenant_id,
+            col(AIOptimizerStrategyBinding.strategy_version_id) == strategy_version_id,
         )
         .with_for_update()
     ).all()
@@ -154,8 +155,8 @@ def _validate_rules(
     if not rule_ids:
         return
     found = session.exec(
-        select(AutomationRule.id).where(
-            AutomationRule.tenant_id == tenant_id,
+        select(col(AutomationRule.id)).where(
+            col(AutomationRule.tenant_id) == tenant_id,
             col(AutomationRule.id).in_(rule_ids),
         )
     ).all()
@@ -174,9 +175,9 @@ def _active_version(
 ) -> AIOptimizerVersion:
     row = session.exec(
         select(AIOptimizerVersion).where(
-            AIOptimizerVersion.tenant_id == tenant_id,
-            AIOptimizerVersion.optimizer_id == optimizer.id,
-            AIOptimizerVersion.number == optimizer.latest_version,
+            col(AIOptimizerVersion.tenant_id) == tenant_id,
+            col(AIOptimizerVersion.optimizer_id) == optimizer.id,
+            col(AIOptimizerVersion.number) == optimizer.latest_version,
         )
     ).one_or_none()
     if row is None:
@@ -191,9 +192,9 @@ def _active_binding(
 ) -> AIOptimizerStrategyBinding:
     row = session.exec(
         select(AIOptimizerStrategyBinding).where(
-            AIOptimizerStrategyBinding.tenant_id == tenant_id,
-            AIOptimizerStrategyBinding.optimizer_id == optimizer_id,
-            AIOptimizerStrategyBinding.active.is_(True),
+            col(AIOptimizerStrategyBinding.tenant_id) == tenant_id,
+            col(AIOptimizerStrategyBinding.optimizer_id) == optimizer_id,
+            col(AIOptimizerStrategyBinding.active).is_(True),
         )
     ).one_or_none()
     if row is None:
@@ -214,9 +215,9 @@ def _sync_bindings(
     current = session.exec(
         select(AIOptimizerStrategyBinding)
         .where(
-            AIOptimizerStrategyBinding.tenant_id == context.tenant_id,
-            AIOptimizerStrategyBinding.optimizer_id == optimizer_id,
-            AIOptimizerStrategyBinding.active.is_(True),
+            col(AIOptimizerStrategyBinding.tenant_id) == context.tenant_id,
+            col(AIOptimizerStrategyBinding.optimizer_id) == optimizer_id,
+            col(AIOptimizerStrategyBinding.active).is_(True),
         )
         .with_for_update()
     ).one_or_none()
@@ -238,8 +239,8 @@ def _sync_bindings(
 
     existing = session.exec(
         select(AIOptimizerRuleBinding).where(
-            AIOptimizerRuleBinding.tenant_id == context.tenant_id,
-            AIOptimizerRuleBinding.optimizer_id == optimizer_id,
+            col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
+            col(AIOptimizerRuleBinding.optimizer_id) == optimizer_id,
         )
     ).all()
     wanted = set(rule_ids)
@@ -265,39 +266,42 @@ def _public(
     session: Session, optimizer: AIOptimizer, version: AIOptimizerVersion
 ) -> OptimizerPublic:
     rules = session.exec(
-        select(AIOptimizerRuleBinding.rule_id).where(
-            AIOptimizerRuleBinding.tenant_id == optimizer.tenant_id,
-            AIOptimizerRuleBinding.optimizer_id == optimizer.id,
-            AIOptimizerRuleBinding.active.is_(True),
+        select(col(AIOptimizerRuleBinding.rule_id)).where(
+            col(AIOptimizerRuleBinding.tenant_id) == optimizer.tenant_id,
+            col(AIOptimizerRuleBinding.optimizer_id) == optimizer.id,
+            col(AIOptimizerRuleBinding.active).is_(True),
         )
     ).all()
-    return OptimizerPublic(
-        id=optimizer.id,
-        tenant_id=optimizer.tenant_id,
-        name=optimizer.name,
-        active=optimizer.active,
-        version=version.number,
-        daily_spend=version.daily_spend,
-        target_roas=version.target_roas,
-        priority=version.priority,
-        bc_id=version.bc_id,
-        advertiser_ids=tuple(version.advertiser_ids),
-        optimization_mode=version.optimization_mode,
-        timezone=version.timezone,
-        review_time=version.review_time,
-        material_config=version.material_config,
-        authorization_limits=version.authorization_limits,
-        strategy_version_id=(
-            session.get(
-                AIOptimizerStrategyBinding, version.strategy_binding_id
-            ).strategy_version_id
-        ),
-        rule_ids=tuple(rules),
-        strategy_binding_id=version.strategy_binding_id,
-        created_by=optimizer.created_by,
-        created_at=optimizer.created_at,
-        version_created_at=version.created_at,
-        request_id=version.request_id,
+    binding = typing_cast(
+        AIOptimizerStrategyBinding,
+        session.get(AIOptimizerStrategyBinding, version.strategy_binding_id),
+    )
+
+    return OptimizerPublic.model_validate(
+        {
+            "id": optimizer.id,
+            "tenant_id": optimizer.tenant_id,
+            "name": optimizer.name,
+            "active": optimizer.active,
+            "version": version.number,
+            "daily_spend": version.daily_spend,
+            "target_roas": version.target_roas,
+            "priority": version.priority,
+            "bc_id": version.bc_id,
+            "advertiser_ids": tuple(version.advertiser_ids),
+            "optimization_mode": version.optimization_mode,
+            "timezone": version.timezone,
+            "review_time": version.review_time,
+            "material_config": version.material_config,
+            "authorization_limits": version.authorization_limits,
+            "strategy_version_id": binding.strategy_version_id,
+            "rule_ids": tuple(rules),
+            "strategy_binding_id": version.strategy_binding_id,
+            "created_by": optimizer.created_by,
+            "created_at": optimizer.created_at,
+            "version_created_at": version.created_at,
+            "request_id": version.request_id,
+        }
     )
 
 
@@ -317,8 +321,8 @@ def create_optimizer(
     _request_lock(session, tenant_id=context.tenant_id, request_id=request_id)
     existing = session.exec(
         select(AIOptimizerVersion).where(
-            AIOptimizerVersion.tenant_id == context.tenant_id,
-            AIOptimizerVersion.request_id == request_id,
+            col(AIOptimizerVersion.tenant_id) == context.tenant_id,
+            col(AIOptimizerVersion.request_id) == request_id,
         )
     ).one_or_none()
     if existing:
@@ -410,7 +414,7 @@ def list_optimizers(session: Session, *, context: TenantContext) -> OptimizerPag
     _authorize(session, context)
     statement = (
         select(AIOptimizer)
-        .where(AIOptimizer.tenant_id == context.tenant_id)
+        .where(col(AIOptimizer.tenant_id) == context.tenant_id)
         .order_by(col(AIOptimizer.created_at).desc())
     )
     rows = session.exec(statement).all()
@@ -442,10 +446,10 @@ def update_optimizer(
     )
     current_rules = tuple(
         session.exec(
-            select(AIOptimizerRuleBinding.rule_id).where(
-                AIOptimizerRuleBinding.tenant_id == context.tenant_id,
-                AIOptimizerRuleBinding.optimizer_id == optimizer.id,
-                AIOptimizerRuleBinding.active.is_(True),
+            select(col(AIOptimizerRuleBinding.rule_id)).where(
+                col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
+                col(AIOptimizerRuleBinding.optimizer_id) == optimizer.id,
+                col(AIOptimizerRuleBinding.active).is_(True),
             )
         ).all()
     )
@@ -507,8 +511,8 @@ def update_optimizer(
     _request_lock(session, tenant_id=context.tenant_id, request_id=request_id)
     existing = session.exec(
         select(AIOptimizerVersion).where(
-            AIOptimizerVersion.tenant_id == context.tenant_id,
-            AIOptimizerVersion.request_id == request_id,
+            col(AIOptimizerVersion.tenant_id) == context.tenant_id,
+            col(AIOptimizerVersion.request_id) == request_id,
         )
     ).one_or_none()
     if existing:

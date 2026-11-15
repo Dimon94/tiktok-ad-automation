@@ -32,6 +32,7 @@ jobs:
           POSTGRES_PASSWORD: ci-local-password
         ports: ['5432:5432']
         options: >-
+          --shm-size=256m
           --health-cmd="pg_isready -U postgres -d tiktok_ci_test"
           --health-interval=5s --health-timeout=5s --health-retries=20
       redis:
@@ -76,12 +77,44 @@ jobs:
         if: matrix.suite == 'modules'
         run: uv run python -m tests.pg_backup
         working-directory: backend
+      - name: Size the disposable PostgreSQL lock pool for scale tests
+        if: matrix.suite == 'modules'
+        run: |
+          docker exec "${{ job.services.postgres.id }}" sh -c "echo 'max_locks_per_transaction = 1024' >> \"\$PGDATA/postgresql.conf\""
+          docker restart "${{ job.services.postgres.id }}"
+          for attempt in $(seq 1 30); do
+            if docker exec "${{ job.services.postgres.id }}" pg_isready -h 127.0.0.1 -U postgres -d tiktok_ci_test; then break; fi
+            sleep 1
+          done
+          test "$(docker exec "${{ job.services.postgres.id }}" psql -U postgres -d tiktok_ci_test -Atc 'SHOW max_locks_per_transaction')" = 1024
       - run: uv run ruff check app tests && uv run ty check app
         if: matrix.suite == 'modules'
         working-directory: backend
-      - run: uv run pytest -q --tb=short --show-capture=no ${{ matrix.pytest-args }}
-        if: matrix.suite != 'browser'
+      - run: uv run pytest -q --tb=short --show-capture=no -m "not mcp" ${{ matrix.pytest-args }}
+        if: matrix.suite != 'browser' && matrix.suite != 'modules'
         working-directory: backend
+      - name: Run all module tests in isolated groups
+        if: matrix.suite == 'modules'
+        run: >-
+          uv run python ../deploy/ci/backend_tests.py --shards 4 --isolate-files
+          --serial-file tests/modules/ads/test_directory_large_publish.py
+          --serial-file tests/modules/builds/test_carousel_execution.py
+          --serial-file tests/modules/builds/test_carousel_freeze.py
+          --serial-file tests/modules/reporting/test_planning_commits.py
+          --serial-file tests/modules/reporting/test_health_directory_repair.py
+          --serial-file tests/modules/business/test_prefix_large_inputs.py
+          --serial-file tests/modules/materials/test_seed_resume_capacity.py
+          --serial-file tests/modules/accounts/test_discovery_worker.py
+          --work "$RUNNER_TEMP/backend-modules"
+          --save-durations "$RUNNER_TEMP/backend-modules/durations.json"
+          -- --ignore=tests/acceptance
+        working-directory: backend
+      - name: Retain module failure details and timings
+        if: always() && matrix.suite == 'modules'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backend-modules
+          path: ${{ runner.temp }}/backend-modules
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         if: matrix.suite == 'browser'
         with: {bun-version: '1.4.2'}
@@ -111,7 +144,7 @@ jobs:
       - run: bun run --filter frontend build
       - run: bun x playwright install --with-deps chromium
         working-directory: frontend
-      - run: bun x playwright test --project workspace
+      - run: bun x playwright test --project=workspace --project=workspace-source
         working-directory: frontend
   image:
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 """草稿定向覆盖独立保存，保持已准备的账户、剧目和手动素材分组。"""
 
+from typing import cast as typing_cast
 from uuid import UUID, uuid5
 
 from sqlmodel import Session
@@ -17,8 +18,11 @@ def effective_targeting(
 ) -> AudienceTargeting:
     if draft.targeting_override is not None:
         return AudienceTargeting.model_validate(draft.targeting_override)
+
     return get_version(
-        session, context=context, version_id=draft.strategy_version_id
+        session,
+        context=context,
+        version_id=typing_cast(UUID, draft.strategy_version_id),
     ).targeting
 
 

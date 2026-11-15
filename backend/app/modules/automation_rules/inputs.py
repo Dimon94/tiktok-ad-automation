@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -22,7 +22,7 @@ from app.modules.automation_rules.statuses import hierarchy_statuses
 from app.modules.reporting.freshness import fresh_report_success
 from app.modules.reporting.metric_catalog import STORED_KEYS
 
-if False:  # pragma: no cover - type checking only, avoids runtime import cycle
+if TYPE_CHECKING:  # 避免运行时循环导入，同时保留作用域合同。
     from app.modules.ai_workbench.rule_binding import RuleBindingScope
 
 _PAST = {"PAST_3_DAYS": 3, "PAST_5_DAYS": 5, "PAST_7_DAYS": 7}
@@ -147,7 +147,7 @@ def expand_accounts(
         # the rule scope.  Existing/manual ad objects in these accounts remain
         # visible because only account grants are narrowed here.
         statement = statement.where(
-            BCAccountAccess.bc_id == optimizer_scope.bc_id,
+            col(BCAccountAccess.bc_id) == optimizer_scope.bc_id,
             col(BCAccountAccess.advertiser_id).in_(optimizer_scope.advertiser_ids),
         )
     statement = statement.order_by(
@@ -160,7 +160,7 @@ def expand_accounts(
         return {}
     rows = session.exec(
         select(AdvertiserAccount).where(
-            AdvertiserAccount.tenant_id == tenant_id,
+            col(AdvertiserAccount.tenant_id) == tenant_id,
             col(AdvertiserAccount.advertiser_id).in_(list(bc_by_account)),
         )
     ).all()

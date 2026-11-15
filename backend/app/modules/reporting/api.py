@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from typing import Annotated, Literal, cast
+from typing import cast as typing_cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from redis import Redis, RedisError
 from sqlalchemy import bindparam, text
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.api.deps import CurrentUser, SessionDep
@@ -703,17 +705,17 @@ def get_ad_sync_status_route(
     accounts = session.exec(
         select(AdvertiserAccount)
         .where(
-            AdvertiserAccount.tenant_id == tenant_id,
+            col(AdvertiserAccount.tenant_id) == tenant_id,
             col(AdvertiserAccount.advertiser_id).in_(allowed),
         )
-        .order_by(AdvertiserAccount.advertiser_id)
+        .order_by(col(AdvertiserAccount.advertiser_id))
     ).all()
     states = session.exec(
         select(ReportSyncState).where(
-            ReportSyncState.tenant_id == tenant_id,
+            col(ReportSyncState.tenant_id) == tenant_id,
             col(ReportSyncState.advertiser_id).in_(allowed),
-            ReportSyncState.stat_date >= start_date,
-            ReportSyncState.stat_date <= end_date,
+            col(ReportSyncState.stat_date) >= start_date,
+            col(ReportSyncState.stat_date) <= end_date,
         )
     ).all()
     by_key = {
@@ -728,8 +730,10 @@ def get_ad_sync_status_route(
     # 否则报表页面看不到已回读的最新开关。限定当前租户、BC 及可见账户，未发布不计入。
     # 每账户只读发布索引的首行；不能为每次轮询扫描已归档前的全部运行历史。
     # 仍以运行账本为准：空目录发布也推进版本，不能用当前 ad_object 代替。
-    directory_version = session.execute(
-        text("""
+    directory_version = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            text("""
         SELECT max(latest.published_version)
         FROM unnest(CAST(:advertisers AS text[])) AS a(advertiser_id)
         CROSS JOIN LATERAL (
@@ -740,8 +744,10 @@ def get_ad_sync_status_route(
           ORDER BY r.published_version DESC LIMIT 1
         ) latest
         """),
-        {"tenant_id": tenant_id, "bc_id": bc_id, "advertisers": list(allowed)},
-    ).scalar_one()
+            {"tenant_id": tenant_id, "bc_id": bc_id, "advertisers": list(allowed)},
+        )
+        .scalar_one()
+    )
     # 素材发布与失败覆盖也推进版本，页面不能只看广告日的最后成功时间。
     version = sha256(
         repr(

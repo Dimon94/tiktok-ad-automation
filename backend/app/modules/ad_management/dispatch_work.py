@@ -83,7 +83,7 @@ def task_work(database_engine, item_ids: tuple[UUID, ...]):
         rows = session.exec(
             select(ManagementTaskItem)
             .where(col(ManagementTaskItem.id).in_(item_ids))
-            .order_by(ManagementTaskItem.position)
+            .order_by(col(ManagementTaskItem.position))
         ).all()
         commands, ids = [], {}
         singles = []

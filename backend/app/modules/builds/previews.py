@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from time import monotonic
 from typing import Any, Literal, cast
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, text
@@ -161,7 +162,8 @@ def _preview(
 ) -> BuildPreview:
     _authorize(session, context, write=lock)
     statement = select(BuildPreview).where(
-        BuildPreview.tenant_id == context.tenant_id, BuildPreview.id == identity
+        col(BuildPreview.tenant_id) == context.tenant_id,
+        col(BuildPreview.id) == identity,
     )
     if lock:
         statement = statement.with_for_update()
@@ -240,9 +242,9 @@ def _generate_preview(
     draft = get_draft(session, context=context, draft_id=draft_id, lock=True)
     existing = session.exec(
         select(BuildPreview).where(
-            BuildPreview.tenant_id == context.tenant_id,
-            BuildPreview.draft_id == draft_id,
-            BuildPreview.draft_revision == expected_revision,
+            col(BuildPreview.tenant_id) == context.tenant_id,
+            col(BuildPreview.draft_id) == draft_id,
+            col(BuildPreview.draft_revision) == expected_revision,
         )
     ).one_or_none()
     legacy = bool(
@@ -256,11 +258,11 @@ def _generate_preview(
         refresh_continuation
         and existing
         and session.exec(
-            select(Submission.id)
+            select(col(Submission.id))
             .where(
-                Submission.tenant_id == context.tenant_id,
-                Submission.draft_id == draft.id,
-                Submission.preview_id != existing.id,
+                col(Submission.tenant_id) == context.tenant_id,
+                col(Submission.draft_id) == draft.id,
+                col(Submission.preview_id) != existing.id,
             )
             .limit(1)
         ).first()
@@ -274,9 +276,9 @@ def _generate_preview(
         ):
             retried = session.exec(
                 select(BuildPreview).where(
-                    BuildPreview.tenant_id == context.tenant_id,
-                    BuildPreview.draft_id == draft_id,
-                    BuildPreview.draft_revision == draft.revision,
+                    col(BuildPreview.tenant_id) == context.tenant_id,
+                    col(BuildPreview.draft_id) == draft_id,
+                    col(BuildPreview.draft_revision) == draft.revision,
                 )
             ).one_or_none()
             if retried and retried.progress.get("retry_of") == str(existing.id):
@@ -290,9 +292,9 @@ def _generate_preview(
             raise DomainError("draft_not_ready", "草稿尚未准备完成")
         if (
             session.exec(
-                select(Submission.id).where(
-                    Submission.tenant_id == context.tenant_id,
-                    Submission.preview_id == existing.id,
+                select(col(Submission.id)).where(
+                    col(Submission.tenant_id) == context.tenant_id,
+                    col(Submission.preview_id) == existing.id,
                 )
             ).first()
             is not None
@@ -320,25 +322,30 @@ def _generate_preview(
     # 必填目标在排队前检查，避免展开全部剧目×账户后才发现整批无法搭建。
     require_preview_mini(session, context=context, draft=draft)
     chosen_identity = require_preview_identity(session, context=context, draft=draft)
+
     config = effective_structure_config(
-        get_version(session, context=context, version_id=draft.strategy_version_id),
+        get_version(
+            session,
+            context=context,
+            version_id=typing_cast(UUID, draft.strategy_version_id),
+        ),
         draft.structure_override,
     )
     # 在账户广告展开前按当前有效单元检查结构；最终广告总数不设本地上限。
     unit_counts = session.exec(
         select(func.count(col(DraftCreativeUnit.id)))
         .where(
-            DraftCreativeUnit.tenant_id == context.tenant_id,
-            DraftCreativeUnit.draft_id == draft.id,
-            DraftCreativeUnit.generation
+            col(DraftCreativeUnit.tenant_id) == context.tenant_id,
+            col(DraftCreativeUnit.draft_id) == draft.id,
+            col(DraftCreativeUnit.generation)
             == (1 if draft.media_kind == "VIDEO" else draft.active_image_generation),
-            select(DraftInput.id)
+            select(col(DraftInput.id))
             .where(
-                DraftInput.tenant_id == context.tenant_id,
-                DraftInput.draft_id == draft.id,
-                DraftInput.kind == "drama",
-                DraftInput.drama_id == DraftCreativeUnit.drama_id,
-                DraftInput.status == "ready",
+                col(DraftInput.tenant_id) == context.tenant_id,
+                col(DraftInput.draft_id) == draft.id,
+                col(DraftInput.kind) == "drama",
+                col(DraftInput.drama_id) == col(DraftCreativeUnit.drama_id),
+                col(DraftInput.status) == "ready",
             )
             .exists(),
         )
@@ -348,8 +355,8 @@ def _generate_preview(
         select(func.count())
         .select_from(DraftAccount)
         .where(
-            DraftAccount.tenant_id == context.tenant_id,
-            DraftAccount.draft_id == draft.id,
+            col(DraftAccount.tenant_id) == context.tenant_id,
+            col(DraftAccount.draft_id) == draft.id,
         )
     ).one()
     estimate_batch_structure(unit_counts, account_count=account_count, config=config)
@@ -385,7 +392,7 @@ def _generate_preview(
         bc_id=draft.bc_id,
         draft_id=draft_id,
         draft_revision=draft.revision,
-        strategy_version_id=draft.strategy_version_id,
+        strategy_version_id=typing_cast(UUID, draft.strategy_version_id),
         actor_id=context.actor_id,
         batch_short_id="",
         local_date=datetime.now(UTC).strftime("%Y%m%d"),
@@ -415,15 +422,15 @@ def _generate_preview(
             select(func.count())
             .select_from(DraftDrama)
             .where(
-                DraftDrama.tenant_id == context.tenant_id,
-                DraftDrama.draft_id == draft_id,
-                select(DraftInput.id)
+                col(DraftDrama.tenant_id) == context.tenant_id,
+                col(DraftDrama.draft_id) == draft_id,
+                select(col(DraftInput.id))
                 .where(
-                    DraftInput.tenant_id == context.tenant_id,
-                    DraftInput.draft_id == draft_id,
-                    DraftInput.kind == "drama",
-                    DraftInput.status == "ready",
-                    DraftInput.drama_id == DraftDrama.drama_id,
+                    col(DraftInput.tenant_id) == context.tenant_id,
+                    col(DraftInput.draft_id) == draft_id,
+                    col(DraftInput.kind) == "drama",
+                    col(DraftInput.status) == "ready",
+                    col(DraftInput.drama_id) == col(DraftDrama.drama_id),
                 )
                 .exists(),
             )
@@ -432,8 +439,8 @@ def _generate_preview(
             select(func.count())
             .select_from(DraftAccount)
             .where(
-                DraftAccount.tenant_id == context.tenant_id,
-                DraftAccount.draft_id == draft_id,
+                col(DraftAccount.tenant_id) == context.tenant_id,
+                col(DraftAccount.draft_id) == draft_id,
             )
         ).one(),
         "updated_at": datetime.now(UTC).isoformat(),
@@ -477,10 +484,10 @@ def _snapshot_inputs(session: Session, preview: BuildPreview) -> None:
     rows = session.exec(
         select(DraftInput)
         .where(
-            DraftInput.tenant_id == preview.tenant_id,
-            DraftInput.draft_id == preview.draft_id,
-            DraftInput.kind == p["kind"],
-            DraftInput.line_no > p["after"],
+            col(DraftInput.tenant_id) == preview.tenant_id,
+            col(DraftInput.draft_id) == preview.draft_id,
+            col(DraftInput.kind) == p["kind"],
+            col(DraftInput.line_no) > p["after"],
         )
         .order_by(col(DraftInput.line_no))
         .limit(PAGE_SIZE)
@@ -522,20 +529,20 @@ def _snapshot_drama(
     p = preview.progress
     if not p["current_drama"]:
         query = select(DraftDrama).where(
-            DraftDrama.tenant_id == preview.tenant_id,
-            DraftDrama.draft_id == preview.draft_id,
-            select(DraftInput.id)
+            col(DraftDrama.tenant_id) == preview.tenant_id,
+            col(DraftDrama.draft_id) == preview.draft_id,
+            select(col(DraftInput.id))
             .where(
-                DraftInput.tenant_id == preview.tenant_id,
-                DraftInput.draft_id == preview.draft_id,
-                DraftInput.kind == "drama",
-                DraftInput.status == "ready",
-                DraftInput.drama_id == DraftDrama.drama_id,
+                col(DraftInput.tenant_id) == preview.tenant_id,
+                col(DraftInput.draft_id) == preview.draft_id,
+                col(DraftInput.kind) == "drama",
+                col(DraftInput.status) == "ready",
+                col(DraftInput.drama_id) == col(DraftDrama.drama_id),
             )
             .exists(),
         )
         if p["drama_after"]:
-            query = query.where(DraftDrama.drama_id > UUID(p["drama_after"]))
+            query = query.where(col(DraftDrama.drama_id) > UUID(p["drama_after"]))
         drama = session.exec(query.order_by(col(DraftDrama.drama_id)).limit(1)).first()
         if drama is None:
             p.update(
@@ -549,8 +556,8 @@ def _snapshot_drama(
             return
         link = session.exec(
             select(PromotionLink).where(
-                PromotionLink.tenant_id == preview.tenant_id,
-                PromotionLink.id == drama.link_id,
+                col(PromotionLink.tenant_id) == preview.tenant_id,
+                col(PromotionLink.id) == drama.link_id,
             )
         ).one()
         provider_drama, connection = session.exec(
@@ -561,10 +568,10 @@ def _snapshot_drama(
                 & (col(ProviderConnection.id) == col(ProviderDrama.connection_id)),
             )
             .where(
-                ProviderDrama.tenant_id == preview.tenant_id,
-                ProviderDrama.id == drama.drama_id,
-                ProviderDrama.connection_id == link.connection_id,
-                ProviderDrama.application_id == link.application_id,
+                col(ProviderDrama.tenant_id) == preview.tenant_id,
+                col(ProviderDrama.id) == drama.drama_id,
+                col(ProviderDrama.connection_id) == link.connection_id,
+                col(ProviderDrama.application_id) == link.application_id,
             )
         ).one()
         # 手动录入且未填写版权方剧目 ID 时，用系统编号保证广告名称完整。
@@ -607,9 +614,9 @@ def _snapshot_drama(
         source_units = session.exec(
             select(PreviewCreativeUnit)
             .where(
-                PreviewCreativeUnit.tenant_id == preview.tenant_id,
-                PreviewCreativeUnit.preview_id == preview.id,
-                PreviewCreativeUnit.drama_id == drama_id,
+                col(PreviewCreativeUnit.tenant_id) == preview.tenant_id,
+                col(PreviewCreativeUnit.preview_id) == preview.id,
+                col(PreviewCreativeUnit.drama_id) == drama_id,
             )
             .order_by(col(PreviewCreativeUnit.position))
         ).all()
@@ -705,11 +712,11 @@ def _expand_unit(
     p = preview.progress
     if not p["current_drama"]:
         query = select(PreviewDrama).where(
-            PreviewDrama.tenant_id == preview.tenant_id,
-            PreviewDrama.preview_id == preview.id,
+            col(PreviewDrama.tenant_id) == preview.tenant_id,
+            col(PreviewDrama.preview_id) == preview.id,
         )
         if p["drama_after"]:
-            query = query.where(PreviewDrama.drama_id > UUID(p["drama_after"]))
+            query = query.where(col(PreviewDrama.drama_id) > UUID(p["drama_after"]))
         drama = session.exec(
             query.order_by(col(PreviewDrama.drama_id)).limit(1)
         ).first()
@@ -731,9 +738,9 @@ def _expand_unit(
         account = session.exec(
             select(DraftAccount)
             .where(
-                DraftAccount.tenant_id == preview.tenant_id,
-                DraftAccount.draft_id == preview.draft_id,
-                DraftAccount.advertiser_id > p["account_after"],
+                col(DraftAccount.tenant_id) == preview.tenant_id,
+                col(DraftAccount.draft_id) == preview.draft_id,
+                col(DraftAccount.advertiser_id) > p["account_after"],
             )
             .order_by(col(DraftAccount.advertiser_id))
             .limit(1)
@@ -847,11 +854,11 @@ def _expand_unit(
         # 保留所有组合，并明确阻断冲突双方。
         collisions = session.exec(
             select(BuildUnit).where(
-                BuildUnit.tenant_id == preview.tenant_id,
-                BuildUnit.preview_id == preview.id,
-                BuildUnit.advertiser_id == account.advertiser_id,
-                BuildUnit.campaign_digest == unit.campaign_digest,
-                BuildUnit.campaign_name == name,
+                col(BuildUnit.tenant_id) == preview.tenant_id,
+                col(BuildUnit.preview_id) == preview.id,
+                col(BuildUnit.advertiser_id) == account.advertiser_id,
+                col(BuildUnit.campaign_digest) == unit.campaign_digest,
+                col(BuildUnit.campaign_name) == name,
             )
         ).all()
         if collisions:
@@ -871,10 +878,10 @@ def _expand_unit(
     group = session.exec(
         select(PreviewDramaGroup)
         .where(
-            PreviewDramaGroup.tenant_id == preview.tenant_id,
-            PreviewDramaGroup.preview_id == preview.id,
-            PreviewDramaGroup.drama_id == drama.drama_id,
-            PreviewDramaGroup.group_no > p["group_after"],
+            col(PreviewDramaGroup.tenant_id) == preview.tenant_id,
+            col(PreviewDramaGroup.preview_id) == preview.id,
+            col(PreviewDramaGroup.drama_id) == drama.drama_id,
+            col(PreviewDramaGroup.group_no) > p["group_after"],
         )
         .order_by(col(PreviewDramaGroup.group_no))
         .limit(1)
@@ -920,17 +927,34 @@ def _expand_unit(
             ["field_limits_unverified"],
         )
     else:
-        # 本地读取仍限 50 条；平台数量限制按排除不可用素材后的实际组校验。
-        materials = session.exec(
-            select(PreviewGroupMaterial.material_id)
+        from .preview_models import PreviewCreativeUnitItem
+
+        # 此处只展开V2合同，按本组冻结单元批读成员，不经过带全组窗口编号的历史视图。
+        # 先保留单元次序，再按成员position展开；相同素材/单元的逻辑复用不能去重。
+        group_units = session.exec(
+            select(col(PreviewGroupCreativeUnit.creative_unit_id))
             .where(
-                PreviewGroupMaterial.tenant_id == preview.tenant_id,
-                PreviewGroupMaterial.preview_id == preview.id,
-                PreviewGroupMaterial.drama_id == drama.drama_id,
-                PreviewGroupMaterial.group_no == group.group_no,
+                col(PreviewGroupCreativeUnit.tenant_id) == preview.tenant_id,
+                col(PreviewGroupCreativeUnit.preview_id) == preview.id,
+                col(PreviewGroupCreativeUnit.drama_id) == drama.drama_id,
+                col(PreviewGroupCreativeUnit.group_no) == group.group_no,
             )
-            .order_by(col(PreviewGroupMaterial.position))
+            .order_by(col(PreviewGroupCreativeUnit.position))
         ).all()
+        group_members = session.exec(
+            select(PreviewCreativeUnitItem.creative_unit_id, PreviewCreativeUnitItem.material_id)
+            .where(
+                col(PreviewCreativeUnitItem.tenant_id) == preview.tenant_id,
+                col(PreviewCreativeUnitItem.preview_id) == preview.id,
+                col(PreviewCreativeUnitItem.creative_unit_id).in_(group_units),
+            )
+            .order_by(col(PreviewCreativeUnitItem.position))
+        ).all()
+        materials_by_unit = {}
+        for identity, material in group_members:
+            materials_by_unit.setdefault(identity, []).append(material)
+        materials = [material for identity in group_units
+                     for material in materials_by_unit.get(identity, [])]
         from .carousel_readiness import image_preview_readiness
 
         readiness = (
@@ -966,8 +990,8 @@ def _expand_unit(
         if skipped_ids:
             material_names = dict(
                 session.exec(
-                    select(MaterialFile.id, MaterialFile.file_name).where(
-                        MaterialFile.tenant_id == preview.tenant_id,
+                    select(col(MaterialFile.id), col(MaterialFile.file_name)).where(
+                        col(MaterialFile.tenant_id) == preview.tenant_id,
                         col(MaterialFile.id).in_(skipped_ids),
                     )
                 ).all()
@@ -1011,10 +1035,10 @@ def _expand_unit(
         ad_material_counts = {}
         mappings = session.exec(
             select(PreviewAdCreativeUnit).where(
-                PreviewAdCreativeUnit.tenant_id == preview.tenant_id,
-                PreviewAdCreativeUnit.preview_id == preview.id,
-                PreviewAdCreativeUnit.drama_id == drama.drama_id,
-                PreviewAdCreativeUnit.group_no == group.group_no,
+                col(PreviewAdCreativeUnit.tenant_id) == preview.tenant_id,
+                col(PreviewAdCreativeUnit.preview_id) == preview.id,
+                col(PreviewAdCreativeUnit.drama_id) == drama.drama_id,
+                col(PreviewAdCreativeUnit.group_no) == group.group_no,
             )
         ).all()
         from .preview_models import PreviewCreativeUnitItem
@@ -1022,11 +1046,11 @@ def _expand_unit(
         # 一次读取整组映射成员，不能按映射逐个查库（共享组可含数千单元）。
         member_rows = session.exec(
             select(
-                PreviewCreativeUnitItem.creative_unit_id,
-                PreviewCreativeUnitItem.material_id,
+                col(PreviewCreativeUnitItem.creative_unit_id),
+                col(PreviewCreativeUnitItem.material_id),
             ).where(
-                PreviewCreativeUnitItem.tenant_id == preview.tenant_id,
-                PreviewCreativeUnitItem.preview_id == preview.id,
+                col(PreviewCreativeUnitItem.tenant_id) == preview.tenant_id,
+                col(PreviewCreativeUnitItem.preview_id) == preview.id,
                 col(PreviewCreativeUnitItem.creative_unit_id).in_(
                     [m.creative_unit_id for m in mappings]
                 ),
@@ -1071,10 +1095,10 @@ def _expand_unit(
     copies = session.exec(
         select(PreviewCopy)
         .where(
-            PreviewCopy.tenant_id == preview.tenant_id,
-            PreviewCopy.preview_id == preview.id,
-            PreviewCopy.drama_id == drama.drama_id,
-            PreviewCopy.group_no == group.group_no,
+            col(PreviewCopy.tenant_id) == preview.tenant_id,
+            col(PreviewCopy.preview_id) == preview.id,
+            col(PreviewCopy.drama_id) == drama.drama_id,
+            col(PreviewCopy.group_no) == group.group_no,
         )
         .order_by(col(PreviewCopy.base_ad_no), col(PreviewCopy.creative_no))
     ).all()
@@ -1148,10 +1172,11 @@ def _digest_units(
 ) -> bool:
     p = preview.progress
     query = select(BuildUnit).where(
-        BuildUnit.tenant_id == preview.tenant_id, BuildUnit.preview_id == preview.id
+        col(BuildUnit.tenant_id) == preview.tenant_id,
+        col(BuildUnit.preview_id) == preview.id,
     )
     if p["after_id"]:
-        query = query.where(BuildUnit.id > UUID(p["after_id"]))
+        query = query.where(col(BuildUnit.id) > UUID(p["after_id"]))
     rows = session.exec(query.order_by(col(BuildUnit.id)).limit(PAGE_SIZE)).all()
     from .continuation import freeze_continuation
 
@@ -1258,20 +1283,20 @@ def _excluded_dramas(
 ) -> list[ExcludedDramaPublic]:
     """整部剧在全部账户都被阻断时单独列出，避免只显示“排除 N 个组合”而漏看整剧未搭建。"""
     blocked = (
-        select(BuildUnit.drama_id)
+        select(col(BuildUnit.drama_id))
         .where(
-            BuildUnit.tenant_id == context.tenant_id,
-            BuildUnit.preview_id == preview_id,
+            col(BuildUnit.tenant_id) == context.tenant_id,
+            col(BuildUnit.preview_id) == preview_id,
             col(BuildUnit.complete).is_(True),
         )
         .group_by(col(BuildUnit.drama_id))
-        .having(func.bool_and(BuildUnit.readiness == "BLOCKED"))
+        .having(func.bool_and(col(BuildUnit.readiness) == "BLOCKED"))
     )
     dramas = session.exec(
-        select(PreviewDrama.drama_id, PreviewDrama.title)
+        select(col(PreviewDrama.drama_id), col(PreviewDrama.title))
         .where(
-            PreviewDrama.tenant_id == context.tenant_id,
-            PreviewDrama.preview_id == preview_id,
+            col(PreviewDrama.tenant_id) == context.tenant_id,
+            col(PreviewDrama.preview_id) == preview_id,
             col(PreviewDrama.drama_id).in_(blocked),
         )
         .order_by(col(PreviewDrama.title))
@@ -1281,9 +1306,9 @@ def _excluded_dramas(
         return []
     reasons: dict[UUID, set[str]] = {drama_id: set() for drama_id, _ in dramas}
     for drama_id, codes in session.exec(
-        select(BuildUnit.drama_id, BuildUnit.reason_codes).where(
-            BuildUnit.tenant_id == context.tenant_id,
-            BuildUnit.preview_id == preview_id,
+        select(col(BuildUnit.drama_id), col(BuildUnit.reason_codes)).where(
+            col(BuildUnit.tenant_id) == context.tenant_id,
+            col(BuildUnit.preview_id) == preview_id,
             col(BuildUnit.drama_id).in_(reasons),
         )
     ).all():
@@ -1302,14 +1327,14 @@ def get_preview_summary(
     preview = _preview(session, context, preview_id)
     rows = session.exec(
         select(
-            BuildUnit.readiness,
+            col(BuildUnit.readiness),
             func.count(),
-            func.sum(BuildUnit.group_count),
-            func.sum(BuildUnit.ad_count),
+            func.sum(col(BuildUnit.group_count)),
+            func.sum(col(BuildUnit.ad_count)),
         )
         .where(
-            BuildUnit.tenant_id == context.tenant_id,
-            BuildUnit.preview_id == preview_id,
+            col(BuildUnit.tenant_id) == context.tenant_id,
+            col(BuildUnit.preview_id) == preview_id,
             col(BuildUnit.complete).is_(True),
         )
         .group_by(col(BuildUnit.readiness))
@@ -1331,15 +1356,15 @@ def get_preview_summary(
         {"tenant": context.tenant_id, "preview": preview_id},
     ).one()
     unique_material_count = session.exec(
-        select(func.count(func.distinct(PreviewGroupMaterial.material_id))).where(
-            PreviewGroupMaterial.tenant_id == context.tenant_id,
-            PreviewGroupMaterial.preview_id == preview_id,
+        select(func.count(func.distinct(col(PreviewGroupMaterial.material_id)))).where(
+            col(PreviewGroupMaterial.tenant_id) == context.tenant_id,
+            col(PreviewGroupMaterial.preview_id) == preview_id,
         )
     ).one()
     ad_material_rows = session.exec(
         select(func.count(col(PreviewAdMaterial.material_id))).where(
-            PreviewAdMaterial.tenant_id == context.tenant_id,
-            PreviewAdMaterial.preview_id == preview_id,
+            col(PreviewAdMaterial.tenant_id) == context.tenant_id,
+            col(PreviewAdMaterial.preview_id) == preview_id,
         )
     ).one()
     descriptor = preview_contract(
@@ -1356,19 +1381,19 @@ def get_preview_summary(
             .join(
                 PlannedGroup,
                 (col(PlannedGroup.tenant_id) == col(PlannedAd.tenant_id))
-                & (PlannedGroup.preview_id == PlannedAd.preview_id)
-                & (PlannedGroup.id == PlannedAd.group_id),
+                & (col(PlannedGroup.preview_id) == col(PlannedAd.preview_id))
+                & (col(PlannedGroup.id) == col(PlannedAd.group_id)),
             )
             .join(
                 PreviewGroupMaterial,
                 (col(PreviewGroupMaterial.tenant_id) == col(PlannedGroup.tenant_id))
-                & (PreviewGroupMaterial.preview_id == PlannedGroup.preview_id)
-                & (PreviewGroupMaterial.drama_id == PlannedGroup.drama_id)
-                & (PreviewGroupMaterial.group_no == PlannedGroup.group_no),
+                & (col(PreviewGroupMaterial.preview_id) == col(PlannedGroup.preview_id))
+                & (col(PreviewGroupMaterial.drama_id) == col(PlannedGroup.drama_id))
+                & (col(PreviewGroupMaterial.group_no) == col(PlannedGroup.group_no)),
             )
             .where(
-                PlannedAd.tenant_id == context.tenant_id,
-                PlannedAd.preview_id == preview_id,
+                col(PlannedAd.tenant_id) == context.tenant_id,
+                col(PlannedAd.preview_id) == preview_id,
             )
         ).one()
     )
@@ -1397,8 +1422,8 @@ def get_preview_summary(
         select(func.count())
         .select_from(PreviewInput)
         .where(
-            PreviewInput.tenant_id == context.tenant_id,
-            PreviewInput.preview_id == preview_id,
+            col(PreviewInput.tenant_id) == context.tenant_id,
+            col(PreviewInput.preview_id) == preview_id,
             col(PreviewInput.status).not_in(["matched", "ready"]),
         )
     ).one()
@@ -1411,11 +1436,11 @@ def get_preview_summary(
         session, tenant_id=context.tenant_id, preview_id=preview_id
     )
     prior_ids = session.exec(
-        select(Submission.id)
+        select(col(Submission.id))
         .where(
-            Submission.tenant_id == context.tenant_id,
-            Submission.draft_id == preview.draft_id,
-            Submission.preview_id != preview.id,
+            col(Submission.tenant_id) == context.tenant_id,
+            col(Submission.draft_id) == preview.draft_id,
+            col(Submission.preview_id) != preview.id,
         )
         .order_by(col(Submission.ordinal).desc())
         .limit(20)
@@ -1434,8 +1459,8 @@ def get_preview_summary(
             select(func.count())
             .select_from(PreviewImageExclusion)
             .where(
-                PreviewImageExclusion.tenant_id == context.tenant_id,
-                PreviewImageExclusion.preview_id == preview.id,
+                col(PreviewImageExclusion.tenant_id) == context.tenant_id,
+                col(PreviewImageExclusion.preview_id) == preview.id,
             )
         ).one(),
         excluded_images=[
@@ -1448,8 +1473,8 @@ def get_preview_summary(
             for item in session.exec(
                 select(PreviewImageExclusion)
                 .where(
-                    PreviewImageExclusion.tenant_id == context.tenant_id,
-                    PreviewImageExclusion.preview_id == preview.id,
+                    col(PreviewImageExclusion.tenant_id) == context.tenant_id,
+                    col(PreviewImageExclusion.preview_id) == preview.id,
                 )
                 .order_by(
                     col(PreviewImageExclusion.drama_id),
@@ -1462,15 +1487,15 @@ def get_preview_summary(
         targeting=preview.config.get("targeting"),
         targeting_region_codes=preview.progress.get("targeting_region_codes", []),
         skipped_material_count=session.exec(
-            select(func.count(func.distinct(PreviewSkippedMaterial.material_id)))
+            select(func.count(func.distinct(col(PreviewSkippedMaterial.material_id))))
             .join(
                 BuildUnit,
-                (col(BuildUnit.tenant_id) == PreviewSkippedMaterial.tenant_id)
-                & (col(BuildUnit.id) == PreviewSkippedMaterial.unit_id),
+                (col(BuildUnit.tenant_id) == col(PreviewSkippedMaterial.tenant_id))
+                & (col(BuildUnit.id) == col(PreviewSkippedMaterial.unit_id)),
             )
             .where(
-                BuildUnit.tenant_id == context.tenant_id,
-                BuildUnit.preview_id == preview_id,
+                col(BuildUnit.tenant_id) == context.tenant_id,
+                col(BuildUnit.preview_id) == preview_id,
             )
         ).one(),
         generation_progress=PreviewGenerationProgress(
@@ -1488,10 +1513,10 @@ def get_preview_summary(
         ),
         # 历史配置的只读状态来自持久化任务，跨浏览器也不重新展示创建入口。
         submission_id=session.exec(
-            select(Submission.id).where(
-                Submission.tenant_id == context.tenant_id,
-                Submission.bc_id == preview.bc_id,
-                Submission.preview_id == preview.id,
+            select(col(Submission.id)).where(
+                col(Submission.tenant_id) == context.tenant_id,
+                col(Submission.bc_id) == preview.bc_id,
+                col(Submission.preview_id) == preview.id,
             )
         ).one_or_none(),
         execution_route=execution_route_view(
@@ -1578,30 +1603,30 @@ def get_preview_units(
         .join(
             PreviewDrama,
             and_(
-                col(PreviewDrama.tenant_id) == BuildUnit.tenant_id,
-                col(PreviewDrama.preview_id) == BuildUnit.preview_id,
-                col(PreviewDrama.drama_id) == BuildUnit.drama_id,
+                col(PreviewDrama.tenant_id) == col(BuildUnit.tenant_id),
+                col(PreviewDrama.preview_id) == col(BuildUnit.preview_id),
+                col(PreviewDrama.drama_id) == col(BuildUnit.drama_id),
             ),
         )
         .where(
-            BuildUnit.tenant_id == context.tenant_id,
-            BuildUnit.preview_id == preview_id,
+            col(BuildUnit.tenant_id) == context.tenant_id,
+            col(BuildUnit.preview_id) == preview_id,
             col(BuildUnit.complete).is_(True),
         )
     )  # noqa: E712
     if readiness:
-        query = query.where(BuildUnit.readiness == readiness)
+        query = query.where(col(BuildUnit.readiness) == readiness)
     if drama_id:
-        query = query.where(BuildUnit.drama_id == drama_id)
+        query = query.where(col(BuildUnit.drama_id) == drama_id)
     total = count_rows(session, query)
     if after:
-        query = query.where(BuildUnit.id > UUID(after))
+        query = query.where(col(BuildUnit.id) > UUID(after))
     rows = session.exec(query.order_by(col(BuildUnit.id)).limit(limit + 1)).all()
     skipped_counts = dict(
         session.exec(
-            select(PreviewSkippedMaterial.unit_id, func.count())
+            select(col(PreviewSkippedMaterial.unit_id), func.count())
             .where(
-                PreviewSkippedMaterial.tenant_id == context.tenant_id,
+                col(PreviewSkippedMaterial.tenant_id) == context.tenant_id,
                 col(PreviewSkippedMaterial.unit_id).in_(
                     [u.id for u, _ in rows[:limit]]
                 ),
@@ -1613,19 +1638,19 @@ def get_preview_units(
     material_rows = (
         session.exec(
             select(
-                BuildUnit.id,
+                col(BuildUnit.id),
                 func.count(col(PreviewGroupMaterial.material_id)),
-                func.count(func.distinct(PreviewGroupMaterial.material_id)),
+                func.count(func.distinct(col(PreviewGroupMaterial.material_id))),
             )
             .join(
                 PreviewGroupMaterial,
                 (col(PreviewGroupMaterial.tenant_id) == col(BuildUnit.tenant_id))
-                & (PreviewGroupMaterial.preview_id == BuildUnit.preview_id)
-                & (PreviewGroupMaterial.drama_id == BuildUnit.drama_id),
+                & (col(PreviewGroupMaterial.preview_id) == col(BuildUnit.preview_id))
+                & (col(PreviewGroupMaterial.drama_id) == col(BuildUnit.drama_id)),
             )
             .where(
-                BuildUnit.tenant_id == context.tenant_id,
-                BuildUnit.preview_id == preview_id,
+                col(BuildUnit.tenant_id) == context.tenant_id,
+                col(BuildUnit.preview_id) == preview_id,
                 col(BuildUnit.id).in_(unit_ids),
                 material_not_skipped(
                     tenant_id=context.tenant_id,
@@ -1644,12 +1669,12 @@ def get_preview_units(
             .join(
                 PreviewAdMaterial,
                 (col(PreviewAdMaterial.tenant_id) == col(BuildUnit.tenant_id))
-                & (PreviewAdMaterial.preview_id == BuildUnit.preview_id)
-                & (PreviewAdMaterial.drama_id == BuildUnit.drama_id),
+                & (col(PreviewAdMaterial.preview_id) == col(BuildUnit.preview_id))
+                & (col(PreviewAdMaterial.drama_id) == col(BuildUnit.drama_id)),
             )
             .where(
-                BuildUnit.tenant_id == context.tenant_id,
-                BuildUnit.preview_id == preview_id,
+                col(BuildUnit.tenant_id) == context.tenant_id,
+                col(BuildUnit.preview_id) == preview_id,
                 col(BuildUnit.id).in_(unit_ids),
                 material_not_skipped(
                     tenant_id=context.tenant_id,
@@ -1676,25 +1701,25 @@ def get_preview_units(
             .join(
                 PlannedGroup,
                 (col(PlannedGroup.tenant_id) == col(BuildUnit.tenant_id))
-                & (PlannedGroup.preview_id == BuildUnit.preview_id)
-                & (PlannedGroup.unit_id == BuildUnit.id),
+                & (col(PlannedGroup.preview_id) == col(BuildUnit.preview_id))
+                & (col(PlannedGroup.unit_id) == col(BuildUnit.id)),
             )
             .join(
                 PlannedAd,
                 (col(PlannedAd.tenant_id) == col(PlannedGroup.tenant_id))
-                & (PlannedAd.preview_id == PlannedGroup.preview_id)
-                & (PlannedAd.group_id == PlannedGroup.id),
+                & (col(PlannedAd.preview_id) == col(PlannedGroup.preview_id))
+                & (col(PlannedAd.group_id) == col(PlannedGroup.id)),
             )
             .join(
                 PreviewGroupMaterial,
                 (col(PreviewGroupMaterial.tenant_id) == col(PlannedGroup.tenant_id))
-                & (PreviewGroupMaterial.preview_id == PlannedGroup.preview_id)
-                & (PreviewGroupMaterial.drama_id == PlannedGroup.drama_id)
-                & (PreviewGroupMaterial.group_no == PlannedGroup.group_no),
+                & (col(PreviewGroupMaterial.preview_id) == col(PlannedGroup.preview_id))
+                & (col(PreviewGroupMaterial.drama_id) == col(PlannedGroup.drama_id))
+                & (col(PreviewGroupMaterial.group_no) == col(PlannedGroup.group_no)),
             )
             .where(
-                BuildUnit.tenant_id == context.tenant_id,
-                BuildUnit.preview_id == preview_id,
+                col(BuildUnit.tenant_id) == context.tenant_id,
+                col(BuildUnit.preview_id) == preview_id,
                 col(BuildUnit.id).in_(unit_ids),
                 material_not_skipped(
                     tenant_id=context.tenant_id,
@@ -1777,7 +1802,7 @@ def _unit(
     _authorize(session, context)
     unit = session.exec(
         select(BuildUnit).where(
-            BuildUnit.tenant_id == context.tenant_id, BuildUnit.id == unit_id
+            col(BuildUnit.tenant_id) == context.tenant_id, col(BuildUnit.id) == unit_id
         )
     ).one_or_none()
     if unit is None:
@@ -1887,11 +1912,12 @@ def get_frozen_groups(
         )
     scope, after = _page_scope(context, unit_id, "frozen_groups", limit, cursor)
     query = select(PlannedGroup).where(
-        PlannedGroup.tenant_id == context.tenant_id, PlannedGroup.unit_id == unit_id
+        col(PlannedGroup.tenant_id) == context.tenant_id,
+        col(PlannedGroup.unit_id) == unit_id,
     )
     total = count_rows(session, query)
     if after:
-        query = query.where(PlannedGroup.group_no > int(after))
+        query = query.where(col(PlannedGroup.group_no) > int(after))
     rows = session.exec(
         query.order_by(col(PlannedGroup.group_no)).limit(limit + 1)
     ).all()
@@ -1911,13 +1937,13 @@ def get_frozen_groups(
         group_material_counts = dict(
             session.exec(
                 select(
-                    PreviewGroupMaterial.group_no,
+                    col(PreviewGroupMaterial.group_no),
                     func.count().label("material_count"),
                 )
                 .where(
-                    PreviewGroupMaterial.tenant_id == context.tenant_id,
-                    PreviewGroupMaterial.preview_id == preview.id,
-                    PreviewGroupMaterial.drama_id == unit.drama_id,
+                    col(PreviewGroupMaterial.tenant_id) == context.tenant_id,
+                    col(PreviewGroupMaterial.preview_id) == preview.id,
+                    col(PreviewGroupMaterial.drama_id) == unit.drama_id,
                     col(PreviewGroupMaterial.group_no).in_(group_nos),
                     material_not_skipped(
                         tenant_id=context.tenant_id,
@@ -1942,15 +1968,15 @@ def get_frozen_groups(
         )
         material_rows = (
             select(
-                PreviewGroupMaterial.group_no,
-                PreviewGroupMaterial.position,
-                PreviewGroupMaterial.material_id,
+                col(PreviewGroupMaterial.group_no),
+                col(PreviewGroupMaterial.position),
+                col(PreviewGroupMaterial.material_id),
                 material_rank,
             )
             .where(
-                PreviewGroupMaterial.tenant_id == context.tenant_id,
-                PreviewGroupMaterial.preview_id == preview.id,
-                PreviewGroupMaterial.drama_id == unit.drama_id,
+                col(PreviewGroupMaterial.tenant_id) == context.tenant_id,
+                col(PreviewGroupMaterial.preview_id) == preview.id,
+                col(PreviewGroupMaterial.drama_id) == unit.drama_id,
                 col(PreviewGroupMaterial.group_no).in_(group_nos),
                 material_not_skipped(
                     tenant_id=context.tenant_id,
@@ -1981,9 +2007,9 @@ def get_frozen_groups(
     if group_ids:
         ad_counts = dict(
             session.exec(
-                select(PlannedAd.group_id, func.count().label("ad_count"))
+                select(col(PlannedAd.group_id), func.count().label("ad_count"))
                 .where(
-                    PlannedAd.tenant_id == context.tenant_id,
+                    col(PlannedAd.tenant_id) == context.tenant_id,
                     col(PlannedAd.group_id).in_(group_ids),
                 )
                 .group_by(col(PlannedAd.group_id))
@@ -2002,7 +2028,7 @@ def get_frozen_groups(
         ad_rows = (
             select(PlannedAd, ad_rank)
             .where(
-                PlannedAd.tenant_id == context.tenant_id,
+                col(PlannedAd.tenant_id) == context.tenant_id,
                 col(PlannedAd.group_id).in_(group_ids),
             )
             .subquery()
@@ -2030,14 +2056,14 @@ def get_frozen_groups(
     if has_ad_material_rows and group_nos:
         ad_material_counts = session.exec(
             select(
-                PreviewAdMaterial.group_no,
-                PreviewAdMaterial.base_ad_no,
+                col(PreviewAdMaterial.group_no),
+                col(PreviewAdMaterial.base_ad_no),
                 func.count().label("material_count"),
             )
             .where(
-                PreviewAdMaterial.tenant_id == context.tenant_id,
-                PreviewAdMaterial.preview_id == preview.id,
-                PreviewAdMaterial.drama_id == unit.drama_id,
+                col(PreviewAdMaterial.tenant_id) == context.tenant_id,
+                col(PreviewAdMaterial.preview_id) == preview.id,
+                col(PreviewAdMaterial.drama_id) == unit.drama_id,
                 col(PreviewAdMaterial.group_no).in_(group_nos),
                 material_not_skipped(
                     tenant_id=context.tenant_id,
@@ -2065,15 +2091,15 @@ def get_frozen_groups(
         )
         ad_material_rows_query = (
             select(
-                PreviewAdMaterial.group_no,
-                PreviewAdMaterial.base_ad_no,
-                PreviewAdMaterial.position,
+                col(PreviewAdMaterial.group_no),
+                col(PreviewAdMaterial.base_ad_no),
+                col(PreviewAdMaterial.position),
                 col(PreviewAdMaterial.material_id),
             )
             .where(
-                PreviewAdMaterial.tenant_id == context.tenant_id,
-                PreviewAdMaterial.preview_id == preview.id,
-                PreviewAdMaterial.drama_id == unit.drama_id,
+                col(PreviewAdMaterial.tenant_id) == context.tenant_id,
+                col(PreviewAdMaterial.preview_id) == preview.id,
+                col(PreviewAdMaterial.drama_id) == unit.drama_id,
                 col(PreviewAdMaterial.group_no).in_(group_nos),
                 material_not_skipped(
                     tenant_id=context.tenant_id,
@@ -2165,12 +2191,12 @@ def get_skipped_materials(
     _unit(session, context, unit_id)
     scope, after = _page_scope(context, unit_id, "skipped_materials", limit, cursor)
     query = select(PreviewSkippedMaterial).where(
-        PreviewSkippedMaterial.tenant_id == context.tenant_id,
-        PreviewSkippedMaterial.unit_id == unit_id,
+        col(PreviewSkippedMaterial.tenant_id) == context.tenant_id,
+        col(PreviewSkippedMaterial.unit_id) == unit_id,
     )
     total = count_rows(session, query)
     if after:
-        query = query.where(PreviewSkippedMaterial.material_id > UUID(after))
+        query = query.where(col(PreviewSkippedMaterial.material_id) > UUID(after))
     rows = session.exec(
         query.order_by(col(PreviewSkippedMaterial.material_id)).limit(limit + 1)
     ).all()
@@ -2208,17 +2234,17 @@ def get_preview_inputs(
         status=status,
     )
     query = select(PreviewInput).where(
-        PreviewInput.tenant_id == context.tenant_id,
-        PreviewInput.preview_id == preview_id,
-        PreviewInput.kind == kind,
+        col(PreviewInput.tenant_id) == context.tenant_id,
+        col(PreviewInput.preview_id) == preview_id,
+        col(PreviewInput.kind) == kind,
     )
     if issues_only:
         query = query.where(col(PreviewInput.status).not_in(["matched", "ready"]))
     if status:
-        query = query.where(PreviewInput.status == status)
+        query = query.where(col(PreviewInput.status) == status)
     total = count_rows(session, query)
     if after:
-        query = query.where(PreviewInput.line_no > int(after))
+        query = query.where(col(PreviewInput.line_no) > int(after))
     rows = session.exec(
         query.order_by(col(PreviewInput.line_no)).limit(limit + 1)
     ).all()

@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import case, func, tuple_
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
 
@@ -98,11 +100,15 @@ def merge_requirement(
             "source": pending_work_class(source),
         },
     ).returning(SyncRequirement)
-    current = session.execute(
-        select(SyncRequirement)
-        .from_statement(returning)
-        .execution_options(populate_existing=True)
-    ).scalar_one()
+    current = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            select(SyncRequirement)
+            .from_statement(returning)
+            .execution_options(populate_existing=True)
+        )
+        .scalar_one()
+    )
     return RequirementRevision(
         current.id, current.scope_id, current.desired_revision, current.requested_after
     )
@@ -156,11 +162,12 @@ def freeze_execution_scope(
             or scope.owner_epoch != epoch
         ):
             raise ValueError("execution cannot freeze a different authorization scope")
+        reference_values: dict[str, Any] = {column: execution.id}
         row = SyncExecutionScope(
             tenant_id=scope.tenant_id,
             scope_id=scope.id,
             requirement_id=requirement.id,
-            **{column: execution.id},
+            **reference_values,
             frozen_revision=revision.revision,
             frozen_requested_after=revision.requested_after,
             owner_epoch=epoch,

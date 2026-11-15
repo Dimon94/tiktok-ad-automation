@@ -5,9 +5,11 @@ import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
+from typing import cast as typing_cast
 
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session
 
 from app.modules.operation_logs.models import (
@@ -45,7 +47,7 @@ def publish_export(
         session, tenant_id=job.tenant_id, advertiser_id=advertiser, events=tuple(events)
     )
     # 全账户串行，避免两个重叠窗口把新覆盖倒退到旧观测。
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
         {"key": f"operation-log:{job.tenant_id}:{advertiser}"},
     )
@@ -85,7 +87,9 @@ def publish_export(
         if start_at <= e.occurred_at < end_at
     ]
     for offset in range(0, len(values), 500):
-        session.execute(insert(OperationLogEvent), values[offset : offset + 500])
+        typing_cast(SQLAlchemySession, session).execute(
+            insert(OperationLogEvent), values[offset : offset + 500]
+        )
     day = job.start_date
     changed = False
     while day <= job.end_date:

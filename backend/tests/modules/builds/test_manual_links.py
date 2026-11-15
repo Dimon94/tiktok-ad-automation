@@ -133,6 +133,60 @@ def manual(line=1, **kw):
     return {"line_no": line, "url": URL, **kw}
 
 
+@pytest.mark.parametrize("media_kind", ["VIDEO", "CAROUSEL"])
+def test_manual_override_does_not_wait_for_reused_unknown_provider(
+    session, context, intent, media_kind
+):
+    from app.modules.builds.drafts import update_draft
+    from app.modules.builds.models import BuildDraft
+    from tests.modules.builds.test_drafts import finish, ready_links
+
+    account(session, context)
+    intent.update(drama_lines=["Moon", "Sun"])
+    draft_id = create_draft(session, context=context, media_kind=media_kind, **intent)
+    original = prepare_draft(
+        session, context=context, draft_id=draft_id, request_id=uuid4()
+    )
+    ready_links(session, context, original, intent)
+    finish(session, context, original)
+    provider_id = session.get(DraftPreparation, original).provider_task_id
+    item = session.exec(
+        select(LinkPreparationItem).where(
+            LinkPreparationItem.preparation_id == provider_id,
+            LinkPreparationItem.line_no == 1,
+        )
+    ).one()
+    item.status = "result_unknown"
+    item.resolved = {
+        **item.resolved,
+        "status": "result_unknown",
+        "error_code": "provider_result_unknown",
+        "_work": {**item.resolved.get("_work", {}), "stage": "recover_create"},
+    }
+    session.add(item)
+    session.flush()
+    checkpoint = dict(item.resolved)
+    draft = session.get(BuildDraft, draft_id)
+    update_draft(
+        session,
+        context=context,
+        draft_id=draft_id,
+        expected_revision=draft.revision,
+        manual_links=[manual()],
+    )
+    renewed = prepare_draft(
+        session, context=context, draft_id=draft_id, request_id=uuid4()
+    )
+    assert session.get(DraftPreparation, renewed).provider_task_id == provider_id
+    finish(session, context, renewed)
+    assert session.get(BuildDraft, draft_id).status == "READY"
+    row = inputs_page(session, context=context, draft_id=draft_id, kind="drama").items[
+        0
+    ]
+    assert row.preparation.link_status == "ready"
+    assert item.status == "result_unknown" and item.resolved == checkpoint
+
+
 def test_other_provider_prepares_without_remote_connection(session, context, intent):
     account(session, context)
     intent.update(
@@ -391,9 +445,14 @@ def test_manual_link_uses_real_bc_route_and_freezes_long_provider_name(
     from app.modules.builds import identity_selection
     from tests.modules.builds.test_previews import seed_targeting_directory
 
-    monkeypatch.setattr(identity_selection, "require_preview_identity", lambda *a, **kw: {
-        "identity_id": "fixture-identity", "identity_type": "TT_USER"
-    })
+    monkeypatch.setattr(
+        identity_selection,
+        "require_preview_identity",
+        lambda *a, **kw: {
+            "identity_id": "fixture-identity",
+            "identity_type": "TT_USER",
+        },
+    )
     from tests.modules.builds.test_drafts import finish
 
     finish(session, context, prep.id)

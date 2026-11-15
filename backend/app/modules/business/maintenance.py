@@ -2,11 +2,13 @@
 
 from datetime import datetime, timedelta
 from typing import Any, cast
+from typing import cast as typing_cast
 
 from sqlalchemy import delete, exists, func, or_, text
 from sqlalchemy import select as sa_select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import QueryableAttribute, load_only
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
@@ -50,7 +52,7 @@ def cleanup_business(session: Session, *, now: datetime, batch: int = 5000) -> i
         _path(f"business-exports/{export.tenant_id}/{export.id}.partial").unlink(
             missing_ok=True
         )
-        session.execute(
+        typing_cast(SQLAlchemySession, session).execute(
             text("""DELETE FROM business_export_row WHERE ctid IN (
             SELECT ctid FROM business_export_row WHERE export_id=:export LIMIT :batch
         )"""),
@@ -66,11 +68,11 @@ def cleanup_business(session: Session, *, now: datetime, batch: int = 5000) -> i
                 *(
                     cast(QueryableAttribute[Any], attribute)
                     for attribute in (
-                        BusinessRun.id,
-                        BusinessRun.tenant_id,
-                        BusinessRun.bc_id,
-                        BusinessRun.quarter,
-                        BusinessRun.status,
+                        col(BusinessRun.id),
+                        col(BusinessRun.tenant_id),
+                        col(BusinessRun.bc_id),
+                        col(BusinessRun.quarter),
+                        col(BusinessRun.status),
                     )
                 )
             )
@@ -87,7 +89,7 @@ def cleanup_business(session: Session, *, now: datetime, batch: int = 5000) -> i
     ).all()
     for run in candidates:
         protected = session.exec(
-            select(BusinessExport.id)
+            select(col(BusinessExport.id))
             .where(
                 col(BusinessExport.expires_at) > now,
                 col(BusinessExport.run_ids).contains([str(run.id)]),
@@ -97,7 +99,7 @@ def cleanup_business(session: Session, *, now: datetime, batch: int = 5000) -> i
         if protected:
             continue
         active_manifest = session.exec(
-            select(BusinessScope.tenant_id)
+            select(col(BusinessScope.tenant_id))
             .where(
                 col(BusinessScope.tenant_id) == run.tenant_id,
                 col(BusinessScope.bc_id) == run.bc_id,
@@ -116,7 +118,7 @@ def cleanup_business(session: Session, *, now: datetime, batch: int = 5000) -> i
         # 当前发布指针永远保留；每轮有界删除，避免大季度一次长事务。
         removed = 0
         for table in ("business_summary_day", "business_day"):
-            result = session.execute(
+            result = typing_cast(SQLAlchemySession, session).execute(
                 text(f"""
                 WITH selected AS (
                     SELECT tableoid, ctid FROM {table} WHERE run_id=:run LIMIT :batch
@@ -126,13 +128,19 @@ def cleanup_business(session: Session, *, now: datetime, batch: int = 5000) -> i
                 {"run": run.id, "batch": batch},
             )
             removed += cast(CursorResult[Any], result).rowcount
-        remains = session.execute(
-            text(
-                "SELECT EXISTS(SELECT 1 FROM business_day WHERE run_id=:run) OR EXISTS(SELECT 1 FROM business_summary_day WHERE run_id=:run)"
-            ),
-            {"run": run.id},
-        ).scalar()
+        remains = (
+            typing_cast(SQLAlchemySession, session)
+            .execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM business_day WHERE run_id=:run) OR EXISTS(SELECT 1 FROM business_summary_day WHERE run_id=:run)"
+                ),
+                {"run": run.id},
+            )
+            .scalar()
+        )
         if not remains:
-            session.execute(delete(BusinessRun).where(col(BusinessRun.id) == run.id))
+            typing_cast(SQLAlchemySession, session).execute(
+                delete(BusinessRun).where(col(BusinessRun.id) == run.id)
+            )
         return removed + len(expired)
     return len(expired)

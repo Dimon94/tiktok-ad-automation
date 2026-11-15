@@ -73,11 +73,11 @@ def enqueue_balances(
     covered = {
         account
         for remaining in session.exec(
-            select(ReportBalanceRun.remaining_advertiser_ids).where(
-                ReportBalanceRun.tenant_id == plan.tenant_id,
-                ReportBalanceRun.actor_id == plan.actor_id,
-                ReportBalanceRun.frozen_route == plan.frozen_route,
-                ReportBalanceRun.status == "ACTIVE",
+            select(col(ReportBalanceRun.remaining_advertiser_ids)).where(
+                col(ReportBalanceRun.tenant_id) == plan.tenant_id,
+                col(ReportBalanceRun.actor_id) == plan.actor_id,
+                col(ReportBalanceRun.frozen_route) == plan.frozen_route,
+                col(ReportBalanceRun.status) == "ACTIVE",
                 execution_owner_current(ReportBalanceRun, "balance_run_id"),
             )
         ).all()
@@ -102,9 +102,9 @@ def enqueue_balances(
         account_key = hashlib.sha256(json.dumps(accounts).encode()).hexdigest()[:16]
         group_key = f"{key}:owner:{epoch}:{account_key}"
         if session.exec(
-            select(ReportBalanceRun.id).where(
-                ReportBalanceRun.tenant_id == plan.tenant_id,
-                ReportBalanceRun.run_key == group_key,
+            select(col(ReportBalanceRun.id)).where(
+                col(ReportBalanceRun.tenant_id) == plan.tenant_id,
+                col(ReportBalanceRun.run_key) == group_key,
             )
         ).first():
             continue
@@ -131,7 +131,7 @@ def plan_balances(*, database_engine: Engine, now: datetime | None = None) -> in
     # 与报表筛选及其退避完全分离，低预算时仍保持独立的半小时计划。
     with Session(database_engine) as session:
         keys = session.exec(
-            select(AdSyncBc.tenant_id, AdSyncBc.bc_id).where(
+            select(col(AdSyncBc.tenant_id), col(AdSyncBc.bc_id)).where(
                 col(AdSyncBc.enabled).is_(True)
             )
         ).all()
@@ -140,7 +140,9 @@ def plan_balances(*, database_engine: Engine, now: datetime | None = None) -> in
         with Session(database_engine) as session, session.begin():
             plan = session.exec(
                 select(AdSyncBc)
-                .where(AdSyncBc.tenant_id == tenant_id, AdSyncBc.bc_id == bc_id)
+                .where(
+                    col(AdSyncBc.tenant_id) == tenant_id, col(AdSyncBc.bc_id) == bc_id
+                )
                 .with_for_update(skip_locked=True)
             ).one_or_none()
             if plan is not None and plan.enabled:
@@ -249,7 +251,7 @@ def _run_balance(
     with Session(database_engine, expire_on_commit=False) as session, session.begin():
         run = session.exec(
             select(ReportBalanceRun)
-            .where(ReportBalanceRun.id == run_id)
+            .where(col(ReportBalanceRun.id) == run_id)
             .with_for_update(skip_locked=True)
         ).one_or_none()
         if run is None:
@@ -270,7 +272,7 @@ def _run_balance(
             {
                 "generation": run.claim_generation,
                 "owner_epoch": run.owner_epoch,
-                "claim_token": run.claim_token,
+                "claim_token": claim_id,
                 "page": page,
                 "advertiser": run.remaining_advertiser_ids[0],
                 "provider_call_active": False,

@@ -129,6 +129,46 @@ def test_periodic_repair_replaces_lost_broker_message_without_hot_loop(request_f
     assert request_fixture[2].calls == ["getVideoList"]
 
 
+@pytest.mark.parametrize("stage", ["invalid", "manual_review"])
+def test_watchdog_does_not_republish_stopped_unknown(request_fixture, stage):
+    task_id = prepare(request_fixture)
+    item_id = first_item(task_id)
+    with Session(engine) as session:
+        item = session.get(LinkPreparationItem, item_id)
+        item.status = "result_unknown"
+        item.resolved = {
+            **item.resolved,
+            "status": "result_unknown",
+            "_work": {**item.resolved.get("_work", {}), "stage": stage},
+        }
+        session.add(item)
+        session.commit()
+    make_due(task_id)
+    with Session(engine) as session:
+        records = session.exec(
+            select(PendingDispatch).where(
+                PendingDispatch.tenant_id == request_fixture[0].tenant_id
+            )
+        ).all()
+        for record in records:
+            record.published_at = datetime.now(UTC)
+            session.add(record)
+        session.commit()
+        published = {record.id: record.published_at for record in records}
+    assert recover_preparations(database_engine=engine) == 0
+    process(request_fixture, item_id)
+    with Session(engine) as session:
+        assert {
+            record.id: record.published_at
+            for record in session.exec(
+                select(PendingDispatch).where(
+                    PendingDispatch.tenant_id == request_fixture[0].tenant_id
+                )
+            ).all()
+        } == published
+    assert request_fixture[2].calls == []
+
+
 def test_repair_is_bounded_and_advances_past_first_batch(request_fixture):
     task_id = prepare(request_fixture, lines=[f"Drama {n}" for n in range(205)])
     make_due(task_id, all_items=True)

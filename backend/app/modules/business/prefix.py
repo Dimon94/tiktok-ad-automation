@@ -2,12 +2,14 @@
 
 from datetime import date, datetime, time, timedelta
 from typing import Any, cast
+from typing import cast as typing_cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Table, inspect, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import QueryableAttribute, load_only
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -143,8 +145,10 @@ def advance_rebase(session: Session, run: BusinessRun, *, batch: int = 500) -> N
     table = cast(Table, inspect(model).local_table)
     keys = [c.name for c in table.primary_key.columns if c.name != "run_id"]
     # 每次删除最前一页，已提交的删除本身就是keyset进度；重放不会跳过剩余行。
-    deleted = session.execute(
-        text(f"""
+    deleted = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            text(f"""
         WITH page AS MATERIALIZED (
           SELECT {",".join(keys)} FROM {table.name}
           WHERE run_id=:run AND tenant_id=:tenant AND bc_id=:bc AND stat_date>=:dirty
@@ -155,14 +159,16 @@ def advance_rebase(session: Session, run: BusinessRun, *, batch: int = 500) -> N
             AND {" AND ".join("target." + k + "=page." + k for k in keys)} RETURNING 1
         ) SELECT count(*) FROM removed
         """),
-        {
-            "run": run.id,
-            "tenant": run.tenant_id,
-            "bc": run.bc_id,
-            "dirty": date.fromisoformat(progress["dirty"]),
-            "batch": min(batch, 500),
-        },
-    ).scalar_one()
+            {
+                "run": run.id,
+                "tenant": run.tenant_id,
+                "bc": run.bc_id,
+                "dirty": date.fromisoformat(progress["dirty"]),
+                "batch": min(batch, 500),
+            },
+        )
+        .scalar_one()
+    )
     counter = "day_deleted" if model is BusinessDay else "summary_deleted"
     progress[counter] += deleted
     if deleted < min(batch, 500):
@@ -191,7 +197,8 @@ def narrow_runs() -> SelectOfScalar[BusinessRun]:
 
 def frozen_metadata(session: Session, run_id: UUID) -> dict[str, Any]:
     row = (
-        session.execute(
+        typing_cast(SQLAlchemySession, session)
+        .execute(
             text("""SELECT inputs->'calculation_revision' calculation_revision,
                        inputs->'identity_catalog' identity_catalog,
                        inputs->'rate_schedules' rate_schedules
@@ -206,12 +213,14 @@ def frozen_metadata(session: Session, run_id: UUID) -> dict[str, Any]:
 
 def frozen_accounts(session: Session, run_id: UUID) -> set[str]:
     return set(
-        session.execute(
+        typing_cast(SQLAlchemySession, session)
+        .execute(
             text(
                 "SELECT jsonb_object_keys(inputs->'accounts') FROM business_run WHERE id=:run"
             ),
             {"run": run_id},
-        ).scalars()
+        )
+        .scalars()
     )
 
 
@@ -259,8 +268,10 @@ def _dirty_start(
         "start": day or run.quarter,
         "stop": day or min(old.end_date, run.end_date),
     }
-    compatible = session.execute(
-        text("""
+    compatible = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            text("""
         WITH meta AS MATERIALIZED (
           SELECT id,inputs->'calculation_revision' calculation,
                  inputs->'identity_catalog' catalog, inputs->'rate_schedules' rates,
@@ -273,14 +284,18 @@ def _dirty_start(
                  AND a.logs IS NOT DISTINCT FROM b.logs AND a.manual IS NOT DISTINCT FROM b.manual
           FROM meta a,meta b WHERE a.id=:old AND b.id=:new
         """),
-        params,
-    ).scalar_one()
+            params,
+        )
+        .scalar_one()
+    )
     if old.scope_revision != run.scope_revision or not compatible:
         return run.quarter
     # 两份JSON各展开一次，返回一个日期；不把大inputs传到Python，也不按账号
     # 重复解压整TOAST。raw state相同但complete_through跨日仍须比较覆盖语义。
-    dirty = session.execute(
-        text("""
+    dirty = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            text("""
         WITH frozen AS MATERIALIZED (
           SELECT id,inputs->'states' states,inputs->'accounts' accounts
           FROM business_run WHERE id IN (:old,:new)
@@ -312,8 +327,10 @@ def _dirty_start(
                  IS DISTINCT FROM (s.stat_day <= (b.value->>'complete_through')::date))
         ) SELECT min(stat_day) FROM differences
         """),
-        params,
-    ).scalar_one()
+            params,
+        )
+        .scalar_one()
+    )
     return (
         cast(date, dirty)
         if dirty is not None
@@ -394,7 +411,9 @@ def advance_prefix(session: Session, run: BusinessRun, *, batch: int = 500) -> N
         RETURNING {order}
       ) SELECT {order} FROM copied ORDER BY {order}
     """
-    rows = session.execute(text(statement), params).all()
+    rows = (
+        typing_cast(SQLAlchemySession, session).execute(text(statement), params).all()
+    )
     if rows:
         progress["after"] = [str(value) for value in rows[-1]]
         key = "day_rows" if model is BusinessDay else "summary_rows"
@@ -405,7 +424,7 @@ def advance_prefix(session: Session, run: BusinessRun, *, batch: int = 500) -> N
             progress["after"] = None
         else:
             # 只在准备结束改一次大JSON；COPY每批仅写小coverage和游标。
-            session.execute(
+            typing_cast(SQLAlchemySession, session).execute(
                 text("""UPDATE business_run SET inputs=jsonb_set(inputs,'{dirty_start}',
                         to_jsonb(CAST(:dirty AS text))) WHERE id=:run"""),
                 {"run": run.id, "dirty": dirty.isoformat()},
@@ -467,10 +486,10 @@ def repair_windows(
       ) SELECT advertiser,first_day,least(first_day+29,window_end) last_day
         FROM missing ORDER BY advertiser
     """)
-    rows = session.execute(statement, params).all()
+    rows = typing_cast(SQLAlchemySession, session).execute(statement, params).all()
     if not rows and after:
         params["after"] = ""
-        rows = session.execute(statement, params).all()
+        rows = typing_cast(SQLAlchemySession, session).execute(statement, params).all()
     windows = [
         (advertiser, start, end) for advertiser, start, end in rows if start is not None
     ]

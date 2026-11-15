@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timedelta
+from typing import cast as typing_cast
 from uuid import UUID, uuid4
 
 from redis import Redis
 from sqlalchemy import and_, case, false, func, or_, text, union_all, update
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
@@ -79,9 +81,9 @@ def _lock_execution_heads(
     )
     with session.begin_nested() as attempt:
         expected = set(
-            session.execute(
-                statement.with_only_columns(col(SyncSchedule.scope_id))
-            ).scalars()
+            typing_cast(SQLAlchemySession, session)
+            .execute(statement.with_only_columns(col(SyncSchedule.scope_id)))
+            .scalars()
         )
         heads = session.exec(
             statement.order_by(col(SyncSchedule.scope_id), col(SyncSchedule.work_class))
@@ -260,7 +262,7 @@ def _dispatch_due(
                 # 扫描/排序全部到期头，也不缓存候选或提前加锁。
                 candidates = union_all(
                     *(
-                        select(SyncSchedule.scope_id, SyncSchedule.work_class)
+                        select(col(SyncSchedule.scope_id), col(SyncSchedule.work_class))
                         .where(
                             *due,
                             *_pool_ready_heads(
@@ -268,8 +270,8 @@ def _dispatch_due(
                                 background_remaining=background_remaining,
                                 now=now,
                             ),
-                            SyncSchedule.tenant_id == tenant_id,
-                            SyncSchedule.work_class == work_class,
+                            col(SyncSchedule.tenant_id) == tenant_id,
+                            col(SyncSchedule.work_class) == work_class,
                             col(SyncSchedule.scope_id).not_in(skipped_scopes),
                         )
                         .order_by(
@@ -394,8 +396,8 @@ def _dispatch_due(
                     locked_head = session.exec(
                         select(SyncSchedule)
                         .where(
-                            SyncSchedule.scope_id == head.scope_id,
-                            SyncSchedule.work_class == head.work_class,
+                            col(SyncSchedule.scope_id) == head.scope_id,
+                            col(SyncSchedule.work_class) == head.work_class,
                         )
                         .with_for_update(skip_locked=True)
                         .execution_options(populate_existing=True)

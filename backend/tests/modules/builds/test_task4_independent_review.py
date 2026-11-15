@@ -40,11 +40,24 @@ def test_non_provider_edit_preserves_unknown_provider_preparation(
     unknown.resolved = {
         **unknown.resolved,
         "status": "result_unknown",
-        "error_code": "provider_result_unknown",
+        "error_code": "provider_state_invalid"
+        if edit_kind == "manual_materials"
+        else "provider_result_unknown",
+        "_work": {
+            **unknown.resolved.get("_work", {}),
+            "stage": "invalid" if edit_kind == "manual_materials" else "recover_create",
+        },
     }
     session.add(unknown)
     session.flush()
-    finish(session, context, first)
+    from app.modules.builds.drafts import continue_draft
+
+    if edit_kind == "manual_materials":
+        # 素材编辑只允许已结束准备的草稿；隔离任务保留Unknown供人工处理。
+        finish(session, context, first)
+    else:
+        for _ in range(20):
+            assert not continue_draft(session, context=context, task_id=first)
     if edit_kind == "manual_materials":
         drama = session.exec(
             select(DraftDrama).where(DraftDrama.draft_id == draft_id)

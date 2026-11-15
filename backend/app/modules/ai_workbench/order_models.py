@@ -38,11 +38,32 @@ class MaterialOrder(SQLModel, table=True):
     attempts: int = 0
     dispatch_generation: int = 0
     next_attempt_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC), sa_type=DateTime(timezone=True)
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=lambda: datetime.now(UTC),
+        ),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC), sa_type=DateTime(timezone=True)
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=lambda: datetime.now(UTC),
+        ),
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC), sa_type=DateTime(timezone=True)
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=lambda: datetime.now(UTC),
+        ),
     )

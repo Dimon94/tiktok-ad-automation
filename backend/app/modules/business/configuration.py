@@ -3,10 +3,12 @@
 from datetime import date
 from decimal import Decimal
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import update
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -50,7 +52,7 @@ def bump_scopes(session: Session, tenant_id: UUID, bc_id: str | None = None) -> 
     statement = update(BusinessScope).where(col(BusinessScope.tenant_id) == tenant_id)
     if bc_id is not None:
         statement = statement.where(col(BusinessScope.bc_id) == bc_id)
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         statement.values(
             revision=col(BusinessScope.revision) + 1,
             last_daily=None,

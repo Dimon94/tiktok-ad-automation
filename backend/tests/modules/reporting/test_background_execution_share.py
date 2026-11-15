@@ -274,6 +274,8 @@ def test_realtime_directory_does_not_take_shared_background_slot(
     if service is not None:
         live.query = live.query | {"directory_service_v1": service}
     register_directory_run(session, live, new_execution=True)
+    # 观察点必须晚于新实时需求登记，不能假设池准备必定在一秒内完成。
+    now = max(now, datetime.now(UTC))
     assert dispatch_pool(session, redis_client, now) >= 1
     assert live.claim_generation > 1
     assert len(pool_running(session, sync_seed, now)) == 4

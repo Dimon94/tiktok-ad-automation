@@ -43,8 +43,8 @@ def _optimizer(
 ) -> AIOptimizer:
     row = session.exec(
         select(AIOptimizer).where(
-            AIOptimizer.tenant_id == context.tenant_id,
-            AIOptimizer.id == optimizer_id,
+            col(AIOptimizer.tenant_id) == context.tenant_id,
+            col(AIOptimizer.id) == optimizer_id,
         )
     ).one_or_none()
     if row is None:
@@ -60,9 +60,9 @@ def _optimizer_context(
         raise DomainError("ai_optimizer_inactive", "ai_optimizer_inactive")
     bindings = session.exec(
         select(AIOptimizerStrategyBinding).where(
-            AIOptimizerStrategyBinding.tenant_id == context.tenant_id,
-            AIOptimizerStrategyBinding.optimizer_id == optimizer_id,
-            AIOptimizerStrategyBinding.active.is_(True),
+            col(AIOptimizerStrategyBinding.tenant_id) == context.tenant_id,
+            col(AIOptimizerStrategyBinding.optimizer_id) == optimizer_id,
+            col(AIOptimizerStrategyBinding.active).is_(True),
         )
     ).all()
     if len(bindings) != 1:
@@ -86,8 +86,8 @@ def _public(session: Session, plan: AIDailyPlan) -> DailyPlanPublic:
     rows = session.exec(
         select(AIDailyPlanRow)
         .where(
-            AIDailyPlanRow.tenant_id == plan.tenant_id,
-            AIDailyPlanRow.plan_id == plan.id,
+            col(AIDailyPlanRow.tenant_id) == plan.tenant_id,
+            col(AIDailyPlanRow.plan_id) == plan.id,
         )
         .order_by(col(AIDailyPlanRow.position))
     ).all()
@@ -95,17 +95,17 @@ def _public(session: Session, plan: AIDailyPlan) -> DailyPlanPublic:
 
     order_rows = set(
         session.exec(
-            select(MaterialOrder.plan_row_id).where(
-                MaterialOrder.tenant_id == plan.tenant_id,
-                MaterialOrder.optimizer_id == plan.optimizer_id,
+            select(col(MaterialOrder.plan_row_id)).where(
+                col(MaterialOrder.tenant_id) == plan.tenant_id,
+                col(MaterialOrder.optimizer_id) == plan.optimizer_id,
             )
         ).all()
     )
     frozen = set(
         session.exec(
-            select(BuildOccurrence.plan_row_id).where(
-                BuildOccurrence.tenant_id == plan.tenant_id,
-                BuildOccurrence.optimizer_id == plan.optimizer_id,
+            select(col(BuildOccurrence.plan_row_id)).where(
+                col(BuildOccurrence.tenant_id) == plan.tenant_id,
+                col(BuildOccurrence.optimizer_id) == plan.optimizer_id,
             )
         ).all()
     )
@@ -145,9 +145,9 @@ def _validate_provider_scope(
     for row in rows:
         application = session.exec(
             select(ProviderApplication).where(
-                ProviderApplication.tenant_id == context.tenant_id,
-                ProviderApplication.connection_id == row.provider_connection_id,
-                ProviderApplication.external_id == row.application_id,
+                col(ProviderApplication.tenant_id) == context.tenant_id,
+                col(ProviderApplication.connection_id) == row.provider_connection_id,
+                col(ProviderApplication.external_id) == row.application_id,
             )
         ).one_or_none()
         if application is None:
@@ -175,9 +175,9 @@ def create_daily_plan(
         raise DomainError("ai_daily_plan_day_mismatch", "ai_daily_plan_day_mismatch")
     existing = session.exec(
         select(AIDailyPlan).where(
-            AIDailyPlan.tenant_id == context.tenant_id,
-            AIDailyPlan.optimizer_id == optimizer_id,
-            AIDailyPlan.business_date == business_date,
+            col(AIDailyPlan.tenant_id) == context.tenant_id,
+            col(AIDailyPlan.optimizer_id) == optimizer_id,
+            col(AIDailyPlan.business_date) == business_date,
         )
     ).one_or_none()
     if existing is not None:
@@ -216,9 +216,9 @@ def update_daily_plan(
     plan = session.exec(
         select(AIDailyPlan)
         .where(
-            AIDailyPlan.tenant_id == context.tenant_id,
-            AIDailyPlan.optimizer_id == optimizer_id,
-            AIDailyPlan.business_date == requested_date,
+            col(AIDailyPlan.tenant_id) == context.tenant_id,
+            col(AIDailyPlan.optimizer_id) == optimizer_id,
+            col(AIDailyPlan.business_date) == requested_date,
         )
         .with_for_update()
     ).one_or_none()
@@ -250,9 +250,9 @@ def get_daily_plan(
     _optimizer_context(session, context, optimizer_id)
     plan = session.exec(
         select(AIDailyPlan).where(
-            AIDailyPlan.tenant_id == context.tenant_id,
-            AIDailyPlan.optimizer_id == optimizer_id,
-            AIDailyPlan.business_date == business_date,
+            col(AIDailyPlan.tenant_id) == context.tenant_id,
+            col(AIDailyPlan.optimizer_id) == optimizer_id,
+            col(AIDailyPlan.business_date) == business_date,
         )
     ).one_or_none()
     if plan is None:
@@ -268,8 +268,8 @@ def list_daily_plans(
     plans = session.exec(
         select(AIDailyPlan)
         .where(
-            AIDailyPlan.tenant_id == context.tenant_id,
-            AIDailyPlan.optimizer_id == optimizer_id,
+            col(AIDailyPlan.tenant_id) == context.tenant_id,
+            col(AIDailyPlan.optimizer_id) == optimizer_id,
         )
         .order_by(col(AIDailyPlan.business_date).desc())
     ).all()
@@ -285,8 +285,8 @@ def _replace_rows(
     existing = session.exec(
         select(AIDailyPlanRow)
         .where(
-            AIDailyPlanRow.tenant_id == plan.tenant_id,
-            AIDailyPlanRow.plan_id == plan.id,
+            col(AIDailyPlanRow.tenant_id) == plan.tenant_id,
+            col(AIDailyPlanRow.plan_id) == plan.id,
         )
         .with_for_update()
     ).all()
@@ -295,17 +295,17 @@ def _replace_rows(
 
     order_rows = set(
         session.exec(
-            select(MaterialOrder.plan_row_id).where(
-                MaterialOrder.tenant_id == plan.tenant_id,
-                MaterialOrder.optimizer_id == plan.optimizer_id,
+            select(col(MaterialOrder.plan_row_id)).where(
+                col(MaterialOrder.tenant_id) == plan.tenant_id,
+                col(MaterialOrder.optimizer_id) == plan.optimizer_id,
             )
         ).all()
     )
     frozen = set(
         session.exec(
-            select(BuildOccurrence.plan_row_id).where(
-                BuildOccurrence.tenant_id == plan.tenant_id,
-                BuildOccurrence.optimizer_id == plan.optimizer_id,
+            select(col(BuildOccurrence.plan_row_id)).where(
+                col(BuildOccurrence.tenant_id) == plan.tenant_id,
+                col(BuildOccurrence.optimizer_id) == plan.optimizer_id,
             )
         ).all()
     ) & set(by_id)
@@ -318,7 +318,7 @@ def _replace_rows(
     if not frozen.issubset(supplied):
         raise DomainError("ai_daily_plan_row_frozen", "已进入执行的排期行不能移除")
     for incoming in rows:
-        if incoming.id in frozen:
+        if incoming.id is not None and incoming.id in frozen:
             saved = by_id[incoming.id]
             if any(
                 getattr(saved, name) != value
@@ -334,9 +334,9 @@ def _replace_rows(
     )
     version = session.exec(
         select(AIOptimizerVersion).where(
-            AIOptimizerVersion.tenant_id == plan.tenant_id,
-            AIOptimizerVersion.optimizer_id == plan.optimizer_id,
-            AIOptimizerVersion.number == optimizer.latest_version,
+            col(AIOptimizerVersion.tenant_id) == plan.tenant_id,
+            col(AIOptimizerVersion.optimizer_id) == plan.optimizer_id,
+            col(AIOptimizerVersion.number) == optimizer.latest_version,
         )
     ).one()
     # 先释放位置唯一约束，允许用户对尚未执行的行重新排序。

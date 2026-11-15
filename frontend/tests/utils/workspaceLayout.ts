@@ -12,7 +12,7 @@ export async function expectWorkspaceLayout(page: Page) {
   await expect(
     page.locator("header").getByRole("heading", { level: 1 }),
   ).toHaveCount(0)
-  await expect(main).toHaveCSS("background-color", "oklch(0.97 0 0)")
+  await expect(main).toHaveCSS("background-color", "oklab(0.97 0 0 / 0.4)")
   for (const button of await main.locator(".bg-primary:visible").all()) {
     await expect(button).toHaveCSS("background-color", "oklch(0.205 0 0)")
   }

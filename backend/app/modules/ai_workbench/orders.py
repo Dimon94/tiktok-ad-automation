@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import (
     func,
 )
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
 from app.core.credentials import decrypt_credentials
@@ -126,7 +126,8 @@ def create_order(
     row = session.exec(
         select(AIDailyPlanRow)
         .where(
-            AIDailyPlanRow.tenant_id == context.tenant_id, AIDailyPlanRow.id == row_id
+            col(AIDailyPlanRow.tenant_id) == context.tenant_id,
+            col(AIDailyPlanRow.id) == row_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -134,8 +135,8 @@ def create_order(
         raise DomainError("ai_daily_plan_row_not_found", "未找到素材下单排期")
     prior = session.exec(
         select(MaterialOrder).where(
-            MaterialOrder.tenant_id == context.tenant_id,
-            MaterialOrder.plan_row_id == row_id,
+            col(MaterialOrder.tenant_id) == context.tenant_id,
+            col(MaterialOrder.plan_row_id) == row_id,
         )
     ).first()
     if prior:
@@ -184,7 +185,8 @@ def process_order(
     order = session.exec(
         select(MaterialOrder)
         .where(
-            MaterialOrder.tenant_id == context.tenant_id, MaterialOrder.id == order_id
+            col(MaterialOrder.tenant_id) == context.tenant_id,
+            col(MaterialOrder.id) == order_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -316,10 +318,10 @@ def scan_orders(session: Session, *, now: datetime, limit: int = 100) -> int:
     from app.jobs.outbox import enqueue_after_commit
 
     missing = (
-        ~select(MaterialOrder.id)
+        ~select(col(MaterialOrder.id))
         .where(
-            MaterialOrder.tenant_id == AIDailyPlanRow.tenant_id,
-            MaterialOrder.plan_row_id == AIDailyPlanRow.id,
+            col(MaterialOrder.tenant_id) == col(AIDailyPlanRow.tenant_id),
+            col(MaterialOrder.plan_row_id) == col(AIDailyPlanRow.id),
         )
         .exists()
     )
@@ -327,23 +329,23 @@ def scan_orders(session: Session, *, now: datetime, limit: int = 100) -> int:
         select(AIDailyPlanRow)
         .join(
             AIOptimizer,
-            (AIOptimizer.tenant_id == AIDailyPlanRow.tenant_id)
-            & (AIOptimizer.id == AIDailyPlanRow.optimizer_id),
+            (col(AIOptimizer.tenant_id) == col(AIDailyPlanRow.tenant_id))
+            & (col(AIOptimizer.id) == col(AIDailyPlanRow.optimizer_id)),
         )
         .join(
             AIOptimizerVersion,
-            (AIOptimizerVersion.tenant_id == AIOptimizer.tenant_id)
-            & (AIOptimizerVersion.optimizer_id == AIOptimizer.id)
-            & (AIOptimizerVersion.number == AIOptimizer.latest_version),
+            (col(AIOptimizerVersion.tenant_id) == col(AIOptimizer.tenant_id))
+            & (col(AIOptimizerVersion.optimizer_id) == col(AIOptimizer.id))
+            & (col(AIOptimizerVersion.number) == col(AIOptimizer.latest_version)),
         )
         .where(
-            AIDailyPlanRow.order_materials.is_(True),
+            col(AIDailyPlanRow.order_materials).is_(True),
             missing,
-            AIOptimizer.active.is_(True),
-            AIDailyPlanRow.business_date
-            >= func.date(func.timezone(AIDailyPlanRow.timezone, now)),
+            col(AIOptimizer.active).is_(True),
+            col(AIDailyPlanRow.business_date)
+            >= func.date(func.timezone(col(AIDailyPlanRow.timezone), now)),
         )
-        .order_by(AIDailyPlanRow.business_date, AIDailyPlanRow.position)
+        .order_by(col(AIDailyPlanRow.business_date), col(AIDailyPlanRow.position))
         .limit(limit)
         .with_for_update(skip_locked=True, of=AIDailyPlanRow)
     ).all()
@@ -357,9 +359,9 @@ def scan_orders(session: Session, *, now: datetime, limit: int = 100) -> int:
             continue
         version = session.exec(
             select(AIOptimizerVersion).where(
-                AIOptimizerVersion.tenant_id == row.tenant_id,
-                AIOptimizerVersion.optimizer_id == row.optimizer_id,
-                AIOptimizerVersion.number == optimizer.latest_version,
+                col(AIOptimizerVersion.tenant_id) == row.tenant_id,
+                col(AIOptimizerVersion.optimizer_id) == row.optimizer_id,
+                col(AIOptimizerVersion.number) == optimizer.latest_version,
             )
         ).one()
         try:
@@ -378,15 +380,15 @@ def scan_orders(session: Session, *, now: datetime, limit: int = 100) -> int:
         select(MaterialOrder)
         .join(
             AIOptimizer,
-            (AIOptimizer.tenant_id == MaterialOrder.tenant_id)
-            & (AIOptimizer.id == MaterialOrder.optimizer_id),
+            (col(AIOptimizer.tenant_id) == col(MaterialOrder.tenant_id))
+            & (col(AIOptimizer.id) == col(MaterialOrder.optimizer_id)),
         )
         .where(
-            AIOptimizer.active.is_(True),
-            MaterialOrder.status.in_(["PENDING", "UNKNOWN", "SUBMITTED"]),
-            MaterialOrder.next_attempt_at <= now,
+            col(AIOptimizer.active).is_(True),
+            col(MaterialOrder.status).in_(["PENDING", "UNKNOWN", "SUBMITTED"]),
+            col(MaterialOrder.next_attempt_at) <= now,
         )
-        .order_by(MaterialOrder.next_attempt_at)
+        .order_by(col(MaterialOrder.next_attempt_at))
         .limit(limit)
         .with_for_update(skip_locked=True, of=MaterialOrder)
     ).all()

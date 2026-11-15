@@ -113,8 +113,8 @@ def wake_unit(session: Session, *, unit_id: UUID, context: TenantContext) -> Non
     unit = session.exec(
         select(SubmissionUnit)
         .where(
-            SubmissionUnit.tenant_id == context.tenant_id,
-            SubmissionUnit.unit_id == unit_id,
+            col(SubmissionUnit.tenant_id) == context.tenant_id,
+            col(SubmissionUnit.unit_id) == unit_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -181,7 +181,7 @@ def _dependency(session: Session, context: TenantContext, step: ExecutionStep) -
             select(ExecutionStep).where(
                 col(ExecutionStep.tenant_id) == step.tenant_id,
                 col(ExecutionStep.unit_id) == step.unit_id,
-                ExecutionStep.kind == "CTA",
+                col(ExecutionStep.kind) == "CTA",
             )
         ).one()
         if cta.status in {"FAILED", "UNKNOWN"}:
@@ -230,19 +230,19 @@ def finalize_submission(
         row = session.exec(
             select(Submission)
             .where(
-                Submission.tenant_id == context.tenant_id,
-                Submission.id == submission_id,
+                col(Submission.tenant_id) == context.tenant_id,
+                col(Submission.id) == submission_id,
             )
             .with_for_update()
         ).one_or_none()
         if row is None or row.actor_id != context.actor_id:
             return
         active_unit = session.exec(
-            select(SubmissionUnit.unit_id)
+            select(col(SubmissionUnit.unit_id))
             .where(
-                SubmissionUnit.tenant_id == row.tenant_id,
-                SubmissionUnit.submission_id == row.id,
-                SubmissionUnit.disposition == "INCLUDED",
+                col(SubmissionUnit.tenant_id) == row.tenant_id,
+                col(SubmissionUnit.submission_id) == row.id,
+                col(SubmissionUnit.disposition) == "INCLUDED",
                 or_(
                     col(SubmissionUnit.expanded).is_(False),
                     col(SubmissionUnit.dispatch_id).is_not(None),
@@ -251,10 +251,10 @@ def finalize_submission(
             .limit(1)
         ).first()
         active_step = session.exec(
-            select(ExecutionStep.id)
+            select(col(ExecutionStep.id))
             .where(
                 col(ExecutionStep.tenant_id) == row.tenant_id,
-                ExecutionStep.submission_id == row.id,
+                col(ExecutionStep.submission_id) == row.id,
                 col(ExecutionStep.status).in_(["QUEUED", "RUNNING"]),
                 text("NOT " + obsolete_readback_sql("execution_step")),
             )
@@ -269,10 +269,10 @@ def finalize_submission(
                 # Internal termination retains existing results even when the
                 # original actor can no longer read this tenant's public API.
                 facts = session.exec(
-                    select(ExecutionStep.status, ExecutionStep.mismatch)
+                    select(col(ExecutionStep.status), col(ExecutionStep.mismatch))
                     .where(
                         col(ExecutionStep.tenant_id) == row.tenant_id,
-                        ExecutionStep.submission_id == row.id,
+                        col(ExecutionStep.submission_id) == row.id,
                         text("NOT " + obsolete_readback_sql("execution_step")),
                     )
                     .group_by(col(ExecutionStep.status), col(ExecutionStep.mismatch))
@@ -321,8 +321,8 @@ def process_unit(
         unit = session.exec(
             select(SubmissionUnit)
             .where(
-                SubmissionUnit.tenant_id == context.tenant_id,
-                SubmissionUnit.unit_id == identity,
+                col(SubmissionUnit.tenant_id) == context.tenant_id,
+                col(SubmissionUnit.unit_id) == identity,
             )
             .with_for_update()
         ).one_or_none()
@@ -343,16 +343,16 @@ def process_unit(
             select(parent.id)
             .where(
                 parent.tenant_id == context.tenant_id,
-                parent.id == ExecutionStep.parent_step_id,
+                parent.id == col(ExecutionStep.parent_step_id),
                 col(parent.status).in_(["SUCCEEDED", "FAILED"]),
             )
             .exists()
         )
         current_read = (
-            select(PendingDispatch.id)
+            select(col(PendingDispatch.id))
             .where(
-                PendingDispatch.id == ExecutionStep.dispatch_id,
-                PendingDispatch.task_name == READ_TASK,
+                col(PendingDispatch.id) == col(ExecutionStep.dispatch_id),
+                col(PendingDispatch.task_name) == READ_TASK,
             )
             .exists()
         )
@@ -633,12 +633,12 @@ def repair_execution(*, database_engine: Any, limit: int = 100) -> int:
                     col(SubmissionUnit.dispatch_id).is_not(None),
                     and_(
                         col(SubmissionUnit.dispatch_id).is_(None),
-                        SubmissionUnit.disposition == "INCLUDED",
-                        SubmissionUnit.expanded,
+                        col(SubmissionUnit.disposition) == "INCLUDED",
+                        col(SubmissionUnit.expanded),
                         col(SubmissionUnit.reason_code).is_(None),
                     ),
                 ),
-                SubmissionUnit.repair_after <= now,
+                col(SubmissionUnit.repair_after) <= now,
             )
             .order_by(col(SubmissionUnit.repair_after), col(SubmissionUnit.unit_id))
             .limit(limit)

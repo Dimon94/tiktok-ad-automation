@@ -576,8 +576,8 @@ test("策略卡片在2304px展开和收起侧栏时保留留白与固定短列",
             .closest('[data-slot="sidebar-inset"]')!
             .getBoundingClientRect()
           return Math.max(
-            Math.abs(rect.left - panel.left - 24),
-            Math.abs(panel.right - rect.right - 24),
+            Math.abs(rect.left - panel.left - 20),
+            Math.abs(panel.right - rect.right - 20),
           )
         }),
       )
@@ -604,7 +604,7 @@ test("策略卡片在2304px展开和收起侧栏时保留留白与固定短列",
               .locator('[data-slot="sidebar-container"]')
               .boundingBox())!.width,
         )
-        .toBe(66)
+        .toBe(48)
     }
     const widths = await section
       .locator("thead th")
@@ -1904,4 +1904,51 @@ test("旧精细年龄与性别条件必须明确修正才能保存", async ({ pa
     age_groups: ["AGE_25_34", "AGE_35_44", "AGE_45_54", "AGE_55_100"],
     gender: "GENDER_UNLIMITED",
   })
+})
+
+test("隐藏脏标签阻止切换BC，确认后清除旧标签并重建当前非素材页", async ({
+  page,
+}) => {
+  await boundary(page)
+  const firstBC = "7000000000000000001"
+  const nextBC = "7000000000000000002"
+  await page.route("**/api/tenants/*/bcs*", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { bc_id: firstBC, name: "第一BC" },
+          { bc_id: nextBC, name: "第二BC" },
+        ],
+        next_cursor: null,
+      },
+    }),
+  )
+  await page.goto(`${editUrl}?bc_id=${firstBC}`)
+  await page.getByLabel("日预算", { exact: true }).fill("321.00")
+  await page
+    .getByRole("navigation", { name: "投放准备" })
+    .getByRole("link", { name: "投放策略", exact: true })
+    .click()
+  await page.getByRole("combobox", { name: "当前 BC" }).click()
+  await page.getByRole("option", { name: /第二BC/ }).click()
+  const guard = page.getByRole("dialog", { name: "有未保存的内容" })
+  await expect(guard).toBeVisible()
+  await guard.getByRole("button", { name: "留在当前页", exact: true }).click()
+  await expect(page).toHaveURL(
+    (url) => url.searchParams.get("bc_id") === firstBC,
+  )
+  await page.getByRole("tab", { name: "投放策略 · 详情", exact: true }).click()
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("321.00")
+  await page.getByRole("combobox", { name: "当前 BC" }).click()
+  await page.getByRole("option", { name: /第二BC/ }).click()
+  await guard
+    .getByRole("button", { name: "丢弃未保存修改", exact: true })
+    .click()
+  await expect(page).toHaveURL(
+    (url) => url.searchParams.get("bc_id") === nextBC,
+  )
+  await expect(page.getByLabel("日预算", { exact: true })).toHaveValue("100.00")
+  await expect(
+    page.getByRole("tablist", { name: "已打开的页面" }).getByRole("tab"),
+  ).toHaveCount(1)
 })

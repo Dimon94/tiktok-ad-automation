@@ -14,18 +14,21 @@ from app.modules.builds.image_composition_state import (
 )
 from tests.migration_database import historical_database
 from tests.modules.builds.test_drafts import create_intent
-from tests.modules.builds.test_image_composition_migration import scaffold
 from tests.modules.conftest import create_context
 from tests.modules.materials.test_tenant_materials import material
 
 
 def test_candidate_build_upgrade_preserves_completed_snapshot_and_count(monkeypatch):
+    from tests.modules.builds.test_image_composition_migration import (
+        historical_scaffold,
+    )
+
     with historical_database(monkeypatch, "0051_image_state_scope") as (engine, config):
         with Session(engine) as session:
             context = create_context(session)
             intent = create_intent(session, context)
             intent["drama_lines"] = ["Moon"]
-            draft, drama = scaffold(session, context, intent)
+            draft, drama = historical_scaffold(session, context, intent)
             image = material(session, context, "Moon.jpg")
             image.media_type, image.sha256 = "IMAGE", "a" * 64
             session.flush()

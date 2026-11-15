@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
@@ -49,33 +50,33 @@ def dispatch_due_rows(session: Session, *, now: datetime, limit: int = 100) -> i
     """只领取到期且未完成的行；历史终态不占用有界扫描的队头。"""
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError("limit must be between 1 and 500")
-    same_row = (BuildOccurrence.tenant_id == AIDailyPlanRow.tenant_id) & (
-        BuildOccurrence.plan_row_id == AIDailyPlanRow.id
+    same_row = (col(BuildOccurrence.tenant_id) == col(AIDailyPlanRow.tenant_id)) & (
+        col(BuildOccurrence.plan_row_id) == col(AIDailyPlanRow.id)
     )
     statement = (
         select(AIDailyPlanRow)
         .join(
             AIOptimizer,
-            (AIOptimizer.tenant_id == AIDailyPlanRow.tenant_id)
-            & (AIOptimizer.id == AIDailyPlanRow.optimizer_id),
+            (col(AIOptimizer.tenant_id) == col(AIDailyPlanRow.tenant_id))
+            & (col(AIOptimizer.id) == col(AIDailyPlanRow.optimizer_id)),
         )
         .where(
-            AIOptimizer.active.is_(True),
-            AIDailyPlanRow.next_dispatch_at <= now,
+            col(AIOptimizer.active).is_(True),
+            col(AIDailyPlanRow.next_dispatch_at) <= now,
             func.timezone(
-                AIDailyPlanRow.timezone,
-                AIDailyPlanRow.business_date + AIDailyPlanRow.scheduled_time,
+                col(AIDailyPlanRow.timezone),
+                col(AIDailyPlanRow.business_date) + col(AIDailyPlanRow.scheduled_time),
             )
             <= now,
             or_(
-                ~exists(select(BuildOccurrence.id).where(same_row)),
+                ~exists(select(col(BuildOccurrence.id)).where(same_row)),
                 exists(
-                    select(BuildOccurrence.id).where(
+                    select(col(BuildOccurrence.id)).where(
                         same_row,
                         or_(
-                            BuildOccurrence.status == "WAITING_MATERIAL",
-                            (BuildOccurrence.status == "PENDING")
-                            & BuildOccurrence.dispatch_id.is_(None),
+                            col(BuildOccurrence.status) == "WAITING_MATERIAL",
+                            (col(BuildOccurrence.status) == "PENDING")
+                            & col(BuildOccurrence.dispatch_id).is_(None),
                         ),
                     )
                 ),
@@ -97,7 +98,10 @@ def dispatch_due_rows(session: Session, *, now: datetime, limit: int = 100) -> i
         try:
             # 一行的撤权/失效不能回滚同批其他租户的排期。
             with session.begin_nested():
-                optimizer = session.get(AIOptimizer, row.optimizer_id)
+                optimizer = typing_cast(
+                    AIOptimizer, session.get(AIOptimizer, row.optimizer_id)
+                )
+
                 context = TenantContext(
                     tenant_id=row.tenant_id,
                     actor_id=optimizer.created_by,
@@ -107,8 +111,8 @@ def dispatch_due_rows(session: Session, *, now: datetime, limit: int = 100) -> i
                 occurrence = session.exec(
                     select(BuildOccurrence)
                     .where(
-                        BuildOccurrence.tenant_id == row.tenant_id,
-                        BuildOccurrence.plan_row_id == row.id,
+                        col(BuildOccurrence.tenant_id) == row.tenant_id,
+                        col(BuildOccurrence.plan_row_id) == row.id,
                     )
                     .with_for_update()
                 ).first()

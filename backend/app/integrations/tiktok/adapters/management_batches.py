@@ -7,10 +7,11 @@
 import json
 from collections import Counter
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import business_api_client as sdk  # type: ignore[import-untyped]
 from sqlalchemy.exc import SQLAlchemyError
+from urllib3.response import HTTPResponse
 
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.common import CallEvidence, RemoteCallError
@@ -213,10 +214,10 @@ def _validate(commands: tuple[ManagementCommand, ...]) -> None:
 
 def _member_id(command: ManagementCommand) -> str:
     return (
-        command.ad_material_id
+        cast(str, command.ad_material_id)
         if command.field == "material_status"
         else command.ref.remote_id
-    )  # type: ignore[return-value]
+    )
 
 
 def _id_key(command: ManagementCommand) -> str:
@@ -308,7 +309,10 @@ def batch_receipts(
             for row in status_rows
         ):
             return tuple(unknown for _ in commands)
-        success_ids = [*success_ids, *(row[id_key] for row in status_rows)]
+        success_ids = [
+            *success_ids,
+            *(row[id_key] for row in cast(list[dict[str, Any]], status_rows)),
+        ]
     accepted: Counter[str] = Counter()
     rejected: Counter[str] = Counter()
     error_codes: dict[str, int] = {}
@@ -320,14 +324,14 @@ def batch_receipts(
         else:
             accepted[identity] += 1
     for error in errors:
-        if (
-            type(error) is not dict
-            or type(error.get(id_key)) is not str
-            or error[id_key] not in expected
-        ):
+        if type(error) is not dict:
             invalid = True
             continue
-        identity = error[id_key]
+        error = cast(dict[str, Any], error)
+        identity = error.get(id_key)
+        if type(identity) is not str or identity not in expected:
+            invalid = True
+            continue
         rejected[identity] += 1
         member_code = error.get("code", error.get("error_code"))
         if type(member_code) is int and member_code != 0:
@@ -470,7 +474,7 @@ def apply_sdk_batch(
                         token, body=payload, async_req=True, _request_timeout=timeout
                     ).get()
             # gateway为每批创建独立client，last_response不能在并发批次之间共享。
-            raw = json.loads(adapter._client.last_response.data)
+            raw = json.loads(cast(HTTPResponse, adapter._client.last_response).data)
             return batch_receipts(commands, raw)
     except Exception as error:
         if sent:

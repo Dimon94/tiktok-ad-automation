@@ -24,17 +24,17 @@ def expansion_cache(session, context, bc_id, route, record, mutation):
             usable_grants(
                 tenant_id=context.tenant_id, bc_id=bc_id, action="read"
             ).where(
-                BCAccountAccess.connection_id == route.connection_id,
-                BCAccountAccess.permission_state == "VERIFIED",
-                BCAccountAccess.checked_at <= datetime.now(UTC),
+                col(BCAccountAccess.connection_id) == route.connection_id,
+                col(BCAccountAccess.permission_state) == "VERIFIED",
+                col(BCAccountAccess.checked_at) <= datetime.now(UTC),
             )
         ).all()
     }
     authorization = session.exec(
         select(ConnectionAuthorization).where(
-            ConnectionAuthorization.tenant_id == context.tenant_id,
-            ConnectionAuthorization.connection_id == route.connection_id,
-            ConnectionAuthorization.authorization_revision
+            col(ConnectionAuthorization.tenant_id) == context.tenant_id,
+            col(ConnectionAuthorization.connection_id) == route.connection_id,
+            col(ConnectionAuthorization.authorization_revision)
             == route.authorization_revision,
         )
     ).one_or_none()
@@ -56,10 +56,10 @@ def expansion_cache(session, context, bc_id, route, record, mutation):
         rows = session.exec(
             select(AdObject).where(
                 tuple_(
-                    AdObject.tenant_id,
-                    AdObject.advertiser_id,
-                    AdObject.kind,
-                    AdObject.remote_id,
+                    col(AdObject.tenant_id),
+                    col(AdObject.advertiser_id),
+                    col(AdObject.kind),
+                    col(AdObject.remote_id),
                 ).in_(keys)
             )
         ).all()
@@ -77,15 +77,15 @@ def expansion_cache(session, context, bc_id, route, record, mutation):
     if campaigns and mutation.field in {"budget", "roas"}:
         rows = session.exec(
             select(AdObject).where(
-                AdObject.tenant_id == context.tenant_id,
-                AdObject.kind == "adgroup",
-                AdObject.parent_kind == "campaign",
-                tuple_(AdObject.advertiser_id, AdObject.parent_remote_id).in_(
+                col(AdObject.tenant_id) == context.tenant_id,
+                col(AdObject.kind) == "adgroup",
+                col(AdObject.parent_kind) == "campaign",
+                tuple_(col(AdObject.advertiser_id), col(AdObject.parent_remote_id)).in_(
                     campaigns
                 ),
-                AdObject.source_connection_id == route.connection_id,
-                AdObject.source_channel == route.channel,
-                AdObject.observed_at <= record.created_at,
+                col(AdObject.source_connection_id) == route.connection_id,
+                col(AdObject.source_channel) == route.channel,
+                col(AdObject.observed_at) <= record.created_at,
             )
         ).all()
         for row in rows:
@@ -98,10 +98,10 @@ def expansion_cache(session, context, bc_id, route, record, mutation):
         rows = session.exec(
             select(CampaignNameProjection)
             .where(
-                CampaignNameProjection.tenant_id == context.tenant_id,
+                col(CampaignNameProjection.tenant_id) == context.tenant_id,
                 tuple_(
-                    CampaignNameProjection.advertiser_id,
-                    CampaignNameProjection.campaign_remote_id,
+                    col(CampaignNameProjection.advertiser_id),
+                    col(CampaignNameProjection.campaign_remote_id),
                 ).in_(campaigns),
             )
             .order_by(col(CampaignNameProjection.name_revision).desc())
@@ -115,9 +115,10 @@ def expansion_cache(session, context, bc_id, route, record, mutation):
     if ads:
         for row in session.exec(
             select(AdMaterialReference).where(
-                AdMaterialReference.tenant_id == context.tenant_id,
+                col(AdMaterialReference.tenant_id) == context.tenant_id,
                 tuple_(
-                    AdMaterialReference.advertiser_id, AdMaterialReference.ad_remote_id
+                    col(AdMaterialReference.advertiser_id),
+                    col(AdMaterialReference.ad_remote_id),
                 ).in_(ads),
             )
         ).all():

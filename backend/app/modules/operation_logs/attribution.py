@@ -3,8 +3,10 @@
 from collections import Counter
 from dataclasses import replace
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
@@ -57,30 +59,39 @@ def attribute_events(
 
     from sqlalchemy import select as sa_select
 
-    rows = session.execute(
-        sa_select(ManagementTaskItem, ManagementRequestAttempt)
-        .join(
-            ManagementRequestAttempt,
-            (
-                col(ManagementRequestAttempt.tenant_id)
-                == col(ManagementTaskItem.tenant_id)
+    rows = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            sa_select(ManagementTaskItem, ManagementRequestAttempt)
+            .join(
+                ManagementRequestAttempt,
+                (
+                    col(ManagementRequestAttempt.tenant_id)
+                    == col(ManagementTaskItem.tenant_id)
+                )
+                & (
+                    col(ManagementRequestAttempt.task_item_id)
+                    == col(ManagementTaskItem.id)
+                ),
             )
-            & (
-                col(ManagementRequestAttempt.task_item_id) == col(ManagementTaskItem.id)
-            ),
+            .where(
+                col(ManagementTaskItem.tenant_id) == tenant_id,
+                col(ManagementTaskItem.execution_result) == "ACCEPTED",
+                col(ManagementRequestAttempt.outcome) == "ACCEPTED",
+                col(ManagementRequestAttempt.request_at) >= earliest,
+                col(ManagementRequestAttempt.request_at)
+                < latest + timedelta(minutes=1),
+            )
         )
-        .where(
-            col(ManagementTaskItem.tenant_id) == tenant_id,
-            col(ManagementTaskItem.execution_result) == "ACCEPTED",
-            col(ManagementRequestAttempt.outcome) == "ACCEPTED",
-            col(ManagementRequestAttempt.request_at) >= earliest,
-            col(ManagementRequestAttempt.request_at) < latest + timedelta(minutes=1),
-        )
-    ).all()
+        .all()
+    )
     task_ids = {item.task_id for item, _ in rows}
     modes = (
         session.exec(
-            select(AutomationActionLedger.management_task_id, AutomationRuleRun.mode)
+            select(
+                col(AutomationActionLedger.management_task_id),
+                col(AutomationRuleRun.mode),
+            )
             .join(
                 AutomationRuleRun,
                 (

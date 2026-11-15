@@ -608,7 +608,7 @@ def _defer_failed_plan(
         ):
             plan = session.exec(
                 select(AdSyncBc)
-                .where(AdSyncBc.tenant_id == key[0], AdSyncBc.bc_id == key[1])
+                .where(col(AdSyncBc.tenant_id) == key[0], col(AdSyncBc.bc_id) == key[1])
                 .with_for_update(skip_locked=True)
             ).one_or_none()
             if plan is None:
@@ -1099,13 +1099,15 @@ def run_job_step(*, database_engine, redis_client, job_id, claim_token):
             # 滚动发布时旧dispatcher可能已给CHECK签发CREATE票。冻结同代主收据
             # 的入口，不按执行后变化的phase释放；网关仍对真实发送接口独立准入。
             reserved_endpoint = session.exec(
-                select(SyncCostLedger.physical_endpoint)
+                select(col(SyncCostLedger.physical_endpoint))
                 .where(
-                    SyncCostLedger.tenant_id == tenant_id,
-                    SyncCostLedger.report_job_id == job_id,
-                    SyncCostLedger.generation == generation,
+                    col(SyncCostLedger.tenant_id) == tenant_id,
+                    col(SyncCostLedger.report_job_id) == job_id,
+                    col(SyncCostLedger.generation) == generation,
                 )
-                .order_by(col(SyncCostLedger.reserved_units).desc(), SyncCostLedger.id)
+                .order_by(
+                    col(SyncCostLedger.reserved_units).desc(), col(SyncCostLedger.id)
+                )
                 .limit(1)
             ).first()
             endpoint = reserved_endpoint or endpoint
@@ -1333,7 +1335,7 @@ def _supersede_stalled_directory_runs(now, *, candidate_ids=None, batch_limit=No
     from app.modules.ads.directory_supersession import superseding_directory_predicate
 
     newer = aliased(AdDirectoryRun)
-    candidates = select(AdDirectoryRun.id).where(
+    candidates = select(col(AdDirectoryRun.id)).where(
         col(AdDirectoryRun.status).in_(["QUEUED", "RUNNING", "WAITING_REMOTE"]),
         col(AdDirectoryRun.published_version).is_(None),
         col(AdDirectoryRun.claimed_until).is_(None)
@@ -1375,7 +1377,7 @@ def _expired_directory_runs(now):
         AdDirectoryRun.status
     ).in_(["CANCELLED", "STALE", "FAILED"])
     return (
-        select(AdDirectoryRun.id)
+        select(col(AdDirectoryRun.id))
         .where(
             finished,
             col(AdDirectoryRun.claim_token).is_(None),
@@ -1386,20 +1388,22 @@ def _expired_directory_runs(now):
             | (
                 col(AdDirectoryRun.completed_at) < now - FAILED_DIRECTORY_PAGE_RETENTION
             ),
-            ~select(SyncExecutionScope.id)
+            ~select(col(SyncExecutionScope.id))
             .where(
-                SyncExecutionScope.directory_run_id == AdDirectoryRun.id,
-                SyncExecutionScope.status == "PENDING",
+                col(SyncExecutionScope.directory_run_id) == col(AdDirectoryRun.id),
+                col(SyncExecutionScope.status) == "PENDING",
             )
             .exists(),
             # 被新运行取代的运行（superseded）不再需要排查窗口，立即清理。
             (col(AdDirectoryRun.error_code) == "superseded")
             | (
-                func.coalesce(AdDirectoryRun.completed_at, AdDirectoryRun.created_at)
+                func.coalesce(
+                    col(AdDirectoryRun.completed_at), col(AdDirectoryRun.created_at)
+                )
                 < now - DIRECTORY_PAGE_RETENTION
             ),
-            select(AdDirectoryPage.run_id)
-            .where(AdDirectoryPage.run_id == AdDirectoryRun.id)
+            select(col(AdDirectoryPage.run_id))
+            .where(col(AdDirectoryPage.run_id) == col(AdDirectoryRun.id))
             .exists(),
         )
         .limit(DIRECTORY_PAGE_CLEANUP_RUNS)
@@ -1437,31 +1441,34 @@ def _execution_cleanup_guard(model, execution_column, payload_key):
     from app.modules.sync_control.models import SyncCostLedger, SyncExecutionScope
 
     pending = (
-        select(SyncExecutionScope.id)
-        .where(execution_column == model.id, SyncExecutionScope.status == "PENDING")
+        select(col(SyncExecutionScope.id))
+        .where(
+            execution_column == model.id, col(SyncExecutionScope.status) == "PENDING"
+        )
         .exists()
     )
     # 本函数仅保护分页清理，父任务由归档流程单独保留。成功执行的迟到消息
     # 只核对终态，不再读取分页，不能让七天的outbox留存拖住大响应正文。
     # 失败/取消执行仍保守等待消息证据压缩，避免丢失恢复线索。
     unpreserved_dispatch = (
-        select(PendingDispatch.id)
+        select(col(PendingDispatch.id))
         .where(
-            PendingDispatch.tenant_id == model.tenant_id,
-            PendingDispatch.payload[payload_key].astext == cast(model.id, String),
-            PendingDispatch.payload[payload_key].astext.is_not(None),
-            PendingDispatch.compacted_at.is_(None),
+            col(PendingDispatch.tenant_id) == model.tenant_id,
+            col(PendingDispatch.payload)[payload_key].astext == cast(model.id, String),
+            col(PendingDispatch.payload)[payload_key].astext.is_not(None),
+            col(PendingDispatch.compacted_at).is_(None),
         )
         .exists()
     )
     cost_column = getattr(SyncCostLedger, execution_column.key)
     unsettled_cost = (
-        select(SyncCostLedger.id)
+        select(col(SyncCostLedger.id))
         .where(
             cost_column == model.id,
-            (SyncCostLedger.receipt_version > SyncCostLedger.settled_version)
+            (col(SyncCostLedger.receipt_version) > col(SyncCostLedger.settled_version))
             | (
-                SyncCostLedger.closed.is_(False) & SyncCostLedger.abandoned_at.is_(None)
+                col(SyncCostLedger.closed).is_(False)
+                & col(SyncCostLedger.abandoned_at).is_(None)
             ),
         )
         .exists()
@@ -1531,7 +1538,7 @@ def _cleanup_category(session, *, category, now, cursors):
             & (col(ReportSyncJob.finished_at) < now - timedelta(days=7))
         )
         & _execution_cleanup_guard(
-            ReportSyncJob, SyncExecutionScope.report_job_id, "job_id"
+            ReportSyncJob, col(SyncExecutionScope.report_job_id), "job_id"
         )
         & (
             col(ReportSyncJob.claimed_until).is_(None)
@@ -1573,8 +1580,8 @@ def _cleanup_category(session, *, category, now, cursors):
     if condition is not None:
         eligible = eligible.where(condition)
     has_pages = (
-        select(ReportSyncPage.job_id)
-        .where(ReportSyncPage.job_id == ReportSyncJob.id)
+        select(col(ReportSyncPage.job_id))
+        .where(col(ReportSyncPage.job_id) == col(ReportSyncJob.id))
         .exists()
     )
     if category == "material_pages":
@@ -1584,7 +1591,7 @@ def _cleanup_category(session, *, category, now, cursors):
     if category == "material_pages":
         # DELETE计划可能重求值IN子查询；物化有限页键固定单条删除上限。
         page_keys = (
-            select(ReportSyncPage.job_id, ReportSyncPage.page)
+            select(col(ReportSyncPage.job_id), col(ReportSyncPage.page))
             .where(col(ReportSyncPage.job_id).in_(eligible))
             .limit(batch_limit)
             .with_for_update(skip_locked=True)
@@ -1599,7 +1606,7 @@ def _cleanup_category(session, *, category, now, cursors):
     elif category == "directory_superseded":
         statement = _supersede_stalled_directory_runs(
             now, candidate_ids=[row[0] for row in candidates], batch_limit=batch_limit
-        ).returning(AdDirectoryRun.id)
+        ).returning(col(AdDirectoryRun.id))
         identifiers = list(session.connection().execute(statement).scalars())
         from app.modules.sync_control.directory_demand import directory_outcome
 
@@ -1623,7 +1630,7 @@ def _cleanup_category(session, *, category, now, cursors):
         if category == "snapshots":
             # 快照同样可能包含大量行；先排空有界子行，再删除父记录。
             rows = (
-                select(QuerySnapshotRow.snapshot_id, QuerySnapshotRow.row_key)
+                select(col(QuerySnapshotRow.snapshot_id), col(QuerySnapshotRow.row_key))
                 .where(col(QuerySnapshotRow.snapshot_id).in_(eligible))
                 .limit(batch_limit)
                 .with_for_update(skip_locked=True)
@@ -1641,8 +1648,8 @@ def _cleanup_category(session, *, category, now, cursors):
                 .rowcount
             )
             eligible = eligible.where(
-                ~select(QuerySnapshotRow.snapshot_id)
-                .where(QuerySnapshotRow.snapshot_id == QuerySnapshot.id)
+                ~select(col(QuerySnapshotRow.snapshot_id))
+                .where(col(QuerySnapshotRow.snapshot_id) == col(QuerySnapshot.id))
                 .exists()
             )
         statement = delete(model).where(tuple_(*keys).in_(eligible))
@@ -1708,7 +1715,7 @@ def cleanup_directory_pages(session, *, now, candidate_ids=None, batch_limit=Non
         runs = runs.where(col(AdDirectoryRun.id).in_(candidate_ids))
     runs = runs.cte("expired_directory_runs").prefix_with("MATERIALIZED")
     pages = (
-        select(AdDirectoryPage.run_id, AdDirectoryPage.page)
+        select(col(AdDirectoryPage.run_id), col(AdDirectoryPage.page))
         .where(col(AdDirectoryPage.run_id).in_(select(runs.c.id)))
         .limit(batch_limit or CLEANUP_BATCH_ROWS)
         .with_for_update(skip_locked=True)
@@ -1729,7 +1736,9 @@ def cleanup_directory_pages(session, *, now, candidate_ids=None, batch_limit=Non
 
 
 @celery_app.task(name="reporting.plan_due", time_limit=30, soft_time_limit=25)
-def plan_due(*, tenant_id=None, actor_id=None, payload=None, dispatch=None):
+def plan_due(
+    *, tenant_id: Any = None, actor_id: Any = None, payload: Any = None, dispatch=None
+):
     if dispatch is not None:
         from app.jobs.tasks import guard_sync_dispatch
 

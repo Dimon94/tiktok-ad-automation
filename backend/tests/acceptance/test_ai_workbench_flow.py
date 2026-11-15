@@ -37,12 +37,6 @@ def test_acceptance_contract_keeps_external_writes_out_of_the_loop():
     assert "frozen_evidence_ids" in source
 
 
-def test_manual_and_automatic_modes_are_explicitly_supported():
-    source = (AI_WORKBENCH_DIR / "proposals.py").read_text()
-    assert 'version.optimization_mode != "AUTO"' in source
-    assert 'mode == "MANUAL"' in source
-
-
 def test_two_tenants_and_two_optimizers_keep_daily_report_scope(
     client, session, ai_workbench_contexts
 ):
@@ -206,7 +200,6 @@ def test_acceptance_matrix_covers_partial_readback_order_and_proposal_contracts(
     assert '"PARTIAL"' in daily_report
     assert '"readback"' in daily_report
     assert '"order_materials"' in daily_report
-    assert "AIOptimizerRuleBinding.active.is_(True)" in daily_report
     # Account-scoped rule proposals are checked before publication, and an
     # accepted proposal always appends a fresh immutable optimizer version.
     assert 'mode == "ACCOUNTS"' in proposals

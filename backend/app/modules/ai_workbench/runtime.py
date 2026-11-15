@@ -12,7 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session as SASession
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.api.deps import SessionDep
 from app.core import security
@@ -115,7 +115,7 @@ def task_identity(
         raise HTTPException(403, "Invalid task authorization") from None
     task = session.exec(
         select(reviews.DSHReviewTask)
-        .where(reviews.DSHReviewTask.id == task_id)
+        .where(col(reviews.DSHReviewTask.id) == task_id)
         .with_for_update()
     ).one_or_none()
     if task is None or any(
@@ -144,12 +144,12 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
         select(reviews.DSHReviewTask)
         .where(
             or_(
-                reviews.DSHReviewTask.status == "PENDING",
-                (reviews.DSHReviewTask.status == "RUNNING")
-                & (reviews.DSHReviewTask.authorization_expires_at <= now),
+                col(reviews.DSHReviewTask.status) == "PENDING",
+                (col(reviews.DSHReviewTask.status) == "RUNNING")
+                & (col(reviews.DSHReviewTask.authorization_expires_at) <= now),
             )
         )
-        .order_by(reviews.DSHReviewTask.created_at)
+        .order_by(col(reviews.DSHReviewTask.created_at))
         .limit(100)
         .with_for_update(skip_locked=True)
     ).all()
@@ -162,12 +162,12 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
         if not acquired:
             continue
         busy = session.exec(
-            select(reviews.DSHReviewTask.id).where(
-                reviews.DSHReviewTask.tenant_id == task.tenant_id,
-                reviews.DSHReviewTask.optimizer_id == task.optimizer_id,
-                reviews.DSHReviewTask.id != task.id,
-                reviews.DSHReviewTask.status == "RUNNING",
-                reviews.DSHReviewTask.authorization_expires_at > now,
+            select(col(reviews.DSHReviewTask.id)).where(
+                col(reviews.DSHReviewTask.tenant_id) == task.tenant_id,
+                col(reviews.DSHReviewTask.optimizer_id) == task.optimizer_id,
+                col(reviews.DSHReviewTask.id) != task.id,
+                col(reviews.DSHReviewTask.status) == "RUNNING",
+                col(reviews.DSHReviewTask.authorization_expires_at) > now,
             )
         ).first()
         if busy is not None:
@@ -324,14 +324,16 @@ def schedule_reviews(session: Session, *, now: datetime, limit: int = 100) -> in
         return 0
     count = 0
     rows = session.exec(
-        select(AIOptimizer).where(AIOptimizer.active.is_(True)).order_by(AIOptimizer.id)
+        select(AIOptimizer)
+        .where(col(AIOptimizer.active).is_(True))
+        .order_by(col(AIOptimizer.id))
     ).all()
     for optimizer in rows:
         version = session.exec(
             select(AIOptimizerVersion).where(
-                AIOptimizerVersion.tenant_id == optimizer.tenant_id,
-                AIOptimizerVersion.optimizer_id == optimizer.id,
-                AIOptimizerVersion.number == optimizer.latest_version,
+                col(AIOptimizerVersion.tenant_id) == optimizer.tenant_id,
+                col(AIOptimizerVersion.optimizer_id) == optimizer.id,
+                col(AIOptimizerVersion.number) == optimizer.latest_version,
             )
         ).one()
         local = now.astimezone(ZoneInfo(version.timezone))
@@ -339,9 +341,9 @@ def schedule_reviews(session: Session, *, now: datetime, limit: int = 100) -> in
             continue
         request_id = uuid5(optimizer.id, f"review:{local.date()}")
         if session.exec(
-            select(reviews.DSHReviewTask.id).where(
-                reviews.DSHReviewTask.tenant_id == optimizer.tenant_id,
-                reviews.DSHReviewTask.request_id == request_id,
+            select(col(reviews.DSHReviewTask.id)).where(
+                col(reviews.DSHReviewTask.tenant_id) == optimizer.tenant_id,
+                col(reviews.DSHReviewTask.request_id) == request_id,
             )
         ).first():
             continue

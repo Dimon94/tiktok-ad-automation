@@ -8,6 +8,7 @@ same immutable evidence IDs.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
@@ -50,10 +51,10 @@ def _evidence_ids_from_value(value: Any) -> set[str]:
 
 def _next_trigger(
     *,
-    occurrences: list[BuildOccurrence],
-    rules: list[AutomationRule],
+    occurrences: Sequence[BuildOccurrence],
+    rules: Sequence[AutomationRule],
     now: datetime,
-    plans: list[AIDailyPlanRow] | None = None,
+    plans: Sequence[AIDailyPlanRow] | None = None,
 ) -> dict[str, Any] | None:
     candidates: list[tuple[datetime, dict[str, Any]]] = []
     for row in occurrences:
@@ -102,8 +103,8 @@ def build_daily_report(
     reviews.authorize(session, context)
     optimizer = session.exec(
         select(AIOptimizer).where(
-            AIOptimizer.tenant_id == context.tenant_id,
-            AIOptimizer.id == optimizer_id,
+            col(AIOptimizer.tenant_id) == context.tenant_id,
+            col(AIOptimizer.id) == optimizer_id,
         )
     ).one_or_none()
     if optimizer is None:
@@ -114,9 +115,9 @@ def build_daily_report(
     rows = session.exec(
         select(AIDailyPlanRow)
         .where(
-            AIDailyPlanRow.tenant_id == context.tenant_id,
-            AIDailyPlanRow.optimizer_id == optimizer_id,
-            AIDailyPlanRow.business_date == business_date,
+            col(AIDailyPlanRow.tenant_id) == context.tenant_id,
+            col(AIDailyPlanRow.optimizer_id) == optimizer_id,
+            col(AIDailyPlanRow.business_date) == business_date,
         )
         .order_by(col(AIDailyPlanRow.position))
     ).all()
@@ -125,8 +126,8 @@ def build_daily_report(
         session.exec(
             select(BuildOccurrence)
             .where(
-                BuildOccurrence.tenant_id == context.tenant_id,
-                BuildOccurrence.optimizer_id == optimizer_id,
+                col(BuildOccurrence.tenant_id) == context.tenant_id,
+                col(BuildOccurrence.optimizer_id) == optimizer_id,
                 col(BuildOccurrence.plan_row_id).in_(plan_ids),
             )
             .order_by(col(BuildOccurrence.scheduled_at), col(BuildOccurrence.id))
@@ -139,8 +140,8 @@ def build_daily_report(
     evidence_rows = session.exec(
         select(AutomationRuleEvidence)
         .where(
-            AutomationRuleEvidence.tenant_id == context.tenant_id,
-            AutomationRuleEvidence.optimizer_id == optimizer_id,
+            col(AutomationRuleEvidence.tenant_id) == context.tenant_id,
+            col(AutomationRuleEvidence.optimizer_id) == optimizer_id,
         )
         .order_by(col(AutomationRuleEvidence.created_at).desc())
     ).all()
@@ -166,8 +167,8 @@ def build_daily_report(
     review_tasks = session.exec(
         select(reviews.DSHReviewTask)
         .where(
-            reviews.DSHReviewTask.tenant_id == context.tenant_id,
-            reviews.DSHReviewTask.optimizer_id == optimizer_id,
+            col(reviews.DSHReviewTask.tenant_id) == context.tenant_id,
+            col(reviews.DSHReviewTask.optimizer_id) == optimizer_id,
         )
         .order_by(col(reviews.DSHReviewTask.created_at).desc())
     ).all()
@@ -194,8 +195,8 @@ def build_daily_report(
 
     orders = session.exec(
         select(MaterialOrder).where(
-            MaterialOrder.tenant_id == context.tenant_id,
-            MaterialOrder.optimizer_id == optimizer_id,
+            col(MaterialOrder.tenant_id) == context.tenant_id,
+            col(MaterialOrder.optimizer_id) == optimizer_id,
         )
     ).all()
     orders_by_row = {item.plan_row_id: item for item in orders}
@@ -311,16 +312,16 @@ def build_daily_report(
     # 下一触发只显示当前优化师仍然启用的规则绑定；同租户其他优化师的规则
     # 不能因为共享租户而泄露到本优化师的报告。
     bound_rule_ids = session.exec(
-        select(AIOptimizerRuleBinding.rule_id).where(
-            AIOptimizerRuleBinding.tenant_id == context.tenant_id,
-            AIOptimizerRuleBinding.optimizer_id == optimizer_id,
-            AIOptimizerRuleBinding.active.is_(True),
+        select(col(AIOptimizerRuleBinding.rule_id)).where(
+            col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
+            col(AIOptimizerRuleBinding.optimizer_id) == optimizer_id,
+            col(AIOptimizerRuleBinding.active).is_(True),
         )
     ).all()
     rules = (
         session.exec(
             select(AutomationRule).where(
-                AutomationRule.tenant_id == context.tenant_id,
+                col(AutomationRule.tenant_id) == context.tenant_id,
                 col(AutomationRule.id).in_(bound_rule_ids),
             )
         ).all()

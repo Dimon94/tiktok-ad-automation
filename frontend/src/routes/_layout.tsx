@@ -64,7 +64,7 @@ function ScopedLayout() {
       : undefined
   return (
     <WorkspaceTabsProvider
-      key={`${user.id}:${tenantId ?? (platform ? "platform" : "global")}:${scope?.bcId ?? ""}:${scope?.role ?? ""}`}
+      key={`${user.id}:${tenantId ?? (platform ? "platform" : "global")}:${scope?.role ?? ""}`}
       groups={groups ?? workspaceNavigation({ manage: !!user.is_superuser })}
     >
       <WorkspaceShell

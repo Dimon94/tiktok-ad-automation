@@ -750,6 +750,15 @@ test("手动批量选择40张图片不套用创意35张限制", async ({ page })
 
 test("图片目录和详情显示尺寸并以图片元素预览", async ({ page }) => {
   const { records } = await boundary(page)
+  await page.route("**/original-preview?**", (route) =>
+    route.fulfill({
+      contentType: "image/png",
+      body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    }),
+  )
   const picture: MaterialPublic = {
     ...original,
     media_type: "IMAGE",
@@ -774,6 +783,9 @@ test("图片目录和详情显示尺寸并以图片元素预览", async ({ page 
   await expect(
     page.getByRole("img", { name: "原文件图片预览" }),
   ).toHaveAttribute("src", /original-preview/)
+  await expect(
+    page.getByRole("img", { name: "原文件图片预览" }),
+  ).toHaveJSProperty("naturalWidth", 1)
   await expect(page.locator("video")).toHaveCount(0)
 })
 

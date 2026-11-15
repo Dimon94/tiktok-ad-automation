@@ -1,6 +1,6 @@
 """真实报表冻结、任务工具鉴权、分页与已读引用合同。"""
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -28,7 +28,10 @@ def reading(session, context, monkeypatch):
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    cutoff = datetime.now(UTC)
+    # 固定成熟窗口，复用的历史收益事实也以同一截止时间播种。
+    from tests.modules.ai_workbench.test_review_maturity import CUTOFF
+
+    cutoff = CUTOFF
     day = cutoff.date() - timedelta(days=1)
 
     def publish(spend, observed=cutoff - timedelta(seconds=1)):

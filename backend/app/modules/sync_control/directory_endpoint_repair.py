@@ -1,9 +1,11 @@
 """旧创意调度头的端点校正；需先隔离旧派发进程，不触碰执行或历史成本。"""
 
 from datetime import datetime
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session
 
 from app.integrations.tiktok.platform_quotas import sdk_endpoint
@@ -26,9 +28,11 @@ def repair_directory_endpoint_batch(
         raise ValueError("old dispatchers must be stopped before endpoint repair")
     # head锁与规范派发共用；有效grant或worker尚存时保持原queued/ledger合同。
     # keyset覆盖闲置头和两个工作类，跳锁行由下一轮从头复查，不在本轮忙等。
-    rows = session.execute(
-        text(
-            """
+    rows = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            text(
+                """
         SELECT h.scope_id,h.work_class
         FROM sync_schedule h JOIN sync_scope s ON s.id=h.scope_id
         WHERE s.resource='directory:creative:SMART_PLUS'
@@ -41,17 +45,19 @@ def repair_directory_endpoint_batch(
               AND r.claimed_until>:now AND r.status IN ('QUEUED','RUNNING','ADMISSION_WAIT','WAITING_REMOTE'))
         ORDER BY h.scope_id,h.work_class LIMIT :limit
     """
-            + (" FOR UPDATE OF h SKIP LOCKED" if apply else "")
-        ),
-        {
-            "old": sdk_endpoint("build.get_ads"),
-            "now": now,
-            "limit": limit,
-            "has_after": after is not None,
-            "after_id": after[0] if after else UUID(int=0),
-            "after_class": after[1] if after else "",
-        },
-    ).all()
+                + (" FOR UPDATE OF h SKIP LOCKED" if apply else "")
+            ),
+            {
+                "old": sdk_endpoint("build.get_ads"),
+                "now": now,
+                "limit": limit,
+                "has_after": after is not None,
+                "after_id": after[0] if after else UUID(int=0),
+                "after_class": after[1] if after else "",
+            },
+        )
+        .all()
+    )
     keys = [(row.scope_id, row.work_class) for row in rows]
     if apply and keys:
         session.connection().execute(

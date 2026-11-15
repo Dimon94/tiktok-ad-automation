@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlmodel import Session, col, select
 
@@ -86,9 +87,9 @@ def freeze_history(
     tasks = session.exec(
         select(DSHReviewTask)
         .where(
-            DSHReviewTask.tenant_id == context.tenant_id,
-            DSHReviewTask.optimizer_id == optimizer_id,
-            DSHReviewTask.created_at <= cutoff,
+            col(DSHReviewTask.tenant_id) == context.tenant_id,
+            col(DSHReviewTask.optimizer_id) == optimizer_id,
+            col(DSHReviewTask.created_at) <= cutoff,
         )
         .order_by(col(DSHReviewTask.created_at).desc())
         .limit(21)
@@ -107,10 +108,10 @@ def freeze_history(
         session.exec(
             select(AIProposal)
             .where(
-                AIProposal.tenant_id == context.tenant_id,
-                AIProposal.optimizer_id == optimizer_id,
+                col(AIProposal.tenant_id) == context.tenant_id,
+                col(AIProposal.optimizer_id) == optimizer_id,
                 col(AIProposal.review_task_id).in_(task_map),
-                AIProposal.created_at <= cutoff,
+                col(AIProposal.created_at) <= cutoff,
             )
             .order_by(col(AIProposal.created_at).desc())
             .limit(101)
@@ -133,12 +134,12 @@ def freeze_history(
             builds = session.exec(
                 select(BuildOccurrence)
                 .where(
-                    BuildOccurrence.tenant_id == context.tenant_id,
-                    BuildOccurrence.optimizer_id == optimizer_id,
-                    BuildOccurrence.bc_id == version.bc_id,
-                    BuildOccurrence.strategy_version_id == p.published_version_id,
-                    BuildOccurrence.created_at >= p.decision_at,
-                    BuildOccurrence.created_at <= cutoff,
+                    col(BuildOccurrence.tenant_id) == context.tenant_id,
+                    col(BuildOccurrence.optimizer_id) == optimizer_id,
+                    col(BuildOccurrence.bc_id) == version.bc_id,
+                    col(BuildOccurrence.strategy_version_id) == p.published_version_id,
+                    col(BuildOccurrence.created_at) >= p.decision_at,
+                    col(BuildOccurrence.created_at) <= cutoff,
                 )
                 .order_by(col(BuildOccurrence.created_at).desc())
                 .limit(51)
@@ -148,7 +149,7 @@ def freeze_history(
                 for b in builds
                 if set(b.advertiser_ids).issubset(set(version.advertiser_ids))
             ]
-            evidence = [
+            evidence: list[dict[str, Any]] = [
                 {
                     "id": str(b.id),
                     "status": b.status,
@@ -168,14 +169,14 @@ def freeze_history(
             rules = session.exec(
                 select(AutomationRuleEvidence)
                 .where(
-                    AutomationRuleEvidence.tenant_id == context.tenant_id,
-                    AutomationRuleEvidence.optimizer_id == optimizer_id,
-                    AutomationRuleEvidence.bc_id == version.bc_id,
-                    AutomationRuleEvidence.rule_id == p.published_version_id,
-                    AutomationRuleEvidence.rule_version
+                    col(AutomationRuleEvidence.tenant_id) == context.tenant_id,
+                    col(AutomationRuleEvidence.optimizer_id) == optimizer_id,
+                    col(AutomationRuleEvidence.bc_id) == version.bc_id,
+                    col(AutomationRuleEvidence.rule_id) == p.published_version_id,
+                    col(AutomationRuleEvidence.rule_version)
                     == (p.base_rule_version or 0) + 1,
-                    AutomationRuleEvidence.created_at >= p.decision_at,
-                    AutomationRuleEvidence.created_at <= cutoff,
+                    col(AutomationRuleEvidence.created_at) >= p.decision_at,
+                    col(AutomationRuleEvidence.created_at) <= cutoff,
                 )
                 .order_by(col(AutomationRuleEvidence.created_at).desc())
                 .limit(51)
@@ -185,7 +186,7 @@ def freeze_history(
                 for r in rules
                 if set(r.advertiser_ids).issubset(set(version.advertiser_ids))
             ]
-            evidence = [
+            evidence: list[dict[str, Any]] = [
                 {
                     "id": str(r.id),
                     "rule_version": r.rule_version,

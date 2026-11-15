@@ -655,6 +655,7 @@ def advance(
                 work["lookup_complete"], work["stage"] = True, "create"
             elif recovering and scan["matches"] != 1:
                 # 出现多条无法判断哪条属于本次建链，交人工核实，绝不重建。
+                work["stage"] = "manual_review"
                 _checkpoint(session, context, item_id, token, work)
                 raise core._error("provider_result_unknown")
             elif scan["candidate"]:

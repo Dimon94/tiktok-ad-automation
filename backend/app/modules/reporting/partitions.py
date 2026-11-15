@@ -2,8 +2,10 @@
 """按月分区：大表（广告日、创意日、紧凑指标日）每月一个分区，另有 DEFAULT 兜底。"""
 
 from datetime import date
+from typing import cast as typing_cast
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session
 
 PARTITIONED_TABLES = (
@@ -116,17 +118,29 @@ def maintain_partitions(
         name = f"{table}_{month:%Y_%m}"
         try:
             with Session(database_engine) as session, session.begin():
-                session.execute(text("SET LOCAL lock_timeout='200ms'"))
-                session.execute(text("SET LOCAL statement_timeout='5s'"))
-                if session.execute(
-                    text("SELECT to_regclass(:name)"), {"name": name}
-                ).scalar():
+                typing_cast(SQLAlchemySession, session).execute(
+                    text("SET LOCAL lock_timeout='200ms'")
+                )
+                typing_cast(SQLAlchemySession, session).execute(
+                    text("SET LOCAL statement_timeout='5s'")
+                )
+                if (
+                    typing_cast(SQLAlchemySession, session)
+                    .execute(text("SELECT to_regclass(:name)"), {"name": name})
+                    .scalar()
+                ):
                     continue
                 # 同月份只有一个维护者；其他维护者下一轮重试，不排强锁长队。
-                locked = session.execute(
-                    text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key,0))"),
-                    {"key": f"partition-maintenance:{table}:{month}"},
-                ).scalar()
+                locked = (
+                    typing_cast(SQLAlchemySession, session)
+                    .execute(
+                        text(
+                            "SELECT pg_try_advisory_xact_lock(hashtextextended(:key,0))"
+                        ),
+                        {"key": f"partition-maintenance:{table}:{month}"},
+                    )
+                    .scalar()
+                )
                 if not locked:
                     deferred += 1
                     continue

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.modules.builds.execution_models import ExecutionStep
 from app.modules.materials.models import (
@@ -13,36 +13,42 @@ from app.modules.materials.models import (
     MaterialDistribution,
     MaterialFile,
 )
-from tests.modules.builds.test_execution import executable as executable
+from tests.modules.builds.test_carousel_execution import carousel_case as carousel_case
 from tests.modules.strategies.test_concurrency import (
     isolated_strategy_database as isolated_strategy_database,
 )
 
 
 @pytest.fixture
-def unknown_image(executable):
+def unknown_image(carousel_case):
     from app.modules.builds.routes import load_preview_route
     from app.modules.materials.image_distribution import prepare_image_targets
     from app.modules.tenants.models import TenantMembership
     from tests.modules.builds.test_drafts import account
 
-    database, context, ids = executable
+    database, context, _, submission_id, unit_ids, _ = carousel_case
     with Session(database) as db, db.begin():
         db.get(
             TenantMembership, (context.tenant_id, context.actor_id)
         ).role = "tenant_admin"
-        step = db.get(ExecutionStep, ids["MATERIAL"][0])
+        step = db.exec(
+            select(ExecutionStep)
+            .where(
+                ExecutionStep.submission_id == submission_id,
+                ExecutionStep.unit_id == unit_ids[0],
+                ExecutionStep.kind == "MATERIAL",
+            )
+            .order_by(col(ExecutionStep.id))
+        ).first()
+        assert step is not None
         material = db.get(MaterialFile, step.material_id)
         for mapping in db.exec(
             select(AccountMaterial).where(AccountMaterial.material_id == material.id)
         ).all():
             db.delete(mapping)
         db.flush()
-        material.media_type, material.duration, material.mime_type = (
-            "IMAGE",
-            None,
-            "image/png",
-        )
+        # 复用先播种图片再冻结的轮播合同，不能把已绑定的视频改成图片。
+        assert material.media_type == "IMAGE"
         material.storage_state = "unavailable"
         db.flush()
         account(db, context, "source-image-account")
@@ -85,13 +91,15 @@ def unknown_image(executable):
         return step.id, step.submission_id, dist.id
 
 
-def test_image_reissue_preserves_unknown_and_is_idempotent(executable, unknown_image):
+def test_image_reissue_preserves_unknown_and_is_idempotent(
+    carousel_case, unknown_image
+):
     from app.modules.materials.reissue import (
         MaterialReissueInput,
         authorize_material_reissue,
     )
 
-    database, context, _ = executable
+    database, context, *_ = carousel_case
     body = MaterialReissueInput(
         request_id=uuid4(),
         kind="IMAGE",
@@ -130,7 +138,7 @@ def test_image_reissue_preserves_unknown_and_is_idempotent(executable, unknown_i
     "change", ["known_id", "binding", "claimed", "wrong_submission"]
 )
 def test_image_reissue_rejects_changed_or_known_scope(
-    executable, unknown_image, change
+    carousel_case, unknown_image, change
 ):
     from app.core.errors import DomainError
     from app.modules.accounts.connection_models import BCConnectionBinding
@@ -139,7 +147,7 @@ def test_image_reissue_rejects_changed_or_known_scope(
         authorize_material_reissue,
     )
 
-    database, context, _ = executable
+    database, context, *_ = carousel_case
     with Session(database) as db, db.begin():
         dist = db.get(MaterialDistribution, unknown_image[2])
         op = db.get(MaterialAssetOperation, dist.operation_id)

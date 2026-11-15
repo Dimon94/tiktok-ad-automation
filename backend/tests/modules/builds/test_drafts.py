@@ -495,27 +495,48 @@ def test_new_strategy_draft_keeps_material_match_order_in_source_package(
     ]
 
 
-def test_unknown_link_keeps_original_status_and_input(session, context, intent):
+@pytest.mark.parametrize("media_kind", ["VIDEO", "CAROUSEL"])
+@pytest.mark.parametrize("stage", ["recover_create", "invalid", "manual_review"])
+def test_unknown_link_keeps_original_status_and_input(
+    session, context, intent, media_kind, stage
+):
+    from app.modules.providers.tasks import _update_preparation_status
+
     account(session, context)
-    draft_id = create_draft(session, context=context, **intent)
+    draft_id = create_draft(session, context=context, media_kind=media_kind, **intent)
     task_id = prepare_draft(
         session, context=context, draft_id=draft_id, request_id=uuid4()
     )
     prep = session.get(DraftPreparation, task_id)
+    provider_id = prep.provider_task_id
     for item in session.exec(
         select(LinkPreparationItem).where(
-            LinkPreparationItem.preparation_id == prep.provider_task_id
+            LinkPreparationItem.preparation_id == provider_id
         )
     ).all():
         item.status = "result_unknown"
         item.resolved = {
             **item.resolved,
             "status": "result_unknown",
-            "error_code": "provider_result_unknown",
+            "error_code": "provider_state_invalid"
+            if stage == "invalid"
+            else "provider_result_unknown",
+            "_work": {**item.resolved.get("_work", {}), "stage": stage},
         }
         session.add(item)
     session.flush()
-    finish(session, context, task_id)
+    provider = session.get(LinkPreparation, provider_id)
+    _update_preparation_status(session, provider)
+    if stage != "recover_create":
+        finish(session, context, task_id)
+        assert provider.status == "failed"
+    else:
+        # 原provider任务还可核查时，两种素材准备路径都必须保持等待。
+        for _ in range(20):
+            assert not continue_draft(session, context=context, task_id=task_id)
+        assert provider.status == "running"
+        assert prep.status == "PENDING"
+        assert session.get(BuildDraft, draft_id).status == "PREPARING"
     row = session.exec(
         select(DraftInput).where(
             DraftInput.draft_id == draft_id,
@@ -524,6 +545,13 @@ def test_unknown_link_keeps_original_status_and_input(session, context, intent):
         )
     ).one()
     assert row.status == "result_unknown" and row.raw_text == " Moon "
+    if stage == "recover_create":
+        # 只更新原任务的回读结果，不重新创建准备或取链任务。
+        ready_links(session, context, task_id, intent)
+        _update_preparation_status(session, provider)
+        finish(session, context, task_id)
+        assert provider.status == "ready"
+        assert prep.provider_task_id == provider_id
     assert session.get(BuildDraft, draft_id).status == "READY"
 
 

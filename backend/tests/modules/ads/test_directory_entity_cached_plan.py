@@ -27,7 +27,7 @@ def test_small_entity_publish_replans_after_large_transition_and_keeps_session(
     session.execute(text("LOAD 'auto_explain'"))
     for setting, value in {
         "client_min_messages": "log",
-        "auto_explain.log_min_duration": "0",
+        "auto_explain.log_min_duration": "-1",
         "auto_explain.log_analyze": "on",
         "auto_explain.log_buffers": "on",
         "auto_explain.log_timing": "off",
@@ -95,6 +95,8 @@ def test_small_entity_publish_replans_after_large_transition_and_keeps_session(
         lock_key = uuid4().int % (2**63 - 1)
         session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
         assert raw.execute("SELECT %s::int", (7,), prepare=True).fetchone()[0] == 7
+        # 只采集待断言的单对象发布；两万行预热仍执行，但不输出逐行嵌套计划。
+        session.execute(text("SET LOCAL auto_explain.log_min_duration=0"))
         plans.clear()
         published = [
             obj

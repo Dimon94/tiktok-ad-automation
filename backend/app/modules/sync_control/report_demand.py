@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
 
@@ -290,11 +292,13 @@ def enqueue_report_requirements(
             },
         ).returning(SyncRequirement)
         requirements.extend(
-            session.execute(
+            typing_cast(SQLAlchemySession, session)
+            .execute(
                 select(SyncRequirement)
                 .from_statement(returning)
                 .execution_options(populate_existing=True)
-            ).scalars()
+            )
+            .scalars()
         )
     pending = [
         row for row in requirements if row.satisfied_revision < row.desired_revision

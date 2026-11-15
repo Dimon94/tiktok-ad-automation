@@ -85,13 +85,41 @@ def test_known_cents_oracle_and_scope_shape():
     assert parameters.manifest()["full_current_scale"] is False
 
 
-def test_real_seed_preserves_parent_identity_and_exact_money():
+@pytest.fixture
+def dedicated_perf_engine():
+    import psycopg
+    from psycopg import sql
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    from app.core.config import settings
+    from tests.database_template import create_head_database
+
+    source = make_url(str(settings.DATABASE_URL))
+    name = "sync_redesign_test_perf"
+    target = source.set(database=name)
+    validate_database_url(target.render_as_string(hide_password=False))
+    # 基准入口继续要求专用本机库；测试只新建自己的库，不清空现有 perf 数据。
+    create_head_database(str(settings.DATABASE_URL), name)
+    engine = create_engine(target)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+        admin_url = source.set(drivername="postgresql", database="postgres")
+        with psycopg.connect(
+            admin_url.render_as_string(hide_password=False), autocommit=True
+        ) as admin:
+            admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
+
+
+def test_real_seed_preserves_parent_identity_and_exact_money(dedicated_perf_engine):
     from sqlalchemy import text
     from sqlmodel import Session
 
-    from app.core.db import engine
     from tests.performance.sync_query_fixture import seed_fixture
 
+    engine = dedicated_perf_engine
     parameters = FixtureParameters(objects=30, days=1, active_fraction=1)
     manifest = seed_fixture(engine, parameters)
     with Session(engine) as db:

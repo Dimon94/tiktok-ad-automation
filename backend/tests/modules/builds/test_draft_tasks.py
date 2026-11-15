@@ -316,7 +316,7 @@ def test_repair_preserves_current_identity_and_unpublished_backoff(
 
 
 def test_carousel_initial_candidates_checkpoint_within_preparation_budget(
-    session, context, intent
+    session, context, intent, monkeypatch
 ):
     import pytest
 
@@ -333,6 +333,17 @@ def test_carousel_initial_candidates_checkpoint_within_preparation_budget(
     draft_id, task_id = material_task(session, context, intent, ["Moon"])
     draft = session.get(BuildDraft, draft_id)
     draft.media_kind = "CAROUSEL"
+    from app.modules.builds.mini_targets import remember_target
+    from tests.modules.builds.test_previews import seed_targeting_directory
+
+    remember_target(
+        session,
+        context=context,
+        url="https://example.com/drama",
+        minis_id="fixture-mini",
+        source="USER",
+    )
+    seed_targeting_directory(session, context, ["account-A"], media_kind="CAROUSEL")
     for index in range(1501):
         row = material(session, context, f"Moon_{index:04}.jpg")
         row.media_type, row.sha256 = "IMAGE", f"{index:064x}"
@@ -377,10 +388,22 @@ def test_carousel_initial_candidates_checkpoint_within_preparation_budget(
         )
         == count
     )
+    from app.modules.builds import draft_tasks
+
+    worker_now = datetime.now(UTC)
+
+    class WorkerClock:
+        @staticmethod
+        def now(tz):
+            return worker_now.astimezone(tz)
+
+    monkeypatch.setattr(draft_tasks, "datetime", WorkerClock)
     for _ in range(25):
         prep = session.get(DraftPreparation, task_id)
         if prep.status != "PENDING":
             break
+        # 模拟调度器到期投递；场景阶段交接保留真实的五秒退避。
+        worker_now = max(datetime.now(UTC), prep.due_at)
         payload = {"preparation_id": str(task_id), "generation": prep.generation}
         process_preparation(
             database_engine=session.connection(),

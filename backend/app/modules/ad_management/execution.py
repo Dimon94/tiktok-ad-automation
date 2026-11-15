@@ -179,8 +179,8 @@ def _attempts(
         session.exec(
             select(ManagementRequestAttempt)
             .where(
-                ManagementRequestAttempt.tenant_id == item.tenant_id,
-                ManagementRequestAttempt.task_item_id == item.id,
+                col(ManagementRequestAttempt.tenant_id) == item.tenant_id,
+                col(ManagementRequestAttempt.task_item_id) == item.id,
             )
             .order_by(col(ManagementRequestAttempt.attempt))
         ).all()
@@ -257,16 +257,16 @@ def _recover_cancelled_claims(session: Session, task: ManagementTask) -> None:
     rows = session.exec(
         select(ManagementTaskItem)
         .where(
-            ManagementTaskItem.task_id == task.id,
-            ManagementTaskItem.tenant_id == task.tenant_id,
-            ManagementTaskItem.execution_result == "PENDING",
+            col(ManagementTaskItem.task_id) == task.id,
+            col(ManagementTaskItem.tenant_id) == task.tenant_id,
+            col(ManagementTaskItem.execution_result) == "PENDING",
             col(ManagementTaskItem.claim_token).is_not(None),
             or_(
-                ManagementTaskItem.claimed_until <= now,
+                col(ManagementTaskItem.claimed_until) <= now,
                 col(ManagementTaskItem.claimed_until).is_(None),
             ),
         )
-        .order_by(ManagementTaskItem.id)
+        .order_by(col(ManagementTaskItem.id))
         .with_for_update()
     ).all()
     unknown_ids = []
@@ -295,12 +295,12 @@ def _recover_cancelled_claims(session: Session, task: ManagementTask) -> None:
         queue_reconciliation(session, task, tuple(unknown_ids))
     # 提前到达的恢复消息不能消耗尚未到期领取的唯一唤醒机会。
     next_expiry = session.exec(
-        select(func.min(ManagementTaskItem.claimed_until)).where(
-            ManagementTaskItem.task_id == task.id,
-            ManagementTaskItem.tenant_id == task.tenant_id,
-            ManagementTaskItem.execution_result == "PENDING",
+        select(func.min(col(ManagementTaskItem.claimed_until))).where(
+            col(ManagementTaskItem.task_id) == task.id,
+            col(ManagementTaskItem.tenant_id) == task.tenant_id,
+            col(ManagementTaskItem.execution_result) == "PENDING",
             col(ManagementTaskItem.claim_token).is_not(None),
-            ManagementTaskItem.claimed_until > now,
+            col(ManagementTaskItem.claimed_until) > now,
         )
     ).one()
     if next_expiry is not None:
@@ -391,22 +391,25 @@ def _locked_item(session: Session, item_id: UUID, *, lock_task: bool = True):
     """取消先锁父任务，修改也采用同一锁序，防止并发回执与取消形成死锁。"""
     if lock_task:
         scope = session.exec(
-            select(ManagementTaskItem.task_id, ManagementTaskItem.tenant_id).where(
-                ManagementTaskItem.id == item_id
-            )
+            select(
+                col(ManagementTaskItem.task_id), col(ManagementTaskItem.tenant_id)
+            ).where(col(ManagementTaskItem.id) == item_id)
         ).one_or_none()
         if scope is None:
             return None
         task = session.exec(
             select(ManagementTask)
-            .where(ManagementTask.id == scope[0], ManagementTask.tenant_id == scope[1])
+            .where(
+                col(ManagementTask.id) == scope[0],
+                col(ManagementTask.tenant_id) == scope[1],
+            )
             .with_for_update()
         ).one_or_none()
         if task is None:
             return None
     return session.exec(
         select(ManagementTaskItem)
-        .where(ManagementTaskItem.id == item_id)
+        .where(col(ManagementTaskItem.id) == item_id)
         .with_for_update()
     ).one_or_none()
 
@@ -415,8 +418,8 @@ def _update_task(session: Session, task_id: UUID, tenant_id: UUID) -> None:
     task = session.exec(
         select(ManagementTask)
         .where(
-            ManagementTask.id == task_id,
-            ManagementTask.tenant_id == tenant_id,
+            col(ManagementTask.id) == task_id,
+            col(ManagementTask.tenant_id) == tenant_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -427,16 +430,17 @@ def _update_task(session: Session, task_id: UUID, tenant_id: UUID) -> None:
     # 万条任务只读取状态聚合，不在每个回执后物化整批JSON和逐项查询attempt。
     rows = session.exec(
         select(
-            ManagementTaskItem.execution_result,
-            ManagementTaskItem.observation_state,
+            col(ManagementTaskItem.execution_result),
+            col(ManagementTaskItem.observation_state),
             func.count(),
         )
         .where(
-            ManagementTaskItem.task_id == task.id,
-            ManagementTaskItem.tenant_id == tenant_id,
+            col(ManagementTaskItem.task_id) == task.id,
+            col(ManagementTaskItem.tenant_id) == tenant_id,
         )
         .group_by(
-            ManagementTaskItem.execution_result, ManagementTaskItem.observation_state
+            col(ManagementTaskItem.execution_result),
+            col(ManagementTaskItem.observation_state),
         )
     ).all()
     totals: dict[str, int] = {}
@@ -459,10 +463,10 @@ def _update_task(session: Session, task_id: UUID, tenant_id: UUID) -> None:
     )
     task.counts = counts
     latest_retryable = (
-        select(ManagementRequestAttempt.retryable)
+        select(col(ManagementRequestAttempt.retryable))
         .where(
-            ManagementRequestAttempt.task_item_id == ManagementTaskItem.id,
-            ManagementRequestAttempt.tenant_id == tenant_id,
+            col(ManagementRequestAttempt.task_item_id) == col(ManagementTaskItem.id),
+            col(ManagementRequestAttempt.tenant_id) == tenant_id,
         )
         .order_by(col(ManagementRequestAttempt.attempt).desc())
         .limit(1)
@@ -471,11 +475,11 @@ def _update_task(session: Session, task_id: UUID, tenant_id: UUID) -> None:
     )
     retry_pending = (
         session.exec(
-            select(ManagementTaskItem.id)
+            select(col(ManagementTaskItem.id))
             .where(
-                ManagementTaskItem.task_id == task.id,
-                ManagementTaskItem.tenant_id == tenant_id,
-                ManagementTaskItem.execution_result == "NOT_SENT",
+                col(ManagementTaskItem.task_id) == task.id,
+                col(ManagementTaskItem.tenant_id) == tenant_id,
+                col(ManagementTaskItem.execution_result) == "NOT_SENT",
                 latest_retryable == True,  # noqa: E712
             )
             .limit(1)
@@ -575,9 +579,9 @@ def _persist_outcome(
         attempt = session.exec(
             select(ManagementRequestAttempt)
             .where(
-                ManagementRequestAttempt.tenant_id == item.tenant_id,
-                ManagementRequestAttempt.task_item_id == item.id,
-                ManagementRequestAttempt.attempt == attempt_no,
+                col(ManagementRequestAttempt.tenant_id) == item.tenant_id,
+                col(ManagementRequestAttempt.task_item_id) == item.id,
+                col(ManagementRequestAttempt.attempt) == attempt_no,
             )
             .with_for_update()
         ).one_or_none()
@@ -785,9 +789,9 @@ def _mark_unknown_after_persist_failure(
             attempt = session.exec(
                 select(ManagementRequestAttempt)
                 .where(
-                    ManagementRequestAttempt.tenant_id == item.tenant_id,
-                    ManagementRequestAttempt.task_item_id == item.id,
-                    ManagementRequestAttempt.attempt == attempt_no,
+                    col(ManagementRequestAttempt.tenant_id) == item.tenant_id,
+                    col(ManagementRequestAttempt.task_item_id) == item.id,
+                    col(ManagementRequestAttempt.attempt) == attempt_no,
                 )
                 .with_for_update()
             ).one_or_none()
@@ -842,9 +846,9 @@ def _mark_unknown_after_fence_failure(
             attempt = session.exec(
                 select(ManagementRequestAttempt)
                 .where(
-                    ManagementRequestAttempt.tenant_id == item.tenant_id,
-                    ManagementRequestAttempt.task_item_id == item.id,
-                    ManagementRequestAttempt.attempt == attempt_no,
+                    col(ManagementRequestAttempt.tenant_id) == item.tenant_id,
+                    col(ManagementRequestAttempt.task_item_id) == item.id,
+                    col(ManagementRequestAttempt.attempt) == attempt_no,
                 )
                 .with_for_update()
             ).one_or_none()
@@ -886,8 +890,8 @@ def execute_item(database_engine: Engine, item_id: UUID) -> bool | None:
                 raise DomainError("management_item_not_found", "管理任务项不存在")
             task = session.exec(
                 select(ManagementTask).where(
-                    ManagementTask.id == item.task_id,
-                    ManagementTask.tenant_id == item.tenant_id,
+                    col(ManagementTask.id) == item.task_id,
+                    col(ManagementTask.tenant_id) == item.tenant_id,
                 )
             ).one_or_none()
             if task is None:
@@ -975,7 +979,9 @@ def execute_item(database_engine: Engine, item_id: UUID) -> bool | None:
             lease.fence(redis_client)
             with Session(database_engine) as check:
                 current = check.exec(
-                    select(ManagementTaskItem).where(ManagementTaskItem.id == item_id)
+                    select(ManagementTaskItem).where(
+                        col(ManagementTaskItem.id) == item_id
+                    )
                 ).one()
                 task = check.get(ManagementTask, current.task_id)
                 assert task is not None
@@ -1008,7 +1014,9 @@ def execute_item(database_engine: Engine, item_id: UUID) -> bool | None:
             lease.fence(redis_client)
             with Session(database_engine) as preflight:
                 latest = preflight.exec(
-                    select(ManagementTaskItem).where(ManagementTaskItem.id == item_id)
+                    select(ManagementTaskItem).where(
+                        col(ManagementTaskItem.id) == item_id
+                    )
                 ).one_or_none()
                 if latest is None:
                     raise DomainError("management_item_not_found", "管理任务项不存在")
@@ -1085,7 +1093,7 @@ def execute_item(database_engine: Engine, item_id: UUID) -> bool | None:
         with Session(database_engine) as read:
             attempt = read.exec(
                 select(ManagementRequestAttempt)
-                .where(ManagementRequestAttempt.task_item_id == item_id)
+                .where(col(ManagementRequestAttempt.task_item_id) == item_id)
                 .order_by(col(ManagementRequestAttempt.attempt).desc())
             ).first()
             assert attempt is not None

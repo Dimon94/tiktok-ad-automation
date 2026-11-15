@@ -4,12 +4,14 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy import select as sa_select
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -18,6 +20,7 @@ from app.modules.business.calculation import (
     AMOUNT_KEYS,
     SUBSIDY_KEYS,
     ZERO,
+    derive_metrics,
     quarter_start,
 )
 from app.modules.business.configuration import scope_accounts
@@ -96,32 +99,6 @@ def resolve_runs(
     return allowed, selected, end, runs
 
 
-def _ratios(
-    values: dict[str, Decimal | None], scenario: str
-) -> dict[str, Decimal | None]:
-    spend = values["spend"]
-    values["platform_roas"] = (
-        values["revenue"] / spend if spend and values["revenue"] is not None else None
-    )
-    business = values["business_revenue"]
-    values["business_roas"] = (
-        business / spend if spend and business is not None else None
-    )
-    if scenario != "base":
-        subsidy = values[f"subsidy_{scenario}"]
-        comp = values["compensation"]
-        business = (
-            business + subsidy + comp
-            if business is not None and subsidy is not None and comp is not None
-            else None
-        )
-    values["scenario_revenue"] = business
-    values["scenario_roas"] = (
-        business / spend if spend and business is not None else None
-    )
-    return values
-
-
 def query_dashboard(
     session: Session, *, context: TenantContext, filters: DashboardFilter
 ) -> DashboardPublic:
@@ -140,7 +117,8 @@ def query_dashboard(
     total = session.exec(select(func.count()).select_from(grouped)).one()
     order = sort_expression(grouped, filters)
     rows = (
-        session.execute(
+        typing_cast(SQLAlchemySession, session)
+        .execute(
             sa_select(grouped)
             .order_by(
                 order.desc().nulls_last()
@@ -155,7 +133,8 @@ def query_dashboard(
         .all()
     )
     raw_totals = (
-        session.execute(
+        typing_cast(SQLAlchemySession, session)
+        .execute(
             sa_select(
                 *[nullable_sum(getattr(grouped.c, k)).label(k) for k in AMOUNT_KEYS]
             ).select_from(grouped)
@@ -203,7 +182,8 @@ def query_dashboard(
         issues.add("POLICY_SCOPE_RESTRICTED")
     restricted = "POLICY_SCOPE_RESTRICTED" in issues
     all_issues = (
-        session.execute(
+        typing_cast(SQLAlchemySession, session)
+        .execute(
             select(func.jsonb_array_elements_text(col(B.issues)))
             .where(*predicates)
             .distinct()
@@ -221,13 +201,9 @@ def query_dashboard(
         result = {k: raw[k] for k in AMOUNT_KEYS}
         if restricted:
             result.update(dict.fromkeys(SUBSIDY_KEYS))
-        calculated = _ratios(result, filters.scenario)
-        # 条件赔付可展示小计，但不能把缺失部分当0加入完整含预计情景。
-        if filters.scenario != "base" and "COMPENSATION_PARTIAL" in issues:
-            calculated.update(scenario_revenue=None, scenario_roas=None)
-        return calculated
+        return derive_metrics(result, scenario=filters.scenario, issues=issues)
 
-    totals = dict(raw_totals)
+    totals: dict[str, Decimal | None] = dict(raw_totals)
     if not total and not missing:
         totals = dict.fromkeys(AMOUNT_KEYS, ZERO)
     if missing or plan.policy_unknown:

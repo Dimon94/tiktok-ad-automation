@@ -1,11 +1,13 @@
 """HTTP contracts for tenant AI optimizer configuration."""
 
 from datetime import date, datetime
+from typing import cast as typing_cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import select
 
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
@@ -185,9 +187,9 @@ def run_daily_plan_row(
     # optimizer before any outbox write so a copied URL cannot cross scopes.
     row = session.exec(
         select(AIDailyPlanRow).where(
-            AIDailyPlanRow.tenant_id == tenant_id,
-            AIDailyPlanRow.id == plan_id,
-            AIDailyPlanRow.optimizer_id == optimizer_id,
+            col(AIDailyPlanRow.tenant_id) == tenant_id,
+            col(AIDailyPlanRow.id) == plan_id,
+            col(AIDailyPlanRow.optimizer_id) == optimizer_id,
         )
     ).one_or_none()
     if row is None:
@@ -218,14 +220,16 @@ def list_occurrences(
     statement = (
         select(BuildOccurrence)
         .where(
-            BuildOccurrence.tenant_id == tenant_id,
-            BuildOccurrence.optimizer_id == optimizer_id,
+            col(BuildOccurrence.tenant_id) == tenant_id,
+            col(BuildOccurrence.optimizer_id) == optimizer_id,
         )
-        .order_by(BuildOccurrence.scheduled_at.desc(), BuildOccurrence.id.desc())
+        .order_by(
+            col(BuildOccurrence.scheduled_at).desc(), col(BuildOccurrence.id).desc()
+        )
         .limit(limit)
     )
     if status:
-        statement = statement.where(BuildOccurrence.status == status)
+        statement = statement.where(col(BuildOccurrence.status) == status)
     rows = session.exec(statement).all()
     return [row.model_dump(mode="json") for row in rows]
 
@@ -391,10 +395,10 @@ def list_reviews(
     tasks = session.exec(
         select(reviews.DSHReviewTask)
         .where(
-            reviews.DSHReviewTask.tenant_id == tenant_id,
-            reviews.DSHReviewTask.optimizer_id == optimizer_id,
+            col(reviews.DSHReviewTask.tenant_id) == tenant_id,
+            col(reviews.DSHReviewTask.optimizer_id) == optimizer_id,
         )
-        .order_by(reviews.DSHReviewTask.created_at.desc())
+        .order_by(col(reviews.DSHReviewTask.created_at).desc())
         .limit(50)
     ).all()
     return {
@@ -537,14 +541,20 @@ def list_ai_knowledge(
 ) -> list[dict]:
     require_tenant(session, actor_id=user.id, tenant_id=tenant_id, action="read")
     query = latest_query().where(
-        or_(KnowledgeVersion.scope == "PUBLIC", KnowledgeVersion.tenant_id == tenant_id)
+        or_(
+            col(KnowledgeVersion.scope) == "PUBLIC",
+            col(KnowledgeVersion.tenant_id) == tenant_id,
+        )
     )
     if bc_id:
         query = query.where(
-            or_(KnowledgeVersion.bc_id.is_(None), KnowledgeVersion.bc_id == bc_id)
+            or_(
+                col(KnowledgeVersion.bc_id).is_(None),
+                col(KnowledgeVersion.bc_id) == bc_id,
+            )
         )
     if key is not None:
-        query = query.where(KnowledgeVersion.key == key)
+        query = query.where(col(KnowledgeVersion.key) == key)
     rows = session.exec(
         query.order_by(col(KnowledgeVersion.created_at).desc()).limit(100)
     ).all()
@@ -665,13 +675,14 @@ def confirm_ai_experience(
     # 同一候选确认串行，防止并发请求各自创建随机 asset_id 的重复知识。
     from sqlalchemy import text
 
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
         {"key": f"ai-experience:{tenant_id}:{key}"},
     )
     existing = session.exec(
         latest_query().where(
-            KnowledgeVersion.tenant_id == tenant_id, KnowledgeVersion.key == key
+            col(KnowledgeVersion.tenant_id) == tenant_id,
+            col(KnowledgeVersion.key) == key,
         )
     ).first()
     if existing:

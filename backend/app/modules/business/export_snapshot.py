@@ -1,7 +1,11 @@
 """一次SQL冻结导出行值和顺序，后续批次不重新扫描全范围报表。"""
 
+from typing import Final
+from typing import cast as typing_cast
+
 from sqlalchemy import Text, cast, func, insert, literal, text
 from sqlalchemy import select as sa_select
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -11,9 +15,19 @@ from app.modules.business.queries import query_dashboard, resolve_runs
 from app.modules.business.query_plan import build_query_plan, sort_expression
 from app.modules.business.schemas import DashboardFilter
 
+EXPORT_SNAPSHOT_CONTRACT: Final = "scenario-completeness-v1"
+
 
 def freeze_rows(session: Session, row: BusinessExport, context: TenantContext) -> None:
-    filters = DashboardFilter.model_validate(row.filters)
+    if row.frozen:
+        return
+    filters = DashboardFilter.model_validate(
+        {
+            key: value
+            for key, value in row.filters.items()
+            if key != "_snapshot_contract"
+        }
+    )
     allowed, selected, end, runs = resolve_runs(session, context, filters)
     plan = build_query_plan(
         session,
@@ -50,7 +64,7 @@ def freeze_rows(session: Session, row: BusinessExport, context: TenantContext) -
         if filters.dimension == "day"
         else grouped.c.key
     )
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         insert(BusinessExportRow).from_select(
             [
                 "export_id",
@@ -83,7 +97,7 @@ def freeze_rows(session: Session, row: BusinessExport, context: TenantContext) -
     adjustments = ", ".join(
         f"'{key}', CAST(totals.{key} AS text)" for key in SUBSIDY_KEYS
     )
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         text(f"""
         WITH totals AS (
             SELECT rounding_group, max(row_key) AS target, {values}
@@ -104,6 +118,7 @@ def freeze_rows(session: Session, row: BusinessExport, context: TenantContext) -
         context=context,
         filters=filters.model_copy(update={"offset": 0, "limit": 1}),
     )
+    row.filters = {**row.filters, "_snapshot_contract": EXPORT_SNAPSHOT_CONTRACT}
     row.frozen, row.status = True, "RUNNING"
     session.add(row)
     # 说明来自同一版本；不在续跑时重新查询可变目录或平台。

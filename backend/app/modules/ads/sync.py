@@ -16,7 +16,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, inspect, or_, text, update
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import InstrumentedAttribute, load_only
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -154,7 +154,7 @@ def stage_directory_page(
     # 先锁运行行，再检查代数并写页；claim 替换无法插入旧代数的页。
     run = session.exec(
         select(AdDirectoryRun)
-        .where(AdDirectoryRun.id == run_id)
+        .where(col(AdDirectoryRun.id) == run_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one_or_none()
@@ -347,6 +347,7 @@ def _complete_chain(pages: list[AdDirectoryPage]) -> list[AdDirectoryPage]:
 _PUBLISH_BATCH_SIZE = 500
 # 单次实体SQL有界，完整目录仍在调用方的同一个原子事务里。
 _ENTITY_WRITE_BATCH_SIZE = 5000
+_MATERIAL_WRITE_BATCH_SIZE = 2000
 
 
 def _batches[T](items: list[T]):
@@ -395,7 +396,7 @@ def _object_identity_filter(identities):
         grouped.setdefault(kind, []).append(remote_id)
     return or_(
         *(
-            and_(AdObject.kind == kind, col(AdObject.remote_id).in_(ids))
+            and_(col(AdObject.kind) == kind, col(AdObject.remote_id).in_(ids))
             for kind, ids in sorted(grouped.items())
         )
     )
@@ -586,16 +587,83 @@ def _publish_staged_materials(session, run, staged, *, statement_timeout_ms=None
             text("SELECT set_config('statement_timeout',:timeout,true)"),
             {"timeout": f"{statement_timeout_ms}ms"},
         )
-    # 每个完整运行仅一次canonical集合写；非空INSERT/UPDATE触发器保留历史候选，
-    # 不能直接以incoming替代历史候选，否则会把正确的完整素材关系覆盖为部分观察。
-    connection.execute(
-        text(
-            _material_upsert_sql(
-                "ad_material_reference", f"SELECT {_MATERIAL_COLUMNS} FROM {staged}"
-            )
+    group_columns = "ad_remote_id,platform_material_id,material_type"
+    group_key = f"({group_columns})"
+    group_count = connection.execute(
+        text(f"SELECT count(DISTINCT {group_key}) FROM {staged}")
+    ).scalar_one()
+    large = group_count > _MATERIAL_WRITE_BATCH_SIZE
+    published_groups = 0
+    next_statistics_at = _MATERIAL_WRITE_BATCH_SIZE
+    after = None
+    while True:
+        parameters = {}
+        predicate = ""
+        if large:
+            lower = ""
+            parameters = {"limit": _MATERIAL_WRITE_BATCH_SIZE}
+            if after is not None:
+                parameters.update(
+                    after_ad=after[0], after_video=after[1], after_type=after[2]
+                )
+                lower = f"WHERE {group_key}>(:after_ad,:after_video,:after_type)"
+            end = connection.execute(
+                text(f"""
+                SELECT {group_columns} FROM (
+                    SELECT DISTINCT {group_columns} FROM {staged} {lower}
+                    ORDER BY {group_columns} LIMIT :limit
+                ) batch ORDER BY ad_remote_id DESC,platform_material_id DESC,
+                    material_type DESC LIMIT 1
+            """),
+                parameters,
+            ).one_or_none()
+            if end is None:
+                break
+            parameters.update(end_ad=end[0], end_video=end[1], end_type=end[2])
+            predicate = f"WHERE {group_key}<=(:end_ad,:end_video,:end_type)"
+            if after is not None:
+                predicate += f" AND {group_key}>(:after_ad,:after_video,:after_type)"
+        # 全集先在TEMP完成去重；同一使用的全部候选必须同批，避免原样重发时
+        # 暂时从歧义变为精确、再恢复歧义，错误地更换未改变身份的证据版本。
+        # canonical按逻辑使用组分段，仍共享原事务和发布版本。
+        # 触发器继续读取全部历史候选，保留完整关系、同版本歧义和精确身份优先级。
+        connection.execute(
+            text(
+                _material_upsert_sql(
+                    "ad_material_reference",
+                    f"SELECT {_MATERIAL_COLUMNS} FROM {staged} {predicate}",
+                )
+            ),
+            parameters,
         )
-    )
-    # 只延长这一条原子集合写及其触发器；后续查询恢复原预算。
+        if not large:
+            break
+        # 冷库中的成员/证据表会在一次发布中增长数万行。按增长量更新真实统计，
+        # 避免逐VID刷新和外键检查沿用空表SeqScan；只统计查询键，
+        # 不反复解压/比较证据JSON等宽值。小目录不更新共享表统计。
+        published_groups = min(group_count, published_groups + _MATERIAL_WRITE_BATCH_SIZE)
+        # 首段、翻倍及末段更新真实键统计，避免每2k行反复扫描整张不断增长的表。
+        # 规划信息最多落后一倍；末段仍留下本次完整发布的统计。
+        if published_groups >= next_statistics_at or published_groups == group_count:
+            connection.execute(
+                text("""
+                ANALYZE ad_material_reference
+                        (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+                         ad_material_id,material_type),
+                    current_ad_material
+                        (tenant_id,advertiser_id,ad_remote_id,platform_material_id,
+                         ad_material_id,material_type),
+                    material_ad_member_current
+                        (tenant_id,advertiser_id,ad_remote_id,platform_material_id,material_type),
+                    material_account_member_current
+                        (tenant_id,advertiser_id,platform_material_id),
+                    report_evidence_version (id,tenant_id,advertiser_id)
+            """)
+            )
+            next_statistics_at *= 2
+        connection.execute(text("DISCARD PLANS"))
+        after = end
+    # 只延长素材集合写及其触发器；后续查询恢复原预算。
     # 失败时事务已中止，不在finally执行SET覆盖原错误，交给原savepoint/事务回滚。
     if previous_timeout is not None:
         connection.execute(
@@ -641,9 +709,9 @@ def _queue_missing_parents(
     for batch in _batches(parents):
         missing.difference_update(
             session.exec(
-                select(AdObject.kind, AdObject.remote_id).where(
-                    AdObject.tenant_id == run.tenant_id,
-                    AdObject.advertiser_id == run.advertiser_id,
+                select(col(AdObject.kind), col(AdObject.remote_id)).where(
+                    col(AdObject.tenant_id) == run.tenant_id,
+                    col(AdObject.advertiser_id) == run.advertiser_id,
                     _object_identity_filter(batch),
                 )
             ).all()
@@ -660,12 +728,12 @@ def _queue_missing_parents(
         include_deleted = bool(run.query.get("include_deleted"))
         pending = session.exec(
             select(AdDirectoryRun).where(
-                AdDirectoryRun.tenant_id == run.tenant_id,
-                AdDirectoryRun.bc_id == run.bc_id,
-                AdDirectoryRun.advertiser_id == run.advertiser_id,
-                AdDirectoryRun.actor_id == run.actor_id,
-                AdDirectoryRun.frozen_route == run.frozen_route,
-                AdDirectoryRun.ad_type == run.ad_type,
+                col(AdDirectoryRun.tenant_id) == run.tenant_id,
+                col(AdDirectoryRun.bc_id) == run.bc_id,
+                col(AdDirectoryRun.advertiser_id) == run.advertiser_id,
+                col(AdDirectoryRun.actor_id) == run.actor_id,
+                col(AdDirectoryRun.frozen_route) == run.frozen_route,
+                col(AdDirectoryRun.ad_type) == run.ad_type,
                 pending_directory_condition(),
             )
         ).all()
@@ -738,7 +806,7 @@ def directory_run_superseded(
 
     return (
         session.exec(
-            select(AdDirectoryRun.id)
+            select(col(AdDirectoryRun.id))
             .where(superseding_directory_predicate(run, AdDirectoryRun))
             .limit(1)
         ).first()
@@ -870,6 +938,10 @@ def _publish_staged_entities(session, run, staged):
             ),
             parameters,
         )
+        # 大目录首次增长和重复更新都需要真实统计，避免后续精确身份/父链查询
+        # 沿用空表计划。普通不足一段的小发布不触碰共享表统计。
+        if after is not None or len(keys) == _ENTITY_WRITE_BATCH_SIZE:
+            connection.execute(text("ANALYZE ad_object"))
         # 使用已经读出的本段键，避免范围谓词仍被规划为每段扫描整张宽TEMP。
         # 必须是UPSERT之后的独立SQL：READ COMMITTED下等待并发赢家提交后，
         # 这里的新快照才能读到其真实父身份/版本，不能合并进同语句CTE。
@@ -906,18 +978,18 @@ def _publish_staged_entities(session, run, staged):
     result = session.exec(
         select(AdObject)
         .where(
-            AdObject.tenant_id == run.tenant_id,
-            AdObject.advertiser_id == run.advertiser_id,
+            col(AdObject.tenant_id) == run.tenant_id,
+            col(AdObject.advertiser_id) == run.advertiser_id,
             text(
                 f"EXISTS (SELECT 1 FROM {staged} s WHERE s.kind=ad_object.kind AND s.remote_id=ad_object.remote_id)"
             ),
         )
         .options(
             load_only(
-                AdObject.parent_kind,
-                AdObject.parent_remote_id,
-                AdObject.name,
-                AdObject.published_version,
+                cast(InstrumentedAttribute, col(AdObject.parent_kind)),
+                cast(InstrumentedAttribute, col(AdObject.parent_remote_id)),
+                cast(InstrumentedAttribute, col(AdObject.name)),
+                cast(InstrumentedAttribute, col(AdObject.published_version)),
             )
         )
         .execution_options(populate_existing=True, yield_per=_PUBLISH_BATCH_SIZE)
@@ -979,7 +1051,9 @@ def publish_directory(
         raise _domain("directory_claim_invalid", "目录 claim 代数无效")
     with session.begin_nested():
         run = session.exec(
-            select(AdDirectoryRun).where(AdDirectoryRun.id == run_id).with_for_update()
+            select(AdDirectoryRun)
+            .where(col(AdDirectoryRun.id) == run_id)
+            .with_for_update()
         ).one_or_none()
         if run is None:
             raise _domain("directory_run_not_found", "目录同步运行不存在")
@@ -999,16 +1073,16 @@ def publish_directory(
         _ensure_route_authority(session, run, route)
         pages = session.exec(
             select(AdDirectoryPage)
-            .where(AdDirectoryPage.run_id == run.id)
+            .where(col(AdDirectoryPage.run_id) == run.id)
             .order_by(col(AdDirectoryPage.page))
             .options(
                 load_only(
-                    AdDirectoryPage.page,
-                    AdDirectoryPage.complete,
-                    AdDirectoryPage.next_page,
-                    AdDirectoryPage.coverage,
-                    AdDirectoryPage.missing_reason,
-                    AdDirectoryPage.observed_at,
+                    cast(InstrumentedAttribute, col(AdDirectoryPage.page)),
+                    cast(InstrumentedAttribute, col(AdDirectoryPage.complete)),
+                    cast(InstrumentedAttribute, col(AdDirectoryPage.next_page)),
+                    cast(InstrumentedAttribute, col(AdDirectoryPage.coverage)),
+                    cast(InstrumentedAttribute, col(AdDirectoryPage.missing_reason)),
+                    cast(InstrumentedAttribute, col(AdDirectoryPage.observed_at)),
                 )
             )
             .with_for_update()
@@ -1023,7 +1097,7 @@ def publish_directory(
         # 版本来自数据库序列；同账户的请求排序用账户锁保护。整租户行锁会让
         # 一个大历史目录挡住其他账户的实时发布，不能作为多账户的执行容量。
         tenant = session.exec(
-            select(Tenant).where(Tenant.id == run.tenant_id)
+            select(Tenant).where(col(Tenant.id) == run.tenant_id)
         ).one_or_none()
         if tenant is None:
             raise _domain("tenant_forbidden", "目录运行的租户不存在")
@@ -1164,8 +1238,8 @@ def publish_directory(
         session.connection().execute(
             update(AdDirectoryPage)
             .where(
-                AdDirectoryPage.run_id == run.id,
-                AdDirectoryPage.coverage != "MATERIAL_CONTEXT",
+                col(AdDirectoryPage.run_id) == run.id,
+                col(AdDirectoryPage.coverage) != "MATERIAL_CONTEXT",
             )
             .values(published_version=version)
         )

@@ -60,7 +60,10 @@ def historical_rows(
         session.execute(
             table.insert().values(
                 **{
-                    key: null() if key == "targeting_override" and value is None else value
+                    key: null()
+                    if key in {"targeting_override", "structure_override"}
+                    and value is None
+                    else value
                     for key, value in row.model_dump().items()
                     if key in table.c
                 }
@@ -209,7 +212,21 @@ def historical_rows(
     session.flush()
     if current:
         from app.modules.accounts.routing import freeze_route
+        from app.modules.builds.preview_models import PreviewContract
         from app.modules.builds.routes import save_preview_route
+
+        # 当前 schema 的历史 V1 夹具也须具备迁移补齐的合同描述。
+        session.add(
+            PreviewContract(
+                tenant_id=context.tenant_id,
+                preview_id=preview.id,
+                bc_id=preview.bc_id,
+                version=1,
+                media_kind="VIDEO",
+                legacy_material_layout="GROUP",
+            )
+        )
+        session.flush()
 
         save_preview_route(
             session,

@@ -53,12 +53,13 @@ def _existing(
     session: Session, rule_id: UUID, slot_at: datetime, optimizer_id: UUID | None = None
 ) -> AutomationRuleRun | None:
     query = select(AutomationRuleRun).where(
-        AutomationRuleRun.rule_id == rule_id, AutomationRuleRun.slot_at == slot_at
+        col(AutomationRuleRun.rule_id) == rule_id,
+        col(AutomationRuleRun.slot_at) == slot_at,
     )
     if optimizer_id is None:
-        query = query.where(AutomationRuleRun.optimizer_id.is_(None))
+        query = query.where(col(AutomationRuleRun.optimizer_id).is_(None))
     else:
-        query = query.where(AutomationRuleRun.optimizer_id == optimizer_id)
+        query = query.where(col(AutomationRuleRun.optimizer_id) == optimizer_id)
     return session.exec(query).first()
 
 
@@ -257,9 +258,9 @@ def _same_issues_as_last_sent(
     last = session.exec(
         select(AutomationRuleRun)
         .where(
-            AutomationRuleRun.rule_id == rule_id,
-            AutomationRuleRun.id != run_id,
-            AutomationRuleRun.notify_status == "SENT",
+            col(AutomationRuleRun.rule_id) == rule_id,
+            col(AutomationRuleRun.id) != run_id,
+            col(AutomationRuleRun.notify_status) == "SENT",
         )
         .order_by(col(AutomationRuleRun.slot_at).desc())
         .limit(1)
@@ -476,9 +477,9 @@ def deliver_notification(
         return run.notify_status
     try:
         confirmation_id = session.exec(
-            select(AutomationConfirmation.id).where(
-                AutomationConfirmation.run_id == run.id,
-                AutomationConfirmation.status == "PENDING",
+            select(col(AutomationConfirmation.id)).where(
+                col(AutomationConfirmation.run_id) == run.id,
+                col(AutomationConfirmation.status) == "PENDING",
             )
         ).first()
         card = build_run_card(rule, run, confirmation_id=confirmation_id)

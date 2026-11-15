@@ -128,7 +128,17 @@ def run_migrations_online():
         )
         connection.commit()
 
-        def include_name(name, type_, _parent_names):
+        def include_name(name, type_, parent_names):
+            # 0116 刻意保全旧 CID，ORM 已退休该字段；后续专项删列前不生成删除操作。
+            if (
+                parent_names.get("table_name") == "ad_material_reference"
+                and (type_, name)
+                in {
+                    ("column", "creative_ids"),
+                    ("check_constraint", "ck_ad_material_creatives"),
+                }
+            ):
+                return False
             return type_ != "table" or name not in report_partitions
 
         context.configure(

@@ -11,9 +11,9 @@ def order_in_scope(session, order, version):
     historical = session.exec(
         select(AIOptimizerVersion)
         .where(
-            AIOptimizerVersion.tenant_id == order.tenant_id,
-            AIOptimizerVersion.optimizer_id == order.optimizer_id,
-            AIOptimizerVersion.created_at <= order.created_at,
+            col(AIOptimizerVersion.tenant_id) == order.tenant_id,
+            col(AIOptimizerVersion.optimizer_id) == order.optimizer_id,
+            col(AIOptimizerVersion.created_at) <= order.created_at,
         )
         .order_by(col(AIOptimizerVersion.number).desc())
         .limit(1)
@@ -29,11 +29,11 @@ def freeze_orders(session, *, context, optimizer_id, version, cutoff):
     rows = session.exec(
         select(MaterialOrder)
         .where(
-            MaterialOrder.tenant_id == context.tenant_id,
-            MaterialOrder.optimizer_id == optimizer_id,
-            MaterialOrder.created_at <= cutoff,
+            col(MaterialOrder.tenant_id) == context.tenant_id,
+            col(MaterialOrder.optimizer_id) == optimizer_id,
+            col(MaterialOrder.created_at) <= cutoff,
         )
-        .order_by(col(MaterialOrder.created_at).desc(), MaterialOrder.id)
+        .order_by(col(MaterialOrder.created_at).desc(), col(MaterialOrder.id))
         .limit(201)
     ).all()
     return {

@@ -229,10 +229,10 @@ def ensure_material_directory_children(
     # source_run_id在JSON里没有外键；与归档DELETE共享父行锁防止悬空引用。
     if (
         session.exec(
-            select(AdDirectoryRun.id)
+            select(col(AdDirectoryRun.id))
             .where(
-                AdDirectoryRun.id == source.id,
-                AdDirectoryRun.tenant_id == source.tenant_id,
+                col(AdDirectoryRun.id) == source.id,
+                col(AdDirectoryRun.tenant_id) == source.tenant_id,
             )
             .with_for_update(read=True, key_share=True)
         ).first()
@@ -335,7 +335,8 @@ def ensure_material_directory_children(
     for offset in range(0, len(groups), _MAX_GROUPS):
         selected_groups = set(groups[offset : offset + _MAX_GROUPS])
         selected = dict(
-            connection.execute(
+            tuple(row)
+            for row in connection.execute(
                 text(f"""
             SELECT DISTINCT ON (ad) ad,jsonb_build_array(parent,observed)
             FROM {owners_table} WHERE parent=ANY(:groups) ORDER BY ad,page DESC,position DESC
@@ -477,10 +478,10 @@ def _owner_observations(
     for offset in range(0, len(owner_ids), 500):
         observed.update(
             session.exec(
-                select(AdObject.remote_id, AdObject.observed_at).where(
-                    AdObject.tenant_id == run.tenant_id,
-                    AdObject.advertiser_id == run.advertiser_id,
-                    AdObject.kind == "ad",
+                select(col(AdObject.remote_id), col(AdObject.observed_at)).where(
+                    col(AdObject.tenant_id) == run.tenant_id,
+                    col(AdObject.advertiser_id) == run.advertiser_id,
+                    col(AdObject.kind) == "ad",
                     col(AdObject.remote_id).in_(owner_ids[offset : offset + 500]),
                 )
             ).all()

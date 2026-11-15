@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import select as sa_select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -479,7 +481,7 @@ def _base_page(session: Session, run: BusinessRun) -> None:
         )
     if rows:
         # ORM批量插入默认忽略None，会把待配置返点错误恢复成模型默认0。
-        session.execute(
+        typing_cast(SQLAlchemySession, session).execute(
             insert(BusinessDay), rows, execution_options={"render_nulls": True}
         )
         run.rows_count += len(rows)
@@ -495,30 +497,34 @@ def _base_page(session: Session, run: BusinessRun) -> None:
 def _subsidy_day(session: Session, run: BusinessRun) -> None:
     # 每个系列截至当日的季度权重；零消耗合成行不会增加门槛。
     B = BusinessDay
-    records = session.execute(
-        sa_select(
-            col(B.drama_key),
-            col(B.advertiser_id),
-            col(B.campaign_id),
-            col(B.currency),
-            func.sum(col(B.spend)),
-            func.sum(col(B.spend)).filter(col(B.stat_date) < run.cursor),
-            func.bool_or(col(B.spend).is_(None)),
-            func.max(col(B.drama_name)),
-            func.max(col(B.campaign_name)),
-            func.max(col(B.provider_name)),
-            func.max(col(B.timezone)),
-            func.min(cast(col(B.provider_id), Text)),
-            func.min(cast(col(B.drama_id), Text)),
+    records = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            sa_select(
+                col(B.drama_key),
+                col(B.advertiser_id),
+                col(B.campaign_id),
+                col(B.currency),
+                func.sum(col(B.spend)),
+                func.sum(col(B.spend)).filter(col(B.stat_date) < run.cursor),
+                func.bool_or(col(B.spend).is_(None)),
+                func.max(col(B.drama_name)),
+                func.max(col(B.campaign_name)),
+                func.max(col(B.provider_name)),
+                func.max(col(B.timezone)),
+                func.min(cast(col(B.provider_id), Text)),
+                func.min(cast(col(B.drama_id), Text)),
+            )
+            .where(col(B.run_id) == run.id, col(B.stat_date) <= run.cursor)
+            .group_by(
+                col(B.drama_key),
+                col(B.advertiser_id),
+                col(B.campaign_id),
+                col(B.currency),
+            )
         )
-        .where(col(B.run_id) == run.id, col(B.stat_date) <= run.cursor)
-        .group_by(
-            col(B.drama_key),
-            col(B.advertiser_id),
-            col(B.campaign_id),
-            col(B.currency),
-        )
-    ).all()
+        .all()
+    )
     groups = defaultdict(list)
     series_identities = defaultdict(set)
     for r in records:
@@ -580,6 +586,7 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
             if row is None and not any(v for v in amounts.values()):
                 continue
             if row is None:
+                zero_amounts: dict[str, Any] = dict.fromkeys(AMOUNT_KEYS, ZERO)
                 row = BusinessDay(
                     run_id=run.id,
                     tenant_id=run.tenant_id,
@@ -595,7 +602,7 @@ def _subsidy_day(session: Session, run: BusinessRun) -> None:
                     timezone=r[10],
                     provider_id=UUID(r[11]) if r[11] else None,
                     currency=r[3],
-                    **dict.fromkeys(AMOUNT_KEYS, ZERO),
+                    **zero_amounts,
                 )
                 session.add(row)
             for name, amount in amounts.items():
@@ -689,16 +696,20 @@ def _aggregate_day(session: Session, run: BusinessRun) -> None:
                 col(B.provider_id),
             )
         )
-        session.execute(insert(BusinessSummaryDay).from_select(columns, statement))
+        typing_cast(SQLAlchemySession, session).execute(
+            insert(BusinessSummaryDay).from_select(columns, statement)
+        )
 
 
 def _freeze_candidate(
     session: Session, run: BusinessRun, scope: BusinessScope, now: datetime
 ) -> bool:
     # 多个Reporting fork只允许一个重型冻结；锁随事务退出，失败不会留Redis孤锁。
-    if not session.execute(
-        text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": SNAPSHOT_LOCK}
-    ).scalar_one():
+    if (
+        not typing_cast(SQLAlchemySession, session)
+        .execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": SNAPSHOT_LOCK})
+        .scalar_one()
+    ):
         return False
     snapshot, signature = source_snapshot(
         session, scope, run.quarter, run.end_date, now
@@ -745,9 +756,11 @@ def _verify_candidate(
     allowed: list[str],
 ) -> bool:
     # 初次冻结与最终核验共用单例，不能让多个fork同时展开大型季度快照。
-    if not session.execute(
-        text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": SNAPSHOT_LOCK}
-    ).scalar_one():
+    if (
+        not typing_cast(SQLAlchemySession, session)
+        .execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": SNAPSHOT_LOCK})
+        .scalar_one()
+    ):
         return False
     session.refresh(run, attribute_names=["inputs"])
     if not isinstance(run.inputs.get("accounts"), dict) or not set(
@@ -795,7 +808,7 @@ def _verify_candidate(
         quarter=run.quarter,
         run_id=run.id,
     )
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         statement.on_conflict_do_update(
             index_elements=["tenant_id", "bc_id", "quarter"],
             set_={"run_id": run.id},

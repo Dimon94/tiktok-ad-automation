@@ -1,5 +1,7 @@
 """复制按当前广告事实冻结，本地策略/版权方/文案关联不再是准入条件。"""
 
+from typing import cast
+
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
@@ -33,7 +35,9 @@ def upgrade():
     conn = op.get_bind()
     for fk in sa.inspect(conn).get_foreign_keys("preview_drama"):
         if fk["referred_table"] == "provider_drama":
-            op.drop_constraint(fk["name"], "preview_drama", type_="foreignkey")
+            op.drop_constraint(
+                cast(str, fk["name"]), "preview_drama", type_="foreignkey"
+            )
     op.create_foreign_key(
         "fk_preview_provider_drama",
         "preview_drama",
@@ -43,7 +47,9 @@ def upgrade():
     )
     for fk in sa.inspect(conn).get_foreign_keys("preview_creative_unit"):
         if fk["referred_table"] == "provider_drama":
-            op.drop_constraint(fk["name"], "preview_creative_unit", type_="foreignkey")
+            op.drop_constraint(
+                cast(str, fk["name"]), "preview_creative_unit", type_="foreignkey"
+            )
     # 普通预览先跨事务复制创意，再分页冻结剧目；完整性应在最终FROZEN边界检查。
     definition = conn.execute(
         sa.text(

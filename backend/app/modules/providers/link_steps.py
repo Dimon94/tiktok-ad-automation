@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
-from sqlalchemy import update
+from sqlalchemy import and_, update
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -46,6 +46,47 @@ from app.modules.tenants.permissions import require_tenant
 
 CLAIM_SECONDS = 60
 TERMINAL = {"ready", "needs_resolution", "failed", "config_conflict", "blocked_auth"}
+STOPPED_STAGES = frozenset({"invalid", "manual_review"})
+
+
+def runnable_link_item(item: LinkPreparationItem) -> bool:
+    """未知写入仍按原任务核查；损坏或已确认歧义的任务交人工处理。"""
+    return (
+        item.status not in TERMINAL
+        and item.resolved.get("_work", {}).get("stage") not in STOPPED_STAGES
+    )
+
+
+def runnable_link_condition():
+    return and_(
+        col(LinkPreparationItem.status).not_in(TERMINAL),
+        *(
+            col(LinkPreparationItem.resolved)["_work"]["stage"].astext.is_distinct_from(
+                stage
+            )
+            for stage in sorted(STOPPED_STAGES)
+        ),
+    )
+
+
+def has_runnable_link_items(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    preparation_id: UUID,
+    item_ids: list[UUID] | None = None,
+) -> bool:
+    """同一可继续合同的有界查询；不向草稿层复制一份状态集合。"""
+    query = select(LinkPreparationItem.id).where(
+        LinkPreparationItem.tenant_id == tenant_id,
+        LinkPreparationItem.preparation_id == preparation_id,
+        runnable_link_condition(),
+    )
+    if item_ids is not None:
+        query = query.where(col(LinkPreparationItem.id).in_(item_ids))
+    return session.exec(query.limit(1)).first() is not None
+
+
 ERROR_MESSAGES = {
     "config_conflict": "已有渠道配置与本次请求不一致，未覆盖远端配置",
     "config_unverifiable": "已有渠道配置无法完整核实",
@@ -338,7 +379,7 @@ def _validated_work(value: object) -> dict[str, Any]:
         "recover_generate",
         "recover_save",
         "done",
-        "invalid",
+        *STOPPED_STAGES,
     }:
         raise _error("provider_state_invalid")
     if ("claim_until" in work) != ("claim_token" in work):
@@ -390,6 +431,10 @@ def _claim_unit(
         # Quarantine corrupt checkpoints without guessing whether a write happened.
         # Preserve the original checkpoint for manual inspection and retain scope.
         work = {"stage": "invalid", "_invalid_work": raw_work}
+    else:
+        if work.get("stage") in STOPPED_STAGES:
+            session.rollback()
+            return None
     if work.get("claim_until") is not None:
         if _utc(work["claim_until"]) > datetime.now(UTC):
             session.rollback()
@@ -500,9 +545,12 @@ _DRAMA_FACTS = {"free_episode_count", "episode_count"}
 def stage_after_resolution(kind: str) -> str:
     """剧目确定后进入的阶段：有逐剧参数的版权方先读详情，避免候选选择后跳过。"""
 
-    return {"duiba": "duiba_preview", "gangganhao": "ggh_detail", "rongliang": "rl_detail", "minglue": "ml_visibility"}.get(
-        kind, "lookup"
-    )
+    return {
+        "duiba": "duiba_preview",
+        "gangganhao": "ggh_detail",
+        "rongliang": "rl_detail",
+        "minglue": "ml_visibility",
+    }.get(kind, "lookup")
 
 
 def _resolved_drama(
@@ -520,7 +568,11 @@ def _resolved_drama(
             tenant_id=context.tenant_id,
             connection_id=prep.connection_id,
             application_id=prep.application_id,
-            **{key: value for key, value in candidate.items() if key not in _DRAMA_FACTS},
+            **{
+                key: value
+                for key, value in candidate.items()
+                if key not in _DRAMA_FACTS
+            },
         )
         .on_conflict_do_update(
             index_elements=[
@@ -979,7 +1031,9 @@ def _run_duiba_item(
             _finish_unit(session, context, item_id, token, work)
             return
         if stage == "recover_create":
-            _recover_effect(session, context, work, found=work.get("lookup_found") is not None)
+            _recover_effect(
+                session, context, work, found=work.get("lookup_found") is not None
+            )
         work["lookup_complete"] = True
         work["stage"] = "read_before" if work.get("lookup_found") else "create"
         _finish_unit(session, context, item_id, token, work)
@@ -1150,7 +1204,9 @@ def _run_gangganhao_item(
             _finish_unit(session, context, item_id, token, work)
             return
         if stage == "recover_create":
-            _recover_effect(session, context, work, found=work.get("lookup_found") is not None)
+            _recover_effect(
+                session, context, work, found=work.get("lookup_found") is not None
+            )
         work["lookup_complete"] = True
         work["stage"] = "read_before" if work.get("lookup_found") else "create"
         _finish_unit(session, context, item_id, token, work)
@@ -1315,7 +1371,9 @@ def _run_rongliang_item(
             _finish_unit(session, context, item_id, token, work)
             return
         if stage == "recover_create":
-            _recover_effect(session, context, work, found=work.get("lookup_found") is not None)
+            _recover_effect(
+                session, context, work, found=work.get("lookup_found") is not None
+            )
         work["lookup_complete"] = True
         work["stage"] = "read_before" if work.get("lookup_found") else "create"
         _finish_unit(session, context, item_id, token, work)
@@ -1405,7 +1463,18 @@ def run_link_item(
             if kind == "minglue":
                 from .minglue_steps import run_item
 
-                run_item(session, context, item_id, token, work, config, client, connection_id, application_id, raw_input)
+                run_item(
+                    session,
+                    context,
+                    item_id,
+                    token,
+                    work,
+                    config,
+                    client,
+                    connection_id,
+                    application_id,
+                    raw_input,
+                )
                 return
             if kind == "duiba":
                 _run_duiba_item(
@@ -1681,7 +1750,8 @@ def run_link_item(
                 "connection_unavailable",
             }
             else "config_conflict"
-            if code in {"config_conflict", "config_unverifiable", "link_episode_out_of_range"}
+            if code
+            in {"config_conflict", "config_unverifiable", "link_episode_out_of_range"}
             else "result_unknown"
             if code in {"provider_result_unknown", "provider_state_invalid"}
             else "retryable_error"

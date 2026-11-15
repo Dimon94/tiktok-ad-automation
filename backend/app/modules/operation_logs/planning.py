@@ -2,10 +2,12 @@
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+from typing import cast as typing_cast
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.modules.operation_logs.models import OperationCoverage, OperationSyncCursor
@@ -41,7 +43,7 @@ def plan_logs(
     if not candidates:
         return 0
     zones = _timezones(session, plan.tenant_id, candidates)
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         insert(OperationSyncCursor)
         .values(
             [
@@ -56,7 +58,7 @@ def plan_logs(
     cursors = session.exec(
         select(OperationSyncCursor)
         .where(
-            OperationSyncCursor.tenant_id == plan.tenant_id,
+            col(OperationSyncCursor.tenant_id) == plan.tenant_id,
             col(OperationSyncCursor.advertiser_id).in_(candidates),
         )
         .order_by(col(OperationSyncCursor.advertiser_id))
@@ -65,16 +67,18 @@ def plan_logs(
     windows: dict[tuple[str, date, date], list[list[str]]] = defaultdict(list)
     for cursor in cursors:
         advertiser = cursor.advertiser_id
-        today = local_today(zones[advertiser], now)
+        zone = zones[advertiser]
+        today = local_today(zone, now)
+        zone = typing_cast(str, zone)
         end = today - timedelta(days=1)
         first = min(history_start or end, end)
         known = set(
             session.exec(
-                select(OperationCoverage.stat_date).where(
-                    OperationCoverage.tenant_id == plan.tenant_id,
-                    OperationCoverage.advertiser_id == advertiser,
-                    OperationCoverage.stat_date >= first,
-                    OperationCoverage.stat_date <= end,
+                select(col(OperationCoverage.stat_date)).where(
+                    col(OperationCoverage.tenant_id) == plan.tenant_id,
+                    col(OperationCoverage.advertiser_id) == advertiser,
+                    col(OperationCoverage.stat_date) >= first,
+                    col(OperationCoverage.stat_date) <= end,
                 )
             ).all()
         )
@@ -86,15 +90,18 @@ def plan_logs(
             "operation_log",
             {"campaign_ids": []},
             "report-v2",
-            timezone=zones[advertiser],
+            timezone=zone,
         )
         active = (
-            select(SyncExecutionScope.id)
-            .join(ReportSyncJob, ReportSyncJob.id == SyncExecutionScope.report_job_id)
+            select(col(SyncExecutionScope.id))
+            .join(
+                ReportSyncJob,
+                col(ReportSyncJob.id) == col(SyncExecutionScope.report_job_id),
+            )
             .where(
-                SyncExecutionScope.requirement_id == SyncRequirement.id,
-                SyncExecutionScope.owner_epoch == SyncScope.owner_epoch,
-                SyncExecutionScope.status == "PENDING",
+                col(SyncExecutionScope.requirement_id) == col(SyncRequirement.id),
+                col(SyncExecutionScope.owner_epoch) == col(SyncScope.owner_epoch),
+                col(SyncExecutionScope.status) == "PENDING",
                 col(ReportSyncJob.status).in_(["QUEUED", "WAITING", "RUNNING"]),
                 execution_owner_current(ReportSyncJob, "report_job_id"),
             )
@@ -103,15 +110,15 @@ def plan_logs(
         )
         for requirement in session.exec(
             select(SyncRequirement)
-            .join(SyncScope, SyncScope.id == SyncRequirement.scope_id)
+            .join(SyncScope, col(SyncScope.id) == col(SyncRequirement.scope_id))
             .where(
-                SyncScope.identity_digest == key.digest,
-                SyncRequirement.bucket_key >= first.isoformat(),
-                SyncRequirement.bucket_key <= end.isoformat(),
+                col(SyncScope.identity_digest) == key.digest,
+                col(SyncRequirement.bucket_key) >= first.isoformat(),
+                col(SyncRequirement.bucket_key) <= end.isoformat(),
                 or_(
                     active,
-                    SyncRequirement.requested_after
-                    >= datetime.combine(today, time.min, ZoneInfo(zones[advertiser])),
+                    col(SyncRequirement.requested_after)
+                    >= datetime.combine(today, time.min, ZoneInfo(zone)),
                 ),
             )
         ).all():

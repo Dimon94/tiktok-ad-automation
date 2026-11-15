@@ -1,7 +1,10 @@
 """用真实搭建回执和冻结剧目识别自定义名称，避免按字段位置猜测归属。"""
 
+from typing import cast as typing_cast
+
 from sqlalchemy import select as sa_select
 from sqlalchemy import tuple_
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col
 
 from app.integrations.tiktok.contracts.ads import EntityRef
@@ -17,40 +20,46 @@ def built_campaign_identities(
     names = dict(campaigns)
     if not names:
         return {}
-    rows = session.execute(
-        # 目录每批会重验晚到回执，仅取身份列，避免加载完整执行输入和预览正文。
-        sa_select(
-            col(ExecutionStep.tenant_id),
-            col(BuildUnit.advertiser_id),
-            col(ExecutionStep.remote_id),
-            col(BuildUnit.campaign_name),
-            col(PreviewDrama.protected_base),
-            col(PreviewDrama.title),
-            col(PreviewDrama.provider_pinyin),
-        )
-        .join(
-            BuildUnit,
-            (col(BuildUnit.tenant_id) == ExecutionStep.tenant_id)
-            & (col(BuildUnit.id) == ExecutionStep.unit_id)
-            & (col(BuildUnit.preview_id) == ExecutionStep.preview_id)
-            & (col(BuildUnit.bc_id) == ExecutionStep.bc_id),
-        )
-        .join(
-            PreviewDrama,
-            (col(PreviewDrama.tenant_id) == BuildUnit.tenant_id)
-            & (col(PreviewDrama.preview_id) == BuildUnit.preview_id)
-            & (col(PreviewDrama.drama_id) == BuildUnit.drama_id),
-        )
-        .where(
-            col(ExecutionStep.kind) == "CAMPAIGN",
-            col(ExecutionStep.remote_id).is_not(None),
-            tuple_(
+    rows = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            # 目录每批会重验晚到回执，仅取身份列，避免加载完整执行输入和预览正文。
+            sa_select(
                 col(ExecutionStep.tenant_id),
                 col(BuildUnit.advertiser_id),
                 col(ExecutionStep.remote_id),
-            ).in_([(ref.tenant_id, ref.advertiser_id, ref.remote_id) for ref in names]),
+                col(BuildUnit.campaign_name),
+                col(PreviewDrama.protected_base),
+                col(PreviewDrama.title),
+                col(PreviewDrama.provider_pinyin),
+            )
+            .join(
+                BuildUnit,
+                (col(BuildUnit.tenant_id) == col(ExecutionStep.tenant_id))
+                & (col(BuildUnit.id) == col(ExecutionStep.unit_id))
+                & (col(BuildUnit.preview_id) == col(ExecutionStep.preview_id))
+                & (col(BuildUnit.bc_id) == col(ExecutionStep.bc_id)),
+            )
+            .join(
+                PreviewDrama,
+                (col(PreviewDrama.tenant_id) == col(BuildUnit.tenant_id))
+                & (col(PreviewDrama.preview_id) == col(BuildUnit.preview_id))
+                & (col(PreviewDrama.drama_id) == col(BuildUnit.drama_id)),
+            )
+            .where(
+                col(ExecutionStep.kind) == "CAMPAIGN",
+                col(ExecutionStep.remote_id).is_not(None),
+                tuple_(
+                    col(ExecutionStep.tenant_id),
+                    col(BuildUnit.advertiser_id),
+                    col(ExecutionStep.remote_id),
+                ).in_(
+                    [(ref.tenant_id, ref.advertiser_id, ref.remote_id) for ref in names]
+                ),
+            )
         )
-    ).all()
+        .all()
+    )
     result: dict[EntityRef, CampaignIdentity] = {}
     for tenant, advertiser, remote_id, frozen_name, base, title, provider in rows:
         assert remote_id is not None

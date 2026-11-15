@@ -1,9 +1,10 @@
 """冻结完整当地日的成熟资格及真实指标可用性，不推算尚未观测的收入。"""
 
 from datetime import date, datetime, time, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
 from app.modules.reporting.metric_catalog import METRIC_CATALOG
@@ -32,11 +33,11 @@ def maturity_evidence(
     if dimension == "material":
         states = session.exec(
             select(ReadBucketState).where(
-                ReadBucketState.tenant_id == context.tenant_id,
-                ReadBucketState.advertiser_id == advertiser_id,
-                ReadBucketState.kind == "creative_material",
-                ReadBucketState.bucket >= start,
-                ReadBucketState.bucket <= end,
+                col(ReadBucketState.tenant_id) == context.tenant_id,
+                col(ReadBucketState.advertiser_id) == advertiser_id,
+                col(ReadBucketState.kind) == "creative_material",
+                col(ReadBucketState.bucket) >= start,
+                col(ReadBucketState.bucket) <= end,
             )
         ).all()
         source = {
@@ -51,7 +52,9 @@ def maturity_evidence(
         }
     else:
         conditions = (
-            [] if dimension == "account" else [ReportSyncState.report_kind == "ad_day"]
+            []
+            if dimension == "account"
+            else [col(ReportSyncState.report_kind) == "ad_day"]
         )
         states = session.exec(
             select(model).where(
@@ -66,12 +69,14 @@ def maturity_evidence(
             row.stat_date: (
                 row.status,
                 row.observed_at or row.last_success_at,
-                row.revision if dimension == "account" else row.publication_version,
+                row.revision
+                if isinstance(row, AccountReportDayState)
+                else row.publication_version,
                 True,
             )
             for row in states
         }
-    entries = []
+    entries: list[dict[str, Any]] = []
     observed_times = []
     for offset in range((end - start).days + 1):
         day = start + timedelta(days=offset)

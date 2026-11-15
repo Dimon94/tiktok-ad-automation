@@ -1058,14 +1058,14 @@ test("恢复原请求404继续同键核实，切BC可取消且不删除原记录
   await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
   await page.getByRole("option").filter({ hasText: "备用 BC" }).click()
   await expect(
-    page.getByRole("heading", { name: "恢复请求尚未确认", exact: true }),
+    page.getByRole("heading", { name: "有未保存的内容", exact: true }),
   ).toBeVisible()
   await page.getByRole("button", { name: "留在当前页", exact: true }).click()
   expect(new URL(page.url()).searchParams.get("bc_id")).toBe(BC)
   await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
   await page.getByRole("option").filter({ hasText: "备用 BC" }).click()
   await page
-    .getByRole("button", { name: "离开并稍后核实", exact: true })
+    .getByRole("button", { name: "丢弃未保存修改", exact: true })
     .click()
   await expect(page).toHaveURL((url) => url.searchParams.get("bc_id") === BC2)
   expect(

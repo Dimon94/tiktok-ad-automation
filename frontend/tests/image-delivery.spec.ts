@@ -93,7 +93,9 @@ test("合成图片批次：规则、单图配乐修正、V2冻结、模拟执行
     .first()
     .click()
   await page.getByRole("tab", { name: "素材", exact: true }).click()
-  await expect(page.getByText(/图片和轮播单元不拆分金额/)).toBeVisible()
+  await expect(
+    page.getByText(/每个轮播创意展示一份消耗与收入，金额不分配到单张图片/),
+  ).toBeVisible()
   await expect(page.getByText(/轮播 1 · 5 张图片/)).toBeVisible()
   await expect(
     page.getByRole("link", { name: "查看冻结创意与投放任务" }),

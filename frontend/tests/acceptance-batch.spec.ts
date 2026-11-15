@@ -291,8 +291,9 @@ test("真实草稿编辑使旧预览失效；丢失回执按原请求恢复并�
   )
   expect((await obsolete.json()).status).toBe("OBSOLETE")
   await page.getByRole("button", { name: "返回调整", exact: true }).click()
+  // 返回的是准备页；重新解析已保存草稿，再冻结新预览。
   await page
-    .getByRole("button", { name: "下一步：准备链接与素材", exact: true })
+    .getByRole("button", { name: "解析并准备", exact: true })
     .click()
   const draftId = /build-drafts\/([^?]+)/.exec(new URL(page.url()).pathname)![1]
   await pumpUntil(request, scope, "preparation", async () => {

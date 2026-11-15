@@ -8,7 +8,10 @@ a role from a request or queue message never constitutes authorization.
 
 from time import monotonic
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
+
+from sqlalchemy.orm import Session as SQLAlchemySession
 
 from app.core.config import settings
 from app.core.db import engine
@@ -159,8 +162,12 @@ def compact_dispatches_task(limit: int = 1000) -> int:
         key = "sync:legacy-dispatch-compaction:cursor:v1"
         cursors = json.loads(redis.get(key) or "{}")
         with Session(engine) as session, session.begin():
-            session.execute(text("SET LOCAL statement_timeout='5s'"))
-            session.execute(text("SET LOCAL lock_timeout='200ms'"))
+            typing_cast(SQLAlchemySession, session).execute(
+                text("SET LOCAL statement_timeout='5s'")
+            )
+            typing_cast(SQLAlchemySession, session).execute(
+                text("SET LOCAL lock_timeout='200ms'")
+            )
             pruned = prune_sync_dispatches(
                 session, now=datetime.now(UTC), limit=max(1, limit // 2)
             )

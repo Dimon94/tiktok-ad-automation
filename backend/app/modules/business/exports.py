@@ -4,6 +4,7 @@ import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast as typing_cast
 from uuid import UUID
 
 from botocore.exceptions import (  # type: ignore[import-untyped]
@@ -11,6 +12,7 @@ from botocore.exceptions import (  # type: ignore[import-untyped]
     ClientError,
 )
 from fastapi import HTTPException
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
@@ -107,12 +109,16 @@ def process_pending_export(session: Session, *, batch_size: int = 500) -> bool:
         with session.begin_nested():
             check_export(session, context=context, export_id=row.id)
             if not row.frozen:
-                prior = session.execute(text("SHOW statement_timeout")).scalar_one()
-                session.execute(
+                prior = (
+                    typing_cast(SQLAlchemySession, session)
+                    .execute(text("SHOW statement_timeout"))
+                    .scalar_one()
+                )
+                typing_cast(SQLAlchemySession, session).execute(
                     text("SELECT set_config('statement_timeout', '20s', true)")
                 )
                 freeze_rows(session, row, context)
-                session.execute(
+                typing_cast(SQLAlchemySession, session).execute(
                     text("SELECT set_config('statement_timeout', :prior, true)"),
                     {"prior": prior},
                 )

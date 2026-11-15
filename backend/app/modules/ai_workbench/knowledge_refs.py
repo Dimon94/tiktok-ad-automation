@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -108,7 +108,7 @@ def versioned_reference(
 
 
 def snapshot_knowledge_refs(
-    refs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] | None,
+    refs: Sequence[Mapping[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     """Freeze caller-provided knowledge references without exposing private data."""
     result: list[dict[str, Any]] = []

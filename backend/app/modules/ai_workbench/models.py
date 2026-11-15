@@ -35,7 +35,16 @@ class AIOptimizer(SQLModel, table=True):
     active: bool = True
     latest_version: int = Field(default=0, ge=0)
     created_by: UUID = Field(foreign_key="user.id")
-    created_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
 
 
 class AIOptimizerStrategyBinding(SQLModel, table=True):
@@ -77,7 +86,16 @@ class AIOptimizerStrategyBinding(SQLModel, table=True):
     strategy_version_id: UUID
     active: bool = True
     created_by: UUID = Field(foreign_key="user.id")
-    created_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
 
 
 class AIOptimizerVersion(SQLModel, table=True):
@@ -145,7 +163,16 @@ class AIOptimizerVersion(SQLModel, table=True):
     request_id: UUID
     request_digest: str = Field(max_length=64)
     created_by: UUID = Field(foreign_key="user.id")
-    created_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
 
 
 class AIOptimizerRuleBinding(SQLModel, table=True):
@@ -170,7 +197,16 @@ class AIOptimizerRuleBinding(SQLModel, table=True):
     rule_id: UUID = Field(foreign_key="automation_rule.id")
     active: bool = True
     created_by: UUID = Field(foreign_key="user.id")
-    created_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
 
 
 class BuildOccurrence(SQLModel, table=True):
@@ -251,5 +287,23 @@ class BuildOccurrence(SQLModel, table=True):
         default_factory=dict, sa_column=Column(JSONB, nullable=False)
     )
     error_code: str | None = None
-    created_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
-    updated_at: datetime = Field(default_factory=_now, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=_now,
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=_now,
+        ),
+    )

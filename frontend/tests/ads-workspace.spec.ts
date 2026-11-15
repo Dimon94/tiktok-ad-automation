@@ -287,15 +287,15 @@ test.describe("ads workspace", () => {
     ).toHaveCount(0)
   })
 
-  test("素材维度隐藏平台不提供的天数列", async ({ page }) => {
+  test("素材维度显示创意日报提供的收入窗口", async ({ page }) => {
     await adsBoundary(page)
     await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
     await page.getByRole("tab", { name: "素材" }).click()
     await expect(
       page.getByRole("columnheader", { name: /第 2 天/ }),
-    ).toHaveCount(0)
+    ).toBeVisible()
     await expect(
-      page.getByRole("columnheader", { name: /广告曝光总价值/ }),
+      page.getByRole("columnheader", { name: /广告展示总价值/ }),
     ).toBeVisible()
   })
 

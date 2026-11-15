@@ -639,6 +639,9 @@ def test_final_quota_denial_requeues_identical_armed_attempt_without_http(
     before_count = len(business_calls(wire, case["route"].channel))
     operation = "build.create_" + kind.lower()
     route = case["route"]
+    from app.integrations.tiktok.platform_quotas import sdk_endpoint
+
+    endpoint = sdk_endpoint(operation) if route.channel == "OFFICIAL_API" else operation
     config = {**settings.TIKTOK_CALL_POLICIES}
     config["endpoints"] = {
         **config.get("endpoints", {}),
@@ -651,12 +654,17 @@ def test_final_quota_denial_requeues_identical_armed_attempt_without_http(
             app_id=settings.TIKTOK_APP_ID,
             verified_service_scope=settings.MCP_SERVICE_QUOTA_SCOPE,
         ),
-        "endpoint": operation,
+        "endpoint": endpoint,
         "tenant_id": route.tenant_id,
         "advertiser_id": "synthetic-competing-account",
         "lease_id": uuid4(),
     }
-    assert admit_call(redis_client, **quota, policy=admission_policy(operation)).granted
+    assert admit_call(
+        redis_client,
+        **quota,
+        policy=admission_policy(operation),
+        rate_group=endpoint if route.channel == "OFFICIAL_API" else None,
+    ).granted
     try:
         assert invoke(database_engine, redis_client, case, kind) == "PENDING"
         assert (

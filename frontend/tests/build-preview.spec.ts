@@ -693,7 +693,7 @@ test("原提交404保留同request且切BC先守卫，不把未找到当未创�
   await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
   await page.getByRole("option").filter({ hasText: "备用 BC" }).click()
   await expect(
-    page.getByRole("heading", { name: "提交结果尚待核实" }),
+    page.getByRole("heading", { name: "有未保存的内容" }),
   ).toBeVisible()
   await page.getByRole("button", { name: "留在当前页" }).click()
   await expect(page).toHaveURL(new RegExp(`/build-previews/${P}`))

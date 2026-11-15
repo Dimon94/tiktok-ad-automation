@@ -1,9 +1,11 @@
 """已存在的重复余额执行安全收敛；仅取消被更新执行完整承接的未在途批次。"""
 
 from datetime import datetime
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import or_, update
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.modules.reporting.store_models import ReportBalanceRun
@@ -116,7 +118,7 @@ def supersede_balance_run(session: Session, *, run_id: UUID, now: datetime) -> b
         .order_by(col(SyncSchedule.scope_id), col(SyncSchedule.work_class))
         .with_for_update()
     ).all()
-    session.execute(
+    typing_cast(SQLAlchemySession, session).execute(
         update(SyncSchedule)
         .where(
             col(SyncSchedule.scope_id).in_(scope_ids),

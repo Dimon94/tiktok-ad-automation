@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID, uuid4
 
 from redis import Redis
 from sqlalchemy import or_, text, true, update
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
 
@@ -92,8 +94,8 @@ def register_balance(
     # 既有执行从run开始持锁；planner传入的scopes对应本事务刚创建的新run。
     session.flush()
     session.exec(
-        select(ReportBalanceRun.id)
-        .where(ReportBalanceRun.id == run.id)
+        select(col(ReportBalanceRun.id))
+        .where(col(ReportBalanceRun.id) == run.id)
         .with_for_update()
     ).one()
     scopes = scopes or balance_scopes(
@@ -132,8 +134,8 @@ def _lock_balance_execution(
     # 不能以UUID排序或joint FOR UPDATE先锁child再等待planner持有的scope。
     session.flush()
     session.exec(
-        select(ReportBalanceRun.id)
-        .where(ReportBalanceRun.id == run.id)
+        select(col(ReportBalanceRun.id))
+        .where(col(ReportBalanceRun.id) == run.id)
         .with_for_update()
     ).one()
     scopes = session.exec(
@@ -423,7 +425,7 @@ def _dispatch_balances_due(
             run.claim_generation = generation
             run.claim_token = uuid4()
             run.claimed_until = now + timedelta(seconds=90)
-            session.execute(
+            typing_cast(SQLAlchemySession, session).execute(
                 update(SyncExecutionScope)
                 .where(
                     col(SyncExecutionScope.balance_run_id) == run.id,

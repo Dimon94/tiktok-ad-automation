@@ -2,8 +2,11 @@
 
 from collections import defaultdict
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import tuple_
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
@@ -186,6 +189,7 @@ def append_campaign_name_projections(
                 for t, a, r in batch
             ),
         )
+        values = []
         for tenant_id, advertiser_id, remote_id in batch:
             raw_name = identities[tenant_id, advertiser_id, remote_id]
             identity = built_identities.get(
@@ -228,9 +232,20 @@ def append_campaign_name_projections(
                 if previous
                 else 1,
             )
-            session.add(projection)
-            result.append(projection)
-        session.flush()
+            values.append(projection.model_dump())
+        if values:
+            # 一批名称用同一条SQL发布，账户成员和名称证据触发器只聚合一次。
+            # ORM逐行executemany会为每条名称生成完整账户快照，放大大目录成本。
+            returning = (
+                insert(CampaignNameProjection)
+                .values(values)
+                .returning(CampaignNameProjection)
+            )
+            result.extend(
+                cast(SQLAlchemySession, session)
+                .execute(select(CampaignNameProjection).from_statement(returning))
+                .scalars()
+            )
     # 单条接口要求原身份对应的返回值；批量输入由调用方按对象身份去重。
     by_key = {(p.tenant_id, p.advertiser_id, p.campaign_remote_id): p for p in result}
     return tuple(

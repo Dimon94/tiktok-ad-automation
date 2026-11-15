@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, literal, or_, union_all
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, col, select
 
@@ -84,9 +87,10 @@ def reserve_execution_cost(
     ).all():
         vectors.setdefault(other_endpoint, {})[other_class] = WEIGHTS[other_class]
     vectors[endpoint] = dict(eligible_weights)
+    reference_values: dict[str, Any] = {reference: execution.id}
     ledger = SyncCostLedger(
         tenant_id=execution.tenant_id,
-        **{reference: execution.id},
+        **reference_values,
         generation=execution.claim_generation,
         physical_endpoint=endpoint,
         work_class=work_class,
@@ -208,25 +212,29 @@ def cost_classes(
 ) -> tuple[set[str], set[str]]:
     # 每次探测仍读取最新active/inflight，只把两次往返合为一次；不缓存到
     # 整个dispatch，否则新ledger和worker收据关闭会被旧快照遮住。
-    rows = session.execute(
-        union_all(
-            select(col(SyncSchedule.work_class), literal(False).label("inflight"))
-            .where(
-                col(SyncSchedule.tenant_id) == tenant_id,
-                col(SyncSchedule.physical_endpoint) == endpoint,
-                col(SyncSchedule.active).is_(True),
+    rows = (
+        typing_cast(SQLAlchemySession, session)
+        .execute(
+            union_all(
+                select(col(SyncSchedule.work_class), literal(False).label("inflight"))
+                .where(
+                    col(SyncSchedule.tenant_id) == tenant_id,
+                    col(SyncSchedule.physical_endpoint) == endpoint,
+                    col(SyncSchedule.active).is_(True),
+                )
+                .distinct(),
+                select(col(SyncCostLedger.work_class), literal(True).label("inflight"))
+                .where(
+                    col(SyncCostLedger.tenant_id) == tenant_id,
+                    col(SyncCostLedger.physical_endpoint) == endpoint,
+                    col(SyncCostLedger.closed).is_(False),
+                    col(SyncCostLedger.lease_until) > now,
+                )
+                .distinct(),
             )
-            .distinct(),
-            select(col(SyncCostLedger.work_class), literal(True).label("inflight"))
-            .where(
-                col(SyncCostLedger.tenant_id) == tenant_id,
-                col(SyncCostLedger.physical_endpoint) == endpoint,
-                col(SyncCostLedger.closed).is_(False),
-                col(SyncCostLedger.lease_until) > now,
-            )
-            .distinct(),
         )
-    ).all()
+        .all()
+    )
     return {work_class for work_class, _ in rows}, {
         work_class for work_class, inflight in rows if inflight
     }

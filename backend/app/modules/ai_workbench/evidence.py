@@ -144,14 +144,14 @@ class RuleEvidenceSnapshot:
                 "sources": sorted({item.get("source", "") for item in freshness or []}),
                 "stat_dates": sorted(
                     {
-                        item.get("stat_date")
+                        item["stat_date"]
                         for item in freshness or []
                         if item.get("stat_date")
                     }
                 ),
                 "timezones": sorted(
                     {
-                        item.get("timezone")
+                        item["timezone"]
                         for item in freshness or []
                         if item.get("timezone")
                     }
@@ -247,15 +247,17 @@ def referenced_evidence_ids(
     reporting rows.  This lets normal retention cleanup remove transient rows
     while preserving the explanation for an accepted/rejected decision.
     """
-    run_query = select(AutomationRuleRun.evidence_id).where(
+    run_query = select(col(AutomationRuleRun.evidence_id)).where(
         col(AutomationRuleRun.evidence_id).is_not(None)
     )
-    ledger_query = select(AutomationActionLedger.evidence_id).where(
+    ledger_query = select(col(AutomationActionLedger.evidence_id)).where(
         col(AutomationActionLedger.evidence_id).is_not(None)
     )
     if tenant_id is not None:
-        run_query = run_query.where(AutomationRuleRun.tenant_id == tenant_id)
-        ledger_query = ledger_query.where(AutomationActionLedger.tenant_id == tenant_id)
+        run_query = run_query.where(col(AutomationRuleRun.tenant_id) == tenant_id)
+        ledger_query = ledger_query.where(
+            col(AutomationActionLedger.tenant_id) == tenant_id
+        )
     result = {
         value for value in session.exec(run_query).all() if isinstance(value, UUID)
     }
@@ -268,11 +270,11 @@ def referenced_evidence_ids(
     from app.modules.ai_workbench.proposals import AIProposal
     from app.modules.ai_workbench.reviews import DSHReviewTask, frozen_evidence_ids
 
-    review_query = select(DSHReviewTask).where(DSHReviewTask.evidence.is_not(None))
-    proposal_query = select(AIProposal).where(AIProposal.evidence.is_not(None))
+    review_query = select(DSHReviewTask).where(col(DSHReviewTask.evidence).is_not(None))
+    proposal_query = select(AIProposal).where(col(AIProposal.evidence).is_not(None))
     if tenant_id is not None:
-        review_query = review_query.where(DSHReviewTask.tenant_id == tenant_id)
-        proposal_query = proposal_query.where(AIProposal.tenant_id == tenant_id)
+        review_query = review_query.where(col(DSHReviewTask.tenant_id) == tenant_id)
+        proposal_query = proposal_query.where(col(AIProposal.tenant_id) == tenant_id)
     for task in session.exec(review_query).all():
         for value in frozen_evidence_ids(task.evidence) | {
             str(row["id"])
@@ -327,7 +329,7 @@ def cleanup_evidence(
         .limit(limit)
     )
     if tenant_id is not None:
-        query = query.where(AutomationRuleEvidence.tenant_id == tenant_id)
+        query = query.where(col(AutomationRuleEvidence.tenant_id) == tenant_id)
     removed = 0
     for row in session.exec(query).all():
         if row.id in protected:

@@ -40,11 +40,13 @@ def ready_source(env, redis_client, wire):
     return operation(env).id
 
 
-def source_event(db, env):
+def source_event(db, env, *, operation_id=None):
+    operation_id = operation_id or operation(env).id
     return db.exec(
         select(PendingDispatch).where(
             PendingDispatch.tenant_id == env["context"].tenant_id,
             PendingDispatch.task_name == "materials.prepare_source_cover",
+            PendingDispatch.task_key == f"source-cover:{operation_id}",
         )
     ).one()
 

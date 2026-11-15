@@ -1,6 +1,8 @@
 """用真实账户日和约33MB冻结JSON验证预算与内存，不访问外部平台。"""
 
+import os
 import resource
+import subprocess
 import sys
 from datetime import UTC, date, datetime
 from time import monotonic
@@ -14,8 +16,32 @@ from app.modules.business.projection import advance_run, request_rebuild
 from app.modules.reporting.query_budget import query_budget
 
 
-def test_large_snapshot_and_database_diff_remain_bounded(session, business_case):
-    c = business_case
+def test_large_snapshot_and_database_diff_remain_bounded(request):
+    # ru_maxrss 是整个进程的历史峰值；独立 pytest 子进程保留绝对内存上限，
+    # 防止之前的万组合容量用例污染本次测量。父进程不领取数据库事务夹具。
+    marker = "TKADA_PREFIX_PROFILE_CHILD"
+    if os.environ.get(marker) != request.node.nodeid:
+        env: dict[str, str] = {**os.environ, marker: request.node.nodeid}
+        env.pop("CI_RESULTS_FILE", None)
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-s", request.node.nodeid],
+            cwd=request.config.rootpath,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=120,
+        )
+        for line in completed.stdout.splitlines():
+            if line.startswith(
+                ("SNAPSHOT_BENCH ", "PREFIX_CHECK_BENCH ", "REPAIR_WINDOW_BENCH ")
+            ):
+                print(line)  # noqa: T201 - 只转发数字性能测量
+        assert completed.returncode == 0, completed.stdout
+        return
+    session = request.getfixturevalue("session")
+    c = request.getfixturevalue("business_case")
     params = {
         "tenant": c.context.tenant_id,
         "original": c.advertiser_id,

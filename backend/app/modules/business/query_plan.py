@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
+from typing import cast as typing_cast
 
 from sqlalchemy import (
     Text,
@@ -19,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import select as sa_select
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlalchemy.sql.selectable import Subquery
 from sqlmodel import Session, col
 
@@ -97,7 +99,8 @@ def build_query_plan(
     campaign_drama_keys = None
     if filters.campaign_id:
         campaign_drama_keys = set(
-            session.execute(
+            typing_cast(SQLAlchemySession, session)
+            .execute(
                 sa_select(col(BusinessDay.drama_key))
                 .where(
                     col(BusinessDay.tenant_id) == context.tenant_id,

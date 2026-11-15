@@ -2,6 +2,7 @@
 
 from collections import Counter
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlmodel import Session, col, select
@@ -85,10 +86,10 @@ def freeze_rule_execution(
         return {"status": "OUT_OF_SCOPE", "items": [], "truncated": False}
     ledgers = session.exec(
         select(AutomationActionLedger).where(
-            AutomationActionLedger.tenant_id == context.tenant_id,
-            AutomationActionLedger.optimizer_id == optimizer_id,
-            AutomationActionLedger.evidence_id == evidence.id,
-            AutomationActionLedger.created_at <= cutoff,
+            col(AutomationActionLedger.tenant_id) == context.tenant_id,
+            col(AutomationActionLedger.optimizer_id) == optimizer_id,
+            col(AutomationActionLedger.evidence_id) == evidence.id,
+            col(AutomationActionLedger.created_at) <= cutoff,
         )
     ).all()
     task_ids = {row.management_task_id for row in ledgers if row.management_task_id}
@@ -97,19 +98,22 @@ def freeze_rule_execution(
             select(ManagementTaskItem, ManagementTask)
             .join(
                 ManagementTask,
-                (ManagementTask.id == ManagementTaskItem.task_id)
-                & (ManagementTask.tenant_id == ManagementTaskItem.tenant_id),
+                (col(ManagementTask.id) == col(ManagementTaskItem.task_id))
+                & (col(ManagementTask.tenant_id) == col(ManagementTaskItem.tenant_id)),
             )
             .where(
-                ManagementTask.tenant_id == context.tenant_id,
-                ManagementTask.bc_id == version.bc_id,
-                ManagementTask.created_at <= cutoff,
+                col(ManagementTask.tenant_id) == context.tenant_id,
+                col(ManagementTask.bc_id) == version.bc_id,
+                col(ManagementTask.created_at) <= cutoff,
                 col(ManagementTask.id).in_(task_ids),
-                ManagementTaskItem.ref["advertiser_id"].astext.in_(allowed),
-                ManagementTaskItem.ref["tenant_id"].astext == str(context.tenant_id),
+                col(ManagementTaskItem.ref)["advertiser_id"].astext.in_(allowed),
+                col(ManagementTaskItem.ref)["tenant_id"].astext
+                == str(context.tenant_id),
             )
             .order_by(
-                ManagementTask.id, ManagementTaskItem.position, ManagementTaskItem.id
+                col(ManagementTask.id),
+                col(ManagementTaskItem.position),
+                col(ManagementTaskItem.id),
             )
             .limit(MAX_ITEMS + 1)
         ).all()
@@ -122,14 +126,20 @@ def freeze_rule_execution(
             select(ManagementReceipt, ManagementRequestAttempt)
             .join(
                 ManagementRequestAttempt,
-                (ManagementRequestAttempt.id == ManagementReceipt.attempt_id)
-                & (ManagementRequestAttempt.tenant_id == ManagementReceipt.tenant_id),
+                (col(ManagementRequestAttempt.id) == col(ManagementReceipt.attempt_id))
+                & (
+                    col(ManagementRequestAttempt.tenant_id)
+                    == col(ManagementReceipt.tenant_id)
+                ),
             )
             .where(
-                ManagementReceipt.tenant_id == context.tenant_id,
+                col(ManagementReceipt.tenant_id) == context.tenant_id,
                 col(ManagementRequestAttempt.task_item_id).in_(item_ids),
             )
-            .order_by(ManagementReceipt.observed_at.desc(), ManagementReceipt.id.desc())
+            .order_by(
+                col(ManagementReceipt.observed_at).desc(),
+                col(ManagementReceipt.id).desc(),
+            )
             .limit(MAX_RECEIPTS + 1)
         ).all()
         if item_ids
@@ -138,7 +148,7 @@ def freeze_rule_execution(
     by_item = {}
     for receipt, attempt in receipts[:MAX_RECEIPTS]:
         by_item.setdefault(attempt.task_item_id, []).append((receipt, attempt))
-    frozen = []
+    frozen: list[dict[str, Any]] = []
     for item, task in rows[:MAX_ITEMS]:
         history = by_item.get(item.id, [])
         eligible = [

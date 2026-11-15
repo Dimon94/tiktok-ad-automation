@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from math import ceil
+from typing import cast as typing_cast
 
 from sqlalchemy import func
 from sqlmodel import Session, col, select
@@ -33,7 +34,8 @@ def schedule_wakeup(
         task_key=f"ad-management-wake:{task.id}:{kind}:{bucket}",
         payload={"task_id": str(task.id), "generation": 1},
     )
-    row = session.get(PendingDispatch, identity)
+    row = typing_cast(PendingDispatch, session.get(PendingDispatch, identity))
+
     row.available_at = datetime.fromtimestamp(bucket * quantum, UTC)
     session.add(row)
     return identity
@@ -44,12 +46,12 @@ def ensure_future_wakeup(session: Session, task: ManagementTask):
         return
     now = datetime.now(UTC)
     claimed_until = session.exec(
-        select(func.min(ManagementTaskItem.claimed_until)).where(
-            ManagementTaskItem.task_id == task.id,
-            ManagementTaskItem.tenant_id == task.tenant_id,
+        select(func.min(col(ManagementTaskItem.claimed_until))).where(
+            col(ManagementTaskItem.task_id) == task.id,
+            col(ManagementTaskItem.tenant_id) == task.tenant_id,
             col(ManagementTaskItem.claim_token).is_not(None),
-            ManagementTaskItem.claimed_until > now,
-            ManagementTaskItem.execution_result == "PENDING",
+            col(ManagementTaskItem.claimed_until) > now,
+            col(ManagementTaskItem.execution_result) == "PENDING",
         )
     ).one()
     if claimed_until is not None:
@@ -61,26 +63,26 @@ def ensure_future_wakeup(session: Session, task: ManagementTask):
             quantum=30,
         )
     latest = (
-        select(func.max(ManagementRequestAttempt.attempt))
+        select(func.max(col(ManagementRequestAttempt.attempt)))
         .where(
-            ManagementRequestAttempt.task_item_id == ManagementTaskItem.id,
-            ManagementRequestAttempt.tenant_id == task.tenant_id,
+            col(ManagementRequestAttempt.task_item_id) == col(ManagementTaskItem.id),
+            col(ManagementRequestAttempt.tenant_id) == task.tenant_id,
         )
         .correlate(ManagementTaskItem)
         .scalar_subquery()
     )
     responses = session.exec(
-        select(ManagementRequestAttempt.response)
+        select(col(ManagementRequestAttempt.response))
         .join(
             ManagementTaskItem,
-            ManagementTaskItem.id == ManagementRequestAttempt.task_item_id,
+            col(ManagementTaskItem.id) == col(ManagementRequestAttempt.task_item_id),
         )
         .where(
-            ManagementTaskItem.task_id == task.id,
-            ManagementTaskItem.tenant_id == task.tenant_id,
-            ManagementRequestAttempt.attempt == latest,
+            col(ManagementTaskItem.task_id) == task.id,
+            col(ManagementTaskItem.tenant_id) == task.tenant_id,
+            col(ManagementRequestAttempt.attempt) == latest,
             col(ManagementRequestAttempt.retryable).is_(True),
-            ManagementTaskItem.execution_result == "NOT_SENT",
+            col(ManagementTaskItem.execution_result) == "NOT_SENT",
         )
     ).all()
     due_dates = []

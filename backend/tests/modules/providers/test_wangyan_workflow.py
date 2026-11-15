@@ -240,6 +240,15 @@ def test_unknown_post_adopts_single_new_link_or_stops(workflow, result):
         ).one()
         assert (effect.remote_id == "901") == (result == "unique")
         assert effect.status != "confirmed_absent"
+    if result == "ambiguous":
+        assert item.resolved["_work"]["stage"] == "manual_review"
+        calls = list(remote.calls)
+        checkpoint = item.resolved
+        for _ in range(3):
+            repeated = advance(workflow)
+            assert repeated.status == "result_unknown"
+            assert repeated.resolved == checkpoint
+        assert remote.calls == calls
 
 
 def test_unknown_post_with_no_new_link_recreates_once(workflow):

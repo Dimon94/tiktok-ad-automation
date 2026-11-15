@@ -19,9 +19,13 @@ from app.jobs.tasks import register_dispatch_task
 from app.modules.providers.link_steps import (
     CLAIM_SECONDS,
     ERROR_MESSAGES,
-    TERMINAL,
     _utc,
+    has_runnable_link_items,
     run_link_item,
+    runnable_link_condition,
+)
+from app.modules.providers.link_steps import (
+    runnable_link_item as _runnable,
 )
 from app.modules.providers.models import (
     LinkPreparation,
@@ -94,13 +98,6 @@ def _scoped_item(
     if prep.actor_id != actor_id:
         raise DomainError("tenant_forbidden", "准备任务操作人不匹配")
     return item, prep
-
-
-def _runnable(item: LinkPreparationItem) -> bool:
-    return (
-        item.status not in TERMINAL
-        and item.resolved.get("_work", {}).get("stage") != "invalid"
-    )
 
 
 def _quarantine(item: LinkPreparationItem) -> None:
@@ -243,17 +240,8 @@ def _update_preparation_status(session: Session, prep: LinkPreparation) -> None:
     total, ready = sum(counts.values()), counts.get("ready", 0)
     if total and ready == total:
         prep.status = "ready"
-    elif any(
-        status
-        in {
-            "pending",
-            "resolving",
-            "checking",
-            "creating",
-            "verifying",
-            "retryable_error",
-        }
-        for status in counts
+    elif has_runnable_link_items(
+        session, tenant_id=prep.tenant_id, preparation_id=prep.id
     ):
         prep.status = "running"
     else:
@@ -273,17 +261,13 @@ def recover_preparations(*, database_engine: Any, limit: int = 100) -> int:
         col(LinkPreparationItem.resolved), "_work", "repair_after"
     )
     due_at = func.coalesce(repair_at, next_at)
-    stage = func.jsonb_extract_path_text(
-        col(LinkPreparationItem.resolved), "_work", "stage"
-    )
     canonical_date = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?\+00:00$"
     repaired = 0
     with Session(database_engine) as session, session.begin():
         rows = session.exec(
             select(LinkPreparationItem)
             .where(
-                ~col(LinkPreparationItem.status).in_(TERMINAL),
-                or_(stage.is_(None), stage != "invalid"),
+                runnable_link_condition(),
                 or_(
                     due_at.is_(None),
                     due_at <= now.isoformat(),

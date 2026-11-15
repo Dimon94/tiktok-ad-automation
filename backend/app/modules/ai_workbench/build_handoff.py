@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session as SQLAlchemySession
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
 from app.core.errors import DomainError
@@ -97,8 +97,8 @@ class BuildHandoff:
         row = self.session.exec(
             select(AIDailyPlanRow)
             .where(
-                AIDailyPlanRow.tenant_id == self.context.tenant_id,
-                AIDailyPlanRow.id == plan_row_id,
+                col(AIDailyPlanRow.tenant_id) == self.context.tenant_id,
+                col(AIDailyPlanRow.id) == plan_row_id,
             )
             .with_for_update()
         ).one_or_none()
@@ -109,8 +109,8 @@ class BuildHandoff:
         optimizer = self.session.exec(
             select(AIOptimizer)
             .where(
-                AIOptimizer.tenant_id == self.context.tenant_id,
-                AIOptimizer.id == row.optimizer_id,
+                col(AIOptimizer.tenant_id) == self.context.tenant_id,
+                col(AIOptimizer.id) == row.optimizer_id,
             )
             .with_for_update()
         ).one_or_none()
@@ -120,9 +120,9 @@ class BuildHandoff:
             raise DomainError("ai_optimizer_inactive", "ai_optimizer_inactive")
         binding = self.session.exec(
             select(AIOptimizerStrategyBinding).where(
-                AIOptimizerStrategyBinding.tenant_id == self.context.tenant_id,
-                AIOptimizerStrategyBinding.optimizer_id == optimizer.id,
-                AIOptimizerStrategyBinding.active.is_(True),
+                col(AIOptimizerStrategyBinding.tenant_id) == self.context.tenant_id,
+                col(AIOptimizerStrategyBinding.optimizer_id) == optimizer.id,
+                col(AIOptimizerStrategyBinding.active).is_(True),
             )
         ).one_or_none()
         if binding is None:
@@ -138,9 +138,9 @@ class BuildHandoff:
             )
         version = self.session.exec(
             select(AIOptimizerVersion).where(
-                AIOptimizerVersion.tenant_id == self.context.tenant_id,
-                AIOptimizerVersion.optimizer_id == optimizer.id,
-                AIOptimizerVersion.number == optimizer.latest_version,
+                col(AIOptimizerVersion.tenant_id) == self.context.tenant_id,
+                col(AIOptimizerVersion.optimizer_id) == optimizer.id,
+                col(AIOptimizerVersion.number) == optimizer.latest_version,
             )
         ).one_or_none()
         if version is None:
@@ -155,9 +155,9 @@ class BuildHandoff:
         # check here because an application can be disabled after scheduling.
         application = self.session.exec(
             select(ProviderApplication).where(
-                ProviderApplication.tenant_id == self.context.tenant_id,
-                ProviderApplication.connection_id == row.provider_connection_id,
-                ProviderApplication.external_id == row.application_id,
+                col(ProviderApplication.tenant_id) == self.context.tenant_id,
+                col(ProviderApplication.connection_id) == row.provider_connection_id,
+                col(ProviderApplication.external_id) == row.application_id,
             )
         ).one_or_none()
         if application is None and not allow_missing_provider:
@@ -229,8 +229,8 @@ class BuildHandoff:
         )
         prior = self.session.exec(
             select(BuildOccurrence).where(
-                BuildOccurrence.tenant_id == self.context.tenant_id,
-                BuildOccurrence.request_id == request_id,
+                col(BuildOccurrence.tenant_id) == self.context.tenant_id,
+                col(BuildOccurrence.request_id) == request_id,
             )
         ).one_or_none()
         if prior is not None:
@@ -239,11 +239,11 @@ class BuildHandoff:
             return prior
         existing = self.session.exec(
             select(BuildOccurrence).where(
-                BuildOccurrence.tenant_id == self.context.tenant_id,
-                BuildOccurrence.optimizer_id == optimizer.id,
-                BuildOccurrence.plan_row_id == row.id,
-                BuildOccurrence.strategy_version_id == resolved_strategy,
-                BuildOccurrence.scheduled_at == scheduled_at,
+                col(BuildOccurrence.tenant_id) == self.context.tenant_id,
+                col(BuildOccurrence.optimizer_id) == optimizer.id,
+                col(BuildOccurrence.plan_row_id) == row.id,
+                col(BuildOccurrence.strategy_version_id) == resolved_strategy,
+                col(BuildOccurrence.scheduled_at) == scheduled_at,
             )
         ).one_or_none()
         if existing is not None:
@@ -292,8 +292,8 @@ class BuildHandoff:
         occurrence = self.session.exec(
             select(BuildOccurrence)
             .where(
-                BuildOccurrence.tenant_id == self.context.tenant_id,
-                BuildOccurrence.id == occurrence_id,
+                col(BuildOccurrence.tenant_id) == self.context.tenant_id,
+                col(BuildOccurrence.id) == occurrence_id,
             )
             .with_for_update()
         ).one_or_none()
@@ -406,7 +406,7 @@ class BuildHandoff:
                 receipt = submissions.submit_preview(
                     self.session,
                     context=self.context,
-                    preview_id=occurrence.preview_id,
+                    preview_id=preview.id,
                     request_id=uuid5(OCCURRENCE_NAMESPACE, f"submit:{occurrence.id}"),
                 )
                 occurrence.submission_id = receipt.submission_id
@@ -428,8 +428,8 @@ class BuildHandoff:
         occurrence = self.session.exec(
             select(BuildOccurrence)
             .where(
-                BuildOccurrence.tenant_id == self.context.tenant_id,
-                BuildOccurrence.id == occurrence_id,
+                col(BuildOccurrence.tenant_id) == self.context.tenant_id,
+                col(BuildOccurrence.id) == occurrence_id,
             )
             .with_for_update()
         ).one_or_none()
@@ -470,8 +470,8 @@ class BuildHandoff:
         occurrence = self.session.exec(
             select(BuildOccurrence)
             .where(
-                BuildOccurrence.tenant_id == self.context.tenant_id,
-                BuildOccurrence.id == occurrence_id,
+                col(BuildOccurrence.tenant_id) == self.context.tenant_id,
+                col(BuildOccurrence.id) == occurrence_id,
             )
             .with_for_update()
         ).one_or_none()
@@ -535,24 +535,24 @@ class BuildHandoff:
             from app.modules.builds.receipt_completion import obsolete_readback_sql
 
             active_unit = self.session.exec(
-                select(SubmissionUnit.unit_id)
+                select(col(SubmissionUnit.unit_id))
                 .where(
-                    SubmissionUnit.tenant_id == self.context.tenant_id,
-                    SubmissionUnit.submission_id == submission_id,
-                    SubmissionUnit.disposition == "INCLUDED",
+                    col(SubmissionUnit.tenant_id) == self.context.tenant_id,
+                    col(SubmissionUnit.submission_id) == submission_id,
+                    col(SubmissionUnit.disposition) == "INCLUDED",
                     or_(
-                        SubmissionUnit.expanded.is_(False),
-                        SubmissionUnit.dispatch_id.is_not(None),
+                        col(SubmissionUnit.expanded).is_(False),
+                        col(SubmissionUnit.dispatch_id).is_not(None),
                     ),
                 )
                 .limit(1)
             ).first()
             active_step = self.session.exec(
-                select(ExecutionStep.id)
+                select(col(ExecutionStep.id))
                 .where(
-                    ExecutionStep.tenant_id == self.context.tenant_id,
-                    ExecutionStep.submission_id == submission_id,
-                    ExecutionStep.status.in_(["QUEUED", "RUNNING"]),
+                    col(ExecutionStep.tenant_id) == self.context.tenant_id,
+                    col(ExecutionStep.submission_id) == submission_id,
+                    col(ExecutionStep.status).in_(["QUEUED", "RUNNING"]),
                     text("NOT " + obsolete_readback_sql("execution_step")),
                 )
                 .limit(1)
@@ -571,8 +571,8 @@ class BuildHandoff:
         occurrence = self.session.exec(
             select(BuildOccurrence)
             .where(
-                BuildOccurrence.tenant_id == self.context.tenant_id,
-                BuildOccurrence.submission_id == submission_id,
+                col(BuildOccurrence.tenant_id) == self.context.tenant_id,
+                col(BuildOccurrence.submission_id) == submission_id,
             )
             .with_for_update()
         ).one_or_none()

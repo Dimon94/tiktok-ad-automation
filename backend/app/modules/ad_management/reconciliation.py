@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from redis import Redis
@@ -40,8 +41,8 @@ def _latest_attempt(session, item):
     return session.exec(
         select(ManagementRequestAttempt)
         .where(
-            ManagementRequestAttempt.tenant_id == item.tenant_id,
-            ManagementRequestAttempt.task_item_id == item.id,
+            col(ManagementRequestAttempt.tenant_id) == item.tenant_id,
+            col(ManagementRequestAttempt.task_item_id) == item.id,
         )
         .order_by(col(ManagementRequestAttempt.attempt).desc())
         .limit(1)
@@ -54,9 +55,10 @@ def _latest_request(session, attempt):
     return session.exec(
         select(ManagementReceipt)
         .where(
-            ManagementReceipt.tenant_id == attempt.tenant_id,
-            ManagementReceipt.attempt_id == attempt.id,
-            ManagementReceipt.response["kind"].astext == "state_observation_request",
+            col(ManagementReceipt.tenant_id) == attempt.tenant_id,
+            col(ManagementReceipt.attempt_id) == attempt.id,
+            col(ManagementReceipt.response)["kind"].astext
+            == "state_observation_request",
         )
         .order_by(
             col(ManagementReceipt.observed_at).desc(), col(ManagementReceipt.id).desc()
@@ -94,16 +96,16 @@ def queue_reconciliation(
         UUID(round_key)
     stored = session.exec(
         select(ManagementTask).where(
-            ManagementTask.id == task.id,
-            ManagementTask.tenant_id == task.tenant_id,
-            ManagementTask.actor_id == task.actor_id,
+            col(ManagementTask.id) == task.id,
+            col(ManagementTask.tenant_id) == task.tenant_id,
+            col(ManagementTask.actor_id) == task.actor_id,
         )
     ).one_or_none()
     rows = session.exec(
         select(ManagementTaskItem)
         .where(
-            ManagementTaskItem.tenant_id == task.tenant_id,
-            ManagementTaskItem.task_id == task.id,
+            col(ManagementTaskItem.tenant_id) == task.tenant_id,
+            col(ManagementTaskItem.task_id) == task.id,
             col(ManagementTaskItem.id).in_(item_ids),
         )
         .order_by(col(ManagementTaskItem.id))
@@ -117,7 +119,7 @@ def queue_reconciliation(
         for value in session.exec(
             select(ManagementRequestAttempt)
             .where(
-                ManagementRequestAttempt.tenant_id == task.tenant_id,
+                col(ManagementRequestAttempt.tenant_id) == task.tenant_id,
                 col(ManagementRequestAttempt.task_item_id).in_(item_ids),
             )
             .distinct(col(ManagementRequestAttempt.task_item_id))
@@ -133,11 +135,11 @@ def queue_reconciliation(
             for value in session.exec(
                 select(ManagementReceipt)
                 .where(
-                    ManagementReceipt.tenant_id == task.tenant_id,
+                    col(ManagementReceipt.tenant_id) == task.tenant_id,
                     col(ManagementReceipt.attempt_id).in_(
                         [value.id for value in sources.values()]
                     ),
-                    ManagementReceipt.response["kind"].astext
+                    col(ManagementReceipt.response)["kind"].astext
                     == "state_observation_request",
                 )
                 .distinct(col(ManagementReceipt.attempt_id))
@@ -226,17 +228,17 @@ def reconcile_item(
 
     item = session.exec(
         select(ManagementTaskItem).where(
-            ManagementTaskItem.id == item_id,
-            ManagementTaskItem.tenant_id == context.tenant_id,
+            col(ManagementTaskItem.id) == item_id,
+            col(ManagementTaskItem.tenant_id) == context.tenant_id,
         )
     ).one_or_none()
     if item is None:
         raise DomainError("management_item_not_found", "管理任务项不存在")
     task = session.exec(
         select(ManagementTask).where(
-            ManagementTask.id == item.task_id,
-            ManagementTask.tenant_id == context.tenant_id,
-            ManagementTask.actor_id == context.actor_id,
+            col(ManagementTask.id) == item.task_id,
+            col(ManagementTask.tenant_id) == context.tenant_id,
+            col(ManagementTask.actor_id) == context.actor_id,
         )
     ).one_or_none()
     if task is None:
@@ -283,7 +285,10 @@ def _value(entity, item, page):
         raw = item.material_use
         use = MaterialUseRef(
             EntityRef(
-                **{**raw["ad_ref"], "tenant_id": UUID(raw["ad_ref"]["tenant_id"])}
+                **cast(
+                    dict[str, Any],
+                    {**raw["ad_ref"], "tenant_id": UUID(raw["ad_ref"]["tenant_id"])},
+                )
             ),
             raw["platform_material_id"],
             raw.get("ad_material_id"),
@@ -331,17 +336,17 @@ def _persist_observation(
     with Session(engine) as session:
         task = session.exec(
             select(ManagementTask).where(
-                ManagementTask.id == task_id,
-                ManagementTask.tenant_id == tenant_id,
-                ManagementTask.actor_id == actor_id,
+                col(ManagementTask.id) == task_id,
+                col(ManagementTask.tenant_id) == tenant_id,
+                col(ManagementTask.actor_id) == actor_id,
             )
         ).one_or_none()
         item = session.exec(
             select(ManagementTaskItem)
             .where(
-                ManagementTaskItem.id == item_id,
-                ManagementTaskItem.task_id == task_id,
-                ManagementTaskItem.tenant_id == tenant_id,
+                col(ManagementTaskItem.id) == item_id,
+                col(ManagementTaskItem.task_id) == task_id,
+                col(ManagementTaskItem.tenant_id) == tenant_id,
             )
             .with_for_update()
         ).one_or_none()
@@ -363,11 +368,11 @@ def _persist_observation(
         }:
             return
         duplicate = session.exec(
-            select(ManagementReceipt.id).where(
-                ManagementReceipt.attempt_id == source.id,
-                ManagementReceipt.response["kind"].astext == "state_observation",
-                ManagementReceipt.response["round"].astext == round_key,
-                ManagementReceipt.response["attempt"].as_integer() == attempt,
+            select(col(ManagementReceipt.id)).where(
+                col(ManagementReceipt.attempt_id) == source.id,
+                col(ManagementReceipt.response)["kind"].astext == "state_observation",
+                col(ManagementReceipt.response)["round"].astext == round_key,
+                col(ManagementReceipt.response)["attempt"].as_integer() == attempt,
             )
         ).first()
         if duplicate:
@@ -444,15 +449,15 @@ def reconcile_unknown_items(
     with Session(engine, expire_on_commit=False) as session:
         task = session.exec(
             select(ManagementTask).where(
-                ManagementTask.id == task_id,
-                ManagementTask.tenant_id == tenant_id,
-                ManagementTask.actor_id == actor_id,
+                col(ManagementTask.id) == task_id,
+                col(ManagementTask.tenant_id) == tenant_id,
+                col(ManagementTask.actor_id) == actor_id,
             )
         ).one_or_none()
         rows = session.exec(
             select(ManagementTaskItem).where(
-                ManagementTaskItem.task_id == task_id,
-                ManagementTaskItem.tenant_id == tenant_id,
+                col(ManagementTaskItem.task_id) == task_id,
+                col(ManagementTaskItem.tenant_id) == tenant_id,
                 col(ManagementTaskItem.id).in_(item_ids),
             )
         ).all()
@@ -572,7 +577,10 @@ def reconcile_unknown_items(
             observation = None
             try:
                 ref = EntityRef(
-                    **{**item.ref, "tenant_id": UUID(item.ref["tenant_id"])}
+                    **cast(
+                        dict[str, Any],
+                        {**item.ref, "tenant_id": UUID(item.ref["tenant_id"])},
+                    )
                 )
                 entities = [entity for entity in page.items if entity.ref == ref]
                 if len(entities) != 1 or entities[0].observed_at < max(

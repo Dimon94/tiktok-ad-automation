@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from typing import Literal, cast
+from typing import cast as typing_cast
 from uuid import UUID
 
 from sqlalchemy import and_, func
@@ -47,20 +48,22 @@ def draft_summary(
     session: Session, *, context: TenantContext, draft_id: UUID
 ) -> DraftSummary:
     row = get_draft(session, context=context, draft_id=draft_id)
+
     counts: dict[str, dict[str, int]] = {"drama": {}, "account": {}}
     for kind, status, count in session.exec(
-        select(DraftInput.kind, DraftInput.status, func.count())
+        select(col(DraftInput.kind), col(DraftInput.status), func.count())
         .where(
-            DraftInput.tenant_id == context.tenant_id, DraftInput.draft_id == draft_id
+            col(DraftInput.tenant_id) == context.tenant_id,
+            col(DraftInput.draft_id) == draft_id,
         )
-        .group_by(DraftInput.kind, DraftInput.status)
+        .group_by(col(DraftInput.kind), col(DraftInput.status))
     ):
         counts[kind][status] = count
     prep = session.exec(
         select(DraftPreparation)
         .where(
-            DraftPreparation.tenant_id == context.tenant_id,
-            DraftPreparation.draft_id == draft_id,
+            col(DraftPreparation.tenant_id) == context.tenant_id,
+            col(DraftPreparation.draft_id) == draft_id,
         )
         .order_by(col(DraftPreparation.draft_revision).desc())
         .limit(1)
@@ -69,8 +72,8 @@ def draft_summary(
         select(func.count())
         .select_from(DraftDrama)
         .where(
-            DraftDrama.tenant_id == context.tenant_id,
-            DraftDrama.draft_id == draft_id,
+            col(DraftDrama.tenant_id) == context.tenant_id,
+            col(DraftDrama.draft_id) == draft_id,
             current_image_drama_clause() if row.media_kind == "CAROUSEL" else True,
         )
     ).one()
@@ -78,8 +81,8 @@ def draft_summary(
         select(func.count())
         .select_from(DraftAccount)
         .where(
-            DraftAccount.tenant_id == context.tenant_id,
-            DraftAccount.draft_id == draft_id,
+            col(DraftAccount.tenant_id) == context.tenant_id,
+            col(DraftAccount.draft_id) == draft_id,
         )
     ).one()
     provider = session.get(ProviderConnection, row.provider_connection_id)
@@ -88,17 +91,19 @@ def draft_summary(
         media_kind=row.media_kind,
         targeting=row.targeting_override
         or get_version(
-            session, context=context, version_id=row.strategy_version_id
+            session,
+            context=context,
+            version_id=typing_cast(UUID, row.strategy_version_id),
         ).targeting,
         targeting_override=row.targeting_override,
         draft_id=row.id,
         revision=row.revision,
         bc_id=row.bc_id,
         status=cast(Literal["DRAFT", "PREPARING", "READY", "BLOCKED"], row.status),
-        strategy_version_id=row.strategy_version_id,
-        provider_connection_id=row.provider_connection_id,
+        strategy_version_id=typing_cast(UUID, row.strategy_version_id),
+        provider_connection_id=typing_cast(UUID, row.provider_connection_id),
         execution_connection_id=row.execution_connection_id,
-        application_id=row.application_id,
+        application_id=typing_cast(str, row.application_id),
         custom_provider_name=provider.display_name
         if provider and provider.kind == "other"
         else None,
@@ -158,14 +163,14 @@ def inputs_page(
     except ValueError:
         raise DomainError("invalid_cursor", "分页游标无效") from None
     query = select(DraftInput).where(
-        DraftInput.tenant_id == context.tenant_id,
-        DraftInput.draft_id == draft_id,
-        DraftInput.kind == kind,
+        col(DraftInput.tenant_id) == context.tenant_id,
+        col(DraftInput.draft_id) == draft_id,
+        col(DraftInput.kind) == kind,
     )
     if status is not None:
-        query = query.where(DraftInput.status == status)
+        query = query.where(col(DraftInput.status) == status)
     total = count_rows(session, query)
-    query = query.where(DraftInput.line_no > number)
+    query = query.where(col(DraftInput.line_no) > number)
     rows = session.exec(query.order_by(col(DraftInput.line_no)).limit(limit + 1)).all()
     items = [DraftInputPublic.model_validate(row) for row in rows[:limit]]
     if kind == "drama" and items:
@@ -173,9 +178,9 @@ def inputs_page(
         # 仅关联当前草稿版本的任务，避免重新编辑后泄漏旧准备结果。
         prep = session.exec(
             select(DraftPreparation).where(
-                DraftPreparation.tenant_id == context.tenant_id,
-                DraftPreparation.draft_id == draft_id,
-                DraftPreparation.draft_revision == draft.revision,
+                col(DraftPreparation.tenant_id) == context.tenant_id,
+                col(DraftPreparation.draft_id) == draft_id,
+                col(DraftPreparation.draft_revision) == draft.revision,
             )
         ).one_or_none()
         links = {}
@@ -184,8 +189,9 @@ def inputs_page(
                 item.line_no: item
                 for item in session.exec(
                     select(LinkPreparationItem).where(
-                        LinkPreparationItem.tenant_id == context.tenant_id,
-                        LinkPreparationItem.preparation_id == prep.provider_task_id,
+                        col(LinkPreparationItem.tenant_id) == context.tenant_id,
+                        col(LinkPreparationItem.preparation_id)
+                        == prep.provider_task_id,
                         col(LinkPreparationItem.line_no).in_(
                             [row.line_no for row in items]
                         ),
@@ -198,19 +204,19 @@ def inputs_page(
                 select(DraftDrama, ProviderDrama, PromotionLink)
                 .join(
                     ProviderDrama,
-                    (col(ProviderDrama.tenant_id) == DraftDrama.tenant_id)
-                    & (col(ProviderDrama.id) == DraftDrama.drama_id),
+                    (col(ProviderDrama.tenant_id) == col(DraftDrama.tenant_id))
+                    & (col(ProviderDrama.id) == col(DraftDrama.drama_id)),
                 )
                 .join(
                     PromotionLink,
-                    (col(PromotionLink.id) == DraftDrama.link_id)
-                    & (col(PromotionLink.tenant_id) == DraftDrama.tenant_id),
+                    (col(PromotionLink.id) == col(DraftDrama.link_id))
+                    & (col(PromotionLink.tenant_id) == col(DraftDrama.tenant_id)),
                 )
                 .where(
-                    ProviderDrama.connection_id == draft.provider_connection_id,
-                    ProviderDrama.application_id == draft.application_id,
-                    DraftDrama.tenant_id == context.tenant_id,
-                    DraftDrama.draft_id == draft_id,
+                    col(ProviderDrama.connection_id) == draft.provider_connection_id,
+                    col(ProviderDrama.application_id) == draft.application_id,
+                    col(DraftDrama.tenant_id) == context.tenant_id,
+                    col(DraftDrama.draft_id) == draft_id,
                     col(DraftDrama.first_line).in_([row.line_no for row in items]),
                     current_image_drama_clause()
                     if draft.media_kind == "CAROUSEL"
@@ -299,12 +305,12 @@ def dramas_page(
     except ValueError:
         raise DomainError("invalid_cursor", "分页游标无效") from None
     query = select(DraftDrama).where(
-        DraftDrama.tenant_id == context.tenant_id,
-        DraftDrama.draft_id == draft_id,
+        col(DraftDrama.tenant_id) == context.tenant_id,
+        col(DraftDrama.draft_id) == draft_id,
     )
     total = count_rows(session, query)
     rows = session.exec(
-        query.where(DraftDrama.drama_id > identity)
+        query.where(col(DraftDrama.drama_id) > identity)
         .order_by(col(DraftDrama.drama_id))
         .limit(limit + 1)
     ).all()
@@ -352,7 +358,7 @@ def materials_page(
             other.tenant_id == context.tenant_id,
             other.draft_id == draft_id,
             other.drama_id != drama_id,
-            other.material_id == DraftCreativeUnitItem.material_id,
+            other.material_id == col(DraftCreativeUnitItem.material_id),
         )
         .exists()
     )
@@ -361,25 +367,27 @@ def materials_page(
         .join(
             DraftCreativeUnitItem,
             and_(
-                col(DraftCreativeUnitItem.tenant_id) == DraftCreativeUnit.tenant_id,
-                col(DraftCreativeUnitItem.draft_id) == DraftCreativeUnit.draft_id,
-                col(DraftCreativeUnitItem.generation) == DraftCreativeUnit.generation,
-                col(DraftCreativeUnitItem.unit_id) == DraftCreativeUnit.id,
+                col(DraftCreativeUnitItem.tenant_id)
+                == col(DraftCreativeUnit.tenant_id),
+                col(DraftCreativeUnitItem.draft_id) == col(DraftCreativeUnit.draft_id),
+                col(DraftCreativeUnitItem.generation)
+                == col(DraftCreativeUnit.generation),
+                col(DraftCreativeUnitItem.unit_id) == col(DraftCreativeUnit.id),
             ),
         )
         .join(
             MaterialFile,
             and_(
-                col(MaterialFile.tenant_id) == DraftCreativeUnitItem.tenant_id,
-                col(MaterialFile.id) == DraftCreativeUnitItem.material_id,
+                col(MaterialFile.tenant_id) == col(DraftCreativeUnitItem.tenant_id),
+                col(MaterialFile.id) == col(DraftCreativeUnitItem.material_id),
             ),
         )
         .where(
-            DraftCreativeUnit.tenant_id == context.tenant_id,
-            DraftCreativeUnit.draft_id == draft_id,
-            DraftCreativeUnit.drama_id == drama_id,
-            DraftCreativeUnit.kind == "VIDEO",
-            DraftCreativeUnit.generation == 1,
+            col(DraftCreativeUnit.tenant_id) == context.tenant_id,
+            col(DraftCreativeUnit.draft_id) == draft_id,
+            col(DraftCreativeUnit.drama_id) == drama_id,
+            col(DraftCreativeUnit.kind) == "VIDEO",
+            col(DraftCreativeUnit.generation) == 1,
         )
     )
     total = count_rows(session, query)

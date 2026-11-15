@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
+from typing import cast as typing_cast
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid5
 
@@ -160,6 +161,7 @@ def validate_manual_links(
 def materialize(
     session: Session, context: TenantContext, draft: BuildDraft, row: DraftInput
 ) -> None:
+
     value = row.manual_link
     if not value.get("url"):
         row.status, row.reason_code = "failed", "manual_link_required"
@@ -190,9 +192,9 @@ def materialize(
     )
     # 手动表单填写展示编号时复用同范围的剧目，不能覆盖其取链接口标识。
     query = select(ProviderDrama).where(
-        ProviderDrama.tenant_id == context.tenant_id,
-        ProviderDrama.connection_id == draft.provider_connection_id,
-        ProviderDrama.application_id == draft.application_id,
+        col(ProviderDrama.tenant_id) == context.tenant_id,
+        col(ProviderDrama.connection_id) == draft.provider_connection_id,
+        col(ProviderDrama.application_id) == draft.application_id,
         or_(
             col(ProviderDrama.external_drama_id) == external,
             col(ProviderDrama.display_drama_id) == external,
@@ -211,8 +213,8 @@ def materialize(
     if drama is None:
         candidate = ProviderDrama(
             tenant_id=context.tenant_id,
-            connection_id=draft.provider_connection_id,
-            application_id=draft.application_id,
+            connection_id=typing_cast(UUID, draft.provider_connection_id),
+            application_id=typing_cast(str, draft.application_id),
             external_drama_id=external,
             display_drama_id=value.get("external_drama_id", "").strip() or None,
             title=row.raw_text.strip(),
@@ -240,16 +242,16 @@ def materialize(
     ).hexdigest()
     link = session.exec(
         select(PromotionLink).where(
-            PromotionLink.tenant_id == context.tenant_id,
-            PromotionLink.reuse_key == digest,
+            col(PromotionLink.tenant_id) == context.tenant_id,
+            col(PromotionLink.reuse_key) == digest,
         )
     ).one_or_none()
     if link is None:
         link = PromotionLink(
             tenant_id=context.tenant_id,
             drama_id=drama.id,
-            connection_id=draft.provider_connection_id,
-            application_id=draft.application_id,
+            connection_id=typing_cast(UUID, draft.provider_connection_id),
+            application_id=typing_cast(str, draft.application_id),
             reuse_key=digest,
             source="manual",
             url=value["url"],
@@ -310,18 +312,21 @@ def save_manual_link(
             raise DomainError("draft_not_ready", "请等待当前准备完成后补充链接")
         row = session.exec(
             select(DraftInput).where(
-                DraftInput.tenant_id == context.tenant_id,
-                DraftInput.draft_id == draft_id,
-                DraftInput.id == input_id,
-                DraftInput.kind == "drama",
+                col(DraftInput.tenant_id) == context.tenant_id,
+                col(DraftInput.draft_id) == draft_id,
+                col(DraftInput.id) == input_id,
+                col(DraftInput.kind) == "drama",
             )
         ).one_or_none()
         if row is None or not row.raw_text.strip() or row.status == "duplicate":
             raise DomainError("draft_not_found", "当前草稿的有效剧目输入不存在")
         if link.get("line_no") != row.line_no:
             raise DomainError("manual_link_invalid", "链接与剧目行号不一致")
+
         provider = get_connection(
-            session, context=context, connection_id=draft.provider_connection_id
+            session,
+            context=context,
+            connection_id=typing_cast(UUID, draft.provider_connection_id),
         )
         lines = [""] * row.line_no
         lines[-1] = row.raw_text

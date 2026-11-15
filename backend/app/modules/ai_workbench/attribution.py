@@ -2,9 +2,10 @@
 
 from collections import defaultdict
 from datetime import date, timedelta
+from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import String
+from sqlalchemy import String, cast
 from sqlmodel import Session, col, select
 
 from app.modules.ai_workbench.models import BuildOccurrence
@@ -40,28 +41,28 @@ def resolve_mappings(session: Session, *, context, optimizer_id, version, cutoff
         select(BuildOccurrence, ExecutionStep, BuildUnit)
         .join(
             ExecutionStep,
-            (ExecutionStep.tenant_id == BuildOccurrence.tenant_id)
-            & (ExecutionStep.submission_id == BuildOccurrence.submission_id)
-            & (ExecutionStep.bc_id == BuildOccurrence.bc_id),
+            (col(ExecutionStep.tenant_id) == col(BuildOccurrence.tenant_id))
+            & (col(ExecutionStep.submission_id) == col(BuildOccurrence.submission_id))
+            & (col(ExecutionStep.bc_id) == col(BuildOccurrence.bc_id)),
         )
         .join(
             BuildUnit,
-            (BuildUnit.tenant_id == ExecutionStep.tenant_id)
-            & (BuildUnit.id == ExecutionStep.unit_id)
-            & (BuildUnit.preview_id == ExecutionStep.preview_id)
-            & (BuildUnit.bc_id == ExecutionStep.bc_id),
+            (col(BuildUnit.tenant_id) == col(ExecutionStep.tenant_id))
+            & (col(BuildUnit.id) == col(ExecutionStep.unit_id))
+            & (col(BuildUnit.preview_id) == col(ExecutionStep.preview_id))
+            & (col(BuildUnit.bc_id) == col(ExecutionStep.bc_id)),
         )
         .where(
-            BuildOccurrence.tenant_id == context.tenant_id,
-            BuildOccurrence.optimizer_id == optimizer_id,
-            BuildOccurrence.bc_id == version.bc_id,
-            BuildOccurrence.created_at <= cutoff,
-            ExecutionStep.kind == "CAMPAIGN",
-            ExecutionStep.status == "SUCCEEDED",
-            ExecutionStep.remote_id.is_not(None),
+            col(BuildOccurrence.tenant_id) == context.tenant_id,
+            col(BuildOccurrence.optimizer_id) == optimizer_id,
+            col(BuildOccurrence.bc_id) == version.bc_id,
+            col(BuildOccurrence.created_at) <= cutoff,
+            col(ExecutionStep.kind) == "CAMPAIGN",
+            col(ExecutionStep.status) == "SUCCEEDED",
+            col(ExecutionStep.remote_id).is_not(None),
             col(BuildUnit.advertiser_id).in_(accounts),
         )
-        .order_by(col(BuildOccurrence.scheduled_at).desc(), ExecutionStep.id)
+        .order_by(col(BuildOccurrence.scheduled_at).desc(), col(ExecutionStep.id))
         .limit(MAX_MAPPINGS + 1)
     ).all()
     grouped = defaultdict(lambda: {"ids": set(), "evidence_ids": set()})
@@ -78,33 +79,33 @@ def resolve_mappings(session: Session, *, context, optimizer_id, version, cutoff
         select(MaterialPushItem, AccountMaterial, MaterialOrder)
         .join(
             MaterialPushBatch,
-            (MaterialPushBatch.tenant_id == MaterialPushItem.tenant_id)
-            & (MaterialPushBatch.id == MaterialPushItem.batch_id),
+            (col(MaterialPushBatch.tenant_id) == col(MaterialPushItem.tenant_id))
+            & (col(MaterialPushBatch.id) == col(MaterialPushItem.batch_id)),
         )
         .join(
             AccountMaterial,
-            (AccountMaterial.tenant_id == MaterialPushItem.tenant_id)
-            & (AccountMaterial.material_id == MaterialPushItem.material_id),
+            (col(AccountMaterial.tenant_id) == col(MaterialPushItem.tenant_id))
+            & (col(AccountMaterial.material_id) == col(MaterialPushItem.material_id)),
         )
         .join(
             MaterialOrder,
-            (MaterialOrder.tenant_id == MaterialPushItem.tenant_id)
+            (col(MaterialOrder.tenant_id) == col(MaterialPushItem.tenant_id))
             & (
-                MaterialPushItem.production_origin["order_id"].astext
-                == col(MaterialOrder.id).cast(String)
+                col(MaterialPushItem.production_origin)["order_id"].astext
+                == cast(col(MaterialOrder.id), String)
             ),
         )
         .where(
-            MaterialPushItem.tenant_id == context.tenant_id,
-            MaterialPushBatch.created_at <= cutoff,
-            MaterialOrder.created_at <= cutoff,
-            AccountMaterial.bc_id == version.bc_id,
+            col(MaterialPushItem.tenant_id) == context.tenant_id,
+            col(MaterialPushBatch.created_at) <= cutoff,
+            col(MaterialOrder.created_at) <= cutoff,
+            col(AccountMaterial.bc_id) == version.bc_id,
             col(AccountMaterial.advertiser_id).in_(accounts),
-            AccountMaterial.status == "available",
-            AccountMaterial.video_id.is_not(None),
-            AccountMaterial.verified_at <= cutoff,
+            col(AccountMaterial.status) == "available",
+            col(AccountMaterial.video_id).is_not(None),
+            col(AccountMaterial.verified_at) <= cutoff,
         )
-        .order_by(MaterialPushItem.id, AccountMaterial.id)
+        .order_by(col(MaterialPushItem.id), col(AccountMaterial.id))
         .limit(MAX_MAPPINGS + 1)
     ).all()
     from app.modules.ai_workbench.review_orders import order_in_scope
@@ -215,7 +216,7 @@ def build_attribution_pack(
             except HTTPException as error:
                 if error.status_code != 409:
                     raise
-                report = {
+                report: dict[str, Any] = {
                     "status": "UNAVAILABLE",
                     "reason": str(error.detail),
                     "rows": [],
@@ -236,7 +237,7 @@ def build_attribution_pack(
                 )
             ]
             if len(exact) != len(report["rows"]):
-                report = {
+                report: dict[str, Any] = {
                     **report,
                     "status": "UNAVAILABLE",
                     "reason": "non_exact_identity_filter",

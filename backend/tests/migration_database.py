@@ -16,6 +16,28 @@ from app.core.config import settings
 from tests.database import require_test_database
 
 
+def insert_historical_row(session, row):
+    """只写迁移前已有列；nullable JSON 的None保持SQL NULL。"""
+    from sqlalchemy import null
+    from sqlalchemy.types import JSON
+
+    table = Table(row.__tablename__, MetaData(), autoload_with=session.connection())
+    session.execute(
+        table.insert().values(
+            **{
+                key: null()
+                if value is None
+                and table.c[key].nullable
+                and isinstance(table.c[key].type, JSON)
+                else value
+                for key, value in row.model_dump().items()
+                if key in table.c
+            }
+        )
+    )
+    return row
+
+
 def insert_historical_asset(session, row):
     """旧映射按当时列播种，主图类型与授权代数不渗入旧 schema。"""
     table = Table("account_material", MetaData(), autoload_with=session.connection())

@@ -245,7 +245,7 @@ def execute_hits(
     hits = list(
         session.exec(
             select(AutomationRuleHit)
-            .where(AutomationRuleHit.run_id == run.id)
+            .where(col(AutomationRuleHit.run_id) == run.id)
             .order_by(col(AutomationRuleHit.sequence))
         ).all()
     )
@@ -257,9 +257,13 @@ def execute_hits(
             hit.outcome = "NOT_SELECTED"
             continue
         for target in hit.targets:
-            if allowed is not None and (
-                target.get("bc_id") != scope.bc_id
-                or target.get("advertiser_id") not in allowed
+            if (
+                scope is not None
+                and allowed is not None
+                and (
+                    target.get("bc_id") != scope.bc_id
+                    or target.get("advertiser_id") not in allowed
+                )
             ):
                 hit.outcome = "NOT_SELECTED"
                 continue
@@ -467,9 +471,9 @@ def _ledger(
         else_=func.split_part(col(AutomationActionLedger.action), "_", 1),
     )
     latest = (
-        select(AutomationActionLedger.id)
+        select(col(AutomationActionLedger.id))
         .where(
-            AutomationActionLedger.tenant_id == tenant_id,
+            col(AutomationActionLedger.tenant_id) == tenant_id,
             col(AutomationActionLedger.target_key).in_(keys),
         )
         .distinct(col(AutomationActionLedger.target_key), field)
@@ -484,7 +488,7 @@ def _ledger(
         session.exec(
             select(AutomationActionLedger)
             .where(
-                AutomationActionLedger.tenant_id == tenant_id,
+                col(AutomationActionLedger.tenant_id) == tenant_id,
                 col(AutomationActionLedger.target_key).in_(keys),
                 or_(
                     col(AutomationActionLedger.rule_id) == rule_id,
@@ -661,11 +665,11 @@ class _OwnerMap:
         key = (advertiser_id, kind, remote_id)
         if key not in self._parents:
             row = self.session.exec(
-                select(AdObject.parent_remote_id).where(
-                    AdObject.tenant_id == self.tenant_id,
-                    AdObject.advertiser_id == advertiser_id,
-                    AdObject.kind == kind,
-                    AdObject.remote_id == remote_id,
+                select(col(AdObject.parent_remote_id)).where(
+                    col(AdObject.tenant_id) == self.tenant_id,
+                    col(AdObject.advertiser_id) == advertiser_id,
+                    col(AdObject.kind) == kind,
+                    col(AdObject.remote_id) == remote_id,
                 )
             ).first()
             self._parents[key] = row

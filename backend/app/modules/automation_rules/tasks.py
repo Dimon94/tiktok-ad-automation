@@ -55,7 +55,7 @@ def scan_due_rules(session: Session, *, now: datetime) -> int:
         return 0
     # 暂停的租户在 SQL 中排除：保持到期状态，恢复后立即补跑一次；
     # 也不会因为大量暂停规则排在前面而占满扫描上限、饿死其他租户。
-    paused = select(AutomationTenantSetting.tenant_id).where(
+    paused = select(col(AutomationTenantSetting.tenant_id)).where(
         col(AutomationTenantSetting.paused).is_(True)
     )
     rules = session.exec(
@@ -85,23 +85,23 @@ def scan_due_rules(session: Session, *, now: datetime) -> int:
         assert slot is not None
         all_bindings = session.exec(
             select(AIOptimizerRuleBinding).where(
-                AIOptimizerRuleBinding.tenant_id == rule.tenant_id,
-                AIOptimizerRuleBinding.rule_id == rule.id,
-                AIOptimizerRuleBinding.active.is_(True),
+                col(AIOptimizerRuleBinding.tenant_id) == rule.tenant_id,
+                col(AIOptimizerRuleBinding.rule_id) == rule.id,
+                col(AIOptimizerRuleBinding.active).is_(True),
             )
         ).all()
         bindings = session.exec(
             select(AIOptimizerRuleBinding)
             .join(
                 AIOptimizer,
-                (AIOptimizer.tenant_id == AIOptimizerRuleBinding.tenant_id)
-                & (AIOptimizer.id == AIOptimizerRuleBinding.optimizer_id),
+                (col(AIOptimizer.tenant_id) == col(AIOptimizerRuleBinding.tenant_id))
+                & (col(AIOptimizer.id) == col(AIOptimizerRuleBinding.optimizer_id)),
             )
             .where(
-                AIOptimizerRuleBinding.tenant_id == rule.tenant_id,
-                AIOptimizerRuleBinding.rule_id == rule.id,
-                AIOptimizerRuleBinding.active.is_(True),
-                AIOptimizer.active.is_(True),
+                col(AIOptimizerRuleBinding.tenant_id) == rule.tenant_id,
+                col(AIOptimizerRuleBinding.rule_id) == rule.id,
+                col(AIOptimizerRuleBinding.active).is_(True),
+                col(AIOptimizer.active).is_(True),
             )
         ).all()
         payloads = [
@@ -305,7 +305,7 @@ def run_execution(session: Session, *, tenant_id: str, data: dict[str, Any]) -> 
     else:
         batch = session.exec(
             select(AutomationConfirmation).where(
-                AutomationConfirmation.run_id == run.id
+                col(AutomationConfirmation.run_id) == run.id
             )
         ).one()
         assert batch.decided_by is not None

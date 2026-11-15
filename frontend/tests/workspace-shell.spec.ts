@@ -228,7 +228,7 @@ for (const width of [1440, 1280]) {
     await expect(page.getByText("BC 未连接", { exact: true })).toBeVisible()
     await expect(
       page.getByRole("link", { name: "DSH 管理台", exact: true }),
-    ).toHaveAttribute("href", "/api/admin/dsh/entry")
+    ).toHaveCount(0)
     const labels = await page
       .getByRole("navigation")
       .getByRole("link")
@@ -314,6 +314,9 @@ test("403 list query stays inside authenticated platform management", async ({
 }) => {
   await apiBoundary(page, { admin: true, usersStatus: 403 })
   await page.goto("/admin")
+  await expect(
+    page.getByRole("link", { name: "DSH 管理台", exact: true }),
+  ).toHaveAttribute("href", "/api/admin/dsh/entry")
   await expect(page.getByText("无法读取用户列表")).toBeVisible()
   await expect(
     page.getByRole("alert").getByText("无操作权限", { exact: true }),

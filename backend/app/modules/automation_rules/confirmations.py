@@ -38,7 +38,7 @@ def open_batch(
     )
     session.add(batch)
     for hit in session.exec(
-        select(AutomationRuleHit).where(AutomationRuleHit.run_id == run.id)
+        select(AutomationRuleHit).where(col(AutomationRuleHit.run_id) == run.id)
     ).all():
         hit.outcome = "PENDING_CONFIRMATION"
     run.execution_status = "AWAITING_CONFIRMATION"
@@ -52,11 +52,14 @@ def expire_open(
     """规则开始新一轮运行时，上一轮没处理的批次失效，避免按过期的结论执行。"""
     batches = session.exec(
         select(AutomationConfirmation)
-        .join(AutomationRuleRun, AutomationRuleRun.id == AutomationConfirmation.run_id)
+        .join(
+            AutomationRuleRun,
+            col(AutomationRuleRun.id) == col(AutomationConfirmation.run_id),
+        )
         .where(
-            AutomationConfirmation.rule_id == rule_id,
-            AutomationConfirmation.status == "PENDING",
-            AutomationRuleRun.optimizer_id == optimizer_id,
+            col(AutomationConfirmation.rule_id) == rule_id,
+            col(AutomationConfirmation.status) == "PENDING",
+            col(AutomationRuleRun.optimizer_id) == optimizer_id,
         )
         .with_for_update(of=AutomationConfirmation)
     ).all()
@@ -67,7 +70,7 @@ def expire_open(
             run.execution_status = "EXPIRED"
             for hit in session.exec(
                 select(AutomationRuleHit).where(
-                    AutomationRuleHit.run_id == run.id,
+                    col(AutomationRuleHit.run_id) == run.id,
                     col(AutomationRuleHit.outcome) == "PENDING_CONFIRMATION",
                 )
             ).all():
@@ -89,7 +92,7 @@ def _hits(session: Session, run_id: UUID) -> list[AutomationRuleHit]:
     return list(
         session.exec(
             select(AutomationRuleHit)
-            .where(AutomationRuleHit.run_id == run_id)
+            .where(col(AutomationRuleHit.run_id) == run_id)
             .order_by(col(AutomationRuleHit.sequence))
         ).all()
     )
@@ -117,14 +120,17 @@ def list_confirmations(
         session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="read"
     )
     statement = (
-        select(AutomationConfirmation, AutomationRule.name)
-        .join(AutomationRule, col(AutomationRule.id) == AutomationConfirmation.rule_id)
-        .where(AutomationConfirmation.tenant_id == context.tenant_id)
+        select(AutomationConfirmation, col(AutomationRule.name))
+        .join(
+            AutomationRule,
+            col(AutomationRule.id) == col(AutomationConfirmation.rule_id),
+        )
+        .where(col(AutomationConfirmation.tenant_id) == context.tenant_id)
         .order_by(col(AutomationConfirmation.created_at).desc())
         .limit(200)
     )
     if status:
-        statement = statement.where(AutomationConfirmation.status == status)
+        statement = statement.where(col(AutomationConfirmation.status) == status)
     rows = session.exec(statement).all()
     items = [_item(batch, name, _hits(session, batch.run_id)) for batch, name in rows]
     return ConfirmationPage(items=items, total=len(items))

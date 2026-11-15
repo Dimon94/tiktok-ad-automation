@@ -2,8 +2,11 @@
 """并行分组：均衡装箱、慢文件拆分、组内路径有序。"""
 
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backend_tests  # noqa: E402
@@ -52,6 +55,57 @@ class PartitionTests(unittest.TestCase):
         self.assertEqual(regular, ["tests/x.py::a", "tests/y.py::c"])
         self.assertEqual(exclusive, ["tests/acceptance/test_flow.py::b"])
 
+    def test_serial_capacity_files_preserve_every_collected_case(self):
+        ids = ["tests/x.py::a", "tests/cap.py::size[10000]",
+               "tests/cap.py::rollback", "tests/acceptance/test_flow.py::b"]
+        parallel, serial = backend_tests.split_serial(ids, ["tests/cap.py"])
+        self.assertEqual(serial, ids[1:3])
+        self.assertEqual(parallel, [ids[0], ids[3]])
+        self.assertEqual(set(parallel + serial), set(ids))
+        self.assertFalse(set(parallel) & set(serial))
+        self.assertEqual(backend_tests.partition(serial, {}, 1)[0][1], ["tests/cap.py"])
+
+    def test_serial_files_wait_for_parallel_and_keep_separate_results(self):
+        ids = ["tests/normal.py::a", "tests/cap_a.py::b", "tests/cap_b.py::c"]
+        calls = []
+        def start(groups, index, label, *_args, **kwargs):
+            paths = [p for _, group in groups for p in group]
+            calls.append(("start", index, paths))
+            if label == "容量串行":
+                self.assertEqual(kwargs["redis_index"], 0)
+            return (index, paths)
+        def wait(running, *_args):
+            index, paths = running
+            calls.append(("wait", index, paths))
+            return ({n: "passed" for n in ids if n.split("::")[0] in paths}, {}, [])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            backend_tests.os.environ, {}, clear=True
+        ), patch.object(sys, "argv", ["backend_tests.py", "--work", directory,
+            "--serial-file", "tests/cap_a.py", "--serial-file", "tests/cap_b.py"
+        ]), patch.object(backend_tests, "collect", return_value=ids), patch.object(
+            backend_tests, "start_groups", side_effect=start
+        ), patch.object(backend_tests, "wait_groups", side_effect=wait):
+            self.assertEqual(backend_tests.main(), 0)
+        self.assertEqual([c[0] for c in calls], ["start", "wait"] * 3)
+        self.assertEqual([c[2] for c in calls[::2]],
+                         [["tests/normal.py"], ["tests/cap_a.py"], ["tests/cap_b.py"]])
+        self.assertEqual(len({c[1] for c in calls[::2]}), 3)
+
+    def test_serial_artifact_index_does_not_allocate_more_redis_databases(self):
+        env = {"DATABASE_URL": "postgresql://u:p@localhost/base_test",
+               "REDIS_URL": "redis://localhost/0", "TEST_REDIS_URL": "redis://localhost/1"}
+        args = Mock(work=Path("/tmp"), fast=False)
+        with patch.object(backend_tests, "recreate_database"), patch.object(
+            backend_tests.Path, "open", return_value=Mock()
+        ), patch.object(backend_tests.Path, "unlink"), patch.object(
+            backend_tests.subprocess, "Popen"
+        ) as process:
+            backend_tests.start_groups([(1, ["tests/cap.py"])], 100, "容量串行",
+                                       args, env, redis_index=0)
+            actual = process.call_args.kwargs["env"]
+            self.assertTrue(actual["TEST_REDIS_URL"].endswith("/3"))
+            self.assertTrue(actual["DATABASE_URL"].endswith("/ci_shard100_test"))
+
     def test_fast_tier_deselects_slow_marker(self):
         fast = backend_tests.pytest_command(["tests"], fast=True)
         full = backend_tests.pytest_command(["tests"], fast=False)
@@ -69,6 +123,45 @@ class PartitionTests(unittest.TestCase):
         exclusive = backend_tests.shard_env(env, 6, "ci_shard6_test", Path("/tmp/b"))
         self.assertNotEqual(regular["REDIS_URL"], exclusive["REDIS_URL"])
         self.assertNotEqual(regular["TEST_REDIS_URL"], exclusive["TEST_REDIS_URL"])
+
+
+class ProcessResultTests(unittest.TestCase):
+    def test_file_isolation_is_explicitly_requested_by_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for option in ([], ["--isolate-files"]):
+                with self.subTest(option=option), patch.dict(backend_tests.os.environ, {}, clear=True), patch.object(
+                    sys, "argv", ["backend_tests.py", "--work", directory, *option]
+                ), patch.object(backend_tests, "collect", return_value=[]) as collect:
+                    self.assertEqual(backend_tests.main(), 0)
+                    self.assertEqual(
+                        collect.call_args.args[1].get("CI_ISOLATE_TEST_FILES"),
+                        "1" if option else None,
+                    )
+
+    def wait_for_result(self, returncode, outcomes):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "shard0.log").write_text("pytest finished\n")
+            args = Mock(work=work)
+            process = Mock()
+            process.wait.return_value = returncode
+            with patch.object(backend_tests, "read_results", return_value=(outcomes, {})):
+                return backend_tests.wait_groups(
+                    [(0, process, Mock(), work / "shard0.jsonl")],
+                    "", args, time.monotonic(),
+                )[2]
+
+    def test_passing_cases_do_not_hide_session_failure(self):
+        self.assertTrue(self.wait_for_result(1, {"tests/x.py::case": "passed"}))
+
+    def test_internal_error_remains_fatal_with_failed_cases(self):
+        self.assertTrue(self.wait_for_result(3, {"tests/x.py::case": "failed"}))
+
+    def test_normal_test_failure_is_available_for_existing_rerun(self):
+        self.assertEqual(self.wait_for_result(1, {"tests/x.py::case": "failed"}), [])
+
+    def test_successful_process_has_no_process_error(self):
+        self.assertEqual(self.wait_for_result(0, {"tests/x.py::case": "passed"}), [])
 
 if __name__ == "__main__":
     unittest.main()

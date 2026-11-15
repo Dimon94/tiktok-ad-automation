@@ -140,24 +140,25 @@ def build_data_pack(
             select(BusinessDay)
             .join(
                 BusinessPublication,
-                (BusinessDay.tenant_id == BusinessPublication.tenant_id)
-                & (BusinessDay.bc_id == BusinessPublication.bc_id)
-                & (BusinessDay.run_id == BusinessPublication.run_id),
+                (col(BusinessDay.tenant_id) == col(BusinessPublication.tenant_id))
+                & (col(BusinessDay.bc_id) == col(BusinessPublication.bc_id))
+                & (col(BusinessDay.run_id) == col(BusinessPublication.run_id)),
             )
             .join(
                 BusinessRun,
-                (BusinessRun.tenant_id == BusinessDay.tenant_id)
-                & (BusinessRun.id == BusinessDay.run_id),
+                (col(BusinessRun.tenant_id) == col(BusinessDay.tenant_id))
+                & (col(BusinessRun.id) == col(BusinessDay.run_id)),
             )
             .where(
-                BusinessRun.finished_at <= cutoff,
-                BusinessDay.tenant_id == context.tenant_id,
-                BusinessDay.bc_id == version.bc_id,
-                BusinessDay.advertiser_id == advertiser_id,
-                BusinessDay.stat_date >= date.fromisoformat(window["start_date"]),
-                BusinessDay.stat_date <= date.fromisoformat(window["complete_through"]),
+                col(BusinessRun.finished_at) <= cutoff,
+                col(BusinessDay.tenant_id) == context.tenant_id,
+                col(BusinessDay.bc_id) == version.bc_id,
+                col(BusinessDay.advertiser_id) == advertiser_id,
+                col(BusinessDay.stat_date) >= date.fromisoformat(window["start_date"]),
+                col(BusinessDay.stat_date)
+                <= date.fromisoformat(window["complete_through"]),
             )
-            .order_by(BusinessDay.stat_date, BusinessDay.campaign_id)
+            .order_by(col(BusinessDay.stat_date), col(BusinessDay.campaign_id))
             .limit(MAX_ROWS + 1)
         ).all()
         business.append(
@@ -172,15 +173,16 @@ def build_data_pack(
             }
         )
         logs = session.exec(
-            select(OperationLogEvent, OperationExport.advertiser_id)
+            select(OperationLogEvent, col(OperationExport.advertiser_id))
             .join(OperationExport)
             .where(
-                OperationExport.tenant_id == context.tenant_id,
-                OperationExport.bc_id == version.bc_id,
-                OperationExport.advertiser_id == advertiser_id,
-                OperationExport.observed_at <= cutoff,
-                OperationLogEvent.occurred_at >= cutoff - timedelta(days=WINDOW_DAYS),
-                OperationLogEvent.occurred_at < cutoff,
+                col(OperationExport.tenant_id) == context.tenant_id,
+                col(OperationExport.bc_id) == version.bc_id,
+                col(OperationExport.advertiser_id) == advertiser_id,
+                col(OperationExport.observed_at) <= cutoff,
+                col(OperationLogEvent.occurred_at)
+                >= cutoff - timedelta(days=WINDOW_DAYS),
+                col(OperationLogEvent.occurred_at) < cutoff,
             )
             .order_by(col(OperationLogEvent.occurred_at).desc())
             .limit(MAX_ROWS + 1)

@@ -86,7 +86,9 @@ class AIProposal(SQLModel, table=True):
             name="fk_ai_proposal_optimizer",
         ),
         CheckConstraint("kind IN ('strategy','rule')", name="ck_ai_proposal_kind"),
-        CheckConstraint("operation IN ('create','update')", name="ck_ai_proposal_operation"),
+        CheckConstraint(
+            "operation IN ('create','update')", name="ck_ai_proposal_operation"
+        ),
         CheckConstraint(
             "status IN ('PENDING','ACCEPTED','REJECTED','STALE')",
             name="ck_ai_proposal_status",
@@ -122,12 +124,22 @@ class AIProposal(SQLModel, table=True):
     decision_request_id: UUID | None = None
     decision_request_digest: str | None = SQLField(default=None, max_length=64)
     decision_at: datetime | None = SQLField(
-        default=None, sa_type=DateTime(timezone=True)
+        default=None,
+        sa_column=Column(
+            DateTime(timezone=True), index=False, unique=False, nullable=True
+        ),
     )
     request_id: UUID
     created_by: UUID = SQLField(foreign_key="user.id")
     created_at: datetime = SQLField(
-        default_factory=lambda: datetime.now(UTC), sa_type=DateTime(timezone=True)
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            index=False,
+            unique=False,
+            nullable=False,
+            default=lambda: datetime.now(UTC),
+        ),
     )
 
 
@@ -170,13 +182,13 @@ def list_proposals(
     query = (
         select(AIProposal)
         .where(
-            AIProposal.tenant_id == context.tenant_id,
-            AIProposal.optimizer_id == optimizer_id,
+            col(AIProposal.tenant_id) == context.tenant_id,
+            col(AIProposal.optimizer_id) == optimizer_id,
         )
         .order_by(col(AIProposal.created_at).desc())
     )
     if status is not None:
-        query = query.where(AIProposal.status == status)
+        query = query.where(col(AIProposal.status) == status)
     return [_public(row) for row in session.exec(query).all()]
 
 
@@ -297,10 +309,10 @@ def _strategy_baseline(
 ) -> StrategyVersion:
     binding = session.exec(
         select(AIOptimizerStrategyBinding).where(
-            AIOptimizerStrategyBinding.tenant_id == tenant_id,
-            AIOptimizerStrategyBinding.optimizer_id == optimizer_id,
-            AIOptimizerStrategyBinding.id == version.strategy_binding_id,
-            AIOptimizerStrategyBinding.active.is_(True),
+            col(AIOptimizerStrategyBinding.tenant_id) == tenant_id,
+            col(AIOptimizerStrategyBinding.optimizer_id) == optimizer_id,
+            col(AIOptimizerStrategyBinding.id) == version.strategy_binding_id,
+            col(AIOptimizerStrategyBinding.active).is_(True),
         )
     ).one_or_none()
     if binding is None:
@@ -309,8 +321,8 @@ def _strategy_baseline(
         )
     row = session.exec(
         select(StrategyVersion).where(
-            StrategyVersion.tenant_id == tenant_id,
-            StrategyVersion.id == binding.strategy_version_id,
+            col(StrategyVersion.tenant_id) == tenant_id,
+            col(StrategyVersion.id) == binding.strategy_version_id,
         )
     ).one_or_none()
     if row is None:
@@ -349,8 +361,8 @@ def create_proposal(
     request_id = request_id or uuid4()
     existing = session.exec(
         select(AIProposal).where(
-            AIProposal.tenant_id == context.tenant_id,
-            AIProposal.request_id == request_id,
+            col(AIProposal.tenant_id) == context.tenant_id,
+            col(AIProposal.request_id) == request_id,
         )
     ).one_or_none()
     if existing is not None:
@@ -437,16 +449,16 @@ def create_proposal(
             raise DomainError("ai_proposal_target_required", "rule target is required")
         binding = session.exec(
             select(AIOptimizerRuleBinding).where(
-                AIOptimizerRuleBinding.tenant_id == context.tenant_id,
-                AIOptimizerRuleBinding.optimizer_id == optimizer_id,
-                AIOptimizerRuleBinding.rule_id == change.target_id,
-                AIOptimizerRuleBinding.active.is_(True),
+                col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
+                col(AIOptimizerRuleBinding.optimizer_id) == optimizer_id,
+                col(AIOptimizerRuleBinding.rule_id) == change.target_id,
+                col(AIOptimizerRuleBinding.active).is_(True),
             )
         ).one_or_none()
         rule = session.exec(
             select(AutomationRule).where(
-                AutomationRule.tenant_id == context.tenant_id,
-                AutomationRule.id == change.target_id,
+                col(AutomationRule.tenant_id) == context.tenant_id,
+                col(AutomationRule.id) == change.target_id,
             )
         ).one_or_none()
         if binding is None or rule is None:
@@ -561,8 +573,8 @@ def _publish_strategy(
         latest = session.exec(
             select(StrategyVersion)
             .where(
-                StrategyVersion.tenant_id == context.tenant_id,
-                StrategyVersion.strategy_id == created,
+                col(StrategyVersion.tenant_id) == context.tenant_id,
+                col(StrategyVersion.strategy_id) == created,
             )
             .order_by(col(StrategyVersion.number).desc())
         ).first()
@@ -583,15 +595,16 @@ def _publish_strategy(
     strategy = session.exec(
         select(Strategy)
         .where(
-            Strategy.tenant_id == context.tenant_id, Strategy.id == baseline.strategy_id
+            col(Strategy.tenant_id) == context.tenant_id,
+            col(Strategy.id) == baseline.strategy_id,
         )
         .with_for_update()
     ).one()
     refs = session.exec(
         select(AIOptimizerStrategyBinding).where(
-            AIOptimizerStrategyBinding.tenant_id == context.tenant_id,
-            AIOptimizerStrategyBinding.strategy_version_id == baseline.id,
-            AIOptimizerStrategyBinding.active.is_(True),
+            col(AIOptimizerStrategyBinding.tenant_id) == context.tenant_id,
+            col(AIOptimizerStrategyBinding.strategy_version_id) == baseline.id,
+            col(AIOptimizerStrategyBinding.active).is_(True),
         )
     ).all()
     if any(ref.optimizer_id != optimizer.id for ref in refs):
@@ -655,10 +668,10 @@ def _publish_rule(
 
         ids = tuple(
             session.exec(
-                select(AIOptimizerRuleBinding.rule_id).where(
-                    AIOptimizerRuleBinding.tenant_id == context.tenant_id,
-                    AIOptimizerRuleBinding.optimizer_id == proposal.optimizer_id,
-                    AIOptimizerRuleBinding.active.is_(True),
+                select(col(AIOptimizerRuleBinding.rule_id)).where(
+                    col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
+                    col(AIOptimizerRuleBinding.optimizer_id) == proposal.optimizer_id,
+                    col(AIOptimizerRuleBinding.active).is_(True),
                 )
             ).all()
         )
@@ -675,7 +688,8 @@ def _publish_rule(
     rule = session.exec(
         select(AutomationRule)
         .where(
-            AutomationRule.tenant_id == context.tenant_id, AutomationRule.id == rule_id
+            col(AutomationRule.tenant_id) == context.tenant_id,
+            col(AutomationRule.id) == rule_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -683,10 +697,10 @@ def _publish_rule(
         raise DomainError("ai_proposal_stale", "rule base version is stale")
     other = session.exec(
         select(AIOptimizerRuleBinding).where(
-            AIOptimizerRuleBinding.tenant_id == context.tenant_id,
-            AIOptimizerRuleBinding.rule_id == rule_id,
-            AIOptimizerRuleBinding.optimizer_id != proposal.optimizer_id,
-            AIOptimizerRuleBinding.active.is_(True),
+            col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
+            col(AIOptimizerRuleBinding.rule_id) == rule_id,
+            col(AIOptimizerRuleBinding.optimizer_id) != proposal.optimizer_id,
+            col(AIOptimizerRuleBinding.active).is_(True),
         )
     ).first()
     if other is not None:
@@ -734,9 +748,9 @@ def accept_proposal(
     row = session.exec(
         select(AIProposal)
         .where(
-            AIProposal.tenant_id == context.tenant_id,
-            AIProposal.optimizer_id == optimizer_id,
-            AIProposal.id == proposal_id,
+            col(AIProposal.tenant_id) == context.tenant_id,
+            col(AIProposal.optimizer_id) == optimizer_id,
+            col(AIProposal.id) == proposal_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -837,9 +851,9 @@ def reject_proposal(
     row = session.exec(
         select(AIProposal)
         .where(
-            AIProposal.tenant_id == context.tenant_id,
-            AIProposal.optimizer_id == optimizer_id,
-            AIProposal.id == proposal_id,
+            col(AIProposal.tenant_id) == context.tenant_id,
+            col(AIProposal.optimizer_id) == optimizer_id,
+            col(AIProposal.id) == proposal_id,
         )
         .with_for_update()
     ).one_or_none()
@@ -888,10 +902,10 @@ def publish_auto_proposals(
     rows = session.exec(
         select(AIProposal)
         .where(
-            AIProposal.tenant_id == context.tenant_id,
-            AIProposal.optimizer_id == optimizer_id,
-            AIProposal.review_task_id == review_task_id,
-            AIProposal.status == "PENDING",
+            col(AIProposal.tenant_id) == context.tenant_id,
+            col(AIProposal.optimizer_id) == optimizer_id,
+            col(AIProposal.review_task_id) == review_task_id,
+            col(AIProposal.status) == "PENDING",
         )
         .order_by(col(AIProposal.kind), col(AIProposal.created_at))
     ).all()

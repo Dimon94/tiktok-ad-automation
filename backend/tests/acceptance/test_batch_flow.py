@@ -151,8 +151,8 @@ def test_partial_input_and_material_matching_use_actual_preparation(
 ):
     from app.modules.accounts.models import AdvertiserAccount
     from app.modules.builds.preview_models import (
+        PreviewCreativeUnitItem,
         PreviewDrama,
-        PreviewGroupMaterial,
     )
     from app.modules.materials.models import MaterialFile
 
@@ -207,15 +207,19 @@ def test_partial_input_and_material_matching_use_actual_preparation(
             assert summary.campaign_count == SCALE.campaigns
             assert summary.input_issue_count == 0
             rows = session.exec(
-                select(PreviewGroupMaterial, PreviewDrama)
+                select(PreviewCreativeUnitItem, PreviewDrama)
                 .join(
                     PreviewDrama,
-                    (PreviewDrama.preview_id == PreviewGroupMaterial.preview_id)
-                    & (PreviewDrama.drama_id == PreviewGroupMaterial.drama_id),
+                    (PreviewDrama.preview_id == PreviewCreativeUnitItem.preview_id)
+                    & (PreviewDrama.drama_id == PreviewCreativeUnitItem.drama_id),
                 )
                 .where(
-                    PreviewGroupMaterial.preview_id == preview_id,
-                    PreviewGroupMaterial.material_id == scenario.scope.material_ids[0],
+                    PreviewCreativeUnitItem.tenant_id
+                    == scenario.scope.context.tenant_id,
+                    PreviewDrama.tenant_id == scenario.scope.context.tenant_id,
+                    PreviewCreativeUnitItem.preview_id == preview_id,
+                    PreviewCreativeUnitItem.material_id
+                    == scenario.scope.material_ids[0],
                 )
             ).all()
             assert {drama.title for _, drama in rows} == {"The Bond", "Hidden Promise"}
@@ -303,6 +307,7 @@ def test_wangyan_ambiguous_create_recovery_blocks_without_second_post(
             )
         ).all()
         assert all(item.status == "result_unknown" for item in items)
+        assert all(item.resolved["_work"]["stage"] == "manual_review" for item in items)
     assert all(call["method"] == "GET" for call in wire.smart.calls) and not wire.videos
 
 

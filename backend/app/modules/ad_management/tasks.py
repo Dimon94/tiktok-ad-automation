@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast as typing_cast
 from uuid import UUID
 
 from redis.exceptions import RedisError
@@ -41,9 +42,9 @@ def _locked_task(session: Session, task_id: UUID, tenant: UUID, actor: UUID):
     return session.exec(
         select(ManagementTask)
         .where(
-            ManagementTask.id == task_id,
-            ManagementTask.tenant_id == tenant,
-            ManagementTask.actor_id == actor,
+            col(ManagementTask.id) == task_id,
+            col(ManagementTask.tenant_id) == tenant,
+            col(ManagementTask.actor_id) == actor,
         )
         .with_for_update()
     ).one_or_none()
@@ -87,11 +88,11 @@ def execute_management_task(
             _update_task(session, task.id, task.tenant_id)
         _queue_unknown_observations(session, task)
         refresh_pending = session.exec(
-            select(ManagementTaskItem.id).where(
-                ManagementTaskItem.task_id == task_id,
-                ManagementTaskItem.tenant_id == tenant,
-                ManagementTaskItem.execution_result == "ACCEPTED",
-                ManagementTaskItem.observation_state == "REFRESH_PENDING",
+            select(col(ManagementTaskItem.id)).where(
+                col(ManagementTaskItem.task_id) == task_id,
+                col(ManagementTaskItem.tenant_id) == tenant,
+                col(ManagementTaskItem.execution_result) == "ACCEPTED",
+                col(ManagementTaskItem.observation_state) == "REFRESH_PENDING",
             )
         ).first()
         if (
@@ -115,8 +116,8 @@ def execute_management_task(
             for row in session.exec(
                 select(ManagementTaskItem)
                 .where(
-                    ManagementTaskItem.task_id == task_id,
-                    ManagementTaskItem.tenant_id == tenant,
+                    col(ManagementTaskItem.task_id) == task_id,
+                    col(ManagementTaskItem.tenant_id) == tenant,
                 )
                 .order_by(col(ManagementTaskItem.position))
             ).all()
@@ -151,7 +152,10 @@ def execute_management_task(
                         "generation": _dispatch_generation,
                     },
                 )
-                dispatch = deferred.get(PendingDispatch, dispatch_id)
+                dispatch = typing_cast(
+                    PendingDispatch, deferred.get(PendingDispatch, dispatch_id)
+                )
+
                 dispatch.available_at = datetime.now(UTC) + timedelta(seconds=1)
                 deferred.add(dispatch)
     with Session(engine) as session:
@@ -177,17 +181,17 @@ def _queue_unknown_observations(session: Session, task: ManagementTask):
 
     ids = tuple(
         session.exec(
-            select(ManagementTaskItem.id)
+            select(col(ManagementTaskItem.id))
             .where(
-                ManagementTaskItem.task_id == task.id,
-                ManagementTaskItem.tenant_id == task.tenant_id,
-                ManagementTaskItem.execution_result == "UNKNOWN",
+                col(ManagementTaskItem.task_id) == task.id,
+                col(ManagementTaskItem.tenant_id) == task.tenant_id,
+                col(ManagementTaskItem.execution_result) == "UNKNOWN",
                 or_(
                     col(ManagementTaskItem.observation_state).is_(None),
-                    ManagementTaskItem.observation_state == "NEEDS_REVIEW",
+                    col(ManagementTaskItem.observation_state) == "NEEDS_REVIEW",
                 ),
             )
-            .order_by(ManagementTaskItem.id)
+            .order_by(col(ManagementTaskItem.id))
         ).all()
     )
     if ids:

@@ -66,8 +66,10 @@ def _current_revision(
             "ai_invalid_rule_scope", "optimizer account authorization is stale"
         )
     revision_rows = session.exec(
-        select(TikTokConnection.id, TikTokConnection.authorization_revision).where(
-            TikTokConnection.tenant_id == tenant_id,
+        select(
+            col(TikTokConnection.id), col(TikTokConnection.authorization_revision)
+        ).where(
+            col(TikTokConnection.tenant_id) == tenant_id,
             col(TikTokConnection.id).in_([grant.connection_id for grant in grants]),
         )
     ).all()
@@ -101,7 +103,7 @@ def resolve_rule_binding(
 ) -> RuleBindingScope:
     optimizer = session.exec(
         select(AIOptimizer).where(
-            AIOptimizer.tenant_id == tenant_id, AIOptimizer.id == optimizer_id
+            col(AIOptimizer.tenant_id) == tenant_id, col(AIOptimizer.id) == optimizer_id
         )
     ).one_or_none()
     if optimizer is None:
@@ -110,9 +112,9 @@ def resolve_rule_binding(
         raise DomainError("ai_optimizer_inactive", "optimizer is disabled")
     version = session.exec(
         select(AIOptimizerVersion).where(
-            AIOptimizerVersion.tenant_id == tenant_id,
-            AIOptimizerVersion.optimizer_id == optimizer_id,
-            AIOptimizerVersion.number == optimizer.latest_version,
+            col(AIOptimizerVersion.tenant_id) == tenant_id,
+            col(AIOptimizerVersion.optimizer_id) == optimizer_id,
+            col(AIOptimizerVersion.number) == optimizer.latest_version,
         )
     ).one_or_none()
     if version is None:
@@ -121,17 +123,18 @@ def resolve_rule_binding(
         )
     binding = session.exec(
         select(AIOptimizerRuleBinding).where(
-            AIOptimizerRuleBinding.tenant_id == tenant_id,
-            AIOptimizerRuleBinding.optimizer_id == optimizer_id,
-            AIOptimizerRuleBinding.rule_id == rule_id,
-            AIOptimizerRuleBinding.active.is_(True),
+            col(AIOptimizerRuleBinding.tenant_id) == tenant_id,
+            col(AIOptimizerRuleBinding.optimizer_id) == optimizer_id,
+            col(AIOptimizerRuleBinding.rule_id) == rule_id,
+            col(AIOptimizerRuleBinding.active).is_(True),
         )
     ).one_or_none()
     if binding is None:
         raise DomainError("ai_rule_not_bound", "rule is not assigned to this optimizer")
     rule = session.exec(
         select(AutomationRule).where(
-            AutomationRule.tenant_id == tenant_id, AutomationRule.id == rule_id
+            col(AutomationRule.tenant_id) == tenant_id,
+            col(AutomationRule.id) == rule_id,
         )
     ).one_or_none()
     if rule is None:

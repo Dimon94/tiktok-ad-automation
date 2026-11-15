@@ -477,7 +477,7 @@ def test_arm_requires_current_attempt_song_and_exact_image_order(carousel_case):
 
 @pytest.mark.parametrize("unit_count", [2000, 4000])
 def test_async_large_shared_group_has_bounded_member_queries_and_per_ad_facts(
-    session, context, image_draft, unit_count
+    session, context, image_draft, unit_count, record_property
 ):
     from time import monotonic
 
@@ -676,6 +676,9 @@ def test_async_large_shared_group_has_bounded_member_queries_and_per_ad_facts(
     finally:
         elapsed = monotonic() - started
         event.remove(session.bind, "before_cursor_execute", observe)
+    record_property("large_carousel_expand", {
+        "units": unit_count, "sql_count": len(statements), "seconds": elapsed,
+    })
     assert len(statements) < 100, (len(statements), elapsed)
     assert elapsed < 10, elapsed
     facts = session.exec(

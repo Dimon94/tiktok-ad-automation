@@ -1,6 +1,7 @@
 """创建回执只读取实际 ID/状态；不从请求或成功文案补值。"""
 
 import re
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -25,7 +26,7 @@ def observed_cta(
     *, response: McpBusinessResponse, advertiser_id: str, portfolio_id: str
 ) -> CtaCreate:
     """来源CTA从当前账户的实际portfolio读取，不能从历史文案或推荐值猜取。"""
-    data = response.data
+    data = cast(dict[str, Any], response.data)
     if (
         data.get("creative_portfolio_id") != portfolio_id
         or data.get("creative_portfolio_type") != "CTA"

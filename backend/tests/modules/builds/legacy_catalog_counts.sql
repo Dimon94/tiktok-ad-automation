@@ -17,7 +17,7 @@
 ), material_groups AS (
  SELECT p.id submission_id,g.id group_id,g.unit_id,coalesce(bool_or(ms.status='FAILED'),false) failed
  FROM page p JOIN planned_group g ON g.tenant_id=p.tenant_id AND g.preview_id=p.preview_id
- LEFT JOIN preview_group_material m ON m.tenant_id=g.tenant_id AND m.preview_id=g.preview_id AND m.drama_id=g.drama_id AND m.group_no=g.group_no
+ LEFT JOIN frozen_group_material m ON m.tenant_id=g.tenant_id AND m.preview_id=g.preview_id AND m.drama_id=g.drama_id AND m.group_no=g.group_no
  LEFT JOIN execution_step ms ON ms.tenant_id=g.tenant_id AND ms.submission_id=p.id AND ms.unit_id=g.unit_id AND ms.kind='MATERIAL' AND ms.material_id=m.material_id
  GROUP BY p.id,g.id,g.unit_id
 ), objects AS (

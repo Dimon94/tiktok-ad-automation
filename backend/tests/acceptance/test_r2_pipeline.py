@@ -427,7 +427,7 @@ def test_api_to_verified_source_cleanup_target_and_cover(
             db,
             context=env["context"],
             operation_id=source_operation_id,
-            dispatch_id=source_event(db, env).id,
+            dispatch_id=source_event(db, env, operation_id=source_operation_id).id,
         )
         source_cover = (
             db.exec(
@@ -471,10 +471,11 @@ def test_api_to_verified_source_cleanup_target_and_cover(
     cover_run(env, redis_client, cover.task_id, read=True)
     mapping = read(env, env["target"]).mapping
     assert mapping.image_id == "target-image"
+    from app.integrations.tiktok.contracts.builds import VideoCreative
     from app.modules.builds.request_compiler import ad_assets
 
     compiled = ad_assets(
-        [mapping.model_dump()],
+        [VideoCreative(video_id=mapping.video_id, cover_image_id=mapping.image_id)],
         text="Watch.",
         url="https://example.test/minis",
         identity={

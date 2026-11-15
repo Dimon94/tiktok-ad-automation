@@ -1,7 +1,8 @@
 """一个物理请求的领取、围栏与逐成员审计；等待平台时不持SQL事务。"""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from threading import Lock
+from typing import cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import tuple_
@@ -40,10 +41,10 @@ def _prefetch_objects(session, rows):
     return session.exec(
         select(AdObject).where(
             tuple_(
-                AdObject.tenant_id,
-                AdObject.advertiser_id,
-                AdObject.kind,
-                AdObject.remote_id,
+                col(AdObject.tenant_id),
+                col(AdObject.advertiser_id),
+                col(AdObject.kind),
+                col(AdObject.remote_id),
             ).in_(
                 [
                     (ref.tenant_id, ref.advertiser_id, ref.kind, ref.remote_id)
@@ -66,7 +67,9 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
     try:
         with _claim_guard, Session(database_engine) as session:
             scopes = session.exec(
-                select(ManagementTaskItem.task_id, ManagementTaskItem.tenant_id)
+                select(
+                    col(ManagementTaskItem.task_id), col(ManagementTaskItem.tenant_id)
+                )
                 .where(col(ManagementTaskItem.id).in_(item_ids))
                 .distinct()
             ).all()
@@ -75,8 +78,8 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
             task = session.exec(
                 select(ManagementTask)
                 .where(
-                    ManagementTask.id == scopes[0][0],
-                    ManagementTask.tenant_id == scopes[0][1],
+                    col(ManagementTask.id) == scopes[0][0],
+                    col(ManagementTask.tenant_id) == scopes[0][1],
                 )
                 .with_for_update()
             ).one_or_none()
@@ -85,7 +88,7 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
             rows = session.exec(
                 select(ManagementTaskItem)
                 .where(col(ManagementTaskItem.id).in_(item_ids))
-                .order_by(ManagementTaskItem.id)
+                .order_by(col(ManagementTaskItem.id))
                 .with_for_update()
             ).all()
             if (
@@ -210,7 +213,7 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
             schedule_wakeup(
                 session,
                 task,
-                max(entry[0].claimed_until for entry in eligible)
+                max(cast(datetime, entry[0].claimed_until) for entry in eligible)
                 + timedelta(seconds=1),
                 kind="claim",
                 quantum=30,
@@ -396,13 +399,13 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
             if physical:
                 # 逐成员attempt才是恢复依据，此状态仅为物理请求摘要。
                 attempts = session.exec(
-                    select(ManagementRequestAttempt.outcome)
+                    select(col(ManagementRequestAttempt.outcome))
                     .join(
                         ManagementPhysicalMember,
-                        ManagementPhysicalMember.attempt_id
-                        == ManagementRequestAttempt.id,
+                        col(ManagementPhysicalMember.attempt_id)
+                        == col(ManagementRequestAttempt.id),
                     )
-                    .where(ManagementPhysicalMember.batch_id == physical_id)
+                    .where(col(ManagementPhysicalMember.batch_id) == physical_id)
                 ).all()
                 physical.status = "UNKNOWN" if "UNKNOWN" in attempts else "COMPLETE"
                 session.add(physical)

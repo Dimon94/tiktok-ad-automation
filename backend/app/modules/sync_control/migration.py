@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import cast
 from uuid import UUID
 
 from sqlalchemy import String, exists
@@ -88,7 +87,7 @@ def legacy_balance_dispatch_query() -> SelectOfScalar[PendingDispatch]:
             col(ReportBalanceRun.contract_version) == 2,
             col(ReportBalanceRun.claim_token).is_(None),
             exists(
-                select(SyncExecutionScope.id).where(
+                select(col(SyncExecutionScope.id)).where(
                     col(SyncExecutionScope.balance_run_id) == col(ReportBalanceRun.id)
                 )
             ),
@@ -121,23 +120,19 @@ def adoption_query(kind: str) -> tuple[type[Execution], SelectOfScalar[Execution
     model: type[Execution]
     statuses: tuple[str, ...]
     if kind == "report":
-        model, child = ReportSyncJob, SyncExecutionScope.report_job_id
+        model, child = ReportSyncJob, col(SyncExecutionScope.report_job_id)
         statuses = ("QUEUED", "RUNNING", "WAITING")
     elif kind == "directory":
-        model, child = AdDirectoryRun, SyncExecutionScope.directory_run_id
+        model, child = AdDirectoryRun, col(SyncExecutionScope.directory_run_id)
         statuses = ("QUEUED", "RUNNING", "ADMISSION_WAIT", "WAITING_REMOTE")
     elif kind == "balance":
-        model, child = ReportBalanceRun, SyncExecutionScope.balance_run_id
+        model, child = ReportBalanceRun, col(SyncExecutionScope.balance_run_id)
         statuses = ("ACTIVE",)
     else:
         raise ValueError("kind must be report, directory or balance")
-    # SQLModel在mypy下将动态model联合退化成SQLModel；运行查询仍返回所选执行类。
-    return model, cast(
-        SelectOfScalar[Execution],
-        select(model).where(
-            col(model.status).in_(statuses),
-            ~exists(select(SyncExecutionScope.id).where(child == col(model.id))),
-        ),
+    return model, select(model).where(
+        col(model.status).in_(statuses),
+        ~exists(select(col(SyncExecutionScope.id)).where(child == col(model.id))),
     )
 
 
@@ -201,14 +196,14 @@ def adopt_legacy_batch(
                     adopt_balance_run(session, row)
                 # 不允许“接管成功”却没有任何可恢复子桶。
                 child_column = {
-                    "report": SyncExecutionScope.report_job_id,
-                    "directory": SyncExecutionScope.directory_run_id,
-                    "balance": SyncExecutionScope.balance_run_id,
+                    "report": col(SyncExecutionScope.report_job_id),
+                    "directory": col(SyncExecutionScope.directory_run_id),
+                    "balance": col(SyncExecutionScope.balance_run_id),
                 }[kind]
                 session.flush()
                 if (
                     session.exec(
-                        select(SyncExecutionScope.id)
+                        select(col(SyncExecutionScope.id))
                         .where(child_column == row.id)
                         .limit(1)
                     ).first()

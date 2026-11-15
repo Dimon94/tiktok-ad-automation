@@ -5,10 +5,11 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import business_api_client as sdk  # type: ignore[import-untyped]
+from urllib3.response import HTTPResponse
 
 from app.core.errors import DomainError
 from app.integrations.tiktok.adapters.build_results import (
@@ -185,7 +186,9 @@ class ApiBuildOperations:
                     async_req=True,
                     _request_timeout=(min(5.0, budget), min(30.0, budget)),
                 ).get()
-                return sdk_creation_envelope(json.loads(client.last_response.data))
+                return sdk_creation_envelope(
+                    json.loads(cast(HTTPResponse, client.last_response).data)
+                )
         except RemoteCallError:
             raise
         except Exception:
@@ -237,7 +240,7 @@ class ApiBuildOperations:
                         async_req=True,
                         _request_timeout=(min(5.0, budget), min(30.0, budget)),
                     ).get()
-                raw = json.loads(client.last_response.data)
+                raw = json.loads(cast(HTTPResponse, client.last_response).data)
                 _log_rejection(raw, kind=intent.kind)
                 response = sdk_creation_envelope(raw, kind=intent.kind)
                 return created_result(kind=intent.kind, response=response)
@@ -268,7 +271,7 @@ class ApiBuildOperations:
             # 本次拒绝证据。创建仍按既有白名单判断副作用，不能因限流放行重发。
             raw = None
             try:
-                body = client.last_response.data
+                body = cast(HTTPResponse, client.last_response).data
                 if len(body) <= 8 * 1024 * 1024:
                     raw = json.loads(body)
             except ValueError, TypeError, AttributeError, RecursionError:

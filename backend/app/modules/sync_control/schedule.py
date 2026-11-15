@@ -41,9 +41,13 @@ def report_endpoint(kind: str, progress: Mapping | None = None) -> str:
 def operation_log_order():
     """同账户日志先昨日增量、再较近历史；其他报表保持原有顺序。"""
     return (
-        case((ReportSyncJob.kind == "operation_log", ReportSyncJob.priority), else_=0),
         case(
-            (ReportSyncJob.kind == "operation_log", ReportSyncJob.end_date), else_=None
+            (col(ReportSyncJob.kind) == "operation_log", col(ReportSyncJob.priority)),
+            else_=0,
+        ),
+        case(
+            (col(ReportSyncJob.kind) == "operation_log", col(ReportSyncJob.end_date)),
+            else_=None,
         ).desc(),
     )
 
@@ -146,32 +150,41 @@ def _pending_operation_endpoint(
 
     job = session.exec(
         select(ReportSyncJob)
-        .join(SyncExecutionScope, SyncExecutionScope.report_job_id == ReportSyncJob.id)
-        .join(SyncRequirement, SyncRequirement.id == SyncExecutionScope.requirement_id)
+        .join(
+            SyncExecutionScope,
+            col(SyncExecutionScope.report_job_id) == col(ReportSyncJob.id),
+        )
+        .join(
+            SyncRequirement,
+            col(SyncRequirement.id) == col(SyncExecutionScope.requirement_id),
+        )
         .where(
-            SyncExecutionScope.scope_id == head.scope_id,
-            SyncExecutionScope.status == "PENDING",
-            SyncRequirement.source == head.work_class,
-            SyncRequirement.satisfied_revision < SyncRequirement.desired_revision,
+            col(SyncExecutionScope.scope_id) == head.scope_id,
+            col(SyncExecutionScope.status) == "PENDING",
+            col(SyncRequirement.source) == head.work_class,
+            col(SyncRequirement.satisfied_revision)
+            < col(SyncRequirement.desired_revision),
             col(ReportSyncJob.status).in_(("QUEUED", "WAITING", "RUNNING")),
             execution_owner_current(ReportSyncJob, "report_job_id"),
         )
         .order_by(
             # 已到期候选保持dispatcher的revision/日志优先级次序；没有到期任务
             # 时才按最早due选下一阶段，不能让刚轮询的30秒等待挡住另一日桶。
-            case((ReportSyncJob.due_at <= now, 0), else_=1),
-            case((ReportSyncJob.due_at > now, ReportSyncJob.due_at), else_=None),
+            case((col(ReportSyncJob.due_at) <= now, 0), else_=1),
+            case(
+                (col(ReportSyncJob.due_at) > now, col(ReportSyncJob.due_at)), else_=None
+            ),
             case(
                 (
-                    SyncExecutionScope.frozen_revision
-                    == SyncRequirement.desired_revision,
+                    col(SyncExecutionScope.frozen_revision)
+                    == col(SyncRequirement.desired_revision),
                     0,
                 ),
                 else_=1,
             ),
             *operation_log_order(),
-            ReportSyncJob.created_at,
-            ReportSyncJob.id,
+            col(ReportSyncJob.created_at),
+            col(ReportSyncJob.id),
         )
         .limit(1)
     ).first()
@@ -321,7 +334,10 @@ def pending_execution_dues(
             func.coalesce(col(ReportSyncJob.claimed_until), now),
         )
         if kind == "report" and respect_claims
-        else func.coalesce(getattr(model, due_field), now)
+        # 目录未设退避即从创建时到期，不能每次outcome向当前时刻推移；
+        # 否则并发完成会把另一个已开始的补位轮次挡在未来due之外。
+        else func.coalesce(getattr(model, due_field),
+                           col(AdDirectoryRun.created_at) if kind == "directory" else now)
     )
     rows = session.exec(
         select(
@@ -362,9 +378,9 @@ def check_report_grant(session: Session, job: ReportSyncJob, token: UUID) -> Non
             col(SyncRequirement.id) == col(SyncExecutionScope.requirement_id),
         )
         .where(
-            SyncExecutionScope.report_job_id == job.id,
-            SyncSchedule.tenant_id == job.tenant_id,
-            SyncSchedule.work_class == SyncRequirement.source,
+            col(SyncExecutionScope.report_job_id) == job.id,
+            col(SyncSchedule.tenant_id) == job.tenant_id,
+            col(SyncSchedule.work_class) == col(SyncRequirement.source),
         )
         .order_by(col(SyncSchedule.scope_id), col(SyncSchedule.work_class))
         .with_for_update(of=SyncSchedule)
