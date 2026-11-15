@@ -5608,3 +5608,5 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - M4b JB38 root阶段接受：候选ff62f283，独立export_lifecycle+tracer21 passed（含真实完整CSV和导出故障/权限/到期），64有限组合通过；五票阶段均接受。下一整M4b fresh Standards/Spec R1，审查前不合main/关闭票。无push/deploy。
 
 - M4b整体：fresh Standards/Spec R1均PASS，P0/P1=0；root直接修复JB41旧投影时间、JB42残差CSV坐标、JB43实例导航。数据回归2绿与两项源码RED/cmp/GREEN；真实浏览器导航/原Worker完整CSV1绿，相关14项沿用有效结果；TS/build/Ruff通过。验收见2026-11-14-native-m4b-acceptance.md。准备本地main集成/直接票关闭，无push/deploy/生产迁移。
+
+- M5a JB59 root阶段接受：候选5f4b0166，独立native HTTP子集12passed/31.35s，Ruff/diff通过；浏览器6场景/119回归/6拒错继承。START已有SQL计数26>25单列未改，不报全绿。专用PG17已恢复运行，供fresh Sol/high JB60接续；整体未放行。

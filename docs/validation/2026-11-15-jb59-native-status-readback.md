@@ -83,3 +83,11 @@ git diff --check
 JB-60 从本候选继承 `native_status_env`、`install_wire`、`drive_management` / `drive_directory` 与 `@native-management-live`，继续使用本专用环境和已批准直接受理合同。增加同批 ACCEPTED/REJECTED/NO_CHANGE/发送后 UNKNOWN、只读核查四类观察、核查有界/晚到消息、原值恢复及当前值冲突；不得把 UNKNOWN 改成 ACCEPTED，不盲重放原写，不新增 Native executor/状态框架。失败读取的已领取目录需按既有租约恢复，不手工改最终状态。Root 拥有 JB-59 阶段验收、JB-60 启动、fresh Standards/Spec 全范围审查、本地集成；本轮不写 tracker、不启动 JB-60。
 
 真实 TikTok、生产、部署、平台授权结果均 Unknown/未执行。没有 main 合并、fetch、rebase、push、PR、生产迁移或业务写操作。产品前端源码未改；浏览器已真实编译测试新增 TS，没有为测试文件变更重复执行全站 build。测试宿主与其页面/查询线程均在 finally 退出；本轮新建 PG17 在收口时停止，复跑使用本机 `/usr/local/opt/postgresql@17/bin/pg_ctl -D /tmp/tkada-native-series-20261112/m5a-implementation/pg17 -o "-h 127.0.0.1 -p <私有 test-env.json 中的端口>" -w start`，凭据仍由私有 runner 注入。
+
+## Root 独立阶段验收
+
+Root在精确候选5f4b01668431d09b2b8512622d6a74b7b1500a96审阅execution原值投影、发送后同路由观察判断、REFRESH_PENDING聚合与原时间桶唤醒。独立重启本任务拥有的loopback PG17（原共享PG16未动），复跑native_status非workspace子集：12 passed/31.35s，含真实HTTP/PGRedis/原Worker和目录发布。改动Python Ruff及diff check通过。六个浏览器场景、119既有回归和六种实际源码拒错继承候选的匹配源码证据，未冒称再跑。
+
+SQL数量26/旧阈值25在START同输入已复现，保留为既有检查失败；本票未改变直接受理路径，不调整旧阈值，不声称相关所有检查全绿。管理域尚无专用形式模型，未借Build TLC作证明；当前接受证据限真实有界并发、重复消息与源码拒错。
+
+结论：JB59本地阶段接受，放行fresh Sol/high JB60继续混合结果、UNKNOWN只读核查与恢复。两票整体仍待独立Standards/Spec审查和本地集成；不提前关闭票。PG17暂保持运行供下一票使用，仅在整个任务收尾时停止；原环境、其它报告工作树不动。未push/deploy/真实平台操作。
