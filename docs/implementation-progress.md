@@ -5676,3 +5676,10 @@ JB62/JB63按用户批准的预算两票完成，保留原直接受理/异步准�
 最终源 JB65 43 个检查分段全部通过（含两条真浏览器），另 M5a/M5b 代表回归各1；四个真实错误源码探针拒错并 finally/cmp 恢复。Ruff/check-format、TypeScript、diff 检查通过。一次最终组合人工 round 夹具失败已定位修正并由最终五条 round 检查替代；详细每 AC、命令/失败/来源/Unknown 见 [JB65验证记录](validation/2026-11-15-jb65-native-roas-recovery.md)。
 
 原 SQL26>25、旧间歇状态 stale、真实 Native 适用/传播/接受和生产 Unknown 保留。只交 root 阶段接受和 whole-M5c fresh Standards/Spec 审查；无 tracker 写、push/PR/deploy、main/其他树修改或子代理；自有测试服务和原共享链接保留。
+
+
+## 2026-11-15 — M5c 本地接受与集成收口
+
+JB64/JB65按用户批准两票完成，保持原直接受理/异步准备/官方SDK管理owner。CBO/ABO、比例/来源冻结、逐成员新鲜观察、UNKNOWN只读与明确反向恢复已贯通。root阶段亲跑正常/来源12与10项（重叠）及恢复4项；其它匹配源码的浏览器/回归/实际源码探针证据继承。固定26ea29fd..c81ec608整片fresh Sol/high Standards与Spec R1均PASS，各0P0/0P1，同一基线P2统一登记JB66。缺证据处理按现有已发布目录准备流程明确，不新增自动刷新门禁。
+
+详见[M5c本地接受](validation/2026-11-15-native-m5c-acceptance.md)。后续本地main快进、最小恢复UI纵切及两票关闭/专用环境回收的实际读回保存在private closeout.json。真实平台/生产/独立broker宿主、旧SQL26>25和stale UI根因Unknown保留；无push/PR/deploy，不关闭Epic19或基线66。
