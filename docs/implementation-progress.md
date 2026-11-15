@@ -5668,3 +5668,11 @@ JB62/JB63按用户批准的预算两票完成，保留原直接受理/异步准�
 ## 2026-11-15 — JB64 root 阶段接受
 
 候选43b21ea9的 CBO/ABO、Decimal、新鲜逐成员回读经源审与12项HTTP/PG17/Redis复验通过。root 补现并修复同准备块 ABO 选择来源混入兄弟组的问题；来源与正常链10项通过，近似错误 CBO 来源共享探针实际 RED→finally/cmp恢复→2项GREEN。固定Ruff/diff通过，详见[JB64验收追加](validation/2026-11-15-jb64-native-roas-readback.md)。释放同树 fresh Codex gpt-6.1-sol/high JB65，64不提前Done；整个M5c待恢复、两轴独立审查与本地集成。无push/PR/deploy/真实平台操作。
+
+## 2026-11-15 — JB65 目标 ROAS 核查与显式恢复候选
+
+从 root 阶段接受 `5ce82f647d3a0fc8a83aec6e2f2e65feec6241d2` 串行实施，产品 source `4832fcd15e9311524ddfec2dbb51d1e1f810ab9f`。沿原核查/恢复/发送 owner，UNKNOWN 不改写不重放；有效 ACCEPTED 或已发送 UNKNOWN 可另行明确确认反向意图。原预览显示 ROAS 冻结/当前证据，CBO 全成员集合、原/目标一致和各自发送后观察在 preview/send 双重校验；ABO 各自恢复原比例。没有新 executor、全局预览政策或真实广告操作。
+
+最终源 JB65 43 个检查分段全部通过（含两条真浏览器），另 M5a/M5b 代表回归各1；四个真实错误源码探针拒错并 finally/cmp 恢复。Ruff/check-format、TypeScript、diff 检查通过。一次最终组合人工 round 夹具失败已定位修正并由最终五条 round 检查替代；详细每 AC、命令/失败/来源/Unknown 见 [JB65验证记录](validation/2026-11-15-jb65-native-roas-recovery.md)。
+
+原 SQL26>25、旧间歇状态 stale、真实 Native 适用/传播/接受和生产 Unknown 保留。只交 root 阶段接受和 whole-M5c fresh Standards/Spec 审查；无 tracker 写、push/PR/deploy、main/其他树修改或子代理；自有测试服务和原共享链接保留。
