@@ -146,6 +146,8 @@ const RECEIPT_LABEL: Record<string, string> = {
   admission_deferred: "调用额度不足，未发送",
   management_preflight_failed: "发送前校验失败，未发送",
   roas_mode_changed: "ROAS 模式或预算策略已变化",
+  roas_scope_conflict: "系列成员已变化或无法发送，整系列未发送",
+  roas_scope_wait: "等待系列其他成员可重试，整系列未发送",
   roas_observation_unavailable: "缺少本次发送后的同连接成员观察",
   roas_observed_different: "新鲜目录比例与目标不同",
   roas_mode_unverified: "目标 ROAS 模式尚未核实",

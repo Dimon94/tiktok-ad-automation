@@ -199,6 +199,8 @@ def _can_run(
     session: Session,
     item: ManagementTaskItem,
     attempts: list[ManagementRequestAttempt],
+    *,
+    claim_token: UUID | None = None,
 ) -> bool:
     if item.execution_result in _TERMINAL:
         return False
@@ -225,7 +227,8 @@ def _can_run(
                 and item.claimed_until is not None
                 and item.claimed_until > _now()
             ):
-                return False
+                # 仅本次 CBO 发送围栏可核对共同领取的成员；普通投递仍禁止重领。
+                return claim_token is not None and item.claim_token == claim_token
             # The previous worker's claim is no longer live.  Preserve a
             # durable UNKNOWN attempt and receipt before exposing the terminal
             # item state; otherwise a recovery delivery would leave only an
@@ -330,13 +333,12 @@ def same_management_value(operation: str, actual: Any, expected: Any) -> bool:
     return str(actual) == str(expected)
 
 
-def _verify_roas_restore_scope(session, item, ref):
-    """CBO 反向写必须覆盖同一完整成员集合；任何兄弟冲突都禁止部分恢复。"""
+def _verify_roas_scope(session, item, ref):
+    """CBO 写入影响整系列，不能裁掉失效成员后继续正常发送或恢复。"""
     capability = item.capability
     facts = capability.get("roas_facts") or {}
-    if facts.get("budget_strategy") != "CBO" or not capability.get("restore_after"):
+    if facts.get("budget_strategy") != "CBO":
         return
-    members = capability.get("restore_roas_members", [])
     rows = session.exec(
         select(AdObject).where(
             col(AdObject.tenant_id) == ref.tenant_id,
@@ -347,6 +349,54 @@ def _verify_roas_restore_scope(session, item, ref):
         )
     ).all()
     expected = {r["remote_id"] for r in facts["affected_refs"]}
+    if not capability.get("restore_after"):
+        members = session.exec(
+            select(ManagementTaskItem).where(
+                ManagementTaskItem.tenant_id == item.tenant_id,
+                ManagementTaskItem.task_id == item.task_id,
+                ManagementTaskItem.ref["advertiser_id"].astext == ref.advertiser_id,
+                ManagementTaskItem.ref["kind"].astext == "adgroup",
+                col(ManagementTaskItem.parent_ref)["remote_id"].astext
+                == facts["campaign_ref"]["remote_id"],
+            )
+        ).all()
+        frozen = {member.ref["remote_id"]: member for member in members}
+        if (
+            not expected
+            or {row.remote_id for row in rows} != expected
+            or set(frozen) != expected
+            or len(members) != len(expected)
+        ):
+            raise DomainError("roas_scope_conflict", "CBO 影响成员已变化或不完整")
+        for row in rows:
+            member = frozen[row.remote_id]
+            attempts = _attempts(session, member)
+            if member.execution_result != "NO_CHANGE" and not _can_run(
+                session,
+                member,
+                attempts,
+                claim_token=item.claim_token,
+            ):
+                if (
+                    member.execution_result == "NOT_SENT"
+                    and attempts
+                    and attempts[-1].retryable
+                ):
+                    raise DomainError("roas_scope_wait", "等待 CBO 其他成员可重试")
+                raise DomainError("roas_scope_conflict", "CBO 成员已不允许发送")
+            if row.source_channel != member.capability.get("source_channel") or str(
+                row.source_connection_id
+            ) != str(member.capability.get("source_connection_id")):
+                raise DomainError("management_source_conflict", "目录对象来源已变化")
+            if (row.configuration or {}).get("deep_bid_type") != facts["mode"]:
+                raise DomainError("roas_mode_changed", "冻结 ROAS 模式已变化")
+            # 各成员保留自己的冻结原值，允许准备时已经等于目标的兄弟参与审计。
+            if not same_management_value(
+                "update_roas", row.configuration.get("roas_bid"), member.original_value
+            ):
+                raise DomainError("management_original_changed", "管理目标原始值已变化")
+        return
+    members = capability.get("restore_roas_members", [])
     if (
         not expected
         or {r.remote_id for r in rows} != expected
@@ -457,8 +507,8 @@ def _same_frozen_value(
             raise DomainError(
                 "management_observation_conflict", "恢复缺少发送后的目录证据"
             )
-        if restore_after and capability.get("operation") == "update_roas":
-            _verify_roas_restore_scope(session, item, ref)
+        if capability.get("operation") == "update_roas":
+            _verify_roas_scope(session, item, ref)
         facts = capability.get("roas_facts")
         if facts:
             parent = session.get(
@@ -749,7 +799,8 @@ def _persist_outcome(
         item.execution_result = (
             "CONFLICT"
             if outcome == "NOT_SENT"
-            and response.get("reason") == "management_original_changed"
+            and response.get("reason")
+            in {"management_original_changed", "roas_scope_conflict"}
             else outcome
         )
         item.reason = response.get("reason")
@@ -1415,7 +1466,8 @@ def execute_item(database_engine: Engine, item_id: UUID) -> bool | None:
                 # 目标原值已被他人改动（如名称被改）时记为冲突，不覆盖别人的修改。
                 item.execution_result = (
                     "CONFLICT"
-                    if error.code == "management_original_changed"
+                    if error.code
+                    in {"management_original_changed", "roas_scope_conflict"}
                     else "NOT_SENT"
                 )
                 # 已提交的预请求也要关闭，重复投递不能把本地失败误判为发送结果未知。

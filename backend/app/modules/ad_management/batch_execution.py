@@ -140,7 +140,8 @@ def execute_batch(database_engine, item_ids: tuple[UUID, ...]) -> bool:
                 except DomainError as error:
                     item.execution_result = (
                         "CONFLICT"
-                        if error.code == "management_original_changed"
+                        if error.code
+                        in {"management_original_changed", "roas_scope_conflict"}
                         else "NOT_SENT"
                     )
                     item.reason = error.code
