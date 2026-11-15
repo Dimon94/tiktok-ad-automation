@@ -1,3 +1,11 @@
+## 2026-11-15：JB-62 / M5B-01 原生预算事实与实际回读候选
+
+在 root 唯一授权树 `feat/m5b-native-budget-validation` 从 START `0e7cf885018922bc111c28de49a99f4b163c9f3e` 形成源码提交 `84db9974b69af5eb97ca82a66f30590803db350b`。复用原预算归属、去重、直接受理/异步准备、官方 SDK 和定向目录发布；补齐冻结的账户币种、选择来源/实际预算影响映射及原任务页金额展示，广告列表复用已有预算表单。修复预算 SDK 接受即标观察成功的实际缺口：等待发送后同连接的真实预算观察，比较实际值，撤权/代次变化拒绝复用，重复刷新不重写。不新增预览门禁、executor、队列、迁移或经营限制。
+
+本人最终 PG17/Redis 相关验证 75 passed，含 60 个有限手算金额/owner 组合、真实工作区系列/广告预算浏览器纵链、跨块去重/来源、多账户 USD/JPY、冻结观察范围、预算不匹配与授权撤回。普通回归 146 passed，唯一旧“排队即观察成功”断言按新合同修正后定向 1 passed；继承的 10748 SQL 26>25 失败未重跑/未放宽。5 个实际源码错误探针均拒绝，仓外备份/finally/cmp 后 GREEN；tsc、正式/demo 构建、scoped Ruff 通过。没有用有限枚举或 Build TLC 宣称无界管理形式证明。
+
+详细逐 AC、精确命令/失败与 Unknown、JB-63 消费合同见 [JB-62 验证记录](validation/2026-11-15-jb62-native-budget-readback.md)。本票仅本地候选，root 尚须独立验收、释放 JB-63、whole-scope 审查及本地集成；M5b 未完成。无子代理、其它树/main/Linear 修改、push/PR/部署或真实平台/auth/广告操作。原共享链接与 root 测试服务保留，真实平台/生产 Unknown。
+
 ## 2026-11-15：JB-59 / M5A-01 原生启停与回读本地候选
 
 在唯一授权集成树 `feat/m5a-native-status-validation` 从 `9d51cc9b37faf1b6a830fa025cbd377ace716048` 形成源码/测试提交 `20709eb550c07d4fc2e67eec7f7d6863594c73a6`。保留现有点击直接受理与异步准备，实际 RED 仅修复原管理 execution owner：公开启停原值被数值转换丢失、写接受/目录排队冒充已观察。原 REFRESH_PENDING 现在等待发送后同连接目录事实；冻结原值与受理回执保持独立，不新增 Native executor、资格门槛、预览或迁移。
