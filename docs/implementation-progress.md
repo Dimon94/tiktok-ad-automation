@@ -5615,3 +5615,5 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - M5a JB60 本地候选：START `2e3a52b6fb278fb924b3f21cbc0fe31e01243662`；源码 `c6694ca837650c77efc0f21db2d8b51dddd10ccc`；有界验证说明 `f4c8fd50dd58c2e67f49cb707f53870e12723df5`；queued restore 撤权增强 `24548ccf75a5243710f9ac9eb927b16527eb15c4`。仅原 prepare_restore 修复硬编码 DISABLE，使用冻结原值对称判断；不改直接受理/异步框架/预算ROAS改名，无迁移。
 - 自有64针对性检查，最终4类UNKNOWN观察→实际反向恢复UI加1个JB59代表UI共5 passed；20个真实owner有限状态组合、12个read/queued restore撤权、六类实际源码RED/外部finally恢复/cmp/逐项GREEN。UNKNOWN来自官方SDK传输发送后丢失响应；核查误写2!=1、自动重放4!=3均被物理写数断言拒绝。
 - 审阅包 `docs/validation/2026-11-15-jb60-native-status-recovery.md` 覆盖全部JB60 AC和整个C01–C10，区分本轮与继承。保留早期目录一次pump后待刷新/一次预览NO_CHANGE的时序Unknown，后续绿跑不宣称根因已修复；原START SQL26>25失败不改阈值、不隐藏。Root阶段接受、fresh Standards/Spec整体审查、本地main集成和关闭仍待执行；两票保持InProgress与依赖，不报M5a Done。无push/PR/Linear/部署/生产或真实平台操作，专用PG17/Redis保留供root收尾。
+
+- M5a JB60 root阶段接受：精确候选0ddc58c2，独立33项混合/恢复/撤权通过（82.90s），Ruff/diff绿；五UI及源码反例继承。保留早期目录时序Unknown和START SQL26>25失败，不报整套全绿。两票完成本地阶段，进入整片fresh双轴R1，尚未合main/闭票。

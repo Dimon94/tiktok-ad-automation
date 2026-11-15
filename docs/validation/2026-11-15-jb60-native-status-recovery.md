@@ -78,3 +78,11 @@ python3 /tmp/tkada-native-series-20261112/m5a-implementation/run-test.py python 
 专用 guarded runner、Python3.14、M5a PG17 与 Redis appDB0/testDB1 保持；没有 FLUSHDB、共享安装、停 PG16、停专用集群或清理其它 actor。页面服务器仅 loopback 动态端口，finally 结束本测试线程/服务并恢复认证 overrides。实际生产门禁由原 owner 执行。
 
 Root 后续负责：JB60 阶段接受、fresh Standards/Spec 整个 M5a、local main 集成与闭票。这里仅交付本地 reviewable candidate，不能宣称整个 M5a Done。
+
+## Root 独立阶段验收
+
+Root在精确候选0ddc58c2ef8bf809eef6828c5c06e09ee9cee696核对prepare_restore恢复原值/当前值门禁与实际有限输入验证说明，独立运行native_recovery的mixed_results_continue、restore_current_gate、recovery_revocation：33 passed、8 deselected/82.90s。覆盖混合任务、20个恢复组合、12个核查/排队恢复撤权场景；这些是同一33项集合，不重复累加。Ruff覆盖两产品owner及两Native测试文件，diff check通过。
+
+五个最终UI纵链、其余UNKNOWN轮次/晚到证据和六类源码拒错继承源码匹配候选，未冒称本轮重跑。早期两次目录时序原因Unknown及START已有SQL26>25断言继续保留，单次复验通过不证明无间歇。formal-verify-management-status仅为实际owner的有界输入枚举与绑定回归，不是数学或无界证明。
+
+结论：JB60本地阶段接受，两票进入整个M5a fresh Standards/Spec R1；不提前关闭票或合main。批准范围以两票及approved-scope为准，未批准的强制预览草案不参与验收。当前直接受理/异步准备保留，无push/deploy/真实provider操作。
