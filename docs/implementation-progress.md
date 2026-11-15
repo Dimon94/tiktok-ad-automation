@@ -5617,3 +5617,12 @@ JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化�
 - 审阅包 `docs/validation/2026-11-15-jb60-native-status-recovery.md` 覆盖全部JB60 AC和整个C01–C10，区分本轮与继承。保留早期目录一次pump后待刷新/一次预览NO_CHANGE的时序Unknown，后续绿跑不宣称根因已修复；原START SQL26>25失败不改阈值、不隐藏。Root阶段接受、fresh Standards/Spec整体审查、本地main集成和关闭仍待执行；两票保持InProgress与依赖，不报M5a Done。无push/PR/Linear/部署/生产或真实平台操作，专用PG17/Redis保留供root收尾。
 
 - M5a JB60 root阶段接受：精确候选0ddc58c2，独立33项混合/恢复/撤权通过（82.90s），Ruff/diff绿；五UI及源码反例继承。保留早期目录时序Unknown和START SQL26>25失败，不报整套全绿。两票完成本地阶段，进入整片fresh双轴R1，尚未合main/闭票。
+
+
+## 2026-11-15 — M5a 本地验收与集成收口
+
+- 用户批准 JB59→JB60 原生三层启停验证与必要修复；保留直接受理/异步准备，不采用未获批的强制预览草案。按用户指定 fresh Codex gpt-6.1-sol/high 完成两票及独立 Standards/Spec R1。
+- 固定审查头 d1bcbe60：两轴 PASS、P0/P1=0；Standards S1 已登记 JB61 并由 root 修复于 f7d83f83。无可用目录计划时保留实际 ACCEPTED 与冻结原值，观察/任务 NEEDS_REVIEW，停止无效唤醒；不制造观察或重发状态写。
+- 首轮整合复跑暴露 Native 测试夹具残留调度窗口；审查头同库复现。保留旧证据库，使用新 UTF8 专用库，夹具退出只释放自己租户的未完目录调度。产品调度未改。
+- 最终相关真实 HTTP/PG17/Redis/原 Worker/SDK transport 替身检查55通过、10页面用例排除；已有六条状态页面、四条核查恢复页面及其它源码拒错证据按匹配源码继承。Ruff/TypeScript/diff通过。
+- 完整依据、两轴报告及边界：[M5a 本地接受](validation/2026-11-15-native-m5a-acceptance.md)。旧 SQL26>25 基线失败保留；早期时序是否全部同因仍Unknown。无生产/真实平台/独立broker投递验收；不推送或部署。EpicJB19其它阶段保持原状态。
