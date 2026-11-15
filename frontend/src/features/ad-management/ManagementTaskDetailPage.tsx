@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { useState } from "react"
-import { AdManagementService, type ManagementPreviewPublic } from "@/client"
+import { AdManagementService, type ManagementItemPublic, type ManagementPreviewPublic } from "@/client"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,26 @@ import {
   statusLabel,
   targetText,
 } from "./presentation"
+
+function BudgetFacts({ item }: { item: ManagementItemPublic }) {
+  const facts = item.budget_facts
+  if (!facts) return "—"
+  return (
+    <div className="space-y-1">
+      <p>预算归属：{KIND_LABEL[item.ref.kind]} · {item.ref.remote_id}</p>
+      <p>账户：{item.ref.advertiser_id}</p>
+      <p>原预算 {item.original_value} → 目标预算 {item.final_value} {facts.currency}</p>
+      <p>影响：{facts.affected_refs.map(ref => `${KIND_LABEL[ref.kind]} · ${ref.remote_id}`).join("、")}</p>
+      {facts.sources.map(source => (
+        <p key={`${source.ref.kind}:${source.ref.remote_id}`}>
+          来源：{KIND_LABEL[source.ref.kind]} · {source.ref.remote_id}（{
+            { owner_selected: "直接选择预算归属对象", campaign_budget_owner: "归并至系列预算", adgroup_budget_owner: "归并至广告组预算", campaign_adgroups_expanded: "系列展开已观察广告组" }[source.reason]
+          }）
+        </p>
+      ))}
+    </div>
+  )
+}
 
 export function ManagementTaskDetailPage() {
   const { tenantId, scope } = useTenantScope()
@@ -190,6 +210,12 @@ export function ManagementTaskDetailPage() {
                 (item) => item.execution_result === "CONFLICT",
               ).length ?? 0}
             </p>
+            {restorePreview.items?.map((item, index) => (
+              <div key={index} className="space-y-1 rounded border p-3" data-testid="restore-budget-item">
+                <BudgetFacts item={item} />
+                <p>{receiptLabel(item.execution_result)}</p>
+              </div>
+            ))}
             <Button
               onClick={() => submitRestore.mutate()}
               disabled={submitRestore.isPending || !write}
@@ -362,21 +388,7 @@ export function ManagementTaskDetailPage() {
                           {item.ref.remote_id}
                         </td>
                         <td className="min-w-64 p-2">
-                          {item.budget_facts ? (
-                            <div className="space-y-1">
-                              <p>预算归属：{KIND_LABEL[item.ref.kind]} · {item.ref.remote_id}</p>
-                              <p>账户：{item.ref.advertiser_id}</p>
-                              <p>原预算 {item.original_value} → 目标预算 {item.final_value} {item.budget_facts.currency}</p>
-                              <p>影响：{item.budget_facts.affected_refs.map(ref => `${KIND_LABEL[ref.kind]} · ${ref.remote_id}`).join("、")}</p>
-                              {item.budget_facts.sources.map(source => (
-                                <p key={`${source.ref.kind}:${source.ref.remote_id}`}>
-                                  来源：{KIND_LABEL[source.ref.kind]} · {source.ref.remote_id}（{
-                                    { owner_selected: "直接选择预算归属对象", campaign_budget_owner: "归并至系列预算", adgroup_budget_owner: "归并至广告组预算", campaign_adgroups_expanded: "系列展开已观察广告组" }[source.reason]
-                                  }）
-                                </p>
-                              ))}
-                            </div>
-                          ) : "—"}
+                          <BudgetFacts item={item} />
                         </td>
                         <td
                           className="p-2"

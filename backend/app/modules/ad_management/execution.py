@@ -314,6 +314,19 @@ def _recover_cancelled_claims(session: Session, task: ManagementTask) -> None:
         )
 
 
+def same_management_value(operation: str, actual: Any, expected: Any) -> bool:
+    """金额按十进制数值比较，等额的不同文本表示不会造成预算冲突。"""
+    if actual is None or expected is None:
+        return False
+    if operation == "update_budget":
+        try:
+            left, right = Decimal(str(actual)), Decimal(str(expected))
+            return left.is_finite() and right.is_finite() and left == right
+        except InvalidOperation, ValueError:
+            return False
+    return str(actual) == str(expected)
+
+
 def _same_frozen_value(
     session: Session, item: ManagementTaskItem, ref: EntityRef
 ) -> None:
@@ -377,6 +390,12 @@ def _same_frozen_value(
             expected_connection
         ):
             raise DomainError("management_source_conflict", "目录对象来源连接已变化")
+        # 恢复预算只消费原写请求之后的新鲜目录；发送前再次核验同一证据边界。
+        restore_after = capability.get("restore_after")
+        if restore_after and row.observed_at <= datetime.fromisoformat(restore_after):
+            raise DomainError(
+                "management_observation_conflict", "恢复预算缺少发送后的目录证据"
+            )
         operation = str(capability.get("operation"))
         if operation == "rename":
             # 改名的冻结原值是目录名称；名称已被他人修改则不覆盖。
@@ -388,7 +407,9 @@ def _same_frozen_value(
             current = (row.configuration or {}).get(key)
     if current is None:
         raise DomainError("management_observation_conflict", "冻结目标当前值缺失")
-    if str(current) != str(item.original_value):
+    if not same_management_value(
+        str(capability.get("operation")), current, item.original_value
+    ):
         raise DomainError("management_original_changed", "管理目标原始值已变化")
 
 

@@ -1066,3 +1066,52 @@ test("原生预算任务冻结金额及实际回读 @native-budget-live", async 
   expect(result.items[0]).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", final_value: "120.125" })
   await expect(page.getByText(/原预算 .* → 目标预算 120.125 USD/).first()).toBeVisible()
 })
+
+test("原生预算 UNKNOWN 与反向恢复 @native-budget-recovery-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 JB62 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: kind === "ad" ? "广告" : "系列", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `object-${kind}-native`, exact: true }) })
+  await row.getByRole("checkbox").check()
+  await page.getByRole("button", { name: "修改预算", exact: true }).click()
+  await page.getByRole("textbox", { name: "管理新值" }).fill("120.125")
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("button", { name: "提交管理任务", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByText(/原预算 .* → 目标预算 120.125 USD/).first()).toBeVisible()
+  await expect(page.getByText(/来源：(系列 · campaign-native|广告 · ad-native)/).first()).toBeVisible()
+  const queued = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith(`/ad-management-tasks/${task}/reconcile`))
+  await page.getByRole("button", { name: "核查本地状态", exact: true }).click()
+  expect((await queued).status()).toBe(200)
+  expect((await page.request.post(`/api/test-native-management/${task}/reconcile`)).ok()).toBeTruthy()
+  await page.reload()
+  await expect(page.getByText("观察值符合目标，受理仍未知", { exact: true }).first()).toBeVisible()
+  const frozen = (await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]
+  expect(frozen.execution_result).toBe("UNKNOWN")
+  expect((await page.request.post(`/api/test-native-management/${task}/publish`)).ok()).toBeTruthy()
+  await page.getByRole("button", { name: "生成恢复预览", exact: true }).click()
+  const preview = page.getByTestId("restore-budget-item").first()
+  await expect(preview.getByText(/原预算 120.125 → 目标预算 .* USD/)).toBeVisible()
+  await expect(preview.getByText(/预算归属：/)).toBeVisible()
+  await expect(preview.getByText(/来源：/).first()).toBeVisible()
+  await expect(preview.getByText(/影响：/)).toBeVisible()
+  const submitted = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-tasks"))
+  await page.getByRole("button", { name: "提交恢复任务", exact: true }).click()
+  const restore = (await (await submitted).json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${restore}/restore`)).ok()).toBeTruthy()
+  const restored = (await (await page.request.get(`${base}/ad-management-tasks/${restore}`)).json()).items[0]
+  expect(restored).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", budget_facts: frozen.budget_facts })
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]).toEqual(frozen)
+})

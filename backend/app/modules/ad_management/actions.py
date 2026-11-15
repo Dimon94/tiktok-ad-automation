@@ -19,6 +19,10 @@ from app.jobs.outbox import enqueue_after_commit
 from app.models import User
 from app.modules.accounts.routing import verify_route
 from app.modules.ad_management.execution import _public as _item_public
+from app.modules.ad_management.execution import (
+    _same_frozen_value,
+    same_management_value,
+)
 from app.modules.ad_management.history_scope import readable_history
 from app.modules.ad_management.models import (
     ManagementPreview,
@@ -110,7 +114,7 @@ def _scoped_task(
                 ManagementTaskItem.tenant_id == context.tenant_id,
                 ManagementTaskItem.task_id == task.id,
                 ManagementTaskItem.execution_result.in_(
-                    ["PENDING", "NOT_SENT", "ACCEPTED"]
+                    ["PENDING", "NOT_SENT", "ACCEPTED", "UNKNOWN"]
                 ),
             )
             .distinct()
@@ -675,8 +679,31 @@ def prepare_restore(
         else:
             key = "roas_bid" if operation == "update_roas" else "budget"
             value = (current.configuration or {}).get(key)
-            if value is None or str(value) != str(old.final_value):
+            if not same_management_value(operation, value, old.final_value):
                 conflict = True
+        capability = dict(old.capability)
+        if operation == "update_budget":
+            # 复用发送前 owner 校验，恢复仍是新意图，原 UNKNOWN 回执保持不变。
+            latest = session.exec(
+                select(ManagementRequestAttempt)
+                .where(
+                    ManagementRequestAttempt.tenant_id == old.tenant_id,
+                    ManagementRequestAttempt.task_item_id == old.id,
+                )
+                .order_by(col(ManagementRequestAttempt.attempt).desc())
+                .limit(1)
+            ).first()
+            if latest is None or old.execution_result not in {"ACCEPTED", "UNKNOWN"}:
+                conflict = True
+            else:
+                capability["restore_after"] = latest.request_at.isoformat()
+                candidate = old.model_copy(
+                    update={"original_value": old.final_value, "capability": capability}
+                )
+                try:
+                    _same_frozen_value(session, candidate, _item_public(old).ref)
+                except DomainError:
+                    conflict = True
         reason = (
             "configuration_conflict"
             if conflict
@@ -696,14 +723,15 @@ def prepare_restore(
                 reason=reason,
                 execution_result=execution_result,
                 parent_ref=dict(old.parent_ref) if old.parent_ref else None,
-                capability=dict(old.capability),
+                capability=capability,
             )
         )
         public_items.append(
             ManagementItemPublic(
                 ref=old.ref,
-                original_value=None,
+                original_value=old.final_value,
                 final_value=old.original_value,
+                budget_facts=capability.get("budget_facts"),
                 reason=reason,
                 execution_result=cast(Any, execution_result),
             )
