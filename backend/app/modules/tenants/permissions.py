@@ -63,3 +63,47 @@ def require_tenant(
     if action not in PERMISSIONS.get(role, frozenset()):
         raise DomainError("action_forbidden", "当前角色不能执行此操作")
     return TenantContext(tenant_id=tenant_id, actor_id=actor_id, role=role)
+
+
+def build_authorization_stamp(
+    session: Session, *, actor_id: UUID, tenant_id: UUID
+) -> dict:
+    """批准与检查共用事实行；锁顺序与原生物理发送 User→Tenant→Member 一致。"""
+    user = session.get(
+        User, actor_id, populate_existing=True, with_for_update={"read": True}
+    )
+    tenant = session.get(
+        Tenant, tenant_id, populate_existing=True, with_for_update={"read": True}
+    )
+    member = session.get(
+        TenantMembership,
+        (tenant_id, actor_id),
+        populate_existing=True,
+        with_for_update={"read": True},
+    )
+    require_tenant(session, actor_id=actor_id, tenant_id=tenant_id, action="build")
+    # 同事务共享锁内的授权检查已保证用户、租户和所需成员存在。
+    assert user is not None and tenant is not None
+    member_generation = None
+    if not user.is_superuser:
+        assert member is not None
+        member_generation = member.authorization_generation
+    return {
+        "actor_id": str(actor_id),
+        "tenant_id": str(tenant_id),
+        "user": user.authorization_generation,
+        "tenant": tenant.authorization_generation,
+        # 平台管理员不依赖成员角色；无关 membership 变更不撤销平台批准。
+        "member": member_generation,
+    }
+
+
+def require_build_authorization_stamp(session: Session, *, submission) -> None:
+    current = build_authorization_stamp(
+        session, actor_id=submission.actor_id, tenant_id=submission.tenant_id
+    )
+    if submission.authorization_stamp != current:
+        raise DomainError(
+            "actor_authorization_changed",
+            "原批准的操作者授权已失效，请新建预览并明确提交",
+        )

@@ -137,7 +137,13 @@ def test_hot_plan_pairs_ad_and_single_account_creative_facts(session, sync_seed)
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert {j.kind for j in jobs} == {"ad_day", "creative_day"}
+    # M4a 已将直接父级日报纳入原调度入口，creative 仍独立单账户。
+    assert {j.kind for j in jobs} == {
+        "campaign_day",
+        "adgroup_day",
+        "ad_day",
+        "creative_day",
+    }
     assert all(j.advertiser_ids == ["acc-1"] for j in jobs)
 
 

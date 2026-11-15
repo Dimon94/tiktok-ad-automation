@@ -59,6 +59,17 @@ export function AdsFilters({
           placeholder="名称、剧名、版权方或 ID（多关键词 AND）"
         />
       </div>
+      {["campaign", "adgroup", "account", "drama"].includes(search.dimension) && (
+        <div className="space-y-1.5">
+          <Label htmlFor="ads-contribution">广告贡献子集 ID</Label>
+          <Input id="ads-contribution" placeholder="留空查看整对象"
+            value={search.contribution?.ids.join(",") ?? ""}
+            onChange={(event) => {
+              const ids = event.target.value.split(",").map((id) => id.trim()).filter(Boolean)
+              onChange({ contribution: ids.length ? { kind: "ad", ids } : null })
+            }} />
+        </div>
+      )}
       {/* 默认只列所选日期有数据的对象；大租户目录有数万个无数据对象，全部列出会明显变慢。
           账户维度始终列出全部账户。 */}
       <div className="flex h-9 items-center gap-2">

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { useState } from "react"
-import { AdManagementService, type ManagementPreviewPublic } from "@/client"
+import { AdManagementService, type ManagementItemPublic, type ManagementPreviewPublic } from "@/client"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,6 +18,29 @@ import {
   statusLabel,
   targetText,
 } from "./presentation"
+
+import { RoasFacts } from "./RoasFacts"
+
+function BudgetFacts({ item }: { item: ManagementItemPublic }) {
+  const facts = item.budget_facts
+  if (item.roas_facts) return <RoasFacts item={item} />
+  if (!facts) return "—"
+  return (
+    <div className="space-y-1">
+      <p>预算归属：{KIND_LABEL[item.ref.kind]} · {item.ref.remote_id}</p>
+      <p>账户：{item.ref.advertiser_id}</p>
+      <p>原预算 {item.original_value} → 目标预算 {item.final_value} {facts.currency}</p>
+      <p>影响：{facts.affected_refs.map(ref => `${KIND_LABEL[ref.kind]} · ${ref.remote_id}`).join("、")}</p>
+      {facts.sources.map(source => (
+        <p key={`${source.ref.kind}:${source.ref.remote_id}`}>
+          来源：{KIND_LABEL[source.ref.kind]} · {source.ref.remote_id}（{
+            { owner_selected: "直接选择预算归属对象", campaign_budget_owner: "归并至系列预算", adgroup_budget_owner: "归并至广告组预算", campaign_adgroups_expanded: "系列展开已观察广告组" }[source.reason]
+          }）
+        </p>
+      ))}
+    </div>
+  )
+}
 
 export function ManagementTaskDetailPage() {
   const { tenantId, scope } = useTenantScope()
@@ -190,6 +213,13 @@ export function ManagementTaskDetailPage() {
                 (item) => item.execution_result === "CONFLICT",
               ).length ?? 0}
             </p>
+            {restorePreview.items?.map((item, index) => (
+              <div key={index} className="space-y-1 rounded border p-3" data-testid="restore-budget-item">
+                <BudgetFacts item={item} />
+                {item.restore_observation && <p>原任务：{item.restore_observation.source_task_id} · 当前比例：{item.restore_observation.value ?? "缺失"} · 观察时间：{item.restore_observation.observed_at ? displayTime(item.restore_observation.observed_at) : "缺失"} · 连接：{item.restore_observation.source_connection_id ?? "缺失"}</p>}
+                <p>{receiptLabel(item.execution_result)}{item.reason ? ` · ${item.reason}` : ""}</p>
+              </div>
+            ))}
             <Button
               onClick={() => submitRestore.mutate()}
               disabled={submitRestore.isPending || !write}
@@ -341,6 +371,7 @@ export function ManagementTaskDetailPage() {
                   <thead>
                     <tr className="border-b text-left">
                       <th className="p-2">目标</th>
+                      <th className="p-2">预算与影响范围</th>
                       <th className="p-2">执行</th>
                       <th className="p-2">请求送达</th>
                       <th className="p-2">数据核对</th>
@@ -360,6 +391,9 @@ export function ManagementTaskDetailPage() {
                           {KIND_LABEL[item.ref.kind] ?? "对象"} ·{" "}
                           {item.ref.remote_id}
                         </td>
+                        <td className="min-w-64 p-2">
+                          <BudgetFacts item={item} />
+                        </td>
                         <td
                           className="p-2"
                           title={item.execution_result ?? undefined}
@@ -376,7 +410,7 @@ export function ManagementTaskDetailPage() {
                           className="p-2"
                           title={item.observation_state ?? undefined}
                         >
-                          {receiptLabel(item.observation_state)}
+                          {item.roas_facts && item.observation_state === "ACCEPTED" ? "已观察目标" : receiptLabel(item.observation_state)}
                         </td>
                         <td className="p-2">
                           {item.attempts?.length

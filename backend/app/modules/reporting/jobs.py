@@ -20,6 +20,7 @@ from sqlmodel import Session, col, select
 
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.change_log_reader import ChangeLogReader
+from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.integrations.tiktok.contracts.report_reader import RawReportPage, ReportReader
 from app.integrations.tiktok.sdk import AccountAdmissionDeferred
 from app.modules.accounts.models import AdvertiserAccount
@@ -34,6 +35,7 @@ from app.modules.reporting.directory_refresh import (
 from app.modules.reporting.lanes import (
     CLOSEOUT_PRIORITY,
 )
+from app.modules.reporting.levels import LEVELS, PARENT_KINDS
 from app.modules.reporting.store_models import ReportSyncJob, ReportSyncPage
 from app.modules.sync_control.executions import ExecutionLost, TransactionBoundaryReader
 
@@ -57,6 +59,7 @@ _CONTRACT_ERRORS = frozenset(
         "report_query_invalid",
         "report_response_invalid",
         "report_row_invalid",
+        "report_publication_conflict",
         "report_value_invalid",
         "report_operation_invalid",
         "operation_log_format_invalid",
@@ -175,7 +178,8 @@ def enqueue_jobs(
 
     if kind in {"material_day", "material_links"}:
         raise DomainError("report_kind_retired", "旧素材报表及补链任务已退休")
-    return enqueue_report_requirements(
+    advertiser_groups = list(advertiser_groups)
+    ids = enqueue_report_requirements(
         session,
         tenant_id=tenant_id,
         bc_id=bc_id,
@@ -191,6 +195,25 @@ def enqueue_jobs(
         requested_at=requested_at,
         execution_window_days=execution_window_days,
     )
+
+    if kind == "ad_day" and not campaign_ids:
+        for parent_kind in PARENT_KINDS:
+            enqueue_report_requirements(
+                session,
+                tenant_id=tenant_id,
+                bc_id=bc_id,
+                kind=parent_kind,
+                priority=PRIORITY[tier],
+                advertiser_groups=advertiser_groups,
+                start=start,
+                end=end,
+                frozen_route=frozen_route,
+                actor_id=actor_id,
+                due_at=due_at,
+                requested_at=requested_at,
+                execution_window_days=execution_window_days,
+            )
+    return ids
 
 
 def _accounts(session, tenant_id, advertiser_ids) -> dict[str, publish.AccountMeta]:
@@ -270,7 +293,10 @@ def _basic_scope(job):
         job.actor_id,
         job.frozen_route,
     )
-    return hashlib.sha256(f"{key}:{request_time(job).isoformat()}".encode()).hexdigest()
+    contract = LEVELS[job.kind].contract if job.kind in LEVELS else "report-v2"
+    return hashlib.sha256(
+        f"{key}:{request_time(job).isoformat()}:{contract}:{LEVELS.get(job.kind)}".encode()
+    ).hexdigest()
 
 
 def _run(
@@ -326,6 +352,7 @@ def _run(
             rows=rows,
             campaign_ids=tuple(job.campaign_ids),
             requested_at=observed_at,
+            route=FrozenTikTokRoute.model_validate(job.frozen_route),
         )
         # 完整报表与补目录 outbox 同事务提交，新投放对象不等全量历史扫描。
         refresh_report_directory(session, job)
@@ -357,6 +384,27 @@ def _run(
             rows=rows,
             campaign_ids=tuple(job.campaign_ids),
             requested_at=observed_at,
+            route=FrozenTikTokRoute.model_validate(job.frozen_route),
+        )
+    if job.kind in PARENT_KINDS:
+        if job.campaign_ids:
+            raise DomainError("report_query_invalid", "父级日报仅允许完整账户日")
+        rows = _read_all(
+            lambda p: getattr(reader, job.kind)(
+                advertiser_ids=advertisers, start=s, end=e, page=p
+            )
+        )
+        return publish.publish_parent_day(
+            session,
+            level=LEVELS[job.kind].level,
+            tenant_id=t,
+            job_id=j,
+            accounts=accounts,
+            start=s,
+            end=e,
+            rows=rows,
+            requested_at=observed_at,
+            route=FrozenTikTokRoute.model_validate(job.frozen_route),
         )
     if job.kind == "campaign_hour":
         rows = _read_all(
@@ -668,6 +716,22 @@ def _handle_error(session, job: ReportSyncJob, error: DomainError) -> str:
         job.status, job.due_at = "WAITING", datetime.now(UTC) + timedelta(seconds=30)
         return "WAITING"
     elif error.code not in _CONTRACT_ERRORS and job.attempts < MAX_PROVIDER_RETRIES:
+        # 重试尚未结束也是真实失败尝试；保留旧成功观测并立即公开本层原因。
+        if job.kind in BASIC_KINDS:
+            publish.mark_failed(
+                session,
+                tenant_id=job.tenant_id,
+                advertiser_ids=job.advertiser_ids,
+                kind=job.kind,
+                start=job.start_date,
+                end=job.end_date,
+                error_code=error.code,
+                requested_at=datetime.fromisoformat(
+                    job.progress["snapshot_observed_at"]
+                )
+                if job.progress.get("snapshot_observed_at")
+                else request_time(job),
+            )
         job.attempts += 1
         job.status = "WAITING"
         now = datetime.now(UTC)

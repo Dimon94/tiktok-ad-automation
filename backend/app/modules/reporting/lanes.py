@@ -4,6 +4,10 @@ from datetime import datetime
 
 from sqlalchemy import text
 
+from app.modules.reporting.levels import DAY_KINDS
+
+_LIVE_DAY_SQL = ",".join(repr(k) for k in (*DAY_KINDS, "creative_day"))
+
 # 收尾独立实时档，不与今日热报争名额；数值只标识档位，派发先服务今日 lane。
 CLOSEOUT_PRIORITY = 0
 
@@ -26,12 +30,12 @@ def current_day_predicate(alias: str = "report_sync_job") -> str:
 
 def closeout_predicate(alias: str = "report_sync_job") -> str:
     yesterday = _day_predicate(alias, days_ago=1)
-    return f"({alias}.priority={CLOSEOUT_PRIORITY} AND {alias}.kind IN ('ad_day','creative_day') AND {yesterday})"
+    return f"({alias}.priority={CLOSEOUT_PRIORITY} AND {alias}.kind IN ({_LIVE_DAY_SQL}) AND {yesterday})"
 
 
 def live_predicate(alias: str = "report_sync_job") -> str:
     day = current_day_predicate(alias)
-    return f"({alias}.priority BETWEEN 1 AND 2 AND {alias}.kind IN ('ad_day','creative_day','campaign_hour') AND {day})"
+    return f"({alias}.priority BETWEEN 1 AND 2 AND {alias}.kind IN ({_LIVE_DAY_SQL},'campaign_hour') AND {day})"
 
 
 def lane_predicate(*, lane: str, alias: str = "report_sync_job") -> str:

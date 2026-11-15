@@ -30,7 +30,7 @@ from app.modules.accounts.management_rules import (
     MANAGEMENT_ENTITY_KINDS,
     management_allowed,
 )
-from app.modules.accounts.models import BCAccountAccess
+from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
 from app.modules.ad_management.schemas import MutationSpec
 from app.modules.ads.directory import locate, locate_material_use
 from app.modules.ads.models import AdObject
@@ -215,9 +215,9 @@ def _management_allowed(
     )
     authorization = session.exec(
         select(ConnectionAuthorization).where(
-            ConnectionAuthorization.tenant_id == context.tenant_id,
-            ConnectionAuthorization.connection_id == route.connection_id,
-            ConnectionAuthorization.authorization_revision
+            col(ConnectionAuthorization.tenant_id) == context.tenant_id,
+            col(ConnectionAuthorization.connection_id) == route.connection_id,
+            col(ConnectionAuthorization.authorization_revision)
             == route.authorization_revision,
         )
     ).one_or_none()
@@ -249,14 +249,14 @@ def _child_adgroups(
         session.exec(
             select(AdObject)
             .where(
-                AdObject.tenant_id == context.tenant_id,
-                AdObject.advertiser_id == campaign.advertiser_id,
-                AdObject.kind == "adgroup",
-                AdObject.parent_kind == "campaign",
-                AdObject.parent_remote_id == campaign.remote_id,
-                AdObject.source_connection_id == route.connection_id,
-                AdObject.source_channel == route.channel,
-                AdObject.observed_at <= observed_before,
+                col(AdObject.tenant_id) == context.tenant_id,
+                col(AdObject.advertiser_id) == campaign.advertiser_id,
+                col(AdObject.kind) == "adgroup",
+                col(AdObject.parent_kind) == "campaign",
+                col(AdObject.parent_remote_id) == campaign.remote_id,
+                col(AdObject.source_connection_id) == route.connection_id,
+                col(AdObject.source_channel) == route.channel,
+                col(AdObject.observed_at) <= observed_before,
             )
             .execution_options(populate_existing=True)
         ).all()
@@ -369,9 +369,9 @@ def _grouping_revision(session: Session, ref: EntityRef) -> int:
     row = session.exec(
         select(CampaignNameProjection)
         .where(
-            CampaignNameProjection.tenant_id == ref.tenant_id,
-            CampaignNameProjection.advertiser_id == ref.advertiser_id,
-            CampaignNameProjection.campaign_remote_id == ref.remote_id,
+            col(CampaignNameProjection.tenant_id) == ref.tenant_id,
+            col(CampaignNameProjection.advertiser_id) == ref.advertiser_id,
+            col(CampaignNameProjection.campaign_remote_id) == ref.remote_id,
         )
         .order_by(col(CampaignNameProjection.name_revision).desc())
         .limit(1)
@@ -543,9 +543,9 @@ def _series_key(
         else session.exec(
             select(CampaignNameProjection)
             .where(
-                CampaignNameProjection.tenant_id == campaign.tenant_id,
-                CampaignNameProjection.advertiser_id == campaign.advertiser_id,
-                CampaignNameProjection.campaign_remote_id == campaign.remote_id,
+                col(CampaignNameProjection.tenant_id) == campaign.tenant_id,
+                col(CampaignNameProjection.advertiser_id) == campaign.advertiser_id,
+                col(CampaignNameProjection.campaign_remote_id) == campaign.remote_id,
             )
             .order_by(col(CampaignNameProjection.name_revision).desc())
             .limit(1)
@@ -589,9 +589,9 @@ def _command(
 def _load_selection(session: Session, context: TenantContext, selection_id: UUID):
     record = session.exec(
         select(FrozenSelectionRecord).where(
-            FrozenSelectionRecord.id == selection_id,
-            FrozenSelectionRecord.tenant_id == context.tenant_id,
-            FrozenSelectionRecord.actor_id == context.actor_id,
+            col(FrozenSelectionRecord.id) == selection_id,
+            col(FrozenSelectionRecord.tenant_id) == context.tenant_id,
+            col(FrozenSelectionRecord.actor_id) == context.actor_id,
         )
     ).first()
     if record is None:
@@ -817,12 +817,12 @@ def _expand(
         account_campaigns = session.exec(
             select(AdObject)
             .where(
-                AdObject.tenant_id == context.tenant_id,
+                col(AdObject.tenant_id) == context.tenant_id,
                 col(AdObject.advertiser_id).in_(selection_record.advertiser_ids),
-                AdObject.kind == "campaign",
-                AdObject.source_connection_id == route.connection_id,
-                AdObject.source_channel == route.channel,
-                AdObject.observed_at <= selection_record.created_at,
+                col(AdObject.kind) == "campaign",
+                col(AdObject.source_connection_id) == route.connection_id,
+                col(AdObject.source_channel) == route.channel,
+                col(AdObject.observed_at) <= selection_record.created_at,
             )
             .execution_options(populate_existing=True)
         ).all()
@@ -866,7 +866,10 @@ def _expand(
             )
             if campaign is None and row.kind == "campaign":
                 campaign = row
-            if campaign is not None:
+            if campaign is not None and (
+                row.kind == "campaign"
+                or (campaign.configuration or {}).get("budget_optimize_on") is True
+            ):
                 campaigns[_ref_key(campaign.ref)] = campaign
         for campaign in campaigns.values():
             for sibling in _child_adgroups(
@@ -905,11 +908,43 @@ def _expand(
                 return None
             raise
 
+    budget_sources: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    roas_campaign_sources: dict[tuple[Any, ...], list[dict[str, str]]] = {}
+    roas_owner_sources: dict[tuple[Any, ...], list[dict[str, str]]] = {}
+    if mutation.field == "roas":
+        # 选择来源按真实影响归属：CBO 共享系列，ABO 仅共享明确选中的父系列。
+        for ref in refs:
+            source = objects.get(_ref_key(ref))
+            if source is None:
+                continue
+            campaign = _campaign_ancestor(
+                session,
+                context=context,
+                bc_id=bc_id,
+                row=source,
+                objects=objects,
+                route=route,
+            )
+            if campaign is None:
+                continue
+            if source.kind == "campaign" or (
+                (campaign.configuration or {}).get("budget_optimize_on") is True
+            ):
+                roas_campaign_sources.setdefault(_ref_key(campaign.ref), []).append(
+                    _ref_dict(ref)
+                )
+            else:
+                owner = source.ref if source.kind == "adgroup" else source.parent_ref
+                if owner is not None and owner.kind == "adgroup":
+                    roas_owner_sources.setdefault(_ref_key(owner), []).append(
+                        _ref_dict(ref)
+                    )
+
     def add_item(row, *, use=None, linked=False, force_field=None):
         try:
             add_item_unchecked(row, use=use, linked=linked, force_field=force_field)
         except DomainError as exc:
-            if frozen_record is None:
+            if frozen_record is None and mutation.field != "roas":
                 raise
             # 后台准备逐项记录不可用，不因单个坏数值中断整批任务。
             items.append(
@@ -977,6 +1012,63 @@ def _expand(
             "observed_at": row.observed_at.isoformat(),
             "configuration": deepcopy(row.configuration or {}),
         }
+        if field == "budget":
+            # 币种属于预算 owner 的账户，随原值冻结，历史回执不查后来元数据。
+            account = session.get(
+                AdvertiserAccount, (context.tenant_id, row.advertiser_id)
+            )
+            if (
+                account is None
+                or not account.currency.strip()
+                or not account.timezone.strip()
+            ):
+                raise DomainError("account_metadata_incomplete", "账户信息尚未完整")
+            capability["budget_facts"] = {
+                "currency": account.currency,
+                "sources": budget_sources.get(_ref_key(row.ref), []),
+                "affected_refs": [_ref_dict(row.ref)],
+            }
+        if field == "roas":
+            parent = _campaign_ancestor(
+                session,
+                context=context,
+                bc_id=bc_id,
+                row=row,
+                objects=objects,
+                route=route,
+            )
+            strategy = (
+                (parent.configuration or {}).get("budget_optimize_on")
+                if parent
+                else None
+            )
+            # 更新只要求已存在的目标 ROAS 模式与父预算策略证据；创建字段不回写。
+            if parent is None or type(strategy) is not bool:
+                raise DomainError(
+                    "roas_budget_strategy_unverified", "系列预算策略尚未核实"
+                )
+            if (row.configuration or {}).get("deep_bid_type") != "VO_MIN_ROAS":
+                raise DomainError("roas_mode_unverified", "当前目标 ROAS 模式尚未核实")
+            affected = (
+                _child_adgroups(
+                    session,
+                    context=context,
+                    campaign=parent,
+                    route=route,
+                    observed_before=selection_record.created_at,
+                )
+                if strategy
+                else [row]
+            )
+            capability["roas_facts"] = {
+                "budget_strategy": "CBO" if strategy else "ABO",
+                "mode": "VO_MIN_ROAS",
+                "campaign_ref": _ref_dict(parent.ref),
+                "parent_configuration": deepcopy(parent.configuration or {}),
+                "sources": roas_campaign_sources.get(_ref_key(parent.ref), [])
+                + roas_owner_sources.get(_ref_key(row.ref), []),
+                "affected_refs": [_ref_dict(member.ref) for member in affected],
+            }
         grouping_revision = grouping_revision_for(row)
         if grouping_revision is None:
             items.append(
@@ -1152,6 +1244,11 @@ def _expand(
             )
             return
         command = _command(row, field=field, final=final, use=use)
+        if field == "roas":
+            command = replace(
+                command,
+                original={**command.original, "roas_facts": capability["roas_facts"]},
+            )
         key = (_ref_key(row.ref), _use_key(use) if use else None, field)
         if key in command_by_ref:
             return
@@ -1305,7 +1402,20 @@ def _expand(
                     observed_before=selection_record.created_at,
                 )
                 for owner in found:
-                    owners[_ref_key(owner.ref)] = owner
+                    key = _ref_key(owner.ref)
+                    owners[key] = owner
+                    reason = (
+                        "owner_selected"
+                        if owner.ref == row.ref
+                        else "campaign_adgroups_expanded"
+                        if row.kind == "campaign"
+                        else "campaign_budget_owner"
+                        if owner.kind == "campaign"
+                        else "adgroup_budget_owner"
+                    )
+                    budget_sources.setdefault(key, []).append(
+                        {"ref": _ref_dict(row.ref), "reason": reason}
+                    )
                 if not found:
                     items.append(
                         ExpandedItem(
@@ -1452,9 +1562,85 @@ def _expand(
                 )
             )
 
+    # CBO 一次写影响全部成员；任一成员未核实/被排除时禁止部分发送。
+    if mutation.field == "roas":
+        valid_refs = {
+            _ref_key(i.ref)
+            for i in items
+            if i.execution_result in {"PENDING", "NO_CHANGE"}
+            and i.final_value is not None
+        }
+        blocked = set()
+        for item in items:
+            facts = item.capability.get("roas_facts") or {}
+            if facts.get("budget_strategy") == "CBO" and any(
+                _ref_key(
+                    EntityRef(
+                        UUID(ref["tenant_id"]),
+                        ref["advertiser_id"],
+                        ref["kind"],
+                        ref["remote_id"],
+                    )
+                )
+                not in valid_refs
+                for ref in facts["affected_refs"]
+            ):
+                blocked.add(item.ref)
+        items = [
+            replace(
+                i,
+                command=None,
+                execution_result="UNSUPPORTED",
+                reason="roas_members_unverified",
+            )
+            if i.ref in blocked
+            else i
+            for i in items
+        ]
+        commands = [i.command for i in items if i.command is not None]
+
+    # CBO 有实际写入时，已等于目标的兄弟仍需登记这次写的受理与独立回读。
+    if mutation.field == "roas":
+        writing_series = set()
+        for item in items:
+            if item.execution_result == "PENDING" and (
+                item.capability.get("roas_facts") or {}
+            ).get("budget_strategy") == "CBO":
+                # CBO 正证据由已核实的父 Campaign 生成。
+                assert item.parent_ref is not None
+                writing_series.add((item.ref.advertiser_id, item.parent_ref.remote_id))
+        for index, item in enumerate(items):
+            if (
+                item.execution_result == "NO_CHANGE"
+                and item.reason == "no_change"
+                and item.parent_ref
+                and (item.ref.advertiser_id, item.parent_ref.remote_id)
+                in writing_series
+                and item.capability.get("roas_facts")
+            ):
+                # NO_CHANGE 是已计算目标值与原值相等的结果。
+                assert item.final_value is not None
+                command = _command(
+                    objects[_ref_key(item.ref)],
+                    field="roas",
+                    final=item.final_value,
+                    use=None,
+                )
+                command = replace(
+                    command,
+                    original={
+                        **command.original,
+                        "roas_facts": item.capability["roas_facts"],
+                    },
+                )
+                items[index] = replace(
+                    item, command=command, execution_result="PENDING", reason=None
+                )
+        commands = [i.command for i in items if i.command is not None]
+
     # Same series cannot receive divergent ROAS values in one management task.
     if mutation.field == "roas":
-        by_series: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+        by_series: dict[tuple[Any, ...], set[Decimal]] = defaultdict(set)
         for item in items:
             if item.final_value is None:
                 continue
@@ -1471,7 +1657,10 @@ def _expand(
                 if row is not None
                 else (item.ref.advertiser_id, item.ref.remote_id)
             )
-            by_series[series].add(str(item.final_value))
+            if (item.capability.get("roas_facts") or {}).get(
+                "budget_strategy"
+            ) == "CBO":
+                by_series[series].add(Decimal(str(item.final_value)))
         conflicts = {key for key, values in by_series.items() if len(values) > 1}
         if conflicts and frozen_record is None:
             raise DomainError(

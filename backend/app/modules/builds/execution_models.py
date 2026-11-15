@@ -70,6 +70,9 @@ class Submission(SQLModel, table=True):
     preview_id: UUID
     draft_id: UUID
     actor_id: UUID = Field(foreign_key="user.id")
+    authorization_stamp: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
     ordinal: int
     status: str = "QUEUED"
     expanded: bool = False

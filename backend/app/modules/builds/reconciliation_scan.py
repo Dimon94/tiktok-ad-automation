@@ -1,5 +1,6 @@
 """普通与新授权核查共用的有界跨页判定；只消费实际类型证据。"""
 
+import re
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -10,6 +11,8 @@ from app.integrations.tiktok.contracts.builds import (
     BuildPage,
     BuildReadQuery,
     BuildRecord,
+    NativeAdCreate,
+    NativeAdGroupCreate,
 )
 from app.modules.builds.readback_compare import (
     _equal,
@@ -30,7 +33,8 @@ def reconciliation_decision(
     item = matches[0]
     return (
         "CONFIRMED"
-        if item.intent is not None and not item.missing_fields
+        if (item.intent is not None or item.observed_native is not None)
+        and not item.missing_fields
         else "UNKNOWN"
     )
 
@@ -51,7 +55,41 @@ def _core_matches(query: BuildReadQuery, record: BuildRecord) -> bool:
 
 
 def _candidate(query: BuildReadQuery, record: BuildRecord) -> bool:
-    actual = record.intent or record.observed_adgroup
+    if query.remote_id is not None and (
+        query.native_series
+        or isinstance(query.intent, (NativeAdGroupCreate, NativeAdCreate))
+    ):
+        if record.remote_id != query.remote_id:
+            raise _invalid()
+        # 精确 ID 的缺字段/父级差异仍保存观察；比较器决定未决或不一致。
+        return True
+    if query.native_series or isinstance(
+        query.intent, (NativeAdGroupCreate, NativeAdCreate)
+    ):
+        # 名称只作请求定位：新冻结请求含草稿 UUID；最终仍须全字段 MATCH。
+        # M2 名称另含冻结 plan_key；完整名称比较仍禁止改挂兄弟计划。
+        # 历史名称不具唯一请求身份，不能自动认领。
+        # Native 冻结步骤只生成 Campaign/AdGroup/Ad，不生成 CTA。
+        assert query.intent.kind != "CTA"
+        if not re.search(
+            r"-R[0-9a-f]{32}(?::[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?"
+            r"(?:-G1|-A[0-9]+-C[0-9]+)?$",
+            query.intent.name,
+        ):
+            return False
+        actual = record.observed_native or record.intent
+        if actual is None:
+            return True
+        if actual.kind != query.intent.kind:
+            raise _invalid()
+        if actual.advertiser_id != query.intent.advertiser_id:
+            raise _invalid()
+        assert actual.kind != "CTA"
+        if actual.name != query.intent.name:
+            return False
+        # 同名错父、缺字段或差异也计入候选，避免忽略冲突后认领另一条。
+        return True
+    actual = record.observed_native or record.intent or record.observed_adgroup
     if (
         actual is None
         or actual.kind != query.intent.kind
@@ -76,7 +114,9 @@ def _candidate(query: BuildReadQuery, record: BuildRecord) -> bool:
 
 def conclusion(query: BuildReadQuery, record: BuildRecord) -> ScanState:
     comparison = compare_record(query=query, record=record)
-    if record.intent is not None and not record.missing_fields:
+    if (
+        record.intent is not None or record.observed_native is not None
+    ) and not record.missing_fields:
         if comparison == "MATCH" or query.remote_id is not None:
             return "COMPLETE"
     # CreateIntent只能表示ENABLE。真实停用状态与完整观察到的相同核心字段另记差异。
@@ -91,7 +131,10 @@ def conclusion(query: BuildReadQuery, record: BuildRecord) -> ScanState:
 
 
 def candidate_summary(query: BuildReadQuery, record: BuildRecord) -> dict[str, Any]:
+    from app.modules.builds.readback_compare import record_differences
+
     return {
+        "differences": record_differences(query, record),
         "remote_id": record.remote_id,
         "comparison": compare_record(query=query, record=record),
         "operation_status": record.operation_status,

@@ -48,6 +48,8 @@ export function useAdsQuery(search: AdsSearch, queryRevision = 0) {
         search.dimension
         ? previous
         : undefined,
+    // 查询失败由用户明确重查，避免自动重试反复等待同一失效快照。
+    retry: false,
     staleTime: 15_000,
     gcTime: 5 * 60_000,
     refetchOnWindowFocus: false,
@@ -127,9 +129,9 @@ export function useAdsQuery(search: AdsSearch, queryRevision = 0) {
     setAllMatching(false)
   }, [])
   return {
-    query,
+    query: { ...query, data: query.isError ? undefined : query.data },
     forceNextQuery,
-    snapshot: query.data?.snapshot ?? null,
+    snapshot: query.isError ? null : query.data?.snapshot ?? null,
     selection: {
       selected,
       excluded,

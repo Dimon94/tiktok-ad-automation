@@ -163,6 +163,7 @@ export function BuildSteps({ step }: { step: 1 | 2 | 3 }) {
 }
 
 export const reasonLabels: Record<string, string> = {
+  local_submission_cancelled: "已取消未发送步骤；已发送请求和已创建对象保留，待核实项仍需核查",
   continuation_pending:
     "原任务仍在执行或结果待核实，请先核实原任务后刷新续建预览",
   continuation_changed: "来源任务已变化，请刷新续建预览后重新核对",

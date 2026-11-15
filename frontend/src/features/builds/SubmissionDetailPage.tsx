@@ -275,6 +275,16 @@ function Detail({
           </CardContent>
         </Card>
       )}
+      {!!data.native_plans?.length && <Card><CardContent className="space-y-3 pt-6">
+        <h2>{data.status === "FAILED" ? "无计划完成" : "逐计划结果"}</h2>
+        <p>已创建对象可能产生消耗；未完整 MATCH 的计划不计完成。</p>
+        {data.native_plans.map(plan => <div key={plan.plan_key} className="border-b pb-2">
+          <p>计划 {plan.plan_key} · {plan.status}</p>
+          <p>账户 {String(plan.selection.advertiser_id)} · Series {String(plan.selection.native_series_id)} · 地区 {String(plan.selection.regions)}</p>
+          <p>{plan.reason_codes.join("、")}</p>
+          <p>{plan.remote_ids.map(o => `${o.kind}: ${o.remote_id}`).join(" · ")}</p>
+        </div>)}
+      </CardContent></Card>}
       <SubmissionProgress
         data={data}
         onTechnicalDetails={() => setTechnicalOpen(true)}
@@ -326,6 +336,8 @@ function Detail({
         bcId={bcId}
         submissionId={submissionId}
         recovery={data.recovery}
+        canCancel={data.can_cancel}
+        localCancelled={data.local_cancelled}
         write={write}
       />
       <Card className="min-w-0">

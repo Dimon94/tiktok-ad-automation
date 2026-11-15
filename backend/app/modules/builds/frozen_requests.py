@@ -3,7 +3,9 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from math import isfinite
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.builds import CREATE_HIGHEST_VALUE_EVENT
@@ -94,3 +96,79 @@ def cta_request(frozen: FrozenUnit, selected: set[str]) -> dict[str, Any]:
     if seen != selected:
         raise DomainError("cta_unavailable", "所选 CTA 缺少冻结推荐证据")
     return cta_portfolio(advertiser_id=frozen.advertiser_id, assets=content)
+
+
+# 原生执行计划为独立 tagged revision；历史 Mini FrozenUnit/decoder 原样保留。
+
+
+class FrozenRequestRevision(BaseModel):
+    """Additive JSON revision；Mini 的 V1/V2 payload 和解码器不改写。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    kind: Literal["NATIVE_SERIES_DIRECT_VIDEO"] = "NATIVE_SERIES_DIRECT_VIDEO"
+    revision: Literal["native-series-v1"] = "native-series-v1"
+    draft_revision: int
+    strategy_version_id: str
+    seed: int
+    constraint_revision: str
+    route: dict
+    selection: dict
+    checkpoint: dict
+    materials: list[dict]
+    campaign: dict
+    adgroup: dict
+    ads: list[dict]
+    occupancy: dict
+    config: dict
+
+
+def native_request_digest(payload: dict) -> str:
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()
+
+
+class NativePlanManifestBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    plan_key: str
+    selection: dict
+    readiness: dict
+    occupancy: dict | None = None
+    reason_codes: list[str]
+
+
+class IncludedNativePlan(NativePlanManifestBase):
+    status: Literal["INCLUDED"]
+    unit_id: str
+    request_digest: str
+
+
+class ExcludedNativePlan(NativePlanManifestBase):
+    status: Literal["EXCLUDED"]
+
+
+# 逐项联合限制批准范围；EXCLUDED 在持久化边界不能携带请求或 Unit。
+
+
+class NativeBatchManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    revision: Literal["native-series-batch-v1"]
+    draft_revision: int
+    route: dict
+    strategy: dict
+    daily_budget_sum: str
+    plans: list[
+        Annotated[
+            IncludedNativePlan | ExcludedNativePlan, Field(discriminator="status")
+        ]
+    ]
+
+
+def native_batch_budget(requests: list[dict]) -> Decimal:
+    """每个已纳入请求的 Campaign 仅计一次，广告数量不参与金额计算。"""
+    return sum((Decimal(p["campaign"]["budget"]) for p in requests), Decimal("0"))

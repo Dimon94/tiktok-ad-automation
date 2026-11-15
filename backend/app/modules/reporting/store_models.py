@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from app.modules.ads.models import AwareDateTime
+from app.modules.reporting.levels import BASIC_KINDS, state_sql
 
 # 所有日/小时事实共享的指标列；顺序即 API 与导出列序。
 METRIC_COLUMNS = (
@@ -36,6 +37,10 @@ METRIC_COLUMNS = (
     "revenue_d30",
     "revenue_total",
 )
+
+
+# 与 Campaign 数值选择同桶；直接发布完成后不再借广告层完成状态。
+CAMPAIGN_STATE_SQL = state_sql("campaign_day")
 
 
 def _num() -> Any:
@@ -85,9 +90,37 @@ class AdReportDay(_Fact, table=True):
     campaign_id: str = Field(max_length=64)
     adgroup_id: str = Field(max_length=64)
     campaign_automation_type: str | None = Field(default=None, max_length=64)
+    evidence: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
     ad_name: str | None = None
     campaign_name: str | None = None
     adgroup_name: str | None = None
+
+
+class ParentReportDay(_Fact, table=True):
+    """父级平台直接事实，与广告派生表及 qem trigger 物理隔离。"""
+
+    __tablename__ = "parent_report_day"
+    __table_args__ = (
+        Index(
+            "ix_parent_report_period",
+            "tenant_id",
+            "advertiser_id",
+            "level",
+            "stat_date",
+        ),
+        CheckConstraint(
+            "level IN ('campaign','adgroup')", name="ck_parent_report_level"
+        ),
+    )
+    level: str = Field(primary_key=True, max_length=16)
+    remote_id: str = Field(primary_key=True, max_length=128)
+    stat_date: date = Field(primary_key=True)
+    object_name: str | None = None
+    campaign_id: str | None = None
+    campaign_name: str | None = None
+    evidence: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
 
 
 class CreativeReportDay(_Fact, table=True):
@@ -118,6 +151,9 @@ class CreativeReportDay(_Fact, table=True):
     creative_id: str = Field(primary_key=True, max_length=128)
     campaign_id: str = Field(max_length=128)
     adgroup_id: str = Field(max_length=128)
+    evidence: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
     campaign_automation_type: str | None = Field(default=None, max_length=64)
 
 
@@ -171,12 +207,7 @@ class AccountReconciliationDay(SQLModel, table=True):
     checked_at: datetime = Field(sa_type=AwareDateTime)
 
 
-REPORT_KINDS = (
-    "creative_day",
-    "ad_day",
-    "campaign_hour",
-    "account_day",
-)
+REPORT_KINDS = tuple(sorted(BASIC_KINDS))
 
 
 class ReportDispatchCursor(SQLModel, table=True):
@@ -224,6 +255,11 @@ class ReportSyncState(SQLModel, table=True):
     # 完成时间只描述发布延迟；覆盖比较使用实际首页观测时点。
     observed_at: datetime | None = Field(default=None, sa_type=AwareDateTime)
     publication_version: int = Field(default=0, sa_type=BigInteger)
+    active_contract: str | None = Field(default=None, max_length=128)
+    publication_digest: str | None = Field(default=None, max_length=64)
+    publication_coordinates: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB)
+    )
     error_code: str | None = Field(default=None, max_length=128)
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=AwareDateTime

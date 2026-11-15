@@ -7,16 +7,17 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.integrations.tiktok.contracts.ads import EntityRef, MaterialUseRef
 from app.integrations.tiktok.contracts.carousel import CarouselCreativeIdentity
+from app.modules.reporting.metric_catalog import MetricContract
 
 # 素材经济事实源与行键已切换；缓存和冻结快照必须使用同一合同代数。
-MATERIAL_QUERY_CONTRACT = 2
+MATERIAL_QUERY_CONTRACT = 3
 
 Dimension = Literal["account", "campaign", "adgroup", "ad", "material", "drama"]
 # PARTIAL 表示部分合计：只合计有值的成员（跨日、跨账户或跨对象），缺失成员既不
@@ -56,6 +57,14 @@ def _finite(value: Decimal | None) -> Decimal | None:
     return value
 
 
+class AdContributionScope(BaseModel):
+    """广告贡献子集独立于当前维度 ids；不把对象搜索暗改成子集。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["ad"]
+    ids: tuple[str, ...] = Field(min_length=1)
+
+
 class ReportingFilter(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -64,6 +73,7 @@ class ReportingFilter(BaseModel):
     end_date: date
     advertiser_ids: tuple[str, ...] = ()
     ids: tuple[str, ...] = ()
+    contribution: AdContributionScope | None = None
     query: str | None = None
     ad_types: tuple[str, ...] = ()
     operation_statuses: tuple[str, ...] = ()
@@ -113,6 +123,13 @@ class ReportingFilter(BaseModel):
 
     @model_validator(mode="after")
     def validate_ranges(self) -> ReportingFilter:
+        if self.contribution and self.dimension not in {
+            "campaign",
+            "adgroup",
+            "account",
+            "drama",
+        }:
+            raise ValueError("ad contribution requires a parent reporting dimension")
         if self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
         if (
@@ -131,16 +148,54 @@ class ReportingFilter(BaseModel):
         return self
 
 
+class BucketStamp(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    advertiser_id: str
+    level: Literal["campaign", "adgroup", "ad"]
+    stat_date: date
+    contract_revision: str
+    publication_version: int
+    observed_at: datetime | None
+    published_at: datetime | None
+    last_attempt_status: Literal["PENDING", "COMPLETE", "STALE", "FAILED"]
+
+
+class MetricProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    level: Literal["campaign", "adgroup", "ad"]
+    source_kind: Literal["PLATFORM_DIRECT", "CHILD_DERIVED"]
+    contract_revision: str
+    scope_digest: str
+    buckets: tuple[BucketStamp, ...]
+    field_state_counts: dict[str, int]
+    reason: str | None
+    formula: str | None
+    known_count: int = 0
+    missing_count: int = 0
+    denominator_known_count: int | None = None
+    denominator_missing_count: int | None = None
+    local_ranges: tuple[str, ...] = ()
+    observations: tuple[dict[str, Any], ...] = ()
+    metric_contract: MetricContract | None = None
+
+
 class MetricVector(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     currency: str
     timezone: str
     attribution: str
+    level: (
+        Literal["campaign", "adgroup", "ad", "creative", "material_instance"] | None
+    ) = None
+    source_kind: Literal["PLATFORM_DIRECT", "CHILD_DERIVED"] | None = None
+    contract_revision: str | None = None
     # A 当前没有 optimization_goal 坐标；None 是唯一可发布值。
     optimization_goal: str | None = None
     values: dict[str, Decimal | None] = Field(default_factory=dict)
     availability: dict[str, Availability] = Field(default_factory=dict)
+    reasons: dict[str, str] = Field(default_factory=dict)
+    provenance: dict[str, MetricProvenance] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_published_metrics(self) -> MetricVector:
@@ -154,11 +209,40 @@ class MetricVector(BaseModel):
         return self
 
 
+class MaterialInstanceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    row_kind: Literal["INSTANCE", "COMPOSITE", "UNMAPPED_CREATIVE"] = "INSTANCE"
+    identity_reason: str | None = None
+    field_state_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+    key: dict[str, str | None]
+    creative_ids: tuple[str, ...]
+    fact_keys: tuple[str, ...]
+    metric_buckets: tuple[MetricVector, ...]
+    coverage: dict[str, object]
+    observations: tuple[dict[str, Any], ...]
+    evidence_digest: str
+
+
+class ParentAdControl(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: dict[str, str | None]
+    scope: Literal["FULL_PARENT_AD"] = "FULL_PARENT_AD"
+    metric_buckets: tuple[MetricVector, ...]
+    coverage: dict[str, object]
+    evidence_digest: str
+
+
 class ReportRow(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     row_key: str
     # 描述性轮播组合；指标仍以广告行唯一键发布。
+    material_instances: tuple[MaterialInstanceResult, ...] = ()
+    parent_controls: tuple[ParentAdControl, ...] = ()
+    reconciliation_rows: tuple[dict[str, Any], ...] = ()
+    evidence_digest: str = ""
     carousel_creatives: tuple[CarouselCreativeIdentity, ...] = ()
     display: dict[str, str | None] = Field(default_factory=dict)
     refs: tuple[EntityRef, ...] = ()
@@ -177,6 +261,8 @@ class QuerySnapshotPublic(BaseModel):
     snapshot_at: datetime
     expires_at: datetime
     filters: ReportingFilter
+    result_contract: dict[str, Any] = Field(default_factory=dict)
+    publication_map: tuple[dict[str, Any], ...] = ()
     publication_versions: dict[str, int] = Field(default_factory=dict)
 
 
@@ -290,7 +376,20 @@ class SyncRefreshPublic(BaseModel):
     status: Literal["QUEUED", "SYNC_DISABLED", "API_BINDING_REQUIRED"]
 
 
+class LevelSyncStatus(BaseModel):
+    level: Literal["campaign", "adgroup", "ad"]
+    stat_date: date
+    status: str
+    last_success_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+    observed_at: datetime | None = None
+    publication_version: int = 0
+    contract_revision: str | None = None
+    reason: str | None = None
+
+
 class SyncAccountStatus(BaseModel):
+    levels: tuple[LevelSyncStatus, ...] = ()
     advertiser_id: str
     timezone: str
     local_today: date | None = None
@@ -342,6 +441,14 @@ class MetricDefinitionPublic(BaseModel):
     material_name_zh: str | None
     basic_name_en: str
     material_name_en: str | None
+    levels: tuple[Literal["campaign", "adgroup", "ad"], ...] = (
+        "campaign",
+        "adgroup",
+        "ad",
+    )
+    source_kind: Literal["PLATFORM_DIRECT", "LOCAL_CALCULATION"]
+    contract: MetricContract
+    platform_observation: MetricContract | None = None
     basic_label: str
     material_label: str | None
 

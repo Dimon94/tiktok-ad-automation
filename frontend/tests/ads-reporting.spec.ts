@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { expect, test } from "@playwright/test"
 import { adsBoundary, BC_A, TENANT } from "./utils/adsBoundary"
 
@@ -792,4 +793,256 @@ test("空结果和首次加载提示显示在表头下方的列表内", async ({
   const header = await table.locator("thead").boundingBox()
   const cell = await empty.boundingBox()
   expect(Math.abs(cell!.y - (header!.y + header!.height))).toBeLessThan(2)
+})
+
+test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
+  test.skip(
+    !process.env.NATIVE_CAMPAIGN_TENANT,
+    "由 JB25 专用 PG/Redis runner 启动",
+  )
+  await page.addInitScript(() =>
+    localStorage.setItem("access_token", "local-test-actor"),
+  )
+  await page.goto(
+    `/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads?bc_id=123456&dimension=${process.env.NATIVE_LEVEL || "campaign"}&start_date=2026-11-13&end_date=2026-11-13`,
+  )
+  await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
+  await page.getByRole("option", { name: /123456/ }).click()
+  await page.getByRole("tab", { name: process.env.NATIVE_LABEL || "系列", exact: true }).click()
+  await page
+    .getByRole("textbox", { name: "开始日期", exact: true })
+    .fill("2026-11-13")
+  await page
+    .getByRole("textbox", { name: "结束日期", exact: true })
+    .fill("2026-11-13")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("button", { name: process.env.NATIVE_NAME || "Campaign 1", exact: true }),
+  }).first()
+  await expect(row).toBeVisible()
+  await expect(row).toContainText("PLATFORM_DIRECT")
+  if (process.env.NATIVE_REFRESH_STATUS) {
+    await expect(row).toContainText(`刷新概览 ${process.env.NATIVE_REFRESH_STATUS}`)
+    await expect(row).toContainText("tiktok_response_error")
+  }
+  await expect(row).toContainText("自然＋付费口径待确认")
+  await expect(row).toContainText("点击后24h")
+  await expect(row).toContainText("0.801234567890123456789")
+  await expect(row.locator('[data-metric="revenue_total"]')).toContainText("40")
+  await expect(row.locator('[data-metric="revenue_d0"]')).toContainText("30")
+  if (process.env.JB28_SCOPE_DEMO) {
+    for (const label of ["账户", "剧", "系列", "广告组", "广告"]) {
+      await page.getByRole("tab", { name: label, exact: true }).click()
+      const rows = page.locator("tbody tr").filter({ hasText: "PLATFORM_DIRECT" })
+      await expect(rows.first()).toBeVisible()
+      await expect(rows.first()).toContainText("匹配对象的全部数据")
+      await expect(rows.first()).toContainText("点击后24h")
+      if (label === "系列") {
+        await expect(rows).toHaveCount(50)
+        await expect(rows.nth(0)).toContainText("campaign1")
+        await expect(rows.nth(1)).toContainText("campaign2")
+        const firstIds = await rows.allTextContents()
+        await page.getByRole("button", { name: "下一页", exact: true }).click()
+        await expect(rows).toHaveCount(2)
+        const nextIds = await rows.allTextContents()
+        expect(nextIds.every((value) => !firstIds.includes(value))).toBeTruthy()
+        await page.getByRole("button", { name: "上一页", exact: true }).click()
+        await expect(rows).toHaveCount(50)
+      }
+      if (label === "账户") {
+        await expect(rows.first().locator('[data-metric="revenue_total"]')).toContainText("40")
+        await expect(rows.first()).toContainText("部分")
+        await expect(rows.first()).toContainText("NON_ADDITIVE")
+        await rows.first().getByText("逐日平台观察", { exact: true }).click()
+        await expect(rows.first().locator("pre")).toContainText("0.801234567890123456789")
+      }
+    }
+    await page.getByRole("tab", { name: "系列", exact: true }).click()
+    await page.getByLabel("广告贡献子集 ID", { exact: true }).fill("ad1")
+    await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+    const subset = page.locator("tbody tr").filter({ hasText: "仅所选广告贡献" }).first()
+    await expect(subset).toBeVisible()
+    await expect(subset.locator('[data-metric="spend"]')).toContainText("5")
+    await expect(subset.locator('[data-metric="revenue_total"]')).toContainText("—")
+    await expect(subset.locator('[data-metric="roas_total"]')).toContainText("—")
+    await page.getByRole("tab", { name: "广告", exact: true }).click()
+    await expect(page.locator("tbody tr").filter({ hasText: "匹配对象的全部数据" }).first()).toBeVisible()
+    await page.getByRole("tab", { name: "系列", exact: true }).click()
+    await expect(page.getByLabel("广告贡献子集 ID", { exact: true })).toHaveValue("")
+  }
+  if (process.env.NATIVE_LEVEL === "adgroup") {
+    for (const [label, name, revenue] of [["系列", "Campaign 1", "40"], ["广告", "Ad 1", "—"]]) {
+      await page.getByRole("tab", { name: label, exact: true }).click()
+      const item = page.getByRole("row").filter({ has: page.getByRole("button", { name, exact: true }) }).first()
+      await expect(item).toBeVisible()
+      await expect(item.locator('[data-metric="revenue_total"]')).toContainText(revenue)
+    }
+  }
+
+  if (process.env.JB29_REFRESH_BARRIER) {
+    test.setTimeout(90_000)
+    await page.getByRole("tab", { name: "系列", exact: true }).click()
+    const apply = page.waitForResponse(r => r.url().includes("/ads?") && r.request().method() === "GET" && r.status() === 200)
+    await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+    const baselineResponse = await apply
+    const baseline = await baselineResponse.json()
+    const snapshot = baseline.snapshot.snapshot_id
+    const first = baseline.items.find((r: { row_key: string }) => r.row_key === "acc-1:campaign:campaign1")
+    const firstRow = page.getByRole("row").filter({ has: page.getByRole("button", { name: "Campaign 1", exact: true }) }).first()
+    await firstRow.getByRole("button", { name: "Campaign 1", exact: true }).click()
+    await expect(page.getByTestId("frozen-report")).toContainText("报表查询时间")
+    writeFileSync(process.env.JB29_REFRESH_BARRIER, "refresh source through real Worker")
+    await expect.poll(() => existsSync(process.env.JB29_REFRESH_BARRIER + ".done"), { timeout: 30_000 }).toBeTruthy()
+    const oldUrl = new URL(baselineResponse.url())
+    oldUrl.searchParams.set("snapshot_id", snapshot)
+    oldUrl.searchParams.delete("force_refresh")
+    const old = await page.request.get(oldUrl.toString())
+    expect(old.ok(), await old.text()).toBeTruthy()
+    expect((await old.json()).items).toEqual(baseline.items)
+    const detail = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads/campaign/campaign1`, { params: {
+      bc_id: "123456", advertiser_id: "acc-1", snapshot_id: snapshot,
+    } })
+    expect(detail.ok()).toBeTruthy()
+    expect((await detail.json()).report_result.metric_buckets).toEqual(first.metric_buckets)
+    const independent = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads/campaign/campaign1`, { params: {
+      bc_id: "123456", advertiser_id: "acc-1",
+    } })
+    expect(independent.ok()).toBeTruthy()
+    expect((await independent.json()).report_snapshot.snapshot_id).not.toEqual(snapshot)
+    await page.getByRole("button", { name: "Close", exact: true }).click()
+    const notice = page.getByRole("button", { name: "有新数据，点击加载", exact: true })
+    await expect(notice).toBeVisible({ timeout: 30_000 })
+    await expect(firstRow.locator('[data-metric="revenue_total"]')).toContainText("40")
+    const latestResponse = page.waitForResponse(r => r.url().includes("/ads?") && r.status() === 200)
+    await notice.click()
+    const latest = await (await latestResponse).json()
+    expect(latest.snapshot.snapshot_id).not.toEqual(snapshot)
+    const oldMap = baseline.snapshot.publication_map
+    const newMap = latest.snapshot.publication_map
+    expect(newMap.find((r: { report_kind: string }) => r.report_kind === "campaign_day").publication_version).toBeGreaterThan(oldMap.find((r: { report_kind: string }) => r.report_kind === "campaign_day").publication_version)
+    const publication = JSON.parse(readFileSync(process.env.JB29_REFRESH_BARRIER + ".done", "utf8"))
+    for (const kind of ["adgroup_day", "ad_day"]) {
+      expect(publication.after[kind]).toEqual(publication.before[kind])
+      expect(newMap.find((r: { report_kind: string }) => r.report_kind === kind).publication_version).toEqual(publication.before[kind])
+    }
+    await expect(firstRow.locator('[data-metric="revenue_total"]')).toContainText("80", { timeout: 20_000 })
+  }
+
+})
+
+test("素材实例与独立父控制 @material-instance-live", async ({ page }) => {
+  test.skip(!process.env.JB34_CAPTURE, "由JB34专用PG/Redis runner启动")
+  await page.addInitScript(() =>
+    localStorage.setItem("access_token", "local-test-actor"),
+  )
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/tenants/") &&
+      response.url().includes("/ads?") &&
+      response.url().includes("dimension=material") &&
+      response.url().includes("query=vid1") &&
+      response.status() === 200,
+  )
+  await page.goto(
+    `/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads?bc_id=123456&dimension=material&query=vid1&start_date=2026-11-13&end_date=2026-11-13`,
+  )
+  await page.getByRole("combobox", { name: "当前 BC", exact: true }).click()
+  await page.getByRole("option", { name: /123456/ }).click()
+  await page.getByRole("tab", { name: "素材", exact: true }).click()
+  await page
+    .getByRole("textbox", { name: "开始日期", exact: true })
+    .fill("2026-11-13")
+  await page
+    .getByRole("textbox", { name: "结束日期", exact: true })
+    .fill("2026-11-13")
+  await page
+    .getByRole("textbox", { name: "搜索广告", exact: true })
+    .fill("vid1")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page
+    .getByRole("row")
+    .filter({
+      has: page.getByRole("button", { name: "vid1.mp4", exact: true }),
+    })
+    .first()
+  await expect(row).toBeVisible()
+  await expect(row.locator('[data-metric="spend"]')).toContainText("40")
+  await row.getByRole("button", { name: "vid1.mp4", exact: true }).click()
+  await page.getByRole("tab", { name: "素材", exact: true }).last().click()
+  const evidence = page.getByTestId("material-instance-result")
+  await expect(evidence).toContainText("素材投放实例 · vid1")
+  await expect(evidence).toContainText("消耗 40")
+  await expect(evidence).toContainText("ROAS 0.225")
+  await expect(evidence).toContainText("NOT_COMPARABLE")
+  await expect(evidence).toContainText("CREATIVE_COVERAGE_INCOMPLETE")
+  await expect(evidence).toContainText("父广告对照 · ad1")
+  await expect(evidence).toContainText("消耗 100")
+  await expect(evidence).toContainText("尚未确认")
+  await evidence.getByRole("button", { name: "查看父广告 · ad1", exact: true }).first().click()
+  await expect(page.getByRole("heading", { name: "广告ad1", exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "返回", exact: true }).last().click()
+  await page.getByRole("tab", { name: "素材", exact: true }).last().click()
+  await expect(page.getByTestId("material-instance-result")).toContainText("creative cr2 不可导航")
+  await page.getByRole("button", { name: "查看 creative · cr1", exact: true }).first().click()
+  await expect(page.getByText("当前目录属性", { exact: false })).toBeVisible()
+  await page.getByRole("button", { name: "返回", exact: true }).last().click()
+  await (await responsePromise).json()
+  await page.keyboard.press("Escape")
+  const { writeFileSync } = await import("node:fs")
+  await page.getByRole("textbox", { name: "搜索广告", exact: true }).fill("carousel")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  await page.getByRole("button", { name: "轮播创意 carousel", exact: true }).first().click()
+  await page.getByRole("tab", { name: "素材", exact: true }).last().click()
+  await expect(page.getByTestId("material-instance-result")).toContainText("轮播组合")
+  await expect(page.getByTestId("material-instance-result")).toContainText("特殊行不计入普通实例合计")
+  await page.keyboard.press("Escape")
+  const fullResponse = page.waitForResponse((response) =>
+    response.url().includes("/api/tenants/") &&
+    response.url().includes("/ads?") &&
+    response.url().includes("dimension=material") &&
+    !new URL(response.url()).searchParams.get("query") && response.status() === 200,
+  )
+  await page.getByRole("textbox", { name: "搜索广告", exact: true }).fill("")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const fullPage = await (await fullResponse).json()
+  const fullExportResponse = page.waitForResponse((response) =>
+    response.url().includes("/report-exports?") &&
+    response.request().method() === "POST" && response.status() === 200,
+  )
+  await page.getByRole("button", { name: "导出", exact: true }).click()
+  const fullExport = await (await fullExportResponse).json()
+  writeFileSync(process.env.JB34_CAPTURE!, JSON.stringify({
+    export_id: fullExport.id, page: fullPage,
+  }))
+  if (process.env.JB37_LIFECYCLE) {
+    const { existsSync, unlinkSync } = await import("node:fs")
+    const barrier = process.env.JB29_REFRESH_BARRIER!
+    const command = async (action: string, snapshotId?: string) => {
+      if (existsSync(`${barrier}.done`)) unlinkSync(`${barrier}.done`)
+      writeFileSync(barrier, JSON.stringify({ action, snapshot_id: snapshotId }))
+      await expect.poll(() => existsSync(`${barrier}.done`)).toBeTruthy()
+    }
+    const snapshotId = fullPage.snapshot.snapshot_id
+    for (const action of ["expire", "contract"]) {
+      await command(action, snapshotId)
+      const rejected = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads`, {
+        params: { bc_id: "123456", dimension: "material", start_date: "2026-11-13", end_date: "2026-11-13", snapshot_id: snapshotId },
+      })
+      expect(rejected.status()).toBe(409)
+      expect((await rejected.json()).detail).toBe(action === "expire" ? "query_snapshot_expired" : "query_snapshot_contract_changed")
+    }
+    await command("fault")
+    // 强制新查询穿过原缓存Worker，持久故障的第二次重查仍须明确失败。
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt === 0) await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+      else await page.getByRole("button", { name: "重新查询", exact: true }).click()
+      await expect(page.getByRole("alert").filter({ hasText: "请重新查询" })).toBeVisible()
+      await expect(page.getByRole("button", { name: "vid1.mp4", exact: true })).toHaveCount(0)
+    }
+    await command("repair")
+    const recovered = page.waitForResponse((r) => r.url().includes("/ads?") && r.url().includes("dimension=material") && r.status() === 200)
+    await page.getByRole("button", { name: "重新查询", exact: true }).click()
+    expect((await (await recovered).json()).snapshot.snapshot_id).not.toBe(snapshotId)
+    await expect(page.getByRole("button", { name: "vid1.mp4", exact: true }).first()).toBeVisible()
+  }
 })

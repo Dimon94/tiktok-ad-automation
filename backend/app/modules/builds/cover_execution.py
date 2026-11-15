@@ -95,6 +95,23 @@ def retry_ad_covers(
         base_ad_no=ad.base_ad_no,
         unit_id=unit.id,
     )
+    from uuid import UUID
+
+    payload = unit.scene_snapshot.get("native_request")
+    if payload:
+        # 仅默认封面位置接续视频封面任务；显式图片由原 IMAGE owner 管理。
+        selected = next(
+            a
+            for a in payload["ads"]
+            if (a["base_ad_no"], a["creative_no"]) == (ad.base_ad_no, ad.creative_no)
+        )
+        material_ids = [
+            UUID(m["material_id"])
+            for m in selected["materials"]
+            if not m.get("cover_material_id")
+        ]
+        if not material_ids:
+            return
     jobs = session.exec(
         select(MaterialCoverJob)
         .join(
@@ -130,6 +147,12 @@ def validate_ad_assets(
 ) -> None:
     """Pure local final fence, after admission and immediately before AD arming."""
     from app.modules.materials.covers import verified_cover_image_id
+
+    if unit.scene_snapshot.get("native_request"):
+        from .native_execution import validate_ad_assets as validate_native_assets
+
+        validate_native_assets(session, step=step, unit=unit, body=body)
+        return
 
     ad = session.exec(
         select(PlannedAd).where(

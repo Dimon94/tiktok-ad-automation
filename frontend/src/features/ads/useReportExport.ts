@@ -64,7 +64,7 @@ export function useReportExport(
         }
         if (stale()) return
         if (status !== "COMPLETE")
-          throw new Error(status === "EXPIRED" ? "导出文件已过期" : "导出失败")
+          throw new Error(status === "EXPIRED" ? "导出文件已过期" : "导出失败，请重新查询后重新导出")
         const file = (
           await AdsReportingService.downloadReportExport({
             path: { tenant_id: tenantId, export_id: created.id },

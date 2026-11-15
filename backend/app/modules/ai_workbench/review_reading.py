@@ -24,6 +24,51 @@ CATEGORIES = (
 )
 
 
+def _metric_buckets_for_reading(buckets: list) -> list:
+    """复盘读取指标值、可用性和原因；Native 深层来源完整保存在冻结归档。"""
+    return [
+        {
+            **{key: value for key, value in bucket.items() if key != "provenance"},
+            "provenance_details_archived": bool(bucket.get("provenance")),
+        }
+        for bucket in buckets
+    ]
+
+
+def _report_row_for_reading(row: dict) -> dict:
+    result = dict(row)
+    if "metric_buckets" in row:
+        result["metric_buckets"] = _metric_buckets_for_reading(row["metric_buckets"])
+    for key in ("material_instances", "parent_controls"):
+        if key in row:
+            result[key] = [_report_row_for_reading(child) for child in row[key]]
+    if "observations" in row:
+        result.pop("observations")
+        result["observations_archived"] = bool(row["observations"])
+    if "platform_roas_observations" in row.get("display", {}):
+        result["display"] = {
+            key: value
+            for key, value in row["display"].items()
+            if key != "platform_roas_observations"
+        }
+        result["provenance_details_archived"] = True
+    return result
+
+
+def _report_for_reading(report: dict) -> dict:
+    result = dict(report)
+    if "summary" in report:
+        result["summary"] = {
+            **report["summary"],
+            "buckets": _metric_buckets_for_reading(
+                report["summary"].get("buckets", [])
+            ),
+        }
+    if "rows" in report:
+        result["rows"] = [_report_row_for_reading(row) for row in report["rows"]]
+    return result
+
+
 def split_evidence(frozen: dict) -> tuple[dict, dict]:
     """复用已鉴权且有截止时间的冻结结果；正文独立保存，不随提示词截断丢失。"""
     store = {}
@@ -55,7 +100,9 @@ def split_evidence(frozen: dict) -> tuple[dict, dict]:
         )
         if report["dimension"] == "account":
             summaries.append(
-                {key: value for key, value in report.items() if key != "rows"}
+                _report_for_reading(
+                    {key: value for key, value in report.items() if key != "rows"}
+                )
                 | {"id": source_id}
             )
     for category in CATEGORIES:
@@ -179,6 +226,17 @@ def read_for_task(
         "next_offset": offset + limit if len(rows) > offset + limit else None,
         "frozen_rows": len(rows),
     }
+    if source["category"] == "reporting":
+        result["metadata"] = _report_for_reading(metadata)
+        result["rows"] = [_report_row_for_reading(row) for row in result["rows"]]
+    elif source["category"] == "attribution":
+        result["rows"] = [
+            {
+                **row,
+                "reports": [_report_for_reading(report) for report in row["reports"]],
+            }
+            for row in result["rows"]
+        ]
     # 只有成功返回的页 ID 可引用；索引/未读页不获得权限，重复读取幂等。
     if len(json.dumps(result, ensure_ascii=False).encode()) > 64000:
         raise DomainError(

@@ -9,9 +9,9 @@ from sqlmodel import select
 
 from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.report_reader import RawReportPage
+from app.modules.reporting.levels import BASIC_KINDS as BASIC_KINDS
 from app.modules.reporting.store_models import ReportSyncPage
 
-BASIC_KINDS = frozenset({"ad_day", "creative_day", "account_day", "campaign_hour"})
 _METHODS = BASIC_KINDS | {"campaign_day"}
 
 
@@ -87,14 +87,6 @@ class CheckpointReader:
                 }
                 self.job.progress = self.job.progress | {"basic_paging": self.progress}
                 return result
-            # 单页完整主报表当场发布，无需为每轮热刷增加暂存写入。系列拆分仍要续传。
-            if (
-                not self.progress["pages"]
-                and name == self.job.kind
-                and page == 1
-                and result.next_page is None
-            ):
-                return result
             previous = self.session.exec(
                 select(ReportSyncPage).where(
                     ReportSyncPage.job_id == self.job.id,
@@ -129,6 +121,14 @@ class CheckpointReader:
                 != result.total_number
             ):
                 raise DomainError("report_response_invalid", "报表完整分页与行数不一致")
+            # 单页完整主报表当场发布，无需为每轮热刷增加暂存写入。系列拆分仍要续传。
+            if (
+                not self.progress["pages"]
+                and name == self.job.kind
+                and page == 1
+                and result.next_page is None
+            ):
+                return result
             index = len(self.progress["pages"]) + 1
             self.session.add(
                 ReportSyncPage(

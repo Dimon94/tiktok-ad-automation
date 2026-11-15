@@ -371,7 +371,7 @@ def append_version(
 
 
 def get_version_record(
-    session: Session, *, context: TenantContext, version_id: UUID
+    session: Session, *, context: TenantContext, version_id: UUID | None
 ) -> VersionPublic:
     _authorize(session, context)
     row = session.exec(

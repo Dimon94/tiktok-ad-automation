@@ -34,10 +34,10 @@ def _step(session: Session, claim: StepClaim) -> ExecutionStep:
     step = session.exec(
         select(ExecutionStep)
         .where(
-            ExecutionStep.id == claim.step_id,
-            ExecutionStep.tenant_id == claim.tenant_id,
-            ExecutionStep.submission_id == claim.submission_id,
-            ExecutionStep.unit_id == claim.unit_id,
+            col(ExecutionStep.id) == claim.step_id,
+            col(ExecutionStep.tenant_id) == claim.tenant_id,
+            col(ExecutionStep.submission_id) == claim.submission_id,
+            col(ExecutionStep.unit_id) == claim.unit_id,
         )
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -143,6 +143,7 @@ def arm_request(
         session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="build"
     )
     step = _step(session, claim)
+    require_local_send_open(session, step)
     from .continuation import require_execution_owner, validate_execution_source
 
     require_execution_owner(session, step)
@@ -265,6 +266,7 @@ def record_created(session: Session, *, claim: StepClaim, result: CreatedObject)
         from app.modules.builds.created_directory import publish_created_object
 
         publish_created_object(session, step=step, route=claim.route)
+        ensure_native_readback(session, step)
     return step.status
 
 
@@ -483,6 +485,12 @@ def record_rejected(
     count = previous + 1 if type(previous) is int and previous >= 0 else 1
     counts[key] = count
     retryable = count <= _BUSINESS_REJECTION_RETRIES[remote_code]
+    from .preview_models import BuildUnit
+
+    unit = session.get(BuildUnit, step.unit_id)
+    if unit is not None and "native_request" in unit.scene_snapshot:
+        # 原生明确拒绝保留原请求和证据，由操作者处理，不自动重试拒绝。
+        retryable = False
     delay = min(30, 5 * 2 ** (count - 1))
     step.resolved = {**step.resolved, "business_rejection_counts": counts}
     evidence(
@@ -676,12 +684,12 @@ def approved_absent_resend(session: Session, *, step: ExecutionStep) -> bool:
 def first_armed_attempt_id(session: Session, *, step: ExecutionStep) -> UUID:
     """冻结正文 request_id 对应的首次发出 attempt；所有发出证据正文摘要相同。"""
     value = session.exec(
-        select(StepEvidence.summary)
+        select(col(StepEvidence.summary))
         .where(
-            StepEvidence.tenant_id == step.tenant_id,
-            StepEvidence.submission_id == step.submission_id,
-            StepEvidence.step_id == step.id,
-            StepEvidence.conclusion == "REQUEST_ARMED",
+            col(StepEvidence.tenant_id) == step.tenant_id,
+            col(StepEvidence.submission_id) == step.submission_id,
+            col(StepEvidence.step_id) == step.id,
+            col(StepEvidence.conclusion) == "REQUEST_ARMED",
         )
         .order_by(col(StepEvidence.observed_at), col(StepEvidence.id))
         .limit(1)
@@ -729,3 +737,50 @@ def safely_retryable_attempt(session: Session, *, step: ExecutionStep) -> bool:
             {"step": step.id, "tenant": step.tenant_id},
         ).scalar_one()
     )
+
+
+def require_local_send_open(session: Session, step: ExecutionStep) -> None:
+    # 与取消共享提交行锁。锁内完成发送准入的请求属于在途；回执始终照常落账。
+    row = session.exec(
+        select(Submission)
+        .where(
+            col(Submission.id) == step.submission_id, col(Submission.tenant_id) == step.tenant_id
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if row.progress.get("local_cancelled"):
+        raise DomainError(
+            "local_submission_cancelled", "已取消未发送步骤；已发送请求仍需核查"
+        )
+
+
+def ensure_native_readback(session: Session, step: ExecutionStep) -> None:
+    unit = session.get(BuildUnit, step.unit_id)
+    # 执行步骤的 unit_id 外键保证冻结单元存在。
+    assert unit is not None
+    if (
+        step.kind in {"CAMPAIGN", "ADGROUP", "AD"}
+        and "native_request" in unit.scene_snapshot
+    ):
+        from uuid import uuid5
+
+        key = step.step_key + ":readback"
+        read_id = uuid5(step.submission_id, key)
+        if session.get(ExecutionStep, read_id) is None:
+            session.add(
+                ExecutionStep(
+                    id=read_id,
+                    tenant_id=step.tenant_id,
+                    submission_id=step.submission_id,
+                    preview_id=step.preview_id,
+                    bc_id=step.bc_id,
+                    unit_id=step.unit_id,
+                    kind="READBACK",
+                    step_key=key,
+                    parent_step_id=step.id,
+                    group_id=step.group_id,
+                    planned_ad_id=step.planned_ad_id,
+                )
+            )
+            session.flush()

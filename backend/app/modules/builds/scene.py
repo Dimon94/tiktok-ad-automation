@@ -99,10 +99,21 @@ def _account_scope(
     bc_id: str,
     advertiser_id: str,
     minis_id: str | None,
+    native_selection: dict[str, Any] | None = None,
     route: FrozenTikTokRoute,
     lock: bool = False,
     media_kind: MediaKind = "VIDEO",
 ) -> dict[str, Any]:
+    if native_selection is not None:
+        from .selection_schemas import NativeSeriesSelection
+
+        native_selection = NativeSeriesSelection.model_validate(
+            native_selection
+        ).model_dump(mode="json")
+        if native_selection["advertiser_id"] != advertiser_id or media_kind != "VIDEO":
+            raise DomainError(
+                "connection_bc_mismatch", "原生目的地与当前账户或媒体类型不一致"
+            )
     if route.tenant_id != context.tenant_id or route.bc_id != bc_id:
         raise DomainError("connection_bc_mismatch", "场景路由不属于当前租户或 BC")
     chosen = route.connection_id
@@ -152,6 +163,8 @@ def _account_scope(
         "timezone": access.timezone,
         "minis_id": minis_id,
     }
+    if native_selection is not None:
+        business["native_selection"] = native_selection
     return {
         "access": AccountAccess(
             advertiser_id=advertiser_id,
@@ -271,6 +284,16 @@ def _merge(
     first: bool,
     last: bool,
 ) -> dict[str, Any]:
+    if resource.startswith("native_"):
+        if not first and (
+            previous.get("total_number") != page["total_number"]
+            or previous.get("total_page") != page["total_page"]
+        ):
+            raise DomainError("scene_pagination_changed", "原生身份分页发生变化")
+        return {
+            **page,
+            "items": ([] if first else previous.get("items", [])) + page["items"],
+        }
     if resource in {"cta", "vbo", "regions"}:
         return page
     if not first and (
@@ -586,7 +609,55 @@ def read_scene_context(
     selected_identity: dict[str, Any] | None = None,
     media_kind: MediaKind = "VIDEO",
     minis_id: str | None = None,
+    native_selection: dict[str, Any] | None = None,
+    draft_revision: int | None = None,
 ) -> SceneContext:
+    if native_selection is not None:
+        if native_selection.get("advertiser_id") != advertiser_id:
+            raise DomainError("account_access_denied", "原生场景目标账户不一致")
+        from types import SimpleNamespace
+
+        from .scene_jobs import native_checkpoint
+
+        if draft_revision is None:
+            raise DomainError("draft_revision_conflict", "原生场景必须绑定草稿版本")
+        checkpoint = native_checkpoint(
+            session,
+            context=context,
+            draft=SimpleNamespace(
+                scene_selection=native_selection, bc_id=bc_id, revision=draft_revision
+            ),
+            route=route,
+        )
+        selection = checkpoint.selection
+        # 场景支持与逐条素材就绪分离；后续规划器仍须检查素材证据。
+        return SceneContext(
+            supported=checkpoint.state == "READY",
+            reason_codes=tuple(
+                checkpoint.reason_codes
+                or ([] if checkpoint.state == "READY" else ["scene_evidence_missing"])
+            ),
+            capability_revision=checkpoint.scope_basis,
+            evidence_ids=tuple(checkpoint.evidence_ids),
+            adgroup_fields={
+                "promotion_type": "NATIVE_SERIES",
+                "native_series_id": selection.native_series_id,
+                "series_identity": selection.series_identity.model_dump(
+                    exclude_none=True
+                )
+                if selection.series_identity
+                else None,
+                "region_codes": selection.regions,
+            },
+            creative_fields={
+                "creative_identity": selection.creative_identity.model_dump(
+                    exclude_none=True
+                )
+                if selection.creative_identity
+                else None
+            },
+            field_constraints={"native_checkpoint": checkpoint.model_dump(mode="json")},
+        )
     # 每个链接独立核验版权方与 Mini，不借别的剧目链接取得权限。
     # 只有同账户、同 Mini、同冻结路由的场景事实可在本地短批次复用。
     with session.no_autoflush:

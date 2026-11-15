@@ -235,7 +235,11 @@ def start_capability_refresh(
             CapabilityJob.adapter_contract_revision == conn.adapter_contract_revision,
             CapabilityJob.directory_basis == basis,
             (col(CapabilityJob.status) == "PENDING")
-            | ((col(CapabilityJob.status) == "COMPLETE") & current_facts_fresh),
+            | (
+                (col(CapabilityJob.status) == "COMPLETE")
+                & (col(CapabilityJob.expires_at) > datetime.now(UTC))
+                & current_facts_fresh
+            ),
         )
         .order_by(col(CapabilityJob.created_at).desc())
         .limit(1)

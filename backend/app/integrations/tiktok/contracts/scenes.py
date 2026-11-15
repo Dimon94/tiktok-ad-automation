@@ -17,6 +17,7 @@ from app.modules.builds.scene_schemas import SceneResource
 from .accounts import AccountRoleFact
 from .builds import IdentityFields
 from .common import CallEvidence
+from .native_scenes import NativeDirectoryFacts
 
 Text = Annotated[StrictStr, Field(min_length=1, max_length=255)]
 LongText = Annotated[StrictStr, Field(min_length=1, max_length=2048)]
@@ -147,11 +148,23 @@ class RegionFacts(FrozenFacts):
         return self
 
 
-SceneFacts = RoleFacts | IdentityFacts | MinisFacts | CtaFacts | VboFacts | RegionFacts | BudgetFacts
+SceneFacts = (
+    NativeDirectoryFacts
+    | RoleFacts
+    | IdentityFacts
+    | MinisFacts
+    | CtaFacts
+    | VboFacts
+    | RegionFacts
+    | BudgetFacts
+)
 FACT_TYPES: dict[SceneResource, type[SceneFacts]] = {
     "account_roles": RoleFacts,
     "identity": IdentityFacts,
     "minis": MinisFacts,
+    "native_series": NativeDirectoryFacts,
+    "native_tt_identity": NativeDirectoryFacts,
+    "native_bc_identity": NativeDirectoryFacts,
     "cta": CtaFacts,
     "vbo": VboFacts,
     "regions": RegionFacts,
@@ -177,7 +190,10 @@ class ScenePage(FrozenFacts):
     def validate_resource(self) -> Self:
         if type(self.facts) is not FACT_TYPES[self.resource]:
             raise ValueError("scene resource/facts mismatch")
-        if isinstance(self.facts, IdentityFacts):
+        if isinstance(self.facts, NativeDirectoryFacts):
+            if self.last == self.facts.has_more:
+                raise ValueError("inconsistent native page")
+        elif isinstance(self.facts, IdentityFacts):
             if self.page != 1 or not self.last:
                 raise ValueError("unpaged identity resource")
         elif isinstance(self.facts, PaginatedFacts):

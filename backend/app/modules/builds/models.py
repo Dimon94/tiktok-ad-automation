@@ -72,7 +72,7 @@ class BuildDraft(SQLModel, table=True):
         ),
         CheckConstraint("revision > 0", name="ck_build_draft_revision"),
         CheckConstraint(
-            "COALESCE((strategy_version_id IS NOT NULL AND provider_connection_id IS NOT NULL AND application_id IS NOT NULL) OR (link_config->>'source_mode'='CAMPAIGN_COPY' AND strategy_version_id IS NULL AND provider_connection_id IS NULL AND application_id IS NULL),false)",
+            "COALESCE((scene_selection->>'kind'='NATIVE_SERIES_DIRECT_VIDEO' AND strategy_version_id IS NOT NULL AND provider_connection_id IS NULL AND application_id IS NULL AND link_config='{}'::jsonb AND media_kind='VIDEO') OR ((scene_selection IS NULL OR scene_selection->>'kind'='MINI_APP') AND ((strategy_version_id IS NOT NULL AND provider_connection_id IS NOT NULL AND application_id IS NOT NULL) OR (link_config->>'source_mode'='CAMPAIGN_COPY' AND strategy_version_id IS NULL AND provider_connection_id IS NULL AND application_id IS NULL))),false)",
             name="ck_draft_source_references",
         ),
         CheckConstraint(
@@ -82,13 +82,6 @@ class BuildDraft(SQLModel, table=True):
         CheckConstraint(
             "status IN ('DRAFT','PREPARING','READY','BLOCKED')",
             name="ck_build_draft_status",
-        ),
-        CheckConstraint(
-            "(identity_id IS NULL AND identity_type IS NULL AND identity_authorized_bc_id IS NULL) "
-            "OR (identity_id IS NOT NULL AND identity_type IN ('TT_USER','BC_AUTH_TT') "
-            "AND ((identity_type='TT_USER' AND identity_authorized_bc_id IS NULL) "
-            "OR (identity_type='BC_AUTH_TT' AND identity_authorized_bc_id IS NOT NULL)))",
-            name="ck_build_draft_identity",
         ),
         Index("ix_build_draft_tenant_page", "tenant_id", "bc_id", "created_at", "id"),
     )
@@ -105,6 +98,9 @@ class BuildDraft(SQLModel, table=True):
     )
     applied_image_rule_revision: int | None = None
     structure_override: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
+    )
+    scene_selection: dict[str, Any] | None = Field(
         default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
     )
     revision: int = 1
@@ -124,9 +120,6 @@ class BuildDraft(SQLModel, table=True):
     targeting_override: dict[str, Any] | None = Field(
         default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
     )
-    identity_id: str | None = Field(default=None, max_length=255)
-    identity_type: str | None = Field(default=None, max_length=32)
-    identity_authorized_bc_id: str | None = Field(default=None, max_length=255)
     identity_display_name: str | None = Field(default=None, max_length=255)
     identity_username: str | None = Field(default=None, max_length=255)
     created_by: UUID = Field(foreign_key="user.id")

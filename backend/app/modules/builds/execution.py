@@ -1,5 +1,6 @@
 """One bounded create or local material dependency per committed attempt."""
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any
@@ -59,7 +60,10 @@ from app.modules.builds.scene import read_scene_context
 from app.modules.builds.scene_jobs import ensure_scene_preparation
 from app.modules.builds.submissions import claim_step, load_execution_unit
 from app.modules.materials.distribution import ensure_target_asset
-from app.modules.tenants.permissions import require_tenant
+from app.modules.tenants.permissions import (
+    require_build_authorization_stamp,
+    require_tenant,
+)
 
 SCENE_FIELDS = (
     "campaign_fields",
@@ -96,7 +100,9 @@ def _require_bounded_worker() -> None:
         raise DomainError("build_worker_unbounded", "广告执行需要有界后台任务")
 
 
-def _frozen(session: Session, context: TenantContext, claim: StepClaim) -> FrozenUnit:
+def _frozen(
+    session: Session, context: TenantContext, claim: StepClaim, *, refreshing=False
+) -> FrozenUnit:
     unit = load_execution_unit(
         session,
         context=context,
@@ -133,12 +139,30 @@ def _frozen(session: Session, context: TenantContext, claim: StepClaim) -> Froze
         unit.frozen.timezone,
     ):
         raise DomainError("account_metadata_changed", "账户币种或时区已变化")
+    if unit.frozen.native_request is not None:
+        require_build_authorization_stamp(
+            session, submission=session.get(Submission, claim.submission_id)
+        )
+        from .native_execution import validate
+        from .preview_models import BuildPreview
+
+        validate(
+            session,
+            context=context,
+            preview=session.get(BuildPreview, claim.preview_id),
+            route=route,
+            refreshing=refreshing,
+            unit_id=claim.unit_id,
+        )
     return unit.frozen
 
 
 def _current_scene(
     session: Session, context: TenantContext, frozen: FrozenUnit
 ) -> None:
+    if frozen.native_request is not None:
+        # _frozen 在每次物理发送边界已复核原生 SceneContext 和当前 revision。
+        return
     creative_info = frozen.scene_snapshot.get("creative_fields", {}).get(
         "creative_info", {}
     )
@@ -278,6 +302,17 @@ def prepare_request(
     """Only local reads / durable material preparation; never calls an SDK."""
     step = session.get(ExecutionStep, claim.step_id)
     assert step
+    if frozen.native_request is not None:
+        from .native_execution import prepare
+
+        return prepare(
+            session,
+            step=step,
+            frozen=frozen,
+            parent_id=_parent(session, step)
+            if step.kind in {"ADGROUP", "AD"}
+            else None,
+        )
     snapshot = frozen.scene_snapshot
     if step.kind == "CTA":
         first = session.exec(
@@ -730,13 +765,36 @@ def _prepare_scene_dependency(
         if not active_attempt(step, claim, phase="CLAIMED"):
             return step.status
         try:
-            frozen = _frozen(session, context, claim)
+            frozen = _frozen(session, context, claim, refreshing=True)
+            if frozen.native_request:
+                from app.core.config import settings
+
+                # 依赖等待沿既有 Scene 有效期设上界；不能无限新建刷新代次。
+                started = step.resolved.get("scene_refresh_started_at")
+                now = datetime.now(UTC)
+                if started and now - datetime.fromisoformat(started) >= timedelta(
+                    seconds=settings.SCENE_MAX_AGE_SECONDS
+                ):
+                    return finish_local(
+                        session,
+                        claim=claim,
+                        status="FAILED",
+                        code="scene_refresh_exhausted",
+                    )
+                step.resolved = {
+                    **step.resolved,
+                    "scene_refresh_started_at": started or now.isoformat(),
+                }
+                session.add(step)
             preparation = ensure_scene_preparation(
                 session,
                 context=context,
                 bc_id=frozen.bc_id,
                 advertiser_id=frozen.advertiser_id,
                 link_id=frozen.link_id,
+                native_selection=frozen.native_request["selection"]
+                if frozen.native_request
+                else None,
                 **(
                     {"minis_id": frozen.scene_snapshot["campaign_copy"]["minis_id"]}
                     if frozen.scene_snapshot.get("campaign_copy", {}).get("version")
@@ -833,6 +891,19 @@ def process_step(
             or step.phase == "REQUEST_ARMED"
         ):
             return step.status
+        if (submission.progress.get("local_cancelled") and step.kind != "READBACK"
+                and step.status in {"PENDING", "QUEUED"}
+                and step.request_body is None):
+            step.status, step.phase, step.error_code = (
+                "FAILED",
+                "DONE",
+                "local_submission_cancelled",
+            )
+            step.dispatch_revision += 1
+            step.dispatch_id = None
+            evidence(session, step=step, claim=None, conclusion="LOCAL_CANCELLED")
+            session.add(step)
+            return step.status
         if step.kind == "READBACK":
             raise DomainError("invalid_build_kind", "回读步骤需要只读执行器")
         if step.kind == "MATERIAL" and step.status in {
@@ -893,6 +964,19 @@ def process_step(
             frozen = _frozen(session, context, claim)
             if claim.kind == "MATERIAL":
                 assert claim.material_id
+                if frozen.native_request:
+                    # 原生已在 prepare 核实逐位置封面；复用当前正证据，不能为显式封面准备默认图。
+                    mapping = next(
+                        m
+                        for m in frozen.native_request["materials"]
+                        if m["material_id"] == str(claim.material_id)
+                    )
+                    return finish_local(
+                        session,
+                        claim=claim,
+                        status="SUCCEEDED",
+                        resolved={"mapping": mapping},
+                    )
                 ready = ensure_target_asset(
                     session,
                     context=context,
@@ -1023,12 +1107,22 @@ def process_step(
                     delay=15,
                 )
 
-        def before_request() -> None:
-            # 握手、tools/list、业务发送各自重查；事务不跨任何网络等待。
+        @contextmanager
+        def send_scope(*, physical=True):
+            # SDK 创建在最终校验后持锁到物理调用结束，撤权不能插入其间。
             with (
-                bounded_session(database_engine, task_deadline=task_deadline) as check,
+                bounded_session(
+                    database_engine,
+                    task_deadline=task_deadline,
+                    # 物理请求可以超过默认 5 秒；锁期限必须覆盖有界任务剩余时间。
+                    max_resource_seconds=HARD_LIMIT if physical else 5.0,
+                ) as check,
                 check.begin(),
             ):
+                if frozen.native_request is not None:
+                    from .native_execution import lock_send_authority
+
+                    lock_send_authority(check, context=context, claim=claim)
                 step = check.exec(
                     select(ExecutionStep)
                     .where(
@@ -1042,6 +1136,9 @@ def process_step(
                     step, claim, phase="REQUEST_ARMED" if armed else "CLAIMED"
                 ):
                     raise DomainError("execution_lease_lost", "执行租约已变化")
+                from .execution_state import require_local_send_open
+
+                require_local_send_open(check, step)
                 from .continuation import (
                     require_execution_owner,
                     validate_execution_source,
@@ -1058,6 +1155,11 @@ def process_step(
                     unit = check.get(BuildUnit, claim.unit_id)
                     assert unit is not None
                     validate_ad_assets(check, step=step, unit=unit, body=body)
+                yield
+
+        def before_request() -> None:
+            with send_scope(physical=False):
+                pass
 
         with admitted_build_call(
             redis_client,
@@ -1072,6 +1174,7 @@ def process_step(
                 route=claim.route,
                 task_deadline=task_deadline,
                 before_request=before_request,
+                send_scope=send_scope if frozen.native_request is not None else None,
             ) as gateway:
                 carousel_proof = None
                 if claim.kind == "AD" and frozen.media_kind == "CAROUSEL":

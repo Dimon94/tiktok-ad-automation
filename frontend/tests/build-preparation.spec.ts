@@ -2822,3 +2822,286 @@ test("取链全部失败时说明先恢复链接，不把未启动的小程序�
     page.getByRole("button", { name: "生成搭建预览" }),
   ).toBeDisabled()
 })
+
+test("原生草稿原子保存双角色身份与地区，不要求 Mini 链接", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
+  await pickInputs(page)
+  await page
+    .getByRole("radio", { name: "原生 Series 直接视频", exact: true })
+    .check()
+  await page.getByLabel("精确 Series ID", { exact: true }).fill("native-exact")
+  await page.getByLabel("投放地区", { exact: true }).fill("US,CA")
+  await page
+    .getByLabel("series_identity ID", { exact: true })
+    .fill("series-owner")
+  await page
+    .getByLabel("creative_identity ID", { exact: true })
+    .fill("creative-owner")
+  await page
+    .getByLabel("广告账户", { exact: true })
+    .fill("90071992547409936666")
+  await expect(
+    page.getByRole("combobox", { name: "版权方连接", exact: true }),
+  ).toHaveCount(0)
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (request) =>
+            request.method === "POST" && request.path.endsWith("/build-drafts"),
+        ).length,
+    )
+    .toBe(1)
+  const saved = api.requests.find(
+    (request) =>
+      request.method === "POST" && request.path.endsWith("/build-drafts"),
+  )!.body
+  expect(saved).toMatchObject({
+    provider_connection_id: null,
+    application_id: null,
+    drama_lines: [],
+    scene_selection: {
+      kind: "NATIVE_SERIES_DIRECT_VIDEO",
+      native_series_id: "native-exact",
+      regions: ["US", "CA"],
+      series_identity: { identity_id: "series-owner" },
+      creative_identity: { identity_id: "creative-owner" },
+    },
+  })
+})
+
+test("原生目录首次发现到双身份选择、精确 Series 保存与刷新回显", async ({
+  page,
+}) => {
+  const api = await buildsBoundary(page)
+  let selection: any = null
+  let preparedIdentity: any = null
+  const owner = {
+    identity_type: "TT_USER",
+    identity_id: "owner",
+    identity_authorized_bc_id: null,
+  }
+  const creative = {
+    identity_type: "BC_AUTH_TT",
+    identity_id: "creative",
+    identity_authorized_bc_id: bc,
+  }
+  await page.route("**/build-drafts**", async (route) => {
+    const req = route.request(),
+      path = new URL(req.url()).pathname
+    if (req.method() === "POST" && path.endsWith("/build-drafts")) {
+      selection = req.postDataJSON().scene_selection
+      Object.assign(api.summary, {
+        scene_selection: selection,
+        status: "DRAFT",
+      })
+    }
+    if (req.method() === "PATCH" && path.endsWith(`/build-drafts/${D}`)) {
+      selection = req.postDataJSON().scene_selection
+      api.summary.scene_selection = selection
+    }
+    if (path.endsWith("/prepare")) preparedIdentity = selection.series_identity
+    if (path.endsWith("/native-checkpoint")) {
+      return route.fulfill({
+        json: {
+          state: "BLOCKED",
+          reason_codes: ["native_series_identity_combination_unverified"],
+          selection: {
+            ...selection,
+            series_identity: selection.series_identity
+              ? {
+                  identity_type: selection.series_identity.identity_type,
+                  identity_id: selection.series_identity.identity_id,
+                  identity_authorized_bc_id:
+                    selection.series_identity.identity_authorized_bc_id,
+                }
+              : null,
+          },
+          draft_revision: api.summary.revision,
+          scope_basis: "display-only",
+          route: {},
+          materials_ready: false,
+          evidence_ids: [],
+          facts: {
+            native_tt_identity: {
+              items: [{ ...owner, display_name: "承载账号" }],
+            },
+            native_bc_identity: {
+              items: [{ ...creative, display_name: "创意账号" }],
+            },
+            native_series: {
+              items:
+                preparedIdentity?.identity_id === "owner"
+                  ? [
+                      {
+                        native_series_id: "wrong-series",
+                        native_series_name: "同名剧",
+                      },
+                      {
+                        native_series_id: "exact-series",
+                        native_series_name: "同名剧",
+                      },
+                    ]
+                  : [],
+            },
+          },
+        },
+      })
+    }
+    return route.fallback()
+  })
+  const edit = async () => {
+    await page.getByRole("button", { name: "返回输入", exact: true }).click()
+    await expect(
+      page.getByLabel("精确 Series ID", { exact: true }),
+    ).toBeVisible()
+  }
+  await page.goto(`/tenants/${tenant}/builds/new?bc_id=${bc}`)
+  await pickInputs(page)
+  await page
+    .getByRole("radio", { name: "原生 Series 直接视频", exact: true })
+    .check()
+  await page
+    .getByLabel("广告账户", { exact: true })
+    .fill("90071992547409936666")
+  await page.getByLabel("投放地区", { exact: true }).fill("US")
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect.poll(() => selection?.series_identity).toBeNull()
+  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await edit()
+  await page
+    .getByRole("combobox", { name: "series_identity 目录", exact: true })
+    .click()
+  await page.getByRole("option", { name: /承载账号/ }).click()
+  await page
+    .getByRole("combobox", { name: "creative_identity 目录", exact: true })
+    .click()
+  await page.getByRole("option", { name: /创意账号/ }).click()
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await page.getByRole("button", { name: "解析并准备", exact: true }).click()
+  await edit()
+  await page
+    .getByRole("combobox", { name: "当前身份可见的 Series", exact: true })
+    .click()
+  await page
+    .getByRole("option", { name: "同名剧 · exact-series", exact: true })
+    .click()
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click()
+  await expect.poll(() => selection?.native_series_id).toBe("exact-series")
+  await edit()
+  await page.reload()
+  await expect(page.getByLabel("精确 Series ID", { exact: true })).toHaveValue(
+    "exact-series",
+  )
+  await expect(
+    page.getByLabel("series_identity ID", { exact: true }),
+  ).toHaveValue("owner")
+  await expect(
+    page.getByLabel("creative_identity ID", { exact: true }),
+  ).toHaveValue("creative")
+  await expect(
+    page.getByLabel("creative_identity 授权 BC", { exact: true }),
+  ).toHaveValue(bc)
+})
+
+test("原生准备就绪可生成预览且不受Mini链接门禁阻断", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  Object.assign(api.summary, {
+    drama_count: 0,
+    scene_selection: {
+      kind: "NATIVE_SERIES_DIRECT_VIDEO",
+      advertiser_id: "native-account",
+      native_series_id: "exact-series",
+      regions: ["US"],
+      video_sources: [],
+      series_identity: { identity_type: "TT_USER", identity_id: "owner" },
+      creative_identity: { identity_type: "TT_USER", identity_id: "owner" },
+    },
+  })
+  await page.route(`**/build-drafts/${D}/native-checkpoint`, (route) =>
+    route.fulfill({
+      json: {
+        state: "READY",
+        materials_ready: true,
+        reason_codes: [],
+        evidence_ids: [],
+        selection: api.summary.scene_selection,
+      },
+    }),
+  )
+  await page.goto(`/tenants/${tenant}/build-drafts/${D}?bc_id=${bc}`)
+  await expect(page.getByRole("button", { name: /生成.*预览/ })).toBeEnabled()
+  await page.getByRole("button", { name: /生成.*预览/ }).click()
+  await expect
+    .poll(
+      () =>
+        api.requests.filter(
+          (x) => x.method === "POST" && x.path.endsWith("/previews"),
+        ).length,
+    )
+    .toBe(1)
+})
+
+test("真实工作区计划复制、选中批量编辑与回执 @native-plan-live", async ({
+  page,
+}) => {
+  test.skip(!process.env.NATIVE_TEST_DRAFT, "隔离宿主运行")
+  await buildsBoundary(page)
+  await page.route(
+    /\/api\/tenants\/[^/]+\/(build-drafts|build-draft-mutations)\//,
+    async (route) => {
+      const response = await route.fetch({
+        url:
+          process.env.NATIVE_TEST_HOST +
+          new URL(route.request().url()).pathname +
+          new URL(route.request().url()).search,
+      })
+      await route.fulfill({ response })
+    },
+  )
+  const url = `/tenants/${tenant}/build-drafts/${process.env.NATIVE_TEST_DRAFT}?bc_id=${bc}`
+  if (process.env.NATIVE_PLAN_MODE === "readiness") {
+    await page.goto(url)
+    await expect(page.getByText(/逐计划准备回执/)).toBeVisible()
+    await expect(page.getByText(/· READY/)).toBeVisible()
+    await expect(page.getByText(/· BLOCKED/)).toBeVisible()
+    await expect(page.getByText(/冻结预览将列出可执行计划/)).toBeVisible()
+    await page.unrouteAll({ behavior: "wait" })
+    return
+  }
+  await page.goto(url + "&edit=true")
+  await expect(
+    page.getByRole("heading", { name: "编辑搭建输入" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "复制计划 1", exact: true }).click()
+  await page.getByRole("button", { name: "复制计划 1", exact: true }).click()
+  const two = page.getByRole("region", { name: "计划 2", exact: true })
+  const three = page.getByRole("region", { name: "计划 3", exact: true })
+  await two.getByLabel("精确目标账户", { exact: true }).fill("not-authorized")
+  await two.getByLabel("精确 Series ID", { exact: true }).fill("other-series")
+  await two.getByLabel("投放地区", { exact: true }).fill("CA")
+  await three.getByLabel("投放地区", { exact: true }).fill("CA")
+  await page.getByRole("checkbox", { name: "选中计划 1" }).check()
+  await page.getByRole("checkbox", { name: "选中计划 2" }).check()
+  await page.getByLabel("批量投放地区", { exact: true }).fill("US")
+  await expect(page.getByText(/批量编辑影响：/)).toContainText("not-authorized")
+  await page.getByRole("button", { name: "应用到选中计划" }).click()
+  await expect(two.getByLabel("投放地区", { exact: true })).toHaveValue("US")
+  await expect(three.getByLabel("投放地区", { exact: true })).toHaveValue("CA")
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PATCH" && r.url().includes("build-drafts"),
+  )
+  const preparing = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().endsWith("/prepare"),
+  )
+  await page
+    .getByRole("button", { name: "下一步：核对目的地与身份", exact: true })
+    .click()
+  const response = await saved
+  expect(response.status(), await response.text()).toBe(200)
+  expect((await preparing).status()).toBe(202)
+  await expect(page.getByText(/逐计划准备回执/)).toBeVisible()
+  await page.unrouteAll({ behavior: "wait" })
+})

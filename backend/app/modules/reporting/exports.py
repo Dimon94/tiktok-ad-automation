@@ -1,7 +1,7 @@
 """冻结报表导出。
 
 导出创建时把快照成员与顺序复制到 ``ReportExport.frozen_rows``，后台生成阶段
-按这份成员分批补全行内容。下载和生成都重新检查当前租户、BC 与账户授权；
+直接读取冻结结果（包括素材实例及独立父对照）。下载和生成都重新检查当前租户、BC 与账户授权；
 撤权后即使队列消息迟到也不会写出或下载旧报表。
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import tempfile
 from collections.abc import Iterable, Iterator
@@ -26,17 +27,15 @@ from app.core.config import settings
 from app.core.context import TenantContext
 from app.modules.accounts.models import TenantBC
 from app.modules.materials.storage import make_s3
-from app.modules.reporting.dimension_query import materialize_rows
 from app.modules.reporting.filters import authorized_grants
+from app.modules.reporting.frozen_result import frozen_row
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     QuerySnapshotRow,
     ReportExport,
     read_snapshot,
 )
-from app.modules.reporting.row_set import SnapshotMember
-from app.modules.reporting.schemas import ExportPublic, ReportingFilter
-from app.modules.reporting.snapshot_members import snapshot_members, snapshot_names
+from app.modules.reporting.schemas import ExportPublic
 from app.modules.tenants.permissions import require_tenant
 
 _EXPORT_PREFIX = "report-exports"
@@ -46,17 +45,28 @@ _MEMORY_OBJECTS: dict[str, bytes] = {}
 
 
 def _enqueue_export(
-    session: Session, *, context: TenantContext, export_id: UUID
+    session: Session, *, context: TenantContext, export: ReportExport
 ) -> None:
     from app.jobs.outbox import enqueue_after_commit
 
-    enqueue_after_commit(
+    dispatch_id = enqueue_after_commit(
         session,
         context=context,
         task_name="reporting.export",
-        task_key=f"reporting.export:{export_id}",
-        payload={"export_id": str(export_id)},
+        task_key=f"reporting.export:{export.id}",
+        payload={"export_id": str(export.id)},
     )
+    if export.status == "FAILED":
+        from app.jobs.models import PendingDispatch
+
+        # 重试复用原outbox身份；只在FAILED→QUEUED时重新投递，重复请求不另建消息。
+        dispatch = session.get(PendingDispatch, dispatch_id, with_for_update=True)
+        assert dispatch is not None
+        dispatch.published_at = None
+        dispatch.available_at = datetime.now(UTC)
+        export.status = "QUEUED"
+        session.add_all([dispatch, export])
+        session.flush()
 
 
 def csv_safe_text(value: str) -> str:
@@ -118,17 +128,8 @@ def _rows_for_snapshot(
     ).all()
     if len(rows) != snapshot.total:
         raise HTTPException(409, detail="query_snapshot_incomplete")
-    members = snapshot_members(session, snapshot=snapshot, rows=rows)
-    frozen_rows = [
-        {
-            "row_key": row.row_key,
-            "refs": list(members[row.row_key].refs),
-            "material_uses": list(members[row.row_key].material_uses),
-        }
-        for row in rows
-    ]
-    return frozen_rows, snapshot_names(
-        session, snapshot=snapshot, rows=rows, members=members
+    return [frozen_row(row).model_dump(mode="json") for row in rows], dict(
+        snapshot.naming_versions
     )
 
 
@@ -149,18 +150,20 @@ def create_export(
     # Idempotency lookup itself is scoped by all three dimensions. A key from
     # another BC/user can never return an existing export.
     existing = session.exec(
-        select(ReportExport).where(
+        select(ReportExport)
+        .where(
             ReportExport.tenant_id == context.tenant_id,
             ReportExport.bc_id == bc_id,
             ReportExport.actor_id == context.actor_id,
             ReportExport.idempotency_key == idempotency_key.strip(),
         )
+        .with_for_update()
     ).first()
     if existing is not None:
         _scope_check(session, context=context, bc_id=bc_id, export=existing)
         if existing.snapshot_id != snapshot_id:
             raise HTTPException(409, detail="export_idempotency_conflict")
-        _enqueue_export(session, context=context, export_id=existing.id)
+        _enqueue_export(session, context=context, export=existing)
         return _public(existing)
 
     snapshot = read_snapshot(
@@ -185,6 +188,8 @@ def create_export(
         idempotency_key=idempotency_key.strip(),
         status="QUEUED",
         frozen_rows=frozen_rows,
+        result_contract=dict(snapshot.result_contract),
+        publication_map=list(snapshot.publication_map),
         coverage=dict(snapshot.coverage),
         expires_at=now.replace(microsecond=0) + timedelta(hours=24),
     )
@@ -208,9 +213,9 @@ def create_export(
         _scope_check(session, context=context, bc_id=bc_id, export=existing)
         if existing.snapshot_id != snapshot_id:
             raise HTTPException(409, detail="export_idempotency_conflict")
-        _enqueue_export(session, context=context, export_id=existing.id)
+        _enqueue_export(session, context=context, export=existing)
         return _public(existing)
-    _enqueue_export(session, context=context, export_id=row.id)
+    _enqueue_export(session, context=context, export=row)
     return _public(row)
 
 
@@ -293,12 +298,42 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         "balance_updated_at",
     ]
     fields.extend(balance_fields)
+    frozen = bool(export.result_contract)
+    evidence_fields = [
+        "snapshot_id",
+        "dimension",
+        "filter_digest",
+        "filters",
+        "result_contract",
+        "publication_map",
+        "metric_vector",
+        "report_display",
+        "row_kind",
+        "identity",
+        "creative_ids",
+        "fact_keys",
+        "evidence_digest",
+        "result_digest",
+        "observations",
+        "field_state_counts",
+        "identity_reason",
+        "row_coverage",
+    ]
+    if frozen:
+        fields.extend(evidence_fields)
     captured = export.created_at.astimezone(UTC).isoformat()
     out = io.StringIO(newline="")
     writer = csv.DictWriter(out, fieldnames=fields, lineterminator="\n")
     headers = {key: key for key in fields} | {
         key: metric_name_zh(key, "ad") for key in metric_fields
     }
+    if frozen and export.filters.get("dimension") != "material":
+        headers.update(
+            revenue_total="Native Growth 总展示价值（平台原字段）",
+            revenue_d0="Native Growth D0 收入（点击后24小时）",
+            roas_total="收益/花费（本地计算）",
+            roas_d0="D0收入/花费（本地计算）",
+        )
     writer.writerow(headers)
     for raw in rows:
         display = dict(raw.get("display") or {})
@@ -308,8 +343,8 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         for bucket in buckets:
             bucket = bucket or {}
             values = dict(bucket.get("values") or {})
-            currency = bucket.get("currency")
-            timezone = bucket.get("timezone")
+            currency = bucket.get("currency") or raw.get("currency")
+            timezone = bucket.get("timezone") or raw.get("timezone")
             data: dict[str, Any] = {
                 "row_key": csv_safe_text(str(raw.get("row_key", ""))),
                 "name": csv_safe_text(
@@ -334,6 +369,45 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
             for key in balance_fields:
                 value = display.get(key)
                 data[key] = csv_safe_text(str(value)) if value is not None else ""
+            if frozen:
+                # 向量保留NULL/真零、availability、字段/公式、partial计数和逐日水位；不重算。
+                metadata = {
+                    "snapshot_id": str(export.snapshot_id),
+                    "dimension": export.filters.get("dimension"),
+                    "filter_digest": export.filter_digest,
+                    "filters": export.filters,
+                    "result_contract": export.result_contract,
+                    "publication_map": export.publication_map,
+                    "metric_vector": bucket,
+                    "report_display": display,
+                    "row_kind": raw.get("row_kind", "SUMMARY"),
+                    "identity": raw.get("key", {}),
+                    "creative_ids": raw.get("creative_ids", []),
+                    "fact_keys": raw.get("fact_keys", []),
+                    "evidence_digest": raw.get("evidence_digest", ""),
+                    "result_digest": raw.get("result_digest", ""),
+                    "observations": raw.get("observations", []),
+                    "field_state_counts": raw.get("field_state_counts", {}),
+                    "identity_reason": raw.get("identity_reason"),
+                    "row_coverage": coverage
+                    | {
+                        k: raw[k]
+                        for k in (
+                            "scope",
+                            "status",
+                            "reason",
+                            "parent_digest",
+                            "metric_reasons",
+                        )
+                        if k in raw
+                    },
+                }
+                for field, cell in metadata.items():
+                    data[field] = csv_safe_text(
+                        cell
+                        if isinstance(cell, str)
+                        else json.dumps(cell, ensure_ascii=False, separators=(",", ":"))
+                    )
             writer.writerow(data)
     return out.getvalue().encode("utf-8")
 
@@ -404,33 +478,69 @@ def _delete_object(key: str) -> None:
     _object_path(key).unlink(missing_ok=True)
 
 
-def _export_rows(session: Session, export: ReportExport) -> Iterator[dict[str, Any]]:
-    """按冻结成员与顺序分批补全行内容，内存与单次查询量只与批大小相关。"""
-    filters = ReportingFilter.model_validate(export.filters)
-    members = [
-        SnapshotMember(raw["row_key"], tuple(raw["refs"]), tuple(raw["material_uses"]))
-        for raw in export.frozen_rows
-    ]
-    for start in range(0, len(members), EXPORT_BATCH):
-        for row in materialize_rows(
-            session,
-            tenant_id=export.tenant_id,
-            filters=filters,
-            members=members[start : start + EXPORT_BATCH],
-            advertisers=export.advertiser_ids,
-        ):
-            yield row.model_dump(mode="json")
+def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, Any]]:
+    """所有报表只消费任务自有冻结结果；父控制用明确行类型隔离。"""
+    from app.modules.reporting.frozen_result import result_contract
+
+    if export.result_contract != result_contract(export.filters["dimension"]):
+        raise HTTPException(409, detail="report_export_contract_incompatible_reexport")
+    if export.filters["dimension"] != "material":
+        yield from export.frozen_rows
+        return
+    seen_parents = set()
+    seen_reconciliation = set()
+    for row in export.frozen_rows:
+        common = {"display": row["display"], "result_digest": row["evidence_digest"]}
+        instances = row.get("material_instances", [])
+        for instance in instances:
+            yield (
+                common
+                | instance
+                | {
+                    "row_key": row["row_key"],
+                    "row_kind": instance.get("row_kind", "INSTANCE"),
+                }
+            )
+        for control in row.get("parent_controls", []):
+            identity = json.dumps(control["key"], sort_keys=True)
+            if identity not in seen_parents:
+                seen_parents.add(identity)
+                yield (
+                    common
+                    | control
+                    | {"row_key": identity, "row_kind": "PARENT_CONTROL"}
+                )
+        for difference in row.get("reconciliation_rows", []):
+            identity = difference["evidence_digest"]
+            if identity not in seen_reconciliation:
+                seen_reconciliation.add(identity)
+                yield common | difference | {"row_key": identity}
 
 
 def generate_export(session: Session, export: ReportExport) -> None:
     """Generate a complete object or leave no externally visible partial file."""
+    context = require_tenant(
+        session, actor_id=export.actor_id, tenant_id=export.tenant_id, action="read"
+    )
+    _scope_check(session, context=context, bc_id=export.bc_id, export=export)
     key = _expected_key(export)
     content = _csv_rows(export, _export_rows(session, export))
-    _put_object(key, content)
-    export.object_key = key
-    export.status = "COMPLETE"
-    session.add(export)
-    session.flush()
+    try:
+        _put_object(key, content)
+        # 对象写入可能跨越到期或撤权；发布键之前重读当前授权，不能借旧上下文放行。
+        session.expire_all()
+        context = require_tenant(
+            session, actor_id=export.actor_id, tenant_id=export.tenant_id, action="read"
+        )
+        _scope_check(session, context=context, bc_id=export.bc_id, export=export)
+        export.object_key = key
+        export.status = "COMPLETE"
+        session.add(export)
+        session.flush()
+    except Exception:
+        # put 也可能写成功后才抛错；只清理本任务确定性键，失败对象不能遗留。
+        _delete_object(key)
+        raise
 
 
 def download_export(
@@ -464,6 +574,9 @@ def cleanup_expired_exports(
         if row.object_key and row.object_key == _expected_key(row):
             _delete_object(row.object_key)
         row.object_key = None
+        row.frozen_rows = []
+        row.result_contract = {}
+        row.publication_map = []
         row.status = "EXPIRED"
         session.add(row)
     session.flush()

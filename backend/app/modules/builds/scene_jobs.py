@@ -86,6 +86,7 @@ def ensure_scene_preparation(
     selected_identity: dict[str, Any] | None = None,
     media_kind: MediaKind = "VIDEO",
     minis_id: str | None = None,
+    native_selection: dict[str, Any] | None = None,
 ) -> ScenePreparation:
     """Local enqueue/reuse only; caller commits. No SDK or credential decryption."""
     require_tenant(
@@ -103,11 +104,18 @@ def ensure_scene_preparation(
         if link_id is not None:
             scope = _scope(session, link_id=link_id, **scope_args)
         else:
-            if not minis_id:
+            if not minis_id and native_selection is None:
                 raise DomainError("copy_minis_missing", "来源缺少实际小程序ID")
-            scope = _account_scope(session, minis_id=minis_id, **scope_args)
+            scope = _account_scope(
+                session,
+                minis_id=minis_id,
+                native_selection=native_selection,
+                **scope_args,
+            )
     except DomainError as error:
         return ScenePreparation(None, "blocked", error.code)
+    if native_selection is not None and route.channel == "OFFICIAL_MCP":
+        return ScenePreparation(None, "blocked", "native_series_route_unsupported")
     now = datetime.now(UTC)
     job = session.exec(
         select(SceneJob)
@@ -138,6 +146,31 @@ def ensure_scene_preparation(
         and job.expires_at
         and job.expires_at > now
     ):
+        if native_selection is not None:
+            # 旧准备证据可补读新增CTA资源，不重读已核实的身份和Series目录。
+            if "cta" not in job.facts:
+                job.status = "PENDING"
+                job.revision += 1
+                session.add(job)
+                _queue(session, job)
+                return ScenePreparation(job.id, "queued")
+            proof = get_capability_evidence(
+                session,
+                context=context,
+                bc_id=bc_id,
+                advertiser_id=advertiser_id,
+                connection_id=job.connection_id,
+            )
+            if proof is None or proof.expires_at <= now:
+                start_capability_refresh(
+                    session,
+                    context=context,
+                    bc_id=bc_id,
+                    connection_id=job.connection_id,
+                    request_id=uuid4(),
+                )
+                return ScenePreparation(job.id, "queued", "account_build_unverified")
+            return ScenePreparation(job.id, "ready")
         if not scope["minis_id"]:
             from .mini_selection import match_catalog_link
 
@@ -247,13 +280,15 @@ def ensure_scene_preparation(
         frozen_route=route.model_dump(mode="json"),
         resource="capabilities" if scope["minis_id"] else "minis",
         minis_id=scope["minis_id"],
+        native_selection=native_selection,
         scope_basis=scope["basis"],
         media_kind=media_kind,
         compiler_contract_revision=CREATIVE_COMPILER_REVISION,
     )
     from .mini_selection import reuse_minis_catalog
 
-    reuse_minis_catalog(session, context=context, job=job, route=route)
+    if native_selection is None:
+        reuse_minis_catalog(session, context=context, job=job, route=route)
     session.add(job)
     session.flush()
     if job.status == "COMPLETE":
@@ -291,6 +326,7 @@ def _scope_for_job(
         bc_id=job.bc_id,
         advertiser_id=job.advertiser_id,
         minis_id=job.minis_id,
+        native_selection=job.native_selection,
         route=load_scene_route(job),
         media_kind=job.media_kind,
     )
@@ -559,6 +595,7 @@ def process_scene_job(
             now + timedelta(seconds=CLAIM_SECONDS),
         )
         advertiser_id, minis_id = job.advertiser_id, job.minis_id
+        native_selection = job.native_selection
 
     def before_request() -> None:
         # 每个线程只在短事务中核验同一全局 claim，不持锁等待 HTTP。
@@ -580,6 +617,7 @@ def process_scene_job(
             route=route,
             advertiser_id=advertiser_id,
             minis_id=minis_id,
+            native_selection=native_selection,
             deadline=deadline,
             before_request=before_request,
             reads=reads,
@@ -789,3 +827,239 @@ def repair_scene_jobs(*, database_engine: Any, limit: int = 100) -> int:
             job.repair_after = now + timedelta(seconds=REPAIR_SECONDS)
             count += 1
     return count
+
+
+def native_checkpoint(
+    session: Session,
+    *,
+    context: TenantContext,
+    draft: Any,
+    route: FrozenTikTokRoute,
+    plan_key: UUID | None = None,
+):
+    """联合当前授权、身份能力、精确资产和地区证据；不以 ID 相等替代权限。"""
+    from .selection_schemas import NativeCheckpoint, NativeSeriesPlanSet
+
+    plan_set = NativeSeriesPlanSet.model_validate(draft.scene_selection)
+    if plan_key is None:
+        # 旧调用只能隐式定位单项；多项必须由当前计划集逐项显式传入。
+        if len(plan_set.plans) != 1:
+            raise DomainError("native_plan_not_found", "多计划必须指定计划键")
+        plan = plan_set.plans[0]
+    else:
+        plan = next((p for p in plan_set.plans if p.plan_key == plan_key), None)
+        if plan is None:
+            raise DomainError("native_plan_not_found", "计划不存在")
+    plan_key = plan.plan_key
+    selection = plan.selection
+    scope = _account_scope(
+        session,
+        context=context,
+        bc_id=draft.bc_id,
+        advertiser_id=selection.advertiser_id,
+        minis_id=None,
+        native_selection=selection.model_dump(mode="json"),
+        route=route,
+    )
+    job = session.exec(
+        select(SceneJob)
+        .where(
+            SceneJob.tenant_id == context.tenant_id,
+            SceneJob.scope_basis == scope["basis"],
+        )
+        .order_by(col(SceneJob.created_at).desc())
+        .limit(1)
+    ).first()
+    reasons = []
+    state = "PENDING"
+    if route.channel == "OFFICIAL_MCP":
+        reasons.append("native_series_route_unsupported")
+        state = "BLOCKED"
+    elif job and job.expires_at and job.expires_at <= datetime.now(UTC):
+        reasons.append("scene_evidence_expired")
+        state = "BLOCKED"
+    elif job and job.status in {"FAILED", "BLOCKED", "STALE"}:
+        reasons.append(job.error_code or "scene_response_unverified")
+        state = "BLOCKED"
+    elif job and job.status == "COMPLETE":
+        state = "READY"
+        unverified = False
+        # COMPLETE 只说明目录完整，消费时仍须核对账户的当前能力。
+        proof = get_capability_evidence(
+            session,
+            context=context,
+            bc_id=draft.bc_id,
+            advertiser_id=selection.advertiser_id,
+            connection_id=route.connection_id,
+        )
+        if (
+            proof is None
+            or proof.expires_at <= datetime.now(UTC)
+            or not proof.scope_verified
+            or not proof.can_build
+        ):
+            reasons.append(
+                "account_build_evidence_expired"
+                if proof is not None
+                and proof.expires_at <= datetime.now(UTC)
+                and proof.scope_verified
+                and proof.can_build
+                else "account_build_unverified"
+            )
+        identities = job.facts.get("native_tt_identity", {}).get(
+            "items", []
+        ) + job.facts.get("native_bc_identity", {}).get("items", [])
+        for role in ("series_identity", "creative_identity"):
+            identity = getattr(selection, role)
+            if identity is None:
+                reasons.append("native_" + role + "_selection_required")
+                continue
+            chosen = identity.model_dump()
+            matches = [
+                item
+                for item in identities
+                if all(item.get(key) == value for key, value in chosen.items())
+            ]
+            if len(matches) != 1:
+                reasons.append("native_" + role + "_not_visible")
+                continue
+            item = matches[0]
+            if (
+                item.get("available_status") not in (None, "AVAILABLE")
+                or item.get("is_gpppa") is True
+                or (role == "series_identity" and item.get("can_use_series") is False)
+                or (role == "creative_identity" and item.get("can_push_video") is False)
+            ):
+                reasons.append("native_" + role + "_unavailable")
+            # 缺省字段不是许可；保留未验证而非制造明确拒绝。
+            if (
+                item.get("available_status") is None
+                or item.get("is_gpppa") is None
+                or item.get(
+                    "can_use_series" if role == "series_identity" else "can_push_video"
+                )
+                is None
+            ):
+                unverified = True
+        assets = job.facts.get("native_series", {}).get("items", [])
+        if (
+            len(
+                [
+                    item
+                    for item in assets
+                    if item.get("native_series_id") == selection.native_series_id
+                ]
+            )
+            != 1
+        ):
+            reasons.append("native_series_not_visible")
+        allowed = {
+            item["region_code"]
+            for item in job.facts.get("regions", {}).get("locations", [])
+        }
+        if not set(selection.regions) <= allowed:
+            reasons.append("native_regions_unavailable")
+        # 官方直接模式允许有效承载身份和有效 Spark 身份。首条有证据路径
+        # 仅覆盖同一完整授权三元组；不同身份组合仍等待特定合同证据。
+        if selection.series_identity != selection.creative_identity or unverified:
+            reasons.append("native_series_identity_combination_unverified")
+            state = "UNVERIFIED"
+        if any(
+            reason != "native_series_identity_combination_unverified"
+            for reason in reasons
+        ):
+            state = "BLOCKED"
+    checkpoint = NativeCheckpoint(
+        state=state,
+        reason_codes=reasons,
+        draft_revision=draft.revision,
+        scope_basis=scope["basis"],
+        route=route.model_dump(mode="json"),
+        selection=selection,
+        evidence_ids=list(
+            session.exec(
+                select(SceneJobPage.id).where(
+                    SceneJobPage.tenant_id == context.tenant_id,
+                    SceneJobPage.job_id == job.id,
+                )
+            ).all()
+        )
+        if job
+        else [],
+        observed_at=job.first_observed_at if job else None,
+        expires_at=job.expires_at if job else None,
+        facts=job.facts if job else {},
+    )
+    if hasattr(draft, "id"):
+        from .native_materials import read_native_materials
+
+        materials, issues = read_native_materials(
+            session,
+            context=context,
+            draft=draft,
+            checkpoint=checkpoint,
+            plan_key=plan_key,
+        )
+        from .selection_schemas import NativeMaterialMapping
+
+        checkpoint.materials = [
+            NativeMaterialMapping.model_validate(item) for item in materials
+        ]
+        checkpoint.material_issues = issues
+        checkpoint.materials_ready = state == "READY" and bool(materials) and not issues
+        checkpoint.materials_state = (
+            "READY"
+            if checkpoint.materials_ready
+            else "UNVERIFIED"
+            if state == "UNVERIFIED"
+            else "BLOCKED"
+            if state == "BLOCKED"
+            or not selection.video_sources
+            or any(issue.get("state") != "PENDING" for issue in issues)
+            else "PENDING"
+        )
+    return checkpoint
+
+
+def evaluate_native_plan_set(session, *, context, draft, route):
+    from .selection_schemas import (
+        NativeSeriesBatchCheckpoint,
+        NativeSeriesPlanSet,
+        ReadyNativePlan,
+        UnavailableNativePlan,
+    )
+
+    results = []
+    for plan in NativeSeriesPlanSet.model_validate(draft.scene_selection).plans:
+        try:
+            proof = native_checkpoint(
+                session,
+                context=context,
+                draft=draft,
+                route=route,
+                plan_key=plan.plan_key,
+            )
+            if proof.materials_ready:
+                results.append(
+                    ReadyNativePlan(
+                        state="READY", plan_key=plan.plan_key, checkpoint=proof
+                    )
+                )
+                continue
+            state = proof.materials_state
+            reasons = proof.reason_codes + [
+                i["reason_code"] for i in proof.material_issues
+            ]
+            if not reasons:
+                reasons = ["native_materials_not_prepared"]
+        except DomainError as error:
+            state, reasons = "BLOCKED", [error.code]
+        results.append(
+            UnavailableNativePlan(
+                state=state,
+                plan_key=plan.plan_key,
+                selection=plan.selection,
+                reason_codes=reasons,
+            )
+        )
+    return NativeSeriesBatchCheckpoint(draft_revision=draft.revision, plans=results)

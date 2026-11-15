@@ -4,6 +4,7 @@ import { AxiosError } from "axios"
 import { useEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import {
+  type NativeSeriesPlanSet,
   BuildsService,
   type DraftSummary,
   type LinkConfigSchema,
@@ -45,7 +46,10 @@ import {
   unknownOutcome,
 } from "./presentation"
 
+import { NativePlanSetFields, emptyNativePlanSet } from "./NativePlanSetFields"
+
 type Values = {
+  native: NativeSeriesPlanSet | null
   mediaKind: "VIDEO" | "CAROUSEL"
   customProvider: string
   manualLinks: NamedManualLink[]
@@ -106,6 +110,10 @@ export function BuildInputPage({
     }
   })
   const initial = useRef<Values>({
+    native:
+      summary?.scene_selection?.kind === "NATIVE_SERIES_DIRECT_VIDEO"
+        ? summary.scene_selection
+        : null,
     mediaKind: summary?.media_kind ?? "VIDEO",
     drama: original?.drama.join("\n") || "",
     account: original?.account.join("\n") || "",
@@ -196,21 +204,46 @@ export function BuildInputPage({
       setBusy(false)
     }
   }
+  const invalid =
+    !values.version ||
+    (values.native
+      ? values.native.plans.some(
+          ({ selection: p }) =>
+            !p.advertiser_id ||
+            !p.native_series_id ||
+            !p.series_identity?.identity_id ||
+            !p.creative_identity?.identity_id ||
+            !p.video_sources?.length ||
+            !p.regions.length ||
+            p.regions.some((c) => !/^[A-Z]{2}$/.test(c)),
+        )
+      : !values.account.trim() ||
+        !values.connection ||
+        (values.connection === "other"
+          ? !values.customProvider.trim()
+          : !values.application) ||
+        !values.drama.trim())
+  const nativeBody = values.native
+    ? {
+        scene_selection: values.native,
+        provider_connection_id: null,
+        application_id: null,
+        custom_provider_name: null,
+        manual_links: [],
+        drama_lines: [],
+        account_lines: [
+          ...new Set(values.native.plans.map((p) => p.selection.advertiser_id)),
+        ],
+        link_config: {},
+      }
+    : {}
   async function save(prepare: boolean) {
-    if (
-      disabled ||
-      !values.version ||
-      !values.connection ||
-      (values.connection === "other"
-        ? !values.customProvider.trim()
-        : !values.application) ||
-      !values.drama.trim() ||
-      !values.account.trim()
-    )
-      return
+    if (disabled || invalid) return
     let manualLinks: ReturnType<typeof linksForLines>
     try {
-      manualLinks = linksForLines(values.drama, values.manualLinks)
+      manualLinks = values.native
+        ? []
+        : linksForLines(values.drama, values.manualLinks)
       setInputError("")
     } catch (e) {
       setInputError(e instanceof Error ? e.message : "请检查剧目与链接")
@@ -247,12 +280,15 @@ export function BuildInputPage({
                   ? values.customProvider.trim()
                   : null,
               manual_links: manualLinks,
-              execution_connection_id: null,
+              execution_connection_id: values.native
+                ? (summary?.execution_connection_id ?? null)
+                : null,
               application_id:
                 values.connection === "other" ? null : values.application,
               link_config: values.linkConfig,
               drama_lines: values.drama.split("\n"),
               account_lines: values.account.split("\n"),
+              ...nativeBody,
             },
             signal: controller.current.signal,
           })
@@ -294,6 +330,7 @@ export function BuildInputPage({
               drama_lines: values.drama.split("\n"),
               account_lines: values.account.split("\n"),
               link_config: values.linkConfig,
+              ...nativeBody,
             },
             signal: controller.current.signal,
           })
@@ -321,6 +358,41 @@ export function BuildInputPage({
   return (
     <div className="flex w-full min-w-0 flex-col gap-4">
       <BuildSteps step={1} />
+      <RadioGroup
+        aria-label="投放目的地"
+        className="flex gap-6"
+        disabled={disabled || !!summary}
+        value={values.native ? "NATIVE_SERIES_DIRECT_VIDEO" : "MINI_APP"}
+        onValueChange={(kind) =>
+          change({
+            native: kind === "MINI_APP" ? null : emptyNativePlanSet(),
+            mediaKind: "VIDEO",
+          })
+        }
+      >
+        <Field orientation="horizontal">
+          <RadioGroupItem id="destination-mini" value="MINI_APP" />
+          <FieldLabel htmlFor="destination-mini">Minis 小程序</FieldLabel>
+        </Field>
+        <Field orientation="horizontal">
+          <RadioGroupItem
+            id="destination-native"
+            value="NATIVE_SERIES_DIRECT_VIDEO"
+          />
+          <FieldLabel htmlFor="destination-native">
+            原生 Series 直接视频
+          </FieldLabel>
+        </Field>
+      </RadioGroup>
+      {values.native && (
+        <NativePlanSetFields
+          tenantId={tenantId}
+          draftId={summary?.draft_id}
+          value={values.native}
+          onChange={(native) => change({ native })}
+          disabled={disabled}
+        />
+      )}
       <BuildGuard dirty={!leaving && (dirty || busy || !!pending)} />
       {!!error && <BuildError error={error} />}
       {inputError && (
@@ -414,7 +486,7 @@ export function BuildInputPage({
                 aria-label="素材类型"
                 className="flex gap-6"
                 value={values.mediaKind}
-                disabled={disabled || !!summary}
+                disabled={disabled || !!summary || !!values.native}
                 onValueChange={(value) =>
                   change({ mediaKind: value as Values["mediaKind"] })
                 }
@@ -429,90 +501,96 @@ export function BuildInputPage({
                 </Field>
               </RadioGroup>
             </FieldSet>
-            <Field>
-              <FieldLabel>版权方连接</FieldLabel>
-              <DirectoryPicker<ProviderConnectionPublic>
-                label="版权方连接"
-                selectedId={values.connection}
-                valueLabel={
-                  values.connection === "other"
-                    ? "其他版权方"
-                    : labels.connection || values.connection
-                }
-                alternative={{
-                  label: "其他版权方",
-                  description: "填写版权方名称，使用已有推广链接。",
-                  selected: values.connection === "other",
-                  onSelect: () => {
-                    change({
-                      connection: "other",
-                      application: "",
-                      linkConfig: {},
-                    })
-                    setLabels((l) => ({
-                      ...l,
-                      connection: "",
-                      application: "",
-                    }))
-                  },
-                }}
-                disabled={disabled}
-                queryKey={["tenant", tenantId, "builds", "provider-picker"]}
-                load={async (query, cursor, limit, signal) =>
-                  (
-                    await ProvidersService.listConnections({
-                      path: { tenant_id: tenantId },
-                      query: { query, cursor, limit, status: "active" },
-                      signal,
-                    })
-                  ).data
-                }
-                renderItem={(item) => <span>{item.display_name}</span>}
-                onSelect={(item) => {
-                  change({
-                    connection: item.id,
-                    application: "",
-                    linkConfig: {},
-                  })
-                  setLabels((l) => ({
-                    ...l,
-                    connection: item.display_name,
-                    application: "",
-                  }))
-                }}
-              />
-            </Field>
-            {values.connection === "other" ? (
-              <Field>
-                <FieldLabel htmlFor="custom-provider-name">
-                  版权方名称
-                </FieldLabel>
-                <Input
-                  id="custom-provider-name"
-                  value={values.customProvider}
-                  maxLength={100}
-                  disabled={disabled}
-                  onChange={(e) => change({ customProvider: e.target.value })}
-                  placeholder="填写实际版权方名称"
-                />
-                <p className="text-xs text-muted-foreground">
-                  无需连接后台，使用你提供的推广链接。
-                </p>
-              </Field>
-            ) : (
-              <Field>
-                <FieldLabel>推广应用</FieldLabel>
-                <ApplicationPicker
-                  tenantId={tenantId}
-                  connectionId={values.connection}
-                  value={labels.application || values.application}
-                  disabled={disabled || !values.connection}
-                  onSelect={(item) => {
-                    change({ application: item.external_id })
-                    setLabels((l) => ({ ...l, application: item.name }))
-                  }}
-                />
-              </Field>
+            {!values.native && (
+              <>
+                <Field>
+                  <FieldLabel>版权方连接</FieldLabel>
+                  <DirectoryPicker<ProviderConnectionPublic>
+                    label="版权方连接"
+                    selectedId={values.connection}
+                    valueLabel={
+                      values.connection === "other"
+                        ? "其他版权方"
+                        : labels.connection || values.connection
+                    }
+                    alternative={{
+                      label: "其他版权方",
+                      description: "填写版权方名称，使用已有推广链接。",
+                      selected: values.connection === "other",
+                      onSelect: () => {
+                        change({
+                          connection: "other",
+                          application: "",
+                          linkConfig: {},
+                        })
+                        setLabels((l) => ({
+                          ...l,
+                          connection: "",
+                          application: "",
+                        }))
+                      },
+                    }}
+                    disabled={disabled}
+                    queryKey={["tenant", tenantId, "builds", "provider-picker"]}
+                    load={async (query, cursor, limit, signal) =>
+                      (
+                        await ProvidersService.listConnections({
+                          path: { tenant_id: tenantId },
+                          query: { query, cursor, limit, status: "active" },
+                          signal,
+                        })
+                      ).data
+                    }
+                    renderItem={(item) => <span>{item.display_name}</span>}
+                    onSelect={(item) => {
+                      change({
+                        connection: item.id,
+                        application: "",
+                        linkConfig: {},
+                      })
+                      setLabels((l) => ({
+                        ...l,
+                        connection: item.display_name,
+                        application: "",
+                      }))
+                    }}
+                  />
+                </Field>
+                {values.connection === "other" ? (
+                  <Field>
+                    <FieldLabel htmlFor="custom-provider-name">
+                      版权方名称
+                    </FieldLabel>
+                    <Input
+                      id="custom-provider-name"
+                      value={values.customProvider}
+                      maxLength={100}
+                      disabled={disabled}
+                      onChange={(e) =>
+                        change({ customProvider: e.target.value })
+                      }
+                      placeholder="填写实际版权方名称"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      无需连接后台，使用你提供的推广链接。
+                    </p>
+                  </Field>
+                ) : (
+                  <Field>
+                    <FieldLabel>推广应用</FieldLabel>
+                    <ApplicationPicker
+                      tenantId={tenantId}
+                      connectionId={values.connection}
+                      value={labels.application || values.application}
+                      disabled={disabled || !values.connection}
+                      onSelect={(item) => {
+                        change({ application: item.external_id })
+                        setLabels((l) => ({ ...l, application: item.name }))
+                      }}
+                    />
+                  </Field>
+                )}
+              </>
             )}
             <Field>
               <FieldLabel>投放策略</FieldLabel>
@@ -545,136 +623,140 @@ export function BuildInputPage({
               />
             </Field>
           </FieldGroup>
-          {values.connection !== "other" && capabilities.data && (
-            <section className="mt-3 border-t pt-2" aria-label="自动取链参数">
-              <div className="flex items-center justify-between gap-3">
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  取链参数
-                </span>
-                <div className="min-w-0 flex-1">
-                  <LinkConfigSummary
-                    schema={capabilities.data}
-                    overrides={values.linkConfig}
-                    compact
-                  />
+          {!values.native &&
+            values.connection !== "other" &&
+            capabilities.data && (
+              <section className="mt-3 border-t pt-2" aria-label="自动取链参数">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    取链参数
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <LinkConfigSummary
+                      schema={capabilities.data}
+                      overrides={values.linkConfig}
+                      compact
+                    />
+                  </div>
+                  {capabilities.data.fields.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      disabled={disabled}
+                      aria-expanded={
+                        adjusting ||
+                        templateMissing(capabilities.data, values.linkConfig)
+                      }
+                      onClick={() => setAdjusting((open) => !open)}
+                    >
+                      {adjusting ? "收起" : "修改"}
+                    </Button>
+                  )}
                 </div>
-                {capabilities.data.fields.length > 0 && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-2 text-xs"
-                    disabled={disabled}
-                    aria-expanded={
-                      adjusting ||
-                      templateMissing(capabilities.data, values.linkConfig)
-                    }
-                    onClick={() => setAdjusting((open) => !open)}
-                  >
-                    {adjusting ? "收起" : "修改"}
-                  </Button>
+                {templateMissing(capabilities.data, values.linkConfig) && (
+                  <Alert variant="destructive" className="mt-3">
+                    <AlertDescription>
+                      付费或混合变现应用需要支付模板，请在版权方连接的推广应用中设置
+                    </AlertDescription>
+                  </Alert>
                 )}
-              </div>
-              {templateMissing(capabilities.data, values.linkConfig) && (
-                <Alert variant="destructive" className="mt-3">
-                  <AlertDescription>
-                    付费或混合变现应用需要支付模板，请在版权方连接的推广应用中设置
-                  </AlertDescription>
-                </Alert>
-              )}
-              {(adjusting ||
-                templateMissing(capabilities.data, values.linkConfig)) && (
-                <div className="pt-3">
-                  <ProviderLinkConfigFields
-                    schema={capabilities.data}
-                    value={values.linkConfig}
-                    mode="overrides"
-                    disabled={disabled}
-                    onChange={(linkConfig) => change({ linkConfig })}
-                  />
-                </div>
-              )}
-            </section>
-          )}
+                {(adjusting ||
+                  templateMissing(capabilities.data, values.linkConfig)) && (
+                  <div className="pt-3">
+                    <ProviderLinkConfigFields
+                      schema={capabilities.data}
+                      value={values.linkConfig}
+                      mode="overrides"
+                      disabled={disabled}
+                      onChange={(linkConfig) => change({ linkConfig })}
+                    />
+                  </div>
+                )}
+              </section>
+            )}
           {version.data && <BuildStrategySummary version={version.data} />}
         </CardContent>
       </Card>
       <div className="grid min-w-0 gap-4 md:grid-cols-2">
-        {(["drama", "account"] as const).map((kind) => (
-          <Card
-            key={kind}
-            className="min-w-0 gap-3 rounded-lg py-4 shadow-none lg:gap-3 lg:py-4"
-          >
-            <CardContent className="flex min-w-0 flex-col gap-2 px-5 lg:px-5">
-              <Field className="gap-2">
-                <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
-                  <FieldLabel htmlFor={`build-${kind}`}>
-                    {kind === "drama" ? "剧目名称" : "广告账户"}
-                  </FieldLabel>
-                  {kind === "account" ? (
-                    <AccountPicker
-                      tenantId={tenantId}
-                      bcId={bcId}
-                      value={values.account}
-                      disabled={disabled}
-                      onChange={(account) => change({ account })}
-                    />
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={disabled}
-                      onClick={() => setManualOpen(true)}
-                    >
-                      填写更多剧目信息
-                    </Button>
-                  )}
-                </div>
-                <Textarea
-                  id={`build-${kind}`}
-                  className="min-h-40 resize-y font-mono"
-                  spellCheck={false}
-                  value={values[kind]}
-                  disabled={disabled}
-                  onChange={(e) => change({ [kind]: e.target.value })}
-                />
-              </Field>
-              {kind === "drama" && (
-                <>
-                  {!!values.manualLinks.length && (
-                    <p className="text-xs text-muted-foreground">
-                      已添加{" "}
-                      {
-                        values.drama.split("\n").filter((line) => line.trim())
-                          .length
-                      }{" "}
-                      部剧，其中{" "}
-                      {values.manualLinks.filter((row) => row.url).length}{" "}
-                      部已填写推广链接；
-                      {
-                        values.manualLinks.filter(
-                          (row) => row.material_identifier,
-                        ).length
-                      }{" "}
-                      部已填写素材标识
-                    </p>
-                  )}
-                  {values.connection === "other" && (
-                    <p className="text-xs text-muted-foreground">
-                      其他版权方需提供推广链接，可在“填写更多剧目信息”中添加。
-                    </p>
-                  )}
-                </>
-              )}
-              <p className="text-xs text-muted-foreground">
-                {kind === "drama"
-                  ? "每行一部剧，可直接粘贴一整列剧名。"
-                  : "每行一个完整账户 ID 或完整名称；重复账户将自动去重。"}
-              </p>
-            </CardContent>
-          </Card>
-        ))}
+        {(["drama", "account"] as const)
+          .filter(() => !values.native)
+          .map((kind) => (
+            <Card
+              key={kind}
+              className="min-w-0 gap-3 rounded-lg py-4 shadow-none lg:gap-3 lg:py-4"
+            >
+              <CardContent className="flex min-w-0 flex-col gap-2 px-5 lg:px-5">
+                <Field className="gap-2">
+                  <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
+                    <FieldLabel htmlFor={`build-${kind}`}>
+                      {kind === "drama" ? "剧目名称" : "广告账户"}
+                    </FieldLabel>
+                    {kind === "account" ? (
+                      <AccountPicker
+                        tenantId={tenantId}
+                        bcId={bcId}
+                        value={values.account}
+                        disabled={disabled}
+                        onChange={(account) => change({ account })}
+                      />
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={disabled}
+                        onClick={() => setManualOpen(true)}
+                      >
+                        填写更多剧目信息
+                      </Button>
+                    )}
+                  </div>
+                  <Textarea
+                    id={`build-${kind}`}
+                    className="min-h-40 resize-y font-mono"
+                    spellCheck={false}
+                    value={values[kind]}
+                    disabled={disabled}
+                    onChange={(e) => change({ [kind]: e.target.value })}
+                  />
+                </Field>
+                {kind === "drama" && (
+                  <>
+                    {!!values.manualLinks.length && (
+                      <p className="text-xs text-muted-foreground">
+                        已添加{" "}
+                        {
+                          values.drama.split("\n").filter((line) => line.trim())
+                            .length
+                        }{" "}
+                        部剧，其中{" "}
+                        {values.manualLinks.filter((row) => row.url).length}{" "}
+                        部已填写推广链接；
+                        {
+                          values.manualLinks.filter(
+                            (row) => row.material_identifier,
+                          ).length
+                        }{" "}
+                        部已填写素材标识
+                      </p>
+                    )}
+                    {values.connection === "other" && (
+                      <p className="text-xs text-muted-foreground">
+                        其他版权方需提供推广链接，可在“填写更多剧目信息”中添加。
+                      </p>
+                    )}
+                  </>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {kind === "drama"
+                    ? "每行一部剧，可直接粘贴一整列剧名。"
+                    : "每行一个完整账户 ID 或完整名称；重复账户将自动去重。"}
+                </p>
+              </CardContent>
+            </Card>
+          ))}
       </div>
       <Card
         role="region"
@@ -683,17 +765,33 @@ export function BuildInputPage({
       >
         <CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-5 lg:px-5">
           <p className="text-xs text-muted-foreground">
-            {values.drama.split("\n").filter((line) => line.trim()).length} 部剧
-            ·{" "}
-            {
-              new Set(
-                values.account
-                  .split("\n")
-                  .map((line) => line.trim())
-                  .filter(Boolean),
-              ).size
-            }{" "}
-            个账户
+            {values.native ? (
+              <>
+                {values.native.plans.length} 份计划 ·{" "}
+                {
+                  new Set(
+                    values.native.plans
+                      .map((p) => p.selection.advertiser_id)
+                      .filter(Boolean),
+                  ).size
+                }{" "}
+                个账户
+              </>
+            ) : (
+              <>
+                {values.drama.split("\n").filter((line) => line.trim()).length}{" "}
+                部剧 ·{" "}
+                {
+                  new Set(
+                    values.account
+                      .split("\n")
+                      .map((line) => line.trim())
+                      .filter(Boolean),
+                  ).size
+                }{" "}
+                个账户
+              </>
+            )}
             <span className="ml-3 text-xs">此步不会创建广告</span>
           </p>
           <div className="flex flex-wrap gap-2">
@@ -706,15 +804,7 @@ export function BuildInputPage({
               <>
                 <Button
                   variant="outline"
-                  disabled={
-                    disabled ||
-                    !values.version ||
-                    (values.connection === "other"
-                      ? !values.customProvider.trim()
-                      : !values.application) ||
-                    !values.drama.trim() ||
-                    !values.account.trim()
-                  }
+                  disabled={disabled || invalid}
                   onClick={() => void save(false)}
                 >
                   保存草稿
@@ -722,20 +812,19 @@ export function BuildInputPage({
                 <Button
                   disabled={
                     disabled ||
-                    !values.version ||
-                    (values.connection === "other"
-                      ? !values.customProvider.trim()
-                      : !values.application) ||
-                    !values.drama.trim() ||
-                    !values.account.trim() ||
+                    invalid ||
                     // 缺支付模板只阻止准备，草稿仍可保存
-                    (capabilities.data
+                    (!values.native && capabilities.data
                       ? templateMissing(capabilities.data, values.linkConfig)
                       : false)
                   }
                   onClick={() => void save(true)}
                 >
-                  {busy ? "正在保存…" : "下一步：准备链接与素材"}
+                  {busy
+                    ? "正在保存…"
+                    : values.native
+                      ? "下一步：核对目的地与身份"
+                      : "下一步：准备链接与素材"}
                 </Button>
               </>
             )}

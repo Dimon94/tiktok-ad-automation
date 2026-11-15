@@ -43,7 +43,7 @@ from app.modules.builds.routes import (
     save_attempt_context,
     verify_unit_route,
 )
-from app.modules.tenants.permissions import require_tenant
+from app.modules.tenants.permissions import build_authorization_stamp, require_tenant
 
 from .ad_readiness import included_ad_sql, included_group_sql
 from .submission_counts import INCLUDED_OBJECT_COUNTS
@@ -59,7 +59,7 @@ def submission_row(
     session: Session, context: TenantContext, identity: UUID, *, lock: bool = False
 ) -> Submission:
     stmt = select(Submission).where(
-        Submission.tenant_id == context.tenant_id, Submission.id == identity
+        col(Submission.tenant_id) == context.tenant_id, col(Submission.id) == identity
     )
     if lock:
         stmt = stmt.with_for_update(key_share=True)
@@ -109,32 +109,45 @@ def submit_preview(
         if alias.preview_id != preview_id:
             raise DomainError("idempotency_conflict", "幂等键已绑定其他预览")
         saved = submission_row(session, context, alias.submission_id)
-        return SubmissionReceipt(submission_id=saved.id, status=saved.status)
+        return SubmissionReceipt(
+            submission_id=saved.id,
+            status=get_submission(
+                session, context=context, submission_id=saved.id
+            ).status,
+        )
     preview = session.exec(
         select(BuildPreview).where(
-            BuildPreview.tenant_id == context.tenant_id, BuildPreview.id == preview_id
+            col(BuildPreview.tenant_id) == context.tenant_id, col(BuildPreview.id) == preview_id
         )
     ).one_or_none()
     if preview is None:
         raise DomainError("preview_not_found", "预览不存在")
+    # 新批准的操作者来自提交者；先锁权限再锁 Draft/Preview，与发送顺序一致。
+    approval_stamp = (
+        build_authorization_stamp(
+            session, actor_id=context.actor_id, tenant_id=context.tenant_id
+        )
+        if ("native_request" in preview.config or "native_batch" in preview.config)
+        else None
+    )
     draft = session.exec(
         select(BuildDraft)
         .where(
-            BuildDraft.tenant_id == context.tenant_id, BuildDraft.id == preview.draft_id
+            col(BuildDraft.tenant_id) == context.tenant_id, col(BuildDraft.id) == preview.draft_id
         )
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one()
     preview = session.exec(
         select(BuildPreview)
-        .where(BuildPreview.id == preview_id)
+        .where(col(BuildPreview.id) == preview_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one()
     existing = session.exec(
         select(Submission).where(
-            Submission.tenant_id == context.tenant_id,
-            Submission.preview_id == preview_id,
+            col(Submission.tenant_id) == context.tenant_id,
+            col(Submission.preview_id) == preview_id,
         )
     ).one_or_none()
     if existing is None:
@@ -157,6 +170,21 @@ def submit_preview(
         verify_route(
             session, context=context, route=route, advertiser_id=None, capability="read"
         )
+        if "native_request" in preview.config or "native_batch" in preview.config:
+            from .native_execution import validate
+            from .native_preview import read_batch
+
+            # 单项与多项都按当前 Unit 走同一资格围栏，不只复核首项。
+            batch = read_batch(session, preview=preview)
+            for item in batch["plans"]:
+                if item["status"] == "INCLUDED":
+                    validate(
+                        session,
+                        context=context,
+                        preview=preview,
+                        route=route,
+                        unit_id=UUID(item["unit_id"]),
+                    )
         bc = session.get(
             TenantBC, (context.tenant_id, preview.bc_id), populate_existing=True
         )
@@ -167,10 +195,10 @@ def submit_preview(
         if draft.revision != preview.draft_revision:
             raise DomainError("draft_revision_conflict", "草稿已变更")
         eligible = session.exec(
-            select(BuildUnit.id)
+            select(col(BuildUnit.id))
             .where(
-                BuildUnit.tenant_id == context.tenant_id,
-                BuildUnit.preview_id == preview_id,
+                col(BuildUnit.tenant_id) == context.tenant_id,
+                col(BuildUnit.preview_id) == preview_id,
                 col(BuildUnit.complete).is_(True),
                 col(BuildUnit.readiness).in_(["READY", "PREPARING"]),
             )
@@ -190,9 +218,9 @@ def submit_preview(
         validate_continuations(session, context=context, preview=preview)
         ordinal = (
             session.exec(
-                select(func.coalesce(func.max(Submission.ordinal), 0)).where(
-                    Submission.tenant_id == context.tenant_id,
-                    Submission.draft_id == draft.id,
+                select(func.coalesce(func.max(col(Submission.ordinal)), 0)).where(
+                    col(Submission.tenant_id) == context.tenant_id,
+                    col(Submission.draft_id) == draft.id,
                 )
             ).one()
             + 1
@@ -223,6 +251,7 @@ def submit_preview(
             preview_id=preview.id,
             draft_id=draft.id,
             actor_id=context.actor_id,
+            authorization_stamp=approval_stamp,
             ordinal=ordinal,
         )
         session.add(existing)
@@ -242,7 +271,13 @@ def submit_preview(
         )
     )
     session.flush()
-    return SubmissionReceipt(submission_id=existing.id, status=existing.status)
+    # 重放必须返回派生的当前回执，持久化调度状态不代表实际 MATCH 结果。
+    return SubmissionReceipt(
+        submission_id=existing.id,
+        status=get_submission(
+            session, context=context, submission_id=existing.id
+        ).status,
+    )
 
 
 # Preserve correlation even before freshly generated plan tables are analyzed.
@@ -304,8 +339,8 @@ def expand_submission(
         unit = session.exec(
             select(SubmissionUnit)
             .where(
-                SubmissionUnit.tenant_id == context.tenant_id,
-                SubmissionUnit.submission_id == row.id,
+                col(SubmissionUnit.tenant_id) == context.tenant_id,
+                col(SubmissionUnit.submission_id) == row.id,
                 col(SubmissionUnit.expanded).is_(False),
             )
             .order_by(col(SubmissionUnit.unit_id))
@@ -314,15 +349,15 @@ def expand_submission(
         if unit is None:
             after = row.progress.get("after")
             stmt = select(BuildUnit).where(
-                BuildUnit.tenant_id == context.tenant_id,
-                BuildUnit.preview_id == row.preview_id,
+                col(BuildUnit.tenant_id) == context.tenant_id,
+                col(BuildUnit.preview_id) == row.preview_id,
             )
             if after:
-                stmt = stmt.where(BuildUnit.id > UUID(after))
+                stmt = stmt.where(col(BuildUnit.id) > UUID(after))
             frozen = session.exec(stmt.order_by(col(BuildUnit.id)).limit(1)).first()
             if frozen is None:
                 row.expanded = True
-                row.progress = {"phase": "done"}
+                row.progress = {**row.progress, "phase": "done"}
                 row.updated_at = datetime.now(UTC)
                 session.add(row)
                 session.flush()
@@ -380,16 +415,16 @@ def expand_submission(
                         unit_id=frozen.id,
                     )
                 )
-            row.progress = {"phase": "units", "after": str(frozen.id)}
+            row.progress = {**row.progress, "phase": "units", "after": str(frozen.id)}
             session.add(row)
             session.flush()
             used += 1
             continue
         frozen = session.exec(
             select(BuildUnit).where(
-                BuildUnit.tenant_id == row.tenant_id,
-                BuildUnit.id == unit.unit_id,
-                BuildUnit.preview_id == row.preview_id,
+                col(BuildUnit.tenant_id) == row.tenant_id,
+                col(BuildUnit.id) == unit.unit_id,
+                col(BuildUnit.preview_id) == row.preview_id,
             )
         ).one()
         candidates = (
@@ -495,7 +530,7 @@ def claim_step(
     step = session.exec(
         select(ExecutionStep)
         .where(
-            ExecutionStep.tenant_id == context.tenant_id, ExecutionStep.id == step_id
+            col(ExecutionStep.tenant_id) == context.tenant_id, col(ExecutionStep.id) == step_id
         )
         .with_for_update()
     ).one_or_none()
@@ -518,11 +553,11 @@ def claim_step(
         return None
     if step.kind == "CAMPAIGN":
         cta = session.exec(
-            select(ExecutionStep.status).where(
-                ExecutionStep.tenant_id == row.tenant_id,
-                ExecutionStep.submission_id == row.id,
-                ExecutionStep.unit_id == step.unit_id,
-                ExecutionStep.kind == "CTA",
+            select(col(ExecutionStep.status)).where(
+                col(ExecutionStep.tenant_id) == row.tenant_id,
+                col(ExecutionStep.submission_id) == row.id,
+                col(ExecutionStep.unit_id) == step.unit_id,
+                col(ExecutionStep.kind) == "CTA",
             )
         ).one_or_none()
         if (
@@ -551,7 +586,7 @@ def claim_step(
             return None
     frozen = session.exec(
         select(BuildUnit).where(
-            BuildUnit.tenant_id == row.tenant_id, BuildUnit.id == step.unit_id
+            col(BuildUnit.tenant_id) == row.tenant_id, col(BuildUnit.id) == step.unit_id
         )
     ).one()
     route = verify_unit_route(session, context=context, unit=frozen, capability="build")
@@ -786,6 +821,12 @@ def get_submission(
         status = "QUEUED"
     if row.expanded and scope["submitted_c"] == 0:
         status = "COMPLETED"
+    native_plans = []
+    if "native_request" in preview.config or "native_batch" in preview.config:
+        from .native_completion import batch_results
+
+        # 取消、MATCH 和 UNKNOWN 对单项/多项使用同一事实聚合。
+        status, native_plans = batch_results(session, row, preview)
     planned = ObjectCounts(
         campaign_count=scope["planned_c"],
         adgroup_count=scope["planned_g"],
@@ -816,6 +857,7 @@ def get_submission(
     from .continuation import submission_facts
 
     return SubmissionView(
+        native_plans=native_plans,
         **submission_facts(session, row),
         corrected_ad_count=stage_counts.get("AD:VERIFIED_REPLACEMENT", 0),
         execution_route=execution_route_view(
@@ -829,6 +871,17 @@ def get_submission(
             else "BLOCKED"
         ),
         error_code=row.error_code,
+        local_cancelled=bool(row.progress.get("local_cancelled")),
+        can_cancel=context.actor_id == row.actor_id
+        and any(
+            "native_request" in u.scene_snapshot
+            for u in session.exec(
+                select(BuildUnit).where(
+                    col(BuildUnit.preview_id) == row.preview_id,
+                    col(BuildUnit.tenant_id) == row.tenant_id,
+                )
+            ).all()
+        ),
         **metadata(
             session, tenant_id=context.tenant_id, submission_id=row.id
         ).model_dump(),
@@ -1057,21 +1110,21 @@ def get_submission_steps(
         select(ExecutionStep)
         .join(
             BuildUnit,
-            (col(BuildUnit.id) == ExecutionStep.unit_id)
-            & (col(BuildUnit.tenant_id) == ExecutionStep.tenant_id),
+            (col(BuildUnit.id) == col(ExecutionStep.unit_id))
+            & (col(BuildUnit.tenant_id) == col(ExecutionStep.tenant_id)),
         )
         .where(
-            ExecutionStep.tenant_id == row.tenant_id,
-            ExecutionStep.submission_id == row.id,
+            col(ExecutionStep.tenant_id) == row.tenant_id,
+            col(ExecutionStep.submission_id) == row.id,
             text("NOT " + obsolete_readback_sql("execution_step")),
         )
     )
     if advertiser_id:
-        stmt = stmt.where(BuildUnit.advertiser_id == advertiser_id)
+        stmt = stmt.where(col(BuildUnit.advertiser_id) == advertiser_id)
     if drama_id:
-        stmt = stmt.where(BuildUnit.drama_id == drama_id)
+        stmt = stmt.where(col(BuildUnit.drama_id) == drama_id)
     if kind:
-        stmt = stmt.where(ExecutionStep.kind == kind)
+        stmt = stmt.where(col(ExecutionStep.kind) == kind)
     if result == "MISMATCH":
         from app.modules.builds.corrections import resolved_sql
 
@@ -1088,10 +1141,10 @@ def get_submission_steps(
                 text("(execution_step.status='SUCCEEDED' OR " + resolved + ")")
             )
         else:
-            stmt = stmt.where(ExecutionStep.status == result, text("NOT " + resolved))
+            stmt = stmt.where(col(ExecutionStep.status) == result, text("NOT " + resolved))
     total = count_rows(session, stmt)
     if after:
-        stmt = stmt.where(ExecutionStep.id > after)
+        stmt = stmt.where(col(ExecutionStep.id) > after)
     rows = session.exec(stmt.order_by(col(ExecutionStep.id)).limit(limit + 1)).all()
     items = [
         StepPublic(
@@ -1184,3 +1237,64 @@ def group_material_state(
         .one()
     )
     return "READY" if value["ready"] else "FAILED" if value["failed"] else "PENDING"
+
+
+def cancel_submission(
+    session: Session, *, context: TenantContext, submission_id: UUID
+) -> SubmissionReceipt:
+    """关闭发送入口并取消空闲未发送步骤；在途锁与回执仍归执行器。"""
+    require_tenant(
+        session, actor_id=context.actor_id, tenant_id=context.tenant_id, action="read"
+    )
+    row = session.exec(
+        select(Submission)
+        .where(
+            col(Submission.id) == submission_id, col(Submission.tenant_id) == context.tenant_id
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if row is None:
+        raise DomainError("resource_not_found", "提交不存在")
+    if row.actor_id != context.actor_id:
+        raise DomainError("action_forbidden", "仅原提交操作者可取消未发送步骤")
+    native = session.exec(
+        select(BuildUnit).where(
+            col(BuildUnit.preview_id) == row.preview_id, col(BuildUnit.tenant_id) == row.tenant_id
+        )
+    ).first()
+    if native is None or "native_request" not in native.scene_snapshot:
+        raise DomainError("local_cancel_unsupported", "此入口仅支持原生投放")
+    if not row.progress.get("local_cancelled"):
+        row.progress = {
+            **row.progress,
+            "local_cancelled": True,
+            "local_cancelled_at": datetime.now(UTC).isoformat(),
+        }
+        row.updated_at = datetime.now(UTC)
+        session.add(row)
+    # 发送器先锁步骤再锁 Submission；取消绝不反向等待步骤锁。
+    # 已锁步骤跳过，随后由原发送围栏观察关闭标记；已准入发送保留事实。
+    from .execution_state import evidence
+
+    pending = session.exec(
+        select(ExecutionStep).where(
+            col(ExecutionStep.submission_id) == row.id,
+            col(ExecutionStep.tenant_id) == row.tenant_id,
+            col(ExecutionStep.status).in_(["PENDING", "QUEUED"]),
+            col(ExecutionStep.request_body).is_(None),
+            col(ExecutionStep.remote_id).is_(None),
+            col(ExecutionStep.kind) != "READBACK",
+        ).with_for_update(skip_locked=True)
+    ).all()
+    for step in pending:
+        step.status, step.phase, step.error_code = (
+            "FAILED", "DONE", "local_submission_cancelled"
+        )
+        step.dispatch_revision += 1
+        step.dispatch_id = None
+        evidence(session, step=step, claim=None, conclusion="LOCAL_CANCELLED")
+        session.add(step)
+    session.flush()
+    view = get_submission(session, context=context, submission_id=row.id)
+    return SubmissionReceipt(submission_id=row.id, status=view.status)

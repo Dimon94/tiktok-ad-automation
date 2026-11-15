@@ -365,6 +365,9 @@ def test_expired_compact_snapshots_are_drained_in_large_bounded_batches(cached_c
     now = datetime.now(UTC)
     with case.factory() as session:
         expired = QuerySnapshot(
+            # 只扫描本夹具的末尾窗口；随机UUID之后可能还有其他租户的到期行，
+            # 会共同消耗全局5000行预算，不能据此推断本快照恰好剩2行。
+            id=UUID(int=(1 << 128) - 1),
             tenant_id=case.seed.tenant_id,
             actor_id=case.seed.actor_id,
             bc_id="bc-a",

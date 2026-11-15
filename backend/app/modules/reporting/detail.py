@@ -3,11 +3,14 @@
 详情只消费 A 阶段已发布的目录和素材使用引用；缺少本地视频文件不会让外部
 广告消失。父级限制单独返回，避免把停用、审核或排期状态误报成子广告状态。
 """
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,7 +26,12 @@ from app.modules.ad_management.models import (
 )
 from app.modules.ads import directory
 from app.modules.ads.models import AdMaterialReference, AdObject
-from app.modules.reporting.query_models import read_snapshot
+from app.modules.reporting.query_models import QuerySnapshotRow, read_snapshot
+from app.modules.reporting.schemas import (
+    QuerySnapshotPublic,
+    ReportingFilter,
+    ReportRow,
+)
 
 
 class ParentRestrictionPublic(BaseModel):
@@ -47,9 +55,221 @@ class MaterialUsePublic(BaseModel):
     external: bool = True
 
 
+class DirectoryIdentityPublic(BaseModel):
+    identity_type: str | None = None
+    identity_id: str | None = None
+    identity_authorized_bc_id: str | None = None
+
+
+class DirectoryObservationPublic(BaseModel):
+    observed_at: datetime | None = None
+    published_version: int | None = None
+    source_connection_id: UUID | None = None
+    source_channel: str | None = None
+
+
+class DirectoryParentPublic(DirectoryObservationPublic):
+    ref: EntityRef
+    configuration: dict[str, Any]
+
+
+class DirectoryMaterialPublic(DirectoryObservationPublic):
+    platform_material_id: str
+    material_type: str
+    name: str | None = None
+    ad_material_id: str | None = None
+
+
+class DirectoryCreativePublic(DirectoryObservationPublic):
+    creative_id: str | None
+    identity: DirectoryIdentityPublic | None
+    configuration: dict[str, Any]
+    materials: tuple[DirectoryMaterialPublic, ...]
+    coverage_reasons: tuple[str, ...]
+
+
+class NativeDirectoryPublic(BaseModel):
+    series_id: str | None = None
+    series_name: str | None = None
+    group_identity: DirectoryIdentityPublic | None = None
+    placement_type: str | None = None
+    placements: tuple[str, ...] | None = None
+    tiktok_subplacements: tuple[str, ...] | None = None
+    parent_adgroup: DirectoryParentPublic | None = None
+    creatives: tuple[DirectoryCreativePublic, ...] | None = None
+    coverage_reasons: tuple[str, ...] = ()
+
+
+def _identity(config: dict[str, Any] | None) -> DirectoryIdentityPublic | None:
+    if config is None:
+        return None
+    keys = ("identity_type", "identity_id", "identity_authorized_bc_id")
+    return (
+        DirectoryIdentityPublic(**{k: config.get(k) for k in keys})
+        if any(k in config for k in keys)
+        else None
+    )
+
+
+def _observation(entity):
+    return {
+        k: getattr(entity, k, None)
+        for k in (
+            "observed_at",
+            "published_version",
+            "source_connection_id",
+            "source_channel",
+        )
+    }
+
+
+def _native_detail(
+    session: Session,
+    context: TenantContext,
+    bc_id: str,
+    entity: AdObject,
+    parent: AdObject | None,
+    material_rows: Sequence[AdMaterialReference],
+) -> NativeDirectoryPublic | None:
+    if entity.kind not in {"adgroup", "ad"}:
+        return None
+    group = (
+        entity
+        if entity.kind == "adgroup"
+        else parent
+        if entity.kind == "ad" and parent and parent.kind == "adgroup"
+        else None
+    )
+    config = group.configuration if group else {}
+
+    def explicit(c):
+        return (
+            c.get("native_series_id") is not None
+            or c.get("promotion_type") == "NATIVE_SERIES"
+        )
+
+    if not explicit(config) and not explicit(entity.configuration):
+        return None
+    reasons = []
+    if group is None:
+        reasons.append("parent_not_synced")
+    for key in (
+        "native_series_id",
+        "native_series_name",
+        "identity_type",
+        "identity_id",
+        "identity_authorized_bc_id",
+        "placement_type",
+        "placements",
+        "tiktok_subplacements",
+    ):
+        if config.get(key) is None:
+            reasons.append(f"{key}:not_provided")
+    creatives = None
+    if entity.kind == "ad":
+        facts = directory.list_native_creatives(
+            session, context=context, bc_id=bc_id, parent=entity.ref
+        )
+        children = directory.list_objects(
+            session,
+            context=context,
+            bc_id=bc_id,
+            advertiser_ids=(entity.advertiser_id,),
+            kind="creative",
+            parent=entity.ref,
+        )
+        # 只有相同 creative ID 可连接两个观察来源；无 ID 配置始终单独保留。
+        configs = {c.remote_id: (c.configuration, c) for c in children}
+        anonymous = []
+        creative_list = entity.configuration.get("creative_list")
+        if creative_list is None:
+            reasons.append("creative_list:not_provided")
+        for item in creative_list if creative_list is not None else ():
+            creative_id = item.get("smart_plus_creative_id")
+            if creative_id is None:
+                anonymous.append(item)
+            elif creative_id not in configs:
+                configs[creative_id] = (item, entity)
+        by_id = {f.creative_id: f for f in facts}
+        entries = [
+            (key, *configs.get(key, ({}, None)), by_id.get(key))
+            for key in sorted(set(configs) | set(by_id))
+        ]
+        entries += [(None, c, entity, None) for c in anonymous]
+        projected = []
+        for creative_id, raw, observed, fact in entries:
+            missing = []
+            identity = _identity(raw.get("creative_info", raw))
+            if identity is None or any(
+                getattr(identity, k) is None
+                for k in DirectoryIdentityPublic.model_fields
+            ):
+                missing.append("creative_identity:not_provided")
+            if fact is None:
+                missing.append("creative_materials:not_covered")
+            elif fact.identity_status in {"UNRESOLVED", "CONFLICT"}:
+                missing.append(f"creative_materials:{fact.identity_status.lower()}")
+            assets = []
+            for asset in fact.assets if fact else []:
+                assert fact is not None
+                matches = [
+                    m
+                    for m in material_rows
+                    if m.platform_material_id == asset["platform_material_id"]
+                    and m.material_type == asset["material_type"]
+                    and m.ad_material_id == fact.ad_material_id
+                ]
+                match = matches[0] if len(matches) == 1 else None
+                assets.append(
+                    DirectoryMaterialPublic(
+                        **asset,
+                        ad_material_id=fact.ad_material_id,
+                        name=match.name if match else None,
+                        observed_at=fact.observed_at,
+                        published_version=fact.published_version,
+                    )
+                )
+            if not assets:
+                missing.append("materials:not_covered")
+            if creative_id is None:
+                missing.append("creative_id:not_provided")
+            projected.append(
+                DirectoryCreativePublic(
+                    creative_id=creative_id,
+                    identity=identity,
+                    configuration=raw,
+                    materials=tuple(assets),
+                    coverage_reasons=tuple(missing),
+                    **_observation(observed or fact),
+                )
+            )
+        creatives = tuple(projected) if projected else None
+        # 已发布关系是观察事实，现有模型没有广告级完整创意清单证明。
+        reasons.append("creative_coverage:unknown")
+    return NativeDirectoryPublic(
+        series_id=config.get("native_series_id"),
+        series_name=config.get("native_series_name"),
+        group_identity=_identity(config),
+        placement_type=config.get("placement_type"),
+        placements=config.get("placements"),
+        tiktok_subplacements=config.get("tiktok_subplacements"),
+        parent_adgroup=DirectoryParentPublic(
+            ref=group.ref, configuration=group.configuration, **_observation(group)
+        )
+        if group and entity.kind == "ad"
+        else None,
+        creatives=creatives,
+        coverage_reasons=tuple(reasons),
+    )
+
+
 class AdDetailPublic(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    native: NativeDirectoryPublic | None = None
+    report_snapshot: QuerySnapshotPublic | None = None
+    report_result: ReportRow | None = None
+    directory_time_basis: str = "CURRENT_DIRECTORY"
     ref: EntityRef
     name: str
     ad_type: str
@@ -59,6 +279,9 @@ class AdDetailPublic(BaseModel):
     materials: tuple[MaterialUsePublic, ...] = ()
     operation_history: tuple[dict[str, Any], ...] = ()
     observed_at: datetime
+    published_version: int
+    source_connection_id: UUID | None = None
+    source_channel: str | None = None
 
 
 def _reasons(entity: AdObject) -> tuple[str, ...]:
@@ -85,14 +308,6 @@ def _reasons(entity: AdObject) -> tuple[str, ...]:
     return tuple(dict.fromkeys(result))
 
 
-def _parent_public(entity: AdObject) -> ParentRestrictionPublic | None:
-    if entity.parent_ref is None:
-        return None
-    # Parent is loaded by the caller and assigned through model construction so
-    # a missing parent remains an explicit unavailable restriction.
-    return None
-
-
 def get_ad_detail(
     session: Session,
     *,
@@ -101,15 +316,57 @@ def get_ad_detail(
     ref: EntityRef,
     snapshot_id: UUID | None = None,
 ) -> AdDetailPublic:
+    from app.modules.reporting.queries import _snapshot_public
+
+    snapshot = None
+    report_result = None
     if snapshot_id is not None:
-        # Bind detail reads to the same tenant/BC snapshot lifecycle as list,
-        # pagination and selection requests before reading current directory data.
-        read_snapshot(session, context=context, bc_id=bc_id, snapshot_id=snapshot_id)
+        snapshot = read_snapshot(
+            session, context=context, bc_id=bc_id, snapshot_id=snapshot_id
+        )
     try:
         entity = directory.locate(session, context=context, bc_id=bc_id, ref=ref)
     except DomainError as exc:
         # Do not disclose an object that belongs to another BC or tenant.
         raise HTTPException(404, detail="ad_not_found") from exc
+    if ref.kind in {"campaign", "adgroup", "ad"}:
+        from app.modules.reporting.frozen_result import frozen_row
+        from app.modules.reporting.queries import query_ads
+
+        if snapshot is None:
+            from app.modules.accounts.models import AdvertiserAccount
+
+            account = session.exec(
+                select(AdvertiserAccount).where(
+                    col(AdvertiserAccount.tenant_id) == context.tenant_id,
+                    col(AdvertiserAccount.advertiser_id) == ref.advertiser_id,
+                )
+            ).one()
+            day = datetime.now(ZoneInfo(account.timezone or "UTC")).date()
+            page = query_ads(
+                session,
+                context=context,
+                bc_id=bc_id,
+                filters=ReportingFilter(
+                    dimension=ref.kind,
+                    start_date=day,
+                    end_date=day,
+                    advertiser_ids=(ref.advertiser_id,),
+                    ids=(ref.remote_id,),
+                    include_empty=True,
+                ),
+            )
+            snapshot = read_snapshot(
+                session,
+                context=context,
+                bc_id=bc_id,
+                snapshot_id=page.snapshot.snapshot_id,
+            )
+        row_key = f"{ref.advertiser_id}:{ref.kind}:{ref.remote_id}"
+        row = session.get(QuerySnapshotRow, (snapshot.id, row_key))
+        if row is None:
+            raise HTTPException(409, detail="query_snapshot_object_mismatch")
+        report_result = frozen_row(row)
     parent_entity: AdObject | None = None
     if entity.parent_ref is not None:
         try:
@@ -125,20 +382,29 @@ def get_ad_detail(
             operation_status=parent_entity.operation_status if parent_entity else None,
             review_status=parent_entity.review_status if parent_entity else None,
             delivery_status=parent_entity.delivery_status if parent_entity else None,
-            reasons=_reasons(parent_entity) if parent_entity else ("parent_not_synced",),
+            reasons=_reasons(parent_entity)
+            if parent_entity
+            else ("parent_not_synced",),
         )
     material_rows = session.exec(
-        select(AdMaterialReference).where(
-            AdMaterialReference.tenant_id == context.tenant_id,
-            AdMaterialReference.advertiser_id == ref.advertiser_id,
-            AdMaterialReference.ad_remote_id == ref.remote_id,
-        ).order_by(col(AdMaterialReference.platform_material_id), col(AdMaterialReference.ad_material_id))
+        select(AdMaterialReference)
+        .where(
+            col(AdMaterialReference.tenant_id) == context.tenant_id,
+            col(AdMaterialReference.advertiser_id) == ref.advertiser_id,
+            col(AdMaterialReference.ad_remote_id) == ref.remote_id,
+        )
+        .order_by(
+            col(AdMaterialReference.platform_material_id),
+            col(AdMaterialReference.ad_material_id),
+        )
     ).all()
     materials = tuple(
         MaterialUsePublic(
             use_ref=row.use_ref,
             name=row.name,
-            local_material_id=str(row.local_material_id) if row.local_material_id else None,
+            local_material_id=str(row.local_material_id)
+            if row.local_material_id
+            else None,
             operation_status=row.operation_status,
             complete=row.complete,
             external=row.local_material_id is None,
@@ -149,10 +415,13 @@ def get_ad_detail(
     history_rows = session.exec(
         select(ManagementTaskItem, ManagementTask, ManagementPreview)
         .join(ManagementTask, col(ManagementTask.id) == col(ManagementTaskItem.task_id))
-        .join(ManagementPreview, col(ManagementPreview.id) == col(ManagementTask.preview_id))
+        .join(
+            ManagementPreview,
+            col(ManagementPreview.id) == col(ManagementTask.preview_id),
+        )
         .where(
-            ManagementTaskItem.tenant_id == context.tenant_id,
-            ManagementTask.bc_id == bc_id,
+            col(ManagementTaskItem.tenant_id) == context.tenant_id,
+            col(ManagementTask.bc_id) == bc_id,
             col(ManagementTaskItem.ref).op("->>")("advertiser_id") == ref.advertiser_id,
             col(ManagementTaskItem.ref).op("->>")("kind") == ref.kind,
             col(ManagementTaskItem.ref).op("->>")("remote_id") == ref.remote_id,
@@ -174,6 +443,11 @@ def get_ad_detail(
         for item, task, preview in history_rows
     )
     return AdDetailPublic(
+        report_snapshot=_snapshot_public(snapshot) if snapshot else None,
+        report_result=report_result,
+        native=_native_detail(
+            session, context, bc_id, entity, parent_entity, material_rows
+        ),
         ref=entity.ref,
         name=entity.name,
         ad_type=entity.ad_type,
@@ -187,4 +461,7 @@ def get_ad_detail(
         materials=materials,
         operation_history=history,
         observed_at=entity.observed_at,
+        published_version=entity.published_version,
+        source_connection_id=entity.source_connection_id,
+        source_channel=entity.source_channel,
     )

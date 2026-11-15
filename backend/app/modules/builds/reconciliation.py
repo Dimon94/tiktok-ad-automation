@@ -41,7 +41,12 @@ from app.modules.builds.reconciliation_scan import advance
 from app.modules.builds.reconciliation_scan import (
     reconciliation_decision as reconciliation_decision,
 )
-from app.modules.builds.request_compiler import decode_intent, remote_request_id
+from app.modules.builds.request_compiler import (
+    decode_intent,
+    read_arguments,
+    remote_request_id,
+    status_arguments,
+)
 from app.modules.builds.route_models import BuildAttemptContext
 from app.modules.builds.routes import save_attempt_context, verify_unit_route
 from app.modules.tenants.permissions import require_tenant
@@ -110,6 +115,7 @@ class _Claim:
     progress: dict[str, Any]
     route: FrozenTikTokRoute
     intent: CreateIntent
+    native_series: bool
     lease_expires_at: datetime
 
 
@@ -551,6 +557,7 @@ def _claim(
         progress,
         route,
         intent,
+        "native_request" in unit.scene_snapshot,
         now + timedelta(seconds=CLAIM_SECONDS),
     )
 
@@ -606,6 +613,7 @@ def _advance(
     return advance(
         query=BuildReadQuery(
             intent=claim.intent,
+            native_series=claim.native_series,
             remote_id=claim.progress.get("known_id"),
             page=claim.progress["page"],
         ),
@@ -703,6 +711,25 @@ def _finish(
             "stage": claim.progress["stage"],
             "body_digest": claim.digest,
         }
+        operation, arguments = (
+            read_arguments(
+                BuildReadQuery(
+                    intent=claim.intent,
+                    native_series=claim.native_series,
+                    remote_id=claim.progress.get("known_id"),
+                    page=claim.progress["page"],
+                )
+            )
+            if claim.progress["stage"] == "OBJECT"
+            else (
+                "build.get_regular_adgroups",
+                status_arguments(
+                    advertiser_id=claim.advertiser_id,
+                    adgroup_id=claim.progress["candidate"]["remote_id"],
+                ),
+            )
+        )
+        summary["query"] = {"operation": operation, "arguments": arguments}
         actual_evidence = page.evidence if page is not None else call_evidence
         if actual_evidence is not None:
             summary["call_evidence"] = asdict(actual_evidence)
@@ -841,6 +868,9 @@ def _finish(
         from app.modules.builds.created_directory import publish_created_object
 
         publish_created_object(session, step=source, route=claim.route)
+        from .execution_state import ensure_native_readback
+
+        ensure_native_readback(session, source)
         return _remember(
             step, ReconciliationResult("MISMATCH" if mismatch else "SUCCEEDED")
         )
@@ -894,6 +924,7 @@ def process_reconciliation(
                     page = gateway.builds.read_page(
                         query=BuildReadQuery(
                             intent=claim.intent,
+                            native_series=claim.native_series,
                             remote_id=claim.progress.get("known_id"),
                             page=claim.progress["page"],
                         )

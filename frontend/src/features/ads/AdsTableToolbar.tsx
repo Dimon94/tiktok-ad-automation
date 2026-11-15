@@ -26,7 +26,7 @@ const DIMENSION_ACTIONS: Record<AdsDimension, ToolbarActionKey[]> = {
   // 改名首期只支持推广系列。
   campaign: ["enable", "disable", "roas", "budget", "rename"],
   adgroup: ["enable", "disable", "roas", "budget"],
-  ad: ["enable", "disable", "roas"],
+  ad: ["enable", "disable", "roas", "budget"],
   material: ["enable", "disable"],
   drama: ["enable", "disable", "budget"],
 }

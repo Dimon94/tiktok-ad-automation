@@ -34,7 +34,10 @@ def confirmed_created_sql(alias: str = "s") -> str:
 def obsolete_readback_sql(alias: str = "s") -> str:
     if not re.fullmatch(r"[a-z_][a-z0-9_]*", alias):
         raise ValueError("invalid SQL alias")
-    return f"""({alias}.kind='READBACK' AND EXISTS (
+    return f"""({alias}.kind='READBACK'
+ AND NOT EXISTS (SELECT 1 FROM build_unit native_unit
+ WHERE native_unit.tenant_id={alias}.tenant_id AND native_unit.id={alias}.unit_id
+ AND native_unit.scene_snapshot ? 'native_request') AND EXISTS (
  SELECT 1 FROM execution_step receipt_source
  WHERE receipt_source.tenant_id={alias}.tenant_id
  AND receipt_source.submission_id={alias}.submission_id

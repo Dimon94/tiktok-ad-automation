@@ -1,5 +1,6 @@
 """真实报表冻结、任务工具鉴权、分页与已读引用合同。"""
 
+import json
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -105,6 +106,14 @@ def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
         "d3",
         "d7",
     }
+    account = initial["data_pack"]["reporting"][0]
+    archived = task.evidence_store[account["id"]]["payload"]
+    raw_bucket = archived["summary"]["buckets"][0]
+    visible_bucket = account["summary"]["buckets"][0]
+    assert raw_bucket["provenance"]["spend"]["observations"]
+    assert visible_bucket["values"] == raw_bucket["values"]
+    assert visible_bucket["availability"] == raw_bucket["availability"]
+    assert visible_bucket["provenance_details_archived"] is True
     path = f"/api/integrations/ai-workbench/reviews/{task.id}"
     source = campaign_source(task)
     query = client.post(
@@ -133,6 +142,7 @@ def test_reporting_pages_stay_frozen_and_only_delivered_ids_can_be_cited(
     )
     assert first.status_code == 200, first.text
     page = first.json()
+    assert len(json.dumps(page, ensure_ascii=False).encode()) <= 64000
     assert page["next_offset"] == 10 and page["frozen_rows"] == 61
     assert page["metadata"]["rows_truncated"] is False
     assert page["metadata"]["maturity_evidence"]["horizon"] == "d0"

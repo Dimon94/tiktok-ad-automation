@@ -86,6 +86,12 @@ class QuerySnapshot(FrozenQueryScope, table=True):
         ),
         Index("ix_query_snapshot_expiry", "expires_at"),
     )
+    result_contract: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
+    publication_map: list[dict[str, Any]] = Field(
+        default_factory=list, sa_type=JSONB, nullable=False
+    )
     total: int = 0
     summary: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB, nullable=False)
     coverage: dict[str, Any] = Field(
@@ -164,6 +170,9 @@ class QuerySnapshotRow(SQLModel, table=True):
     # 复合主键自身提供 snapshot + row_key 索引。
     snapshot_id: UUID = Field(primary_key=True)
     row_key: str = Field(primary_key=True, max_length=512)
+    frozen_result: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
     stable_sequence: int
     dimension: str = Field(max_length=32)
     member_keys: list[list[str]] = Field(
@@ -262,6 +271,12 @@ class ReportExport(FrozenQueryScope, table=True):
             name="ck_report_export_status",
         ),
     )
+    result_contract: dict[str, Any] = Field(
+        default_factory=dict, sa_type=JSONB, nullable=False
+    )
+    publication_map: list[dict[str, Any]] = Field(
+        default_factory=list, sa_type=JSONB, nullable=False
+    )
     snapshot_id: UUID
     idempotency_key: str = Field(max_length=128)
     status: str = Field(default="QUEUED", max_length=16)
@@ -345,6 +360,18 @@ def snapshot_transaction(
                 event.remove(connection, "before_cursor_execute", remaining_budget)
 
 
+def snapshot_contract_current(snapshot: QuerySnapshot) -> bool:
+    """显式读旧身份须退出；新查询的复用候选也必须通过同一合同判断。"""
+    from app.modules.reporting.frozen_result import result_contract
+
+    dimension = snapshot.filters["dimension"]
+    return (
+        dimension != "material"
+        or snapshot.publication_versions.get("material_query_contract")
+        == MATERIAL_QUERY_CONTRACT
+    ) and snapshot.result_contract == result_contract(dimension)
+
+
 def read_snapshot(
     session: Session, *, context: TenantContext, bc_id: str, snapshot_id: UUID
 ) -> QuerySnapshot:
@@ -371,11 +398,7 @@ def read_snapshot(
     allowed = authorized_grants(session, context=context, bc_id=bc_id)
     if not set(snapshot.advertiser_ids) <= {grant.advertiser_id for grant in allowed}:
         raise HTTPException(403, detail="report_scope_forbidden")
-    if (
-        snapshot.filters.get("dimension") == "material"
-        and snapshot.publication_versions.get("material_query_contract")
-        != MATERIAL_QUERY_CONTRACT
-    ):
+    if not snapshot_contract_current(snapshot):
         raise HTTPException(409, detail="query_snapshot_contract_changed")
     if snapshot.expires_at <= datetime.now(UTC):
         raise HTTPException(409, detail="query_snapshot_expired")

@@ -23,11 +23,14 @@ from app.core.context import TenantContext
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.balance_queries import latest_balance_observations
 from app.modules.reporting.filters import authorized_grants
+from app.modules.reporting.frozen_result import RESULT_CONTRACT
+from app.modules.reporting.levels import DAY_KINDS, query_kind
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     QuerySnapshotBuild,
     is_transaction_cleanup,
     read_snapshot,
+    snapshot_contract_current,
     snapshot_transaction,
 )
 from app.modules.reporting.schemas import MATERIAL_QUERY_CONTRACT, ReportingFilter
@@ -69,6 +72,8 @@ def query_key(context: TenantContext, bc_id: str, filters: ReportingFilter) -> s
         context.actor_id,
         filters.model_dump(mode="json"),
     ]
+    if filters.dimension != "material":
+        payload.append(RESULT_CONTRACT)
     if filters.dimension == "material":
         payload.append(f"creative-material-v{MATERIAL_QUERY_CONTRACT}")
     return _digest(payload)
@@ -150,6 +155,7 @@ def dependency_stamp(
         "advertisers": advertisers,
         "start": filters.start_date,
         "end": filters.end_date,
+        "report_kind": query_kind(filters.dimension),
     }
     rows = (
         session.connection()
@@ -166,6 +172,22 @@ def dependency_stamp(
     )
     kind = "creative_material" if filters.dimension == "material" else "ad_day"
     facts = [tuple(r[:4]) for r in rows if r.kind == kind]
+    # 三层状态和证据均影响刷新概览；相同金额的新合同/失败也必须失效缓存。
+    facts.extend(
+        tuple(r)
+        for r in session.connection()
+        .execute(
+            text("""
+            SELECT advertiser_id,report_kind,stat_date,publication_version,observed_at,
+                   last_success_at,status,error_code,updated_at,active_contract,publication_digest,publication_coordinates
+            FROM report_sync_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advertisers)
+            AND report_kind=ANY(:day_kinds) AND stat_date BETWEEN :start AND :end
+            ORDER BY advertiser_id,report_kind,stat_date
+            """),
+            params | {"day_kinds": list(DAY_KINDS)},
+        )
+        .all()
+    )
     derived = [
         (r.advertiser_id, r.kind, r.bucket, r.derived_revision)
         for r in rows
@@ -186,7 +208,7 @@ def dependency_stamp(
     return QueryDependencyStamp(
         metric_contract=f"creative-material-v{MATERIAL_QUERY_CONTRACT}"
         if filters.dimension == "material"
-        else "report-metrics-v1",
+        else _digest(RESULT_CONTRACT),
         scope_digest=authority.scope_digest,
         permission_revision=authority.permission_revision,
         filter_digest=_digest(filters.model_dump(mode="json")),
@@ -445,7 +467,7 @@ def reuse_in_transaction(
         .order_by(col(QuerySnapshot.created_at).desc())
         .limit(1)
     ).first()
-    if snapshot:
+    if snapshot and snapshot_contract_current(snapshot):
         query_diagnostics.count("reused", 1)
         return read_snapshot(
             session, context=context, bc_id=bc_id, snapshot_id=snapshot.id
@@ -524,7 +546,11 @@ def _find_or_build_snapshot(
             entry = session.get(QuerySnapshotBuild, key)
             if entry and entry.snapshot_id and entry.dependency_digest == stamp.digest:
                 snapshot = session.get(QuerySnapshot, entry.snapshot_id)
-                if snapshot and snapshot.expires_at > datetime.now(UTC):
+                if (
+                    snapshot
+                    and snapshot_contract_current(snapshot)
+                    and snapshot.expires_at > datetime.now(UTC)
+                ):
                     read_snapshot(
                         session, context=context, bc_id=bc_id, snapshot_id=snapshot.id
                     )
@@ -588,6 +614,7 @@ def _find_or_build_snapshot(
                     )
                     if (
                         not snapshot
+                        or not snapshot_contract_current(snapshot)
                         or snapshot.dependency_digest != actual.digest
                         or snapshot.expires_at <= datetime.now(UTC)
                     ):

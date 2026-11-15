@@ -400,7 +400,7 @@ def test_many_old_heads_repair_bounded_batch_without_holding_other_endpoint(
             db,
             tenant_id=seed.tenant_id,
             bc_id="bc-a",
-            kind="ad_day",
+            kind="campaign_day",
             tier="hot",
             advertiser_ids=["acc-1"],
             start=now.date(),
@@ -411,7 +411,10 @@ def test_many_old_heads_repair_bounded_batch_without_holding_other_endpoint(
         )
         # 让旧CREATE端点先获得发现机会；纠正预算不能把其他端点整轮饿死。
         live_head = db.exec(
-            select(SyncSchedule).where(SyncSchedule.physical_endpoint != CREATE)
+            select(SyncSchedule).where(
+                SyncSchedule.tenant_id == seed.tenant_id,
+                SyncSchedule.physical_endpoint != CREATE,
+            )
         ).one()
         live_head.last_dispatched_at = now - timedelta(seconds=1)
     with factory() as db, db.begin():

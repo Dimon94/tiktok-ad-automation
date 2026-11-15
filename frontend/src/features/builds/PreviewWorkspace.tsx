@@ -11,6 +11,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { CopyGroupSetting } from "@/features/campaign-copies/api"
@@ -32,6 +33,7 @@ import { WorkspacePageTitle } from "@/features/workspace/WorkspacePageTitle"
 import { cn } from "@/lib/utils"
 import { bidLabel, budgetLabel, budgetUnitLabel, buildKey } from "./api"
 import { ExecutionRoute } from "./ExecutionRoute"
+import { NativeBatchApproval, NativeFrozenPreview } from "./NativeFrozenPreview"
 import { PreviewGenerationProgress } from "./PreviewGenerationProgress"
 import {
   BuildGuard,
@@ -389,92 +391,102 @@ export function BuildPreviewPanel({
         </Card>
       ) : (
         <>
-          {(current.excluded_dramas?.length ?? 0) > 0 && (
-            <Alert variant="destructive">
-              <AlertTitle>
-                {current.excluded_dramas?.length} 部剧本次不会搭建
-              </AlertTitle>
-              <AlertDescription>
-                <p>以下剧在所有账户上都被排除，提交后不会创建任何系列：</p>
-                <ul className="mt-1 list-disc pl-5">
-                  {current.excluded_dramas?.map((drama) => (
-                    <li key={drama.drama_id} className="break-all">
-                      {drama.title}
-                      {(drama.reason_codes?.length ?? 0) > 0 &&
-                        `（${drama.reason_codes
-                          ?.map((code) => reasonLabels[code] || code)
-                          .join("、")}）`}
-                    </li>
-                  ))}
-                </ul>
-                {!readOnly && (
-                  <p className="mt-1">
-                    如需一并搭建，请先补充素材后重新生成预览；直接提交只会搭建其余剧。
-                  </p>
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
-          {(current.blocked_count > 0 || current.input_issue_count > 0) && (
-            <Alert>
-              <AlertDescription>
-                本次排除 {current.blocked_count} 个阻断组合；另有{" "}
-                {current.input_issue_count} 条输入问题，未形成组合。
-                {readOnly
-                  ? "排除项未包含在本次提交中。"
-                  : "仅提交可用与提交后可分发范围，排除项不会自动补入。"}
-              </AlertDescription>
-            </Alert>
-          )}
-          <Card className="min-w-0">
-            <CardHeader className="min-w-0">
-              <Tabs
-                value={tab}
-                onValueChange={(value) => {
-                  setTab(value)
-                  setDramaId(undefined)
-                }}
-              >
-                <TabsList>
-                  <TabsTrigger value="dramas">剧目汇总</TabsTrigger>
-                  <TabsTrigger value="units">账户组合</TabsTrigger>
-                  <TabsTrigger value="excluded">排除组合</TabsTrigger>
-                  <TabsTrigger value="issues">输入问题</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </CardHeader>
-            <CardContent className="min-w-0">
-              {tab === "dramas" ? (
-                <PreviewDramaTable
-                  tenantId={tenantId}
-                  bcId={bcId}
-                  preview={current}
-                  onDrama={(id) => {
-                    setDramaId(id)
-                    setTab("units")
-                  }}
-                />
-              ) : tab === "issues" ? (
-                <PreviewExclusions
-                  tenantId={tenantId}
-                  bcId={bcId}
-                  previewId={previewId}
-                  onEdit={readOnly ? undefined : back}
-                />
-              ) : (
-                <PreviewUnitTable
-                  key={tab}
-                  tenantId={tenantId}
-                  bcId={bcId}
-                  previewId={previewId}
-                  budgetStrategy={current.budget_strategy}
-                  dramaId={dramaId}
-                  excluded={tab === "excluded"}
-                  onUnit={setUnit}
-                />
+          {current.native_request ? (
+            <NativeFrozenPreview
+              tenantId={tenantId}
+              preview={current}
+              back={back}
+            />
+          ) : (
+            <>
+              {(current.excluded_dramas?.length ?? 0) > 0 && (
+                <Alert variant="destructive">
+                  <AlertTitle>
+                    {current.excluded_dramas?.length} 部剧本次不会搭建
+                  </AlertTitle>
+                  <AlertDescription>
+                    <p>以下剧在所有账户上都被排除，提交后不会创建任何系列：</p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {current.excluded_dramas?.map((drama) => (
+                        <li key={drama.drama_id} className="break-all">
+                          {drama.title}
+                          {(drama.reason_codes?.length ?? 0) > 0 &&
+                            `（${drama.reason_codes
+                              ?.map((code) => reasonLabels[code] || code)
+                              .join("、")}）`}
+                        </li>
+                      ))}
+                    </ul>
+                    {!readOnly && (
+                      <p className="mt-1">
+                        如需一并搭建，请先补充素材后重新生成预览；直接提交只会搭建其余剧。
+                      </p>
+                    )}
+                  </AlertDescription>
+                </Alert>
               )}
-            </CardContent>
-          </Card>
+              {(current.blocked_count > 0 || current.input_issue_count > 0) && (
+                <Alert>
+                  <AlertDescription>
+                    本次排除 {current.blocked_count} 个阻断组合；另有{" "}
+                    {current.input_issue_count} 条输入问题，未形成组合。
+                    {readOnly
+                      ? "排除项未包含在本次提交中。"
+                      : "仅提交可用与提交后可分发范围，排除项不会自动补入。"}
+                  </AlertDescription>
+                </Alert>
+              )}
+              <Card className="min-w-0">
+                <CardHeader className="min-w-0">
+                  <Tabs
+                    value={tab}
+                    onValueChange={(value) => {
+                      setTab(value)
+                      setDramaId(undefined)
+                    }}
+                  >
+                    <TabsList>
+                      <TabsTrigger value="dramas">剧目汇总</TabsTrigger>
+                      <TabsTrigger value="units">账户组合</TabsTrigger>
+                      <TabsTrigger value="excluded">排除组合</TabsTrigger>
+                      <TabsTrigger value="issues">输入问题</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </CardHeader>
+                <CardContent className="min-w-0">
+                  {tab === "dramas" ? (
+                    <PreviewDramaTable
+                      tenantId={tenantId}
+                      bcId={bcId}
+                      preview={current}
+                      onDrama={(id) => {
+                        setDramaId(id)
+                        setTab("units")
+                      }}
+                    />
+                  ) : tab === "issues" ? (
+                    <PreviewExclusions
+                      tenantId={tenantId}
+                      bcId={bcId}
+                      previewId={previewId}
+                      onEdit={readOnly ? undefined : back}
+                    />
+                  ) : (
+                    <PreviewUnitTable
+                      key={tab}
+                      tenantId={tenantId}
+                      bcId={bcId}
+                      previewId={previewId}
+                      budgetStrategy={current.budget_strategy}
+                      dramaId={dramaId}
+                      excluded={tab === "excluded"}
+                      onUnit={setUnit}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
           <PreviewSummaryBar
             preview={current}
             readOnly={readOnly}
@@ -513,6 +525,8 @@ export function PreviewSummaryBar({
 }) {
   const [pending, setPending] = useState(false),
     [error, setError] = useState<unknown>()
+  const [confirm, setConfirm] = useState(false)
+  const batch = preview.native_request?.revision === "native-series-batch-v1"
   const createsDisabled = preview.creation_status === "DISABLE"
   const submitAction = preview.continuation_unit_count
     ? createsDisabled
@@ -589,6 +603,7 @@ export function PreviewSummaryBar({
                 aria-label={`${submitAction} ${preview.campaign_count} 个 Campaign / ${preview.adgroup_count} 个 Ad Group / ${preview.ad_count} 条 Ad`}
                 onClick={async () => {
                   if (!onSubmit || pending) return
+                  if (batch) { setConfirm(true); return }
                   setPending(true)
                   try {
                     await onSubmit(preview)
@@ -601,6 +616,20 @@ export function PreviewSummaryBar({
               >
                 {pending ? "正在确认提交结果" : submitAction}
               </Button>
+              <Dialog open={confirm} onOpenChange={setConfirm}>
+                <DialogContent className="max-h-[85vh] overflow-y-auto">
+                  <DialogHeader><DialogTitle>确认逐计划创建并直接 ENABLE</DialogTitle></DialogHeader>
+                  <NativeBatchApproval preview={preview} />
+                  <p>创建后可能立即产生消耗；占用观察仅覆盖所列范围。</p>
+                  <Button disabled={pending} onClick={async () => {
+                    if (!onSubmit || pending) return
+                    setPending(true)
+                    try { await onSubmit(preview); setConfirm(false) }
+                    catch (e) { setError(e) }
+                    finally { setPending(false) }
+                  }}>确认创建并立即启用</Button>
+                </DialogContent>
+              </Dialog>
               <p className="text-xs text-muted-foreground">
                 {preview.continuation_unit_count
                   ? `仅新增对象将创建并${submitStatus}，复用对象保持原状态。`

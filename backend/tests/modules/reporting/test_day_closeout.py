@@ -82,9 +82,14 @@ def test_first_hot_round_closes_yesterday_once_for_each_timezone(
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert len(jobs) == 4
+    assert len(jobs) == 8
+    assert {(item.advertiser_ids[0], item.kind) for item in jobs} == {
+        (account, kind)
+        for account in ("acc-1", "acc-2")
+        for kind in ("campaign_day", "adgroup_day", "ad_day", "creative_day")
+    }
     for job in jobs:
-        assert job.kind in {"ad_day", "creative_day"}
+        assert job.kind in {"campaign_day", "adgroup_day", "ad_day", "creative_day"}
         assert job.start_date == job.end_date == days[job.advertiser_ids[0]]
         assert report_workload(session, job, now=NOW) == "live"
         assert (
@@ -99,11 +104,15 @@ def test_closeout_skips_no_facts_and_already_successful_kinds(session, sync_seed
     state = session.get(ReportSyncState, (sync_seed.tenant_id, "acc-1", "ad_day", day))
     state.last_success_at = midnight + timedelta(seconds=1)
     session.flush()
-    assert planner.plan_day_closeout(session, plan, now=NOW) == 1
+    assert planner.plan_day_closeout(session, plan, now=NOW) == 3
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert [(j.kind, j.advertiser_ids) for j in jobs] == [("creative_day", ["acc-1"])]
+    assert {(j.kind, tuple(j.advertiser_ids)) for j in jobs} == {
+        ("campaign_day", ("acc-1",)),
+        ("adgroup_day", ("acc-1",)),
+        ("creative_day", ("acc-1",)),
+    }
     # bc-b 可见 acc-2，但不拥有它，不能生成重复收尾。
     seed_yesterday(session, sync_seed, advertiser="acc-2")
     other = session.get(AdSyncBc, (sync_seed.tenant_id, "bc-b"))
@@ -144,7 +153,12 @@ def test_closeout_is_planned_by_due_hot_even_without_today_activity(
         jobs = session.exec(
             select(ReportSyncJob).where(ReportSyncJob.tenant_id == seed.tenant_id)
         ).all()
-        assert {j.kind for j in jobs} == {"ad_day", "creative_day"}
+        assert {j.kind for j in jobs} == {
+            "campaign_day",
+            "adgroup_day",
+            "ad_day",
+            "creative_day",
+        }
         assert all(j.start_date == NOW.date() for j in jobs)  # 香港已经进入次日。
 
 
@@ -202,7 +216,7 @@ def test_closeout_publishes_success_and_daily_refresh_can_replace_it(
         day, midnight = seed_yesterday(session, seed, now=now, advertiser="acc-2")
         planner.plan_day_closeout(session, plan, now=now)
         claimed = claim_jobs(session, now=now + timedelta(seconds=1), limit=10)
-        assert len(claimed) == 2
+        assert len(claimed) == 4
 
     class Reader:
         spend = "2"
@@ -215,6 +229,12 @@ def test_closeout_publishes_success_and_daily_refresh_can_replace_it(
         def creative_day(self, **_kwargs):
             return RawReportPage((), 1, 0, 0)
 
+        def campaign_day(self, **_kwargs):
+            return RawReportPage((), 1, 0, 0)
+
+        def adgroup_day(self, **_kwargs):
+            return RawReportPage((), 1, 0, 0)
+
     reader = Reader()
     for job in claimed:
         assert (
@@ -225,7 +245,7 @@ def test_closeout_publishes_success_and_daily_refresh_can_replace_it(
         )
     with factory() as session, session.begin():
         plan = session.get(AdSyncBc, (seed.tenant_id, "bc-a"))
-        for kind in ("ad_day", "creative_day"):
+        for kind in ("campaign_day", "adgroup_day", "ad_day", "creative_day"):
             state = session.get(ReportSyncState, (seed.tenant_id, "acc-2", kind, day))
             assert state.status == "COMPLETE" and state.last_success_at > midnight
         assert planner.plan_day_closeout(session, plan, now=now) == 0
@@ -282,7 +302,7 @@ def test_pre_midnight_hot_job_does_not_swallow_closeout(session, sync_seed):
         planner.plan_day_closeout(session, plan, now=NOW + timedelta(minutes=15)) == 0
     )
     claimed = claim_jobs(session, now=NOW, limit=10)
-    assert len(claimed) == 2
+    assert len(claimed) == 4
 
 
 @pytest.mark.parametrize("timezone", ["America/New_York", "Asia/Kathmandu"])

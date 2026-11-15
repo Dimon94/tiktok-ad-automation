@@ -85,7 +85,10 @@ def source_env(monkeypatch, redis_client, request):
     )
     with Session(engine) as session:
         context = create_context(session)
-        bc = TenantBC(tenant_id=context.tenant_id, bc_id="bc-fixture")
+        bc = TenantBC(
+            tenant_id=context.tenant_id,
+            bc_id=getattr(request, "param", {}).get("bc_id", "bc-fixture"),
+        )
         connection = TikTokConnection(
             tenant_id=context.tenant_id,
             status="ACTIVE",

@@ -193,6 +193,25 @@ def enqueue_report_requirements(
             )
         ).all()
     }
+    # 新父级需求必须在写 scope / outbox 之前核验当前权限，不能只相信冻结 BC。
+    from app.modules.reporting.levels import LEVELS, PARENT_KINDS
+
+    contract = LEVELS[kind].contract if kind in LEVELS else "report-v2"
+    if kind in LEVELS:
+        from app.core.context import TenantContext
+        from app.modules.accounts.routing import verify_route
+
+        context = TenantContext(tenant_id=tenant_id, actor_id=actor_id, role="operator")
+        for advertiser in advertisers:
+            verify_route(
+                session,
+                context=context,
+                route=route,
+                advertiser_id=advertiser,
+                capability="read",
+            )
+    if kind in PARENT_KINDS and campaign_ids:
+        raise DomainError("report_query_invalid", "父级日报仅允许完整账户日")
     query = {"campaign_ids": sorted(campaign_ids)}
     scope_values, classes = [], {}
     for advertiser in advertisers:
@@ -205,7 +224,7 @@ def enqueue_report_requirements(
             advertiser,
             kind,
             query,
-            "report-v2",
+            contract,
             timezone=account.timezone,
         )
         scope_values.append(
@@ -220,7 +239,7 @@ def enqueue_report_requirements(
                 resource=kind,
                 timezone=account.timezone,
                 identity_digest=key.digest,
-                query_contract={"query": query, "metrics": "report-v2"},
+                query_contract={"query": query, "metrics": contract},
             ).model_dump()
         )
         local_today = now.astimezone(ZoneInfo(account.timezone)).date()

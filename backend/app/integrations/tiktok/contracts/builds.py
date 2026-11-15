@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    JsonValue,
     field_validator,
     model_validator,
 )
@@ -324,6 +325,54 @@ class AdCreate(IdentityFields):
         return self
 
 
+class NativeAdGroupCreate(AdGroupCreate):
+    """直接 Series；组身份在官方 wire 顶层，不能与创意身份混用。"""
+
+    minis_id: None = None
+    promotion_type: Literal["NATIVE_SERIES"] = "NATIVE_SERIES"
+    native_series_id: Id
+    identity_id: Id
+    identity_type: Literal["BC_AUTH_TT", "TT_USER"]
+    identity_authorized_bc_id: Id | None = None
+    optimization_event: Literal["AD_REVENUE_VALUE"] = "AD_REVENUE_VALUE"
+    vbo_window: Literal["ZERO_DAY"] = "ZERO_DAY"
+    deep_bid_type: Literal["VO_MIN_ROAS"] = "VO_MIN_ROAS"
+
+    @model_validator(mode="after")
+    def native_contract(self) -> Self:
+        IdentityFields.model_validate(
+            {key: getattr(self, key) for key in IdentityFields.model_fields}
+        )
+        if self.budget_strategy != "SERIES" or self.bid_strategy != "TARGET_ROAS":
+            raise ValueError("native Series requires CBO Target ROAS")
+        return self
+
+
+class NativeAdCreate(AdCreate):
+    """原生直接广告没有落地链接；每个视频必须有冻结封面。"""
+
+    landing_page_url: None = None
+    text_variants: None = None
+    assets: tuple[VideoCreative, ...] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def native_covers(self) -> Self:
+        if any(asset.cover_image_id is None for asset in self.assets):
+            raise ValueError("native video requires verified cover")
+        return self
+
+
+class NativeAdGroupObservedFacts(NativeAdGroupCreate):
+    """平台实际枚举保留为证据；创建枚举合同不随读回放宽。"""
+
+    optimization_event: Id
+    operation_status: Id
+
+
+class NativeAdObservedFacts(NativeAdCreate):
+    operation_status: Id
+
+
 class CtaAsset(FrozenModel):
     asset_ids: tuple[Id, ...] = Field(min_length=1, max_length=50)
     asset_content: Id
@@ -345,7 +394,13 @@ class CtaCreate(FrozenModel):
 
 
 CreateIntent = Annotated[
-    CampaignCreate | AdGroupCreate | AdCreate | CtaCreate, Field(discriminator="kind")
+    CampaignCreate
+    | AdGroupCreate
+    | NativeAdGroupCreate
+    | AdCreate
+    | NativeAdCreate
+    | CtaCreate,
+    Field(union_mode="smart"),
 ]
 
 
@@ -361,11 +416,14 @@ class BuildRecord(FrozenModel):
     intent: CreateIntent | None
     operation_status: Id | None
     missing_fields: tuple[Id, ...]
+    observed_direct_fields: dict[str, JsonValue] = Field(default_factory=dict)
+    observed_native: NativeAdGroupObservedFacts | NativeAdObservedFacts | None = None
     observed_adgroup: AdGroupObservedFacts | None = None
     review_status: Id | None = None
 
 
 class BuildReadQuery(FrozenModel):
+    native_series: bool = False
     intent: CreateIntent
     remote_id: Id | None = None
     page: int = Field(default=1, strict=True, ge=1, le=1000)

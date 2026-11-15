@@ -1,3 +1,9 @@
+## 2026-11-15：对齐 upstream 与 Native M5c 前置发表基线
+
+用户授权修复 JB-66 的发表根因。独立树基于 upstream `456a2c86`，合并已验证 PR7/8 与 Native `54dfdb45`，保留原提交历史，明确排除 M6/M7 与 JB-66。解决 Alembic 双 head、Native 冻结层级截止时间与 AI 复盘页深层来源容量问题；原始证据归档及摘要完整保留，沿用现有 64KB/10 行门槛。上游类型门禁通过；旧 M1 断言按 M2 批次合同更新，调度夹具按当前父层任务语义修正，未加产品兼容回退。
+
+PR7/8 回归85项、AI完整8项及交界/迁移5项通过；首轮Native CI runner273项中260通过，13项陈旧测试修正后两文件31项通过；集合重叠不相加。正式/demo构建、Ruff/ty及新增集成/类型两轴评审通过。拒错探针逐次恢复源码。没有部署或真实TikTok写入，主树与M7保持不动。详细范围、固定点、环境失败和证据见[集成验证](validation/2026-11-15-native-m5c-upstream-integration.md)。上游只有读取权限，前置合并仍由维护者完成；JB-66 的窄差异需以前置合并为基础。
+
 ## 2026-11-13：日志加密归档与失效下载恢复已生产发布
 
 最终应用`d2bce2cf`，11角色精确摘要/Ready、原配置与独立DSH保持、共享锁释放及CI恢复原disabled。真实归档0→74，日志明细3956、日覆盖1068；全部导出状态COMPLETE，真实R2密文/认证解密/摘要/marker核对通过。SDK下载40000精确失效回执线上已归类为可重建，86项相关测试与继承时限4项通过；本机DSH运行包不完整测试失败不计为验收，该独立镜像未改。仍25495条日志任务待处理/4546条CHECK普通错误，平台限流与历史恢复继续，不称全部最新或清零。无DDL/配置/新备份恢复/广告写入，见[最终证据](validation/2026-11-13-operation-log-recovery.md)。
@@ -47,7 +53,76 @@
 
 新增[实施计划](superpowers/plans/2026-11-12-ai-ad-workbench-v1.md)：按优化师领域模型、每日剧单、定时搭建交接、账户级自动规则、DSH 复盘提案、TKADA 前端工作台、证据保留与验收七个任务实施。当前只更新设计、原型和计划，未修改产品代码、数据库或部署；计划待用户审阅后再选择执行方式。
 
+## 2026-11-15：JB-64 / M5C-01 正常目标 ROAS 本地候选
+
+唯一写者复用 root-owned `feat/m5c-native-roas-validation`，START `26ea29fd374848d687b35a3c086838202aff533a`，用户指定 Codex gpt-6.1-sol/high，自行实现，无下级。沿原工作区/ROAS 表单直接202、异步准备、通用管理Worker、官方SDK与真实目录发布；明确冻结 CBO/ABO、模式、parent/source/全影响成员，CBO 去重和跨块冲突只消费显式证据，ABO 各owner独立。Decimal 等值表示不冲突；受理与逐成员新鲜观察分开，原任务详情显示比例与影响来源。无创建字段bundle硬门槛、新经营限制、执行器或开关语义变化。
+
+真实浏览器/HTTP/PG17/Redis/原Worker、仅SDK传输替身；CBO/ABO两条工作区已通过。相关86项与六条最初chain通过，最终20项ROAS专项通过（含两条真实浏览器），实际去重/比例/新鲜时间/CBO已等目标兄弟源码探针均拒错且finally/cmp还原。精确最终专项结果、逐AC、夹具失败修正、官方更新模型与真实传播Unknown、JB65消费边界见 [JB64验证记录](validation/2026-11-15-jb64-native-roas-readback.md)。沿用M5a/M5b匹配证据，不重跑全仓；已知direct10748 SQL26>25未修改，旧间歇失败根因Unknown。现有依赖链接与root服务保留。
+
+这是本地候选，root仍需阶段接受和独立审查；JB65未启动，M5c/Epic未完成。无其它树/main/Linear/远端/PR/deploy/真实平台或授权广告操作。新增公共roas_facts DTO保存在原capability JSON，无迁移；历史缺项不补造，JB65仍需UNKNOWN只读与显式反向恢复资格/UI验收。
+
+## 2026-11-15：JB-62 / M5B-01 原生预算事实与实际回读候选
+
+在 root 唯一授权树 `feat/m5b-native-budget-validation` 从 START `0e7cf885018922bc111c28de49a99f4b163c9f3e` 形成源码提交 `84db9974b69af5eb97ca82a66f30590803db350b`。复用原预算归属、去重、直接受理/异步准备、官方 SDK 和定向目录发布；补齐冻结的账户币种、选择来源/实际预算影响映射及原任务页金额展示，广告列表复用已有预算表单。修复预算 SDK 接受即标观察成功的实际缺口：等待发送后同连接的真实预算观察，比较实际值，撤权/代次变化拒绝复用，重复刷新不重写。不新增预览门禁、executor、队列、迁移或经营限制。
+
+本人最终 PG17/Redis 相关验证 75 passed，含 60 个有限手算金额/owner 组合、真实工作区系列/广告预算浏览器纵链、跨块去重/来源、多账户 USD/JPY、冻结观察范围、预算不匹配与授权撤回。普通回归 146 passed，唯一旧“排队即观察成功”断言按新合同修正后定向 1 passed；继承的 10748 SQL 26>25 失败未重跑/未放宽。5 个实际源码错误探针均拒绝，仓外备份/finally/cmp 后 GREEN；tsc、正式/demo 构建、scoped Ruff 通过。没有用有限枚举或 Build TLC 宣称无界管理形式证明。
+
+详细逐 AC、精确命令/失败与 Unknown、JB-63 消费合同见 [JB-62 验证记录](validation/2026-11-15-jb62-native-budget-readback.md)。本票仅本地候选，root 尚须独立验收、释放 JB-63、whole-scope 审查及本地集成；M5b 未完成。无子代理、其它树/main/Linear 修改、push/PR/部署或真实平台/auth/广告操作。原共享链接与 root 测试服务保留，真实平台/生产 Unknown。
+
+## 2026-11-15：JB-59 / M5A-01 原生启停与回读本地候选
+
+在唯一授权集成树 `feat/m5a-native-status-validation` 从 `9d51cc9b37faf1b6a830fa025cbd377ace716048` 形成源码/测试提交 `20709eb550c07d4fc2e67eec7f7d6863594c73a6`。保留现有点击直接受理与异步准备，实际 RED 仅修复原管理 execution owner：公开启停原值被数值转换丢失、写接受/目录排队冒充已观察。原 REFRESH_PENDING 现在等待发送后同连接目录事实；冻结原值与受理回执保持独立，不新增 Native executor、资格门槛、预览或迁移。
+
+本地新增 18 个场景（六个真实工作区→HTTP→PG/Redis→原 Worker→官方 SDK transport double→实际目录发布→任务/当前工作区）；加厚跨租户同平台 ID、跨 BC 拒绝、receipt 和未来消息后 12 个 HTTP 场景独立 GREEN。受影响既有回归 119 passed；六个源码错误探针全部 RED→finally/cmp→GREEN，静态/语法通过。保留一项 START 即存在的 SQL 数量阈值失败（10748 项受理，26>25），不放宽旧断言，不把整组报全绿。无管理形式模型，不用 Native Build TLC 替代管理证明。详细 AC、证据窗口、环境修正/执行偏差和 JB-60 精确消费合同见 [JB-59 验证记录](validation/2026-11-15-jb59-native-status-readback.md)。
+
+仅候选，不标 Done。Root 仍拥有阶段验收、基线失败裁定、JB-60 启动、fresh Standards/Spec 和本地集成。无子代理、main 合并、fetch/rebase、push、PR、tracker 写入、部署、生产迁移、真实平台授权或广告写。原 `.venv`/`node_modules` 链接保留；本轮新建专用 PG17 收口停止，原 PG16/Redis 和其它树不动。真实平台/生产 Unknown。
+
+## 2026-11-14：JB-22 无报表目录导航本地候选
+
+从 `55ee37146d7275b8c308161bce1986f9fbbb1670` 在唯一 M3 集成树 `feat/jb21-native-series-m3` 实现并提交 `2701fbfad95c316d8d5a49d8918fafdb2164edf4`：原目录 owner 新增绑定 tenant/BC/账户/kind/父范围的稳定分页 HTTP，工作区通过授权账户进入系列→广告组→广告→创意与父级返回。详情直接消费 EntityRef，不生成 ReportRow/snapshot/管理选择；显示来源、观察时间和发布版本。复用原查询、详情与账户选择器，无新同步器、迁移或业务开关。
+
+独立 M3 PostgreSQL、本地真实页面→HTTP 主 Seam 通过；相关套件 21 passed，扩展浏览器缓存撤权检查后新增套件 3 passed，旧报表详情回归 4 passed，正式/demo 构建及 scoped lint 通过。重复页/跳过授权两种源码错误探针均拒绝，finally/cmp 恢复后 GREEN。详见 [JB-22 验证与 JB-23 消费合同](validation/2026-11-14-jb22-directory-navigation.md)。本票本地 AC 满足，仍是同一 MMF 的实现候选；JB-23 原生识别、M3 独立两轴审查与最终集成未完成。真实平台/生产 Unknown；无 push、PR、部署、Linear 写入、main 合并或工作树删除。
+
+## 2026-11-14：JB-20 分类型目录覆盖本地修复
+
+从 `9bbe663f` 在授权任务树 `fix/jb20-directory-coverage` 修复 Campaign / Adgroup 共用最新 Run 的问题。每类保留查询范围、真实同步覆盖、观察时间和发布版本；缺失/过期仅作覆盖限制，精确 ACTIVE 冲突仍按原账户、Series、地区处理。预览与提交确认分别展示两类证据；历史冻结只按其已记录的目录类型展示原始证据，不改写历史或推断另一类覆盖。复用既有目录同步 owner，无迁移、无平台调用。
+
+真实 HTTP/PG/Redis 定向验证合计 13 passed（首轮 11 passed，另两条历史测试修正既有批次读回入口后 2 passed）；新增六场景先 RED，再 GREEN。前端正式/demo 构建通过，最终 TypeScript 与新旧冻结数据组件渲染通过。独立 Standards / Spec R1 均 PASS；两轴指出的同一历史展示 P2 已修复，并用实际组件渲染验证。浏览器及线上验收 Unknown。详见 [JB-20 验证记录](validation/2026-11-14-jb20-directory-coverage.md)。实现阶段未提交、未合并、未推送、未部署、未写 Linear。随后用户调用 `git-rebase-main` 授权聚焦提交、本地 main 集成与 JB-20 收尾；落地提交及关闭读回见 Git 历史和 JB-20 评论。目标分支不推送，不部署。
+
+## 2026-11-13：M2 本地验收通过，准备集成
+
+JB-13 及 JB-14～JB-18 完成实现与本地验收。Standards R1 PASS；Spec R1 live-sibling P1 已在 `0d9c8846` 修复，经独立形式同步 `47d74d4c` 与 Spec R2 PASS。root 核对当前源码与证据，并直接复跑真实 HTTP/PG/Redis 的 native-ad-PENDING 回归，1 passed/22.58s。仅文档收尾，不再改产品源码。交付、验证矩阵、两项迁移及真实平台待验范围见 [M2 交付记录](validation/2026-11-13-native-m2-delivery.md)。本地 main 合入、Linear 完成及工作树回收以最终回读为准；无 push/PR/deploy/真实广告写入。总 Epic JB-19 保持进行中。
+
+## 2026-11-13：M2 R1 独立聚合形式同步（历史，Spec R2 已通过）
+
+fresh Kimi 在既有集成树 `0d9c8846fe1d2ba7318d28c159e891a275018c62` 独立同步 `native_completion.py` 八行 live-sibling 修复；产品源码无 diff、未发现新反例。原五模型基线按既定检查通过，但旧 Submission 不含失败后代闭包和 live-sibling 中间态，不能覆盖本 P1。新增最小 `Completion.tla` 表达父子依赖、失败闭包、优先 MATCH/复核/取消/live/失败派生及多计划 FAILED 合同；不把四等价运行态笛卡尔扩展。
+
+正常 TLC N=1,K=4 为 2082 distinct，N=2,K=3 为 69696 distinct；live-sibling 错误变体命中实际提前 PARTIAL 的 LiveSiblingSafety 反例；blocked-descendant 预期 witness 证明不可执行后代不会无限 RUNNING。真实 `live-sibling-completion` 源码探针复跑 RED→finally/cmp→GREEN；受影响 completion/receipt `16 passed, 32 deselected`。四态、blocked 和未变探针复用既有精确日志。仅是有界聚合安全验证，不是 refinement、liveness、任意规模或生产证明。
+
+## 2026-11-13：M2 R1 P1 可执行兄弟终态修复（本地候选，未放行）
+
+独立 Spec R1 发现 `native_completion.batch_results` 在任一创建失败后，会把仍可执行的兄弟步骤提前覆盖为 PARTIAL/FAILED。已在唯一 M2 集成树修复同一 owner：先保留 UNKNOWN/MISMATCH 和取消语义；失败后代闭包外的非 READBACK PENDING/QUEUED/RUNNING/RETRYABLE 一律保持 RUNNING，再按实际 MATCH/失败派生。未新增状态模型，未改变发送、预算、权限、READBACK 或原 ID 合同。
+
+真实本地 HTTP+PG/Redis、SDK transport 替身场景在修复前得到两个 INCLUDED 计划各一 Ad FAILED、另一 Ad PENDING，四 READBACK MATCH 而整批 FAILED 的反例；修复后 PENDING/QUEUED/RUNNING/RETRYABLE 四状态均读回 RUNNING、原 ID 续跑和 READBACK MATCH，最终依 R13 保留 FAILED（每计划 PARTIAL）。四状态 `4 passed`；blocked-descendant 对照 `4 passed`；最终受影响结果/恢复/取消代表 `13 passed`。错误实现探针 live-sibling-completion 真实 RED→finally/cmp 字节恢复→GREEN。详见 [R1 修复验证](validation/2026-11-13-native-m2-r1-fix.md)。本轮模型只读，已列出下一 fresh Kimi 的模型同步性质；未宣称 M2 完成，无 push/PR/deploy/Linear/main 合并。
+
+## 2026-11-13：JB18 最终验证维护候选（root 审查/集成未完成）
+
+从产品 sync `5d6706d1594fb5395e3e2b2e7c9ca3661f531ed9` 起，补齐 R11 有界模型、真实 cancel-first 围栏源码红→恢复绿、历史 flat 合法 writer→当前读取/结果纵切，以及 T1–T20/R1–R13 矩阵。默认/recovery/historical/historical-witness/cancel 模型全部运行；13 个正式源码探针红→finally/cmp→绿，产品源码最终无 diff。取消 4 场景、send-first 2 场景、historical-rejection 和独立 flat 纵切本轮通过，合计 8 passed/61.20s。
+
+本轮 `batch-workspace`、`recovery-browser`、`cancel-before` 三浏览器场景实测 `3 passed/63.56s`。prepare/freeze/submit、results/recovery、cancel 均走真实页面→本地 HTTP→真实 PG/Redis→SDK transport 替身。根因是 fixture `bc-fixture` 被租户数字 search schema 移除；仅把该测试场景沿用既有数字 BC fixture，不改产品源码。冻结预览及计划编辑/准备浏览器亦通过。详见 [M2 最终验证维护记录](validation/2026-11-13-native-m2-final-verification.md)。无真实平台写、迁移、推送、发布或 Linear；M2 尚待 root 独立两轴审查与集成。
+
+## 2026-11-13：JB18 取消/canonical consumer 实现候选（未放行）
+
+在唯一 M2 集成树接续 dirty 现场，完成原生 Submission 未发送取消、queue/process/物理发送三道围栏、真实独立 PG 会话在途取消与 UNKNOWN 迟到回执保留；统一新旧单/多计划的冻结读取、当前 Unit 执行和资格校验，删除内部 single_native_selection 死码。受影响真实 PG/Redis/API/SDK-transport 套件最终 111 passed；浏览器取消、混合 PARTIAL/FAILED/NEEDS_REVIEW、旧迁移字节保持通过。没有真实平台写、迁移、推送、发布或 Linear 操作。取消源码错误探针未得到有效红→恢复绿，历史 frozen-read 独立纵切、R11 最终模型和完整 20T/13R 仍交后续 fresh context；root 尚未两轴 review/main 集成。详见 [JB18 validation](validation/2026-11-12-jb18-native-batch-cancel.md)。
+
 ## 2026-11-12：第三版双侧栏、多搭建方案与配置上下文原型通过检查
+
+## 2026-11-12：JB16 提交/冻结形式 v2（候选，仍未放行）
+
+在唯一 M2 集成树、起点 be062687 更新 formal-verify-native-series-batch-submission：三个正常 TLC 边界分别 4226/37454/1456 distinct states，无反例；11个故障模型反例、8类真实源码破坏→恢复→绿已实际运行。补162组真实 Decimal 生成输入及独立预期，源码探针均仓外备份/finally/cmp，未改产品/UI。源码 sync 为 be062687，R10/R11 留待 JB17/18。
+
+形式 AC 尚未全闭合：部分 owner 缺独立源码破坏闭环、scope/旧准备/lease 与权限子模型尚未组合证明；没有新真实产品 finding。JB16 不宣称完成，JB17 未放行。详细 bounds、命令、反例和证据见 [JB16 validation](validation/2026-11-12-jb16-native-batch-create.md) 与项目 formal skill。无推送、发布、Linear 或外层树变更。
+
 
 更新[交互原型](superpowers/prototypes/ai-optimizer-workbench.html)：最左保留 TK-ADA 菜单，独立 AI 投放工作台入口位于“打开体验版”正上方；进入后第二列为优化师工作菜单，移除工作台内容页签。每优化师支持多套搭建方案，分别引用现有投放策略，设置版权方、轮次、相对延后时间；规则仍为独立绑定。AI 内策略/规则默认当前优化师已用，租户全部显式切换，选择器明确绑定，具体方案进入时定位实际策略并可返回原方案。新增策略/规则时明确保存并绑定或添加方案，切换优化师会清除旧草稿、选择器及返回上下文。
 
@@ -5252,6 +5327,106 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 线上7f版本中发现筛查回放的轻量计划缺少报表`kind`，`screen_hot`进入`AttributeError`并按5分钟退避；修复由`_report_plan_kind`为缺失字段明确选择integrated报表入口。新增回归与阶段端点专项通过，旧4,859账户压力用例因本地PG `max_locks_per_transaction` 不足失败，未归因于本次代码。
 - f10dff97从7f快速发布，11角色全就绪、schema0118、配置/额度/并发/资源/四开关/HTTPS保持，发布锁删除、Jenkins恢复。补数16Gi与报表反亲和造成节点碎片，临时正常退出迁移报表Worker后恢复，最终Deployment规格/副本数回到原值；无扩容、DDL、强删任务或新备份。
 - 发布后lagging计划在18:35:58完成screen_hot、hot、material、live，hot/material各覆盖535账户；cohort四任务COMPLETE且revision gap为0。全局stale计数仍受切换窗口和身份缺口影响，必须继续以发布边界后的自然需求核对20分钟SLO。
+
+## 2026-11-12 — JB-3 经营报表完整性与安全续跑（本地候选）
+
+- 在用户授权的已有 fix/jb2-business-integrity 集成树实现，基线 9ebdeae0；唯一写者。
+- Calculation derive_metrics 统一查询/CSV，保留赔付小计，冻结 issues 屏蔽不完整情景。
+- 新快照内部约定版本；旧冻结任务在任何文件改动前失败；旧未冻结任务正常冻结。
+- 真实 red/green/近似错误探针、PG/Redis、CSV HTTP 下载回读及有限模型已运行。
+  root 独立明确入口复跑 95 passed；补充冻结后 issues 变化的 base/comic 回归 2 passed，空返回与丢弃冻结 issues 的错误探针均被拒绝；模型 5000 输入/27 状态通过。
+- root 已使用数字合成 BC 补齐真实网页查询、点击导出、实际浏览器下载 CSV 回读：小计50保留，两个情景字段为空。未修改前端或真实账户数据。
+- Standards 与 Spec R1 均 PASS，零 P0–P3；产品代码仍为已审 ce025a76，后续仅补测试与证据。
+  ty 基线 tuple 错误仍存在；未推送、部署或生产验证，M2 不在本次实现范围。
+- 详细命令、范围、失败、模型假设及下一步：[JB-3 验证记录](validation/2026-11-12-jb3-business-export.md)。
+
+## 2026-11-12 — JB-6 / M2 历史核算必要日志（本地候选）
+
+- 唯一产品改动为 Operation Log Evidence 的每账户 IANA 本地日期冻结边界；原选锚策略、核算 start/end、公式、接口和生命周期保持，必要早期 coverage/export 进入既有语义签名。
+- 已批准反例真实 PG 先红（NULL/LOG_CHAIN_INCOMPLETE）、后绿（50/pending）；管理员 API→advance→发布→查询/实际 CSV 下载完整贯通。旧 run/day/依据/CSV bytes 不变，失败重试和来源失效均经真实链路验证。
+- 相关回归 166 passed / 1 既有失败；该 repair-000 时区 fixture KeyError 已用 af24 原文件独立复现。最终新增及日志 worker 专项18 passed，六类真实变异均被拒绝并 cmp 恢复，恢复后新增14 passed；不重复无变化全量检查。
+- M2 自有有限模型78,732来源转移通过，五个负向模型失败；只覆盖声明的有界假设，不冒用M1或宣称全系统证明。Ruff、格式、语法、diff检查通过。
+- 产品提交 b6cc09e2；Standards/Spec R1 均PASS、各轴零P0–P3。root独立复验新增14项真实PG用例通过（1.81s），模型78,732转移通过及五负向拒绝；后续仅补评审证据，不改已审源码。
+- 无迁移、外部调用、推送或部署；本地集成与资源收尾以JB-4/JB-6记录为准。命令、源码blob、T/R映射和边界见[JB-6验证记录](validation/2026-11-12-jb6-historical-log-evidence.md)。
+
+
+## 2026-11-12：JB-5 端原生M1实施启动
+
+- 用户调用implement-spec，授权单一集成分支及逐票隔离工作树；集成分支feat/jb5-native-series-m1从da190b59开始。保留此前business/operation-logs提交和主工作树无关产物。
+- 已读回JB-5与JB-7至JB-12完整正文及原生依赖；当前frontier仅JB-7。Spec副本见docs/superpowers/specs/2026-11-12-native-series-direct-video-design.md。
+- 验收沿既有创建工作区及官方SDK传输Seam，TDD按票推进；组合算法沿既有素材分配及creative_count语义。
+- 只建立实施输入与隔离本地PostgreSQL/Redis测试环境；尚未实现任何票，未进行广告/授权写入或生产发布。
+
+## 2026-11-12 — JB-7 原生 Series 选择与 scoped 准备（本地候选）
+
+- 产品源码 `5f66a6f65ceba042a2ddfc441f98a8ebd717be60`：既有工作区原子保存原生目的地、单账户、双角色身份、地区及视频/封面来源；复用策略与结构输入、mutation/CAS/幂等、SceneJob和官方SDK读取。支持显式待选择状态，无假版权方剧目或Mini链接。
+- 两条迁移统一Mini/native身份事实源，旧Mini调用方改接scene_selection；不改冻结预览/执行事实。Series按cursor/count≤20/has_more，TT_USER/BC_AUTH_TT分别分页；无已证实MCP工具时明确不支持。
+- 当前组合保持UNVERIFIED，明确不代表素材READY；JB-8继续做目标视频/封面逐条准备。后续预览、创建和回读未吞入。
+- 最新原生/迁移11 passed；前端类型+生产/demo构建通过，真实Chromium表单1 passed；错误保存/游标探针均被拒绝。先前scene回归129 passed；身份退休后owner回归91 passed / 1失败（既有批量上限测试未抛拆批，尚未动态确认旧HEAD基线）。不把该缺口标绿，不关闭Linear票。
+- 迁移、源码SHA、命令、TDD顺序边界和剩余验收见[JB-7验证记录](validation/2026-11-12-jb7-native-series-selection.md)。root待审查；没有推送、部署、真实业务读取或广告/授权写入。
+
+
+## 2026-11-12：JB-7 验收修复
+
+- 从46e15d57在用户批准的原集成树串行修复，不派下级代理。原生检查点增加基于当前账户授权、完整身份能力、精确Series和地区证据的READY路径；仅同一完整身份三元组在联合证据充分时支持，不同组合缺证据仍UNVERIFIED。SceneContext场景支持与素材未准备分离，过期账户能力由现有owner重新排队。
+- 修复Series目录按JSON属性顺序比较身份而隐藏的问题；真实Chromium跑通首次目录发现→双身份选择→按身份准备并选择精确Series→保存→刷新回显，2 passed。业务链另用真实PG/Redis与官方SDK传输替身，不是TikTok实联。
+- 回归141 passed / 9 deselected；最后账户能力TTL修复后原生/选择/迁移专项14 passed；两个真实变异失败且恢复cmp一致。前端TypeScript及生产/demo构建、Ruff、diff检查通过。
+- 77baaf04独立git archive源码与独立新建测试库动态复现预览batch-cap单测同样DID NOT RAISE；当前同输入同失败。根因为既有82277b08已取消广告总数上限而旧断言未迁移。本票不改断言或组合算法、不降级当前DB。
+- 本地JB-7三个缺口已关闭，交协调者独立验收；JB-8素材及后续票仍待实现。未改Linear、推送、部署、生产凭证或真实业务接口；保留untracked node_modules软链。来源、命令和边界见[JB-7验证记录](validation/2026-11-12-jb7-native-series-selection.md)。
+
+## 2026-11-12 JB-8 原生选中素材在目标账户逐条就绪
+
+- 起点 `5a3cb1b6e8ca56e96765ad66c679aad4918a3988`；复用用户指定 `feat/jb5-native-series-m1` 集成树，单写者串行完成。本节所在提交为源码 tip；不推送/PR/部署、不更新 Linear、不派下级代理，保留 untracked node_modules 软链。
+- prepare/continue 在 JB-7 当前场景资格通过后接既有 distribution、IMAGE distribution、covers owner；每轮最多20项，严格同N同序保存VID、封面引用、映射证据与任务ID。已核实素材可复用；缺一项、错账户、损坏顺序、旧revision或UNKNOWN不能作为完整组消费。不改变结构组合模型。
+- 增加 `DraftScenePreparation.native_materials` 的 additive 迁移 `native_material_readiness`；当前隔离PG实际升级，无当前库降级。存在证据的 downgrade 拒绝丢数据；生产迁移方案仍由M1最终审查处理。
+- 既有 native-checkpoint 增加 materials_state / materials_ready / materials / material_issues；JB-9只消费当前scope/revision/route下整组正证据，不以目的地READY代替素材READY。生成客户端合同已更新；未实施预览冻结、创建或广告回读。
+- TDD首红：完整两条素材仍BLOCKED，1 failed/1 passed；接线后2 passed。scope近似错误探针实际失败，恢复源码并核对字节一致；收尾多连接current封面多义检查同时覆盖只读与准备阻断；补充续接检查抓到JSON嵌套修改不落库问题并修复。未声称每分支逐条先红或形式证明。
+- 最终原生与选择专项 **30 passed / 59.70s**；素材/封面/上传/route/并发/Mini工作区回归 **176 passed / 210.23s**。真实PG/Redis，替身仅官方SDK/MCP传输处；前端 TypeScript + Vite production/demo 构建通过，Ruff及diff检查通过。
+- 完整命令、日志和可复现真库演示：[JB-8验收](validation/2026-11-12-jb8-native-material-readiness.md)。真实平台接受性/经营资格为Unknown；无真实业务接口、授权或广告读写。已知旧预览总数上限基线断言未重跑/修改。JB-9～12、独立审查及整个M1验收尚待完成。
+
+## 2026-11-12 JB-9 原生Series准确预览与冻结
+
+- 从e4ddf3c在用户授权的原集成树串行实现，未派下级代理、更新Linear、推送/PR/部署或调用真实业务接口；保留node_modules软链。
+- 原生工作区READY可沿既有预览入口冻结；新鲜native_checkpoint整组正证据、官方地区ID、双身份、实际VID/封面、seed文案、完整CTA、CBO、TargetROAS、ENABLE及route/授权代数均保存。复用原Strategy Structure、BuildUnit/PlannedAd和creative_content_digest；1×6、2×3、30×1及预算不倍增，公开详情与冻结一致。
+- additive native-series-v1 JSON revision及来源引用guard迁移；历史Mini冻结正文不改，草稿revision仍由既有触发器使旧预览OBSOLETE。原生执行明确未开放，交JB-10扩展typed/wire及发送前重核合同。
+- 当前账户精确Series×location交集、显式active阻断、暂停UNKNOWN、已删除inactive、PARTIAL/STALE/UNKNOWN及目录原始查询覆盖如实展示；没有推导平台完整active枚举或跨账户无冲突。沿原目录入口请求更新，不改变同步开关。
+- 真PG/Redis+SDK传输替身工作区与聚焦验证、2项Playwright行为检查、前端生产/demo构建通过；Mini回归84通过，另4项在起点独立源码/新库同样失败（历史夹具/私有替身签名），未扩范围修复。TDD首红及ACTIVE门禁真变异有日志，恢复cmp一致；未声称形式证明。
+- 详情、精确命令、分项结果、JB-10合同及Unknown见[JB-9验证记录](validation/2026-11-12-jb9-native-preview-freeze.md)。本节所在提交为交付tip，仍待协调者独立验收；M1尚未整体完成。
+
+## 2026-11-12 JB-10 原生Series沿现有执行链直接ENABLE创建
+
+- 从 `312468f7ae2188b3f7fb6917612004fe7100d23f` 在指定 `feat/jb5-native-series-m1` 单树串行实施，未派下级代理；本节所在提交为交付tip。不更新Linear、不推送/PR/部署、不调用真实平台，保留untracked node_modules软链。
+- 原生冻结计划接入现有Submission/Expansion/ExecutionStep/官方SDK执行器，新增typed原生组/广告意图、严格decoder和本地冻结编译；删除原执行不可用门禁。CTA及三级对象直接ENABLE；1×6为6个API Ad，一份CBO预算，双身份/Series/地区/视频/封面/单条文案/动态CTA在SDK传输层验证。
+- 受理及每次物理发送边界重核digest、revision、route/授权、账户及当前原生SceneContext和素材事实；显式ACTIVE冲突阻断，未知覆盖保持原限制。沿既有write-once/锁/回执保全；原生明确拒绝停止自动重试，UNKNOWN不盲create。创建回执的原生完成投影及撤权内部收尾保持NEEDS_REVIEW，交JB-11真正逐项MATCH。
+- 原生执行+预览28 passed；既有相关SDK/Mini/编译/提交/执行状态124 passed。旧Mini执行夹具5项在身份目录准备处报错，起点独立源码/新库首项同错；未改合同迎合。实际错误探针发送DISABLE被检查拒绝并恢复字节一致；完整证据及恢复后补跑见[JB-10验收](validation/2026-11-12-jb10-native-create.md)。无UI变化，无形式证明或真实平台接受声明。
+- JB-11消费稳定PlannedAd base_ad_no/creative_no、native-series-v1、各步骤request_body/digest/attempt、真实远端ID和StepEvidence；须以三级/逐创意全MATCH替换完成门禁。原生回读恢复与取消仍交JB-11/JB-12，整个M1未完成。
+
+## 2026-11-12 JB-11 原生三级及逐创意回读
+
+- 从 `9f0537b68d5a21e4f08c37c14e69f356596e6146` 在指定集成树单写者实现；本节所在提交为交付 tip。没有下级代理、Linear 更新、push/PR/部署或真实平台操作；原 node_modules 软链保留。
+- 创建回执为原生对象安排既有 READBACK；强类型实际观察接入原 readback_compare/reconciliation/scan/SDK 读取 owner。原生事件映射限定 AD_REVENUE_VALUE→IMPRESSION_LEVEL_AD_REVENUE；全部逐创意视频/封面/身份、单条文案、CTA、三级精确ID/父级/账户/ENABLE与冻结字段比较，缺失/多义/查询失败不MATCH。
+- 普通聚合与撤权收尾共用全量 MATCH 门禁；原生回执不再永久 NEEDS_REVIEW，也不能凭回执完成。现有结果视图显示实际状态及具体差异路径。Mini原有事件映射及回执处理保持。
+- 真实PG/Redis与SDK传输替身验证；字段消融、多重集合/排列、全MATCH/部分创建/差异/审核拒绝/空回读时间线，错误探针实际跑红并逐字节恢复；正式/demo前端构建通过。相关回归161通过，另1个Mini UNKNOWN用例在起点独立源码同样失败，未扩大范围修旧夹具。
+- 精确命令、最终分项结果、证据、独立oracle边界与JB-12交接见[JB-11验收](validation/2026-11-12-jb11-native-readback.md)。原生UNKNOWN完整恢复/取消归JB-12；真实平台接受与完整M1验收仍Unknown，无形式证明声明。
+
+## 2026-11-12 JB-12 原生 UNKNOWN 恢复与本地取消
+
+- 从 c21f054 在用户指定集成树单写者实现；本节所在提交为交付 tip。无代理、Linear 更新、push/PR/部署或真实业务接口操作；保留 node_modules 软链，无迁移或部署开关。
+- 既有 Recovery/Readback 接原生请求唯一标记、精确父级、完整字段/分页与唯一候选认领；认领保存真实 ID 并安排原精确 READBACK，全部 MATCH 完成门禁保持。NOT_SENT 预算、原 body/digest/identity、confirmed-absent 与明确拒绝 owner 保持。
+- 现有任务详情/API 增加“取消未发送步骤”。同租户原操作者可本地取消而不需平台写权限，提交行锁与发送前重查阻止后续创建；旧消息失效，在途/迟到 ID 与 UNKNOWN 仍保留。取消后只读恢复可用，无远端 delete/disable/再 ENABLE。
+- 真实PG/Redis与官方SDK传输替身验证：唯一/多义/取消后恢复、三级 UNKNOWN、取消 HTTP 并发、在途/迟到回执与恢复中撤权。大回归173通过；新增 Ad 检查误选多行已修正补跑，4旧身份夹具阻断保持披露。前端 TypeScript 与正式/demo 构建通过，两个近似错误探针失败并字节恢复。
+- 精确命令、分项结果、状态语义、风险范围与剩余 Mini 夹具缺口见[JB-12验收](validation/2026-11-12-jb12-native-recovery-cancel.md)。没有形式证明/真实平台接受声明；M1最终独立审查、集成与工单闭环仍由协调者完成。
+
+## 2026-11-12 Native Series M1 R1 修复候选
+
+起点 `2dce3bc7d19f132209a6d3c6a8ba1bbd87619af2`；指定 `feat/jb5-native-series-m1` 集成树单写者修复，未派代理、未改 Linear、未合 main/推送/PR/部署/真实平台操作。交付 tip 为本节所在提交。
+
+R1 两轴原严重度保留：Standards BLOCK P1=2/P2=1；Spec BLOCK P1=3/P2=1。已实现四类修复：原生正文接回共用提交/未知受理恢复/已提交任务导航；原生逐位置显式封面及重复视频接最终实际wire围栏和素材/重试依赖；实际 nested distribution/static CTA/addon 观察事实共享到精确回读与UNKNOWN比较；原 SceneJob/CapabilityJob 同scope刷新TTL并保留冻结意图，否定资格/变CTA/超时不续跑。
+
+真实浏览器经生产 Submission 路由、真实隔离数据库受理，响应丢失按原ledger恢复，数据库唯一Submission；同一链继续SDK创建及全量回读到COMPLETED。新三类回读负例保持NEEDS_REVIEW（含内部聚合），UNKNOWN禁止认领。封面三类合法输入创建通过，准入前后竞态/错wire均阻断。探针实际失败并逐字节恢复。相关最终回归185 passed，build与静态检查通过；未重复无关176/173全量。
+
+完整方法、finding逐条证据、日志、UI壳fixture边界、三项已在起点页面复现的旧UI断言失败，见 `docs/validation/2026-11-12-native-m1-review-r1-fixes.md`。不自行给最终review PASS；待协调者R2两轴仅审修复diff及影响行为。真实平台接受/active完整映射/经营资格仍Unknown，未作形式证明。
+
 ## 2026-11-12：创意身份目录补读逻辑已修正，待发布
 
 定位到创意报表已完成但素材身份仍未收敛的原因：`creative_day` 发布后没有触发创意 ID 目录补读，健康修复只覆盖广告/广告组/系列；同时报表驱动的定向目录请求没有带删除对象范围。新增独立 identity 目录队列：按账户和平台广告类型分组，每批最多100个未解析且有金额的创意，带 `include_deleted` 与 identity service，使用 background workload，不阻塞报表 SLO；手动/旧 Smart+ 创意按广告 ID回读，Upgraded Smart+按 creative ID 回读。普通报表驱动目录补读也统一包含删除对象范围。
@@ -5503,3 +5678,385 @@ c34b生产快速切换约3分28秒完成、锁释放/CI恢复；五分钟仍4.88
 - 目录大输入/发布预算/实体SQL/素材deadline四文件23 passed /55.87秒；40k首次18.704764秒、重复14.435526秒，首轮六次统计0.484秒。保留原数量、身份、重复证据稳定、回滚与45秒门槛。
 - 旧实时目录两参数初始失败但重跑通过：准备后台池后新live需求可能晚于最初now+1秒。测试只把观察点推进到登记之后，不假设准备必在一秒内结束；原四后台槽不被实时占用及代数推进断言保持。
 - 后台池整文件+4891账户目录deadline实例19 passed /74.34秒，保留该实例收紧到2秒的事务预算。账户目录容量文件加入原串行阶段；真实权限/生产5秒预算不变。Ruff/ty、YAML/shell及diff通过。两树同步，完整远程新CI待验证，未合并、未部署。
+
+## 2026-11-12 — JB-5 原生 Series M1 本地交付完成
+
+- 六票实现及R1四类修复完成；Standards/Spec R2均PASS、各轴未解P0–P3为0。完整报告归档到docs/validation/2026-11-12-native-m1-review/。
+- root独立真实浏览器→真实本地API/PG/Redis→SDK替身→创建/回读完成1 passed；丢响应原请求恢复与唯一Submission已核实。不是API显示mock替代后端。
+- 远端最新74ea9bc0已获取并保留原origin；合并1134520c保留既有本地提交与所有进度记录。合后reporting/readback158 passed，快进本地main后readback94 passed。M1产品源码与R2已审d39f6bbe一致；未重复无变化全量。
+- JB-7～12逐票读回Done后JB-5读回Done；未推送/部署/真实平台操作。原主树无关未跟踪文件保留。最终范围、证据、旧基线与外部Unknown见[本地交付验收](validation/2026-11-12-native-m1-final-acceptance.md)。
+
+## 2026-11-12 — JB-13 原生 Series M2 实施启动
+
+- 用户调用implement-spec，目标为整个JB-13及JB-14～18五票，按已批准依赖串行推进。M2集成树feat/jb13-native-series-m2基于main b1857367；沿用先前确认的单集成树/每票新上下文/唯一写者路线，绕开T3外层项目无法为独立子仓创建逐票工作树的限制。
+- 实施按本仓AGENTS使用Astra/high；Kimi K3.1 Pro已完成Spec和拆票。单批共享策略与同投放连接，逐计划明确账户、Series、双身份及地区；跨连接分批，M1原策略及证据边界保持。
+- 已读取完整实时Spec、五票及评论；全部Todo，JB-14无前置，其余原生依赖为14→15→16→17→18。创建独立本机PG测试库与Redis，复用锁定依赖，仅SDK传输替身，无真实业务读写。
+- 当前仅接续M1前置基线；尚未实现M2产品行为。完成各票后核对能力并推进，最后独立两轴审查、必要修复、本地main集成与Linear读回；不推送、不开PR、不部署。
+
+## 2026-11-12 — JB-14 显式原生计划集与独立准备
+
+在授权的 `feat/jb13-native-series-m2` 单集成树实现 canonical `NativeSeriesPlanSet`、真实工作区添加/复制/选中批量改地区、按计划键隔离的 SceneJob/素材准备回执、同 revision 重试与旧任务隔离。旧平铺 JSON 只读规范化；单项 Preview/Execution 暂用显式单项适配，多项冻结可见阻断，等待 JB-15。未新增 HTTP 入口、上传或资格 owner、业务开关。
+
+实际 PG/Redis 与 SDK transport double 检查、页面 PATCH/prepare/回执、并发重试、旧 JSON 和冻结历史、错误探针、前端构建及验证边界见 `docs/validation/2026-11-12-jb14-native-plan-set-readiness.md`。本票不关闭 Linear，不宣称 M2 MMF 完成；root 独立验收后决定 JB-15 frontier。
+
+## 2026-11-12 — JB-14 候选补充验收
+
+在起点 `7e908d8edd575f055249faac3a797e264dbe6bee` 的唯一 M2 集成树补齐两项 HTTP/真实 PG/Redis 验收：两个授权账户各自精确 Series/身份/反序素材均 READY；单项 Scene TTL 刷新保持 revision 与兄弟完整 checkpoint；旧 dispatch 不生效；跨账户素材证据、跨 tenant 读取及冻结 connection 改写被拒绝；两份反向计划顺序草稿共享素材、两个 PG session 并发准备完成。实际业务 owner 与官方 SDK transport double，未写假 READY。
+
+没有复现新产品缺陷，仅增加测试和证据；夹具失败和最终结果分别记录于 [JB-14 验收报告](validation/2026-11-12-jb14-native-plan-set-readiness.md)。吞掉兄弟计划及绕过素材 scope 的真跑探针均失败，产品源码逐字节恢复。复用既有 UI/构建、M1 ENABLE/MATCH/恢复取消证据，不重复全套。JB-15 消费 canonical plans 和逐键 checkpoint；多计划冻结仍 pending，是否放行归 root。未推送、部署、创建 PR 或更新 Linear，原未跟踪软链保留。
+
+补充检查最终：恢复源码后2 passed / 4 deselected / 15.63s；既有旧 revision 检查在前轮通过。Ruff/格式/固定Python compileall及diff检查通过，产品源码无变更。
+
+## 2026-11-12 — JB-15 原生逐计划预览与完整冻结
+
+从 `9066dc2274d7cb29e1ed66b27ba864679eaa828c` 在唯一 M2 集成树接通真实准备→INCLUDED/EXCLUDED manifest→原策略完整展开→同事务冻结→HTTP/页面回读。批内精确账户/Series/地区交集排除双方；确定 ACTIVE 只排除受影响计划，覆盖 UNKNOWN/PARTIAL/STALE 保留风险且不全局禁投。完整请求保存在各 Unit，manifest 绑定 request_digest、范围、原因和精确预算；批次提交明确 pending，M1 单项继续支持。新增向前迁移 `native_batch_preview` 扩展既有 provider-reference guard，未部署。
+
+真实 PG/Redis/SDK transport double 验证包含混合准备、全部排除、双账户冻结、独立 Unit 预算、稳定分配、双 session 同 revision 冻结、摘要变异、PG 故障回滚与 M1 创建链；真实页面显示两项 INCLUDED 和一项 EXCLUDED。漏排、重计预算、漏绑定 manifest、float 四种实际错误探针被拒绝并恢复源码。USD 原资格只允许 0.01；真实合法金额与任意精度纯函数分别测试，不放宽平台约束。详细命令、失败、修复后通过结果、JB-16 消费合同及边界见 [JB-15 验收报告](validation/2026-11-12-jb15-native-batch-preview.md)。
+
+本地候选待 root 独立审查/集成，最终 Done 归 root。未推送、部署、开 PR 或修改 Linear，未调用真实广告/授权 provider 写；原未跟踪 `.venv` / `node_modules` 软链保留。
+
+### 2026-11-12 · JB-16 native batch create candidate（未完成）
+
+从 `820a26e9` 在唯一 M2 集成树迁移原生执行复核到当前 Unit，沿现有 Submission/step/SDK/readback 链支持独立计划，并增加逐计划 MATCH 派生回执、确认框和生成类型。末次定向 8 passed / 80.09s，前端正式/demo 构建通过；真实源码完成判定/计划作用域两个破坏探针红后恢复。TLA+ 草模实际运行 16564 distinct states，但完整源码映射、预算抽象和逐性质破坏探针未达到 Spec 门槛。完整双围栏竞态和页面至执行/readback 合一纵切仍待完成，不能推进 JB-16 Done 或 JB-17 实施。无推送、部署、Linear 或真实平台写。详见 [JB-16 候选证据](validation/2026-11-12-jb16-native-batch-create.md)。
+
+### 2026-11-12 · JB-16 fresh-context 运行修复（待 root，形式未完成）
+
+起点 `9805d8d02df35994368769d81759bc41d43d6f8f`，唯一 M2 树串行修复：SDK 最终权限校验至物理发送的真实窗口及慢请求锁期限、重复提交返回过时 QUEUED、准备页残留单计划冻结门槛。新增同一 Submission 从页面 prepare/freeze/确认到真实任务入队/SDK 创建/三级逐创意回读/结果页的纵切，双时点撤权/代数围栏、各终态与 UNKNOWN 并发重放及不可变数据拒绝证据。实际近似错误探针串行失败并逐字节恢复；命令、失败修复和最终结果见 [JB-16 运行证据](validation/2026-11-12-jb16-native-batch-create.md)。
+
+现有权限模型没有独立 actor authorization generation，撤权后重新授权对旧代次的隔离仍未证明，不能以当前权限锁或形式模型代替该合同。形式 skill 完全未改；后续需 root 源码验收，再串行形式补全。JB-16 不宣称完成，JB-17 不推进。无真实平台/授权 provider 调用、推送、PR、部署或 Linear 修改，原未跟踪软链保留。
+
+本轮最终源码检查：10 passed / 141.81s，另复用本轮双边界 10 passed / 106.39s；前端正式/demo 构建、6 文件 Ruff/格式及 diff 检查通过。新发送事务持锁可增加同批次物理写/撤权的等待；吞吐与真实 Celery 宿主硬超时未验，不把本地测试宿主当生产验收。
+
+## 2026-11-12 JB-16 R12 操作者授权代数候选（待 root / 形式验收）
+
+- 起点 `15cb546468cc270249f09cd626635c7040244833`；唯一集成树/分支未变，只保留原 `.venv` / `node_modules` 未跟踪软链。无下级代理、无 push/PR/deploy/Linear/真实平台写，未改形式 skill、未推进 JB-17。
+- 最小持久代数归现有 User/Tenant/Membership 行；DB trigger 覆盖 active/role/superuser 和插入，sequence 防成员删除重建 ABA。唯一批准快照在原生首次明确提交的 Submission 上，绑定真实 actor，数据库禁止后续修改；队列与最终 SDK 发送从同权限 owner 比较，原锁序与期限保留。
+- 新向前迁移 `actor_authorization_stamp` 已仅在专用 M2 本地数据库应用并读回 head；历史 Submission NULL 不回填，新写拒绝、历史结果/完整请求不改。重新投放须按原唯一性合同新工作区/新预览明确批准，不复活旧 Submission，不添加第二 ENABLE。
+- 最小 red 真实复现停用恢复仍多发 SDK 请求；4 个 revoke/regrant 绿，10 个 scope/新批准检查绿；绕过比较探针 4 failed，恢复后 cmp 相同。最终定向检查结果见本轮 validation 末段；前端未变，复用上一轮构建。
+- 交接与精确命令：`docs/validation/2026-11-12-jb16-native-batch-create.md` 的「R12 操作者授权代数」节。JB-16 仍需 root 审查和下一 fresh-context 形式 worker 的 stamp 冻结/递增/比较原子性映射，不能标 Done；JB-17 未放行。
+- 最终定向运行 59 passed / 2 failed；修复内部 generation 序列化泄露后权限/管理 34 passed，清除 TTL 测试 import 遮蔽后该节点 1 passed。24 个 queue/send 围栏、历史读取与 SDK User/账户双锁的绿结果复用；Ruff 10 文件 check/format、diff check 通过。完整失败与修复链保留在 validation，不宣称单次全套绿。
+
+
+## 2026-11-12 JB16 六个核心形式性质对应收口候选
+
+起点 `80aea85c5f858f03ab0a50b82e4eb2152f669fa7`，唯一 M2 树串行单写。新增可选 source_checks unique-replay / unknown-retry：前者真实 PG 重放必须返回原 Submission（错误拒绝红，恢复绿）；后者真实 SDK POST 丢响应→同 worker 消息重投（写次数4→5红，恢复无新增写绿）。组合变异理解现有多层保护，不修改 DB DDL、不伪造已发送事实。仓外备份/finally/cmp 恢复全部源文件。
+
+产品源码仍匹配 `be06268759d6b72013120d936b9fe2b458afc4ce`，无新产品缺陷或源码改动。复用3个正常模型、11个命名模型反例、8个源码探针及既有 queue/send/browser/权限/TTL证据；runner组合支持改动仅补一次廉价旧budget-double兼容复验，不重跑整套。六个核心 R5/R7/R8/R9/R12/R13 代表性闭环已齐备；范围和两模型接缝假设详见 [JB16 validation v3](validation/2026-11-12-jb16-native-batch-create.md)。未证明全系统组合、任意scope/lease/每个guard，未发现剩余真实corefinding。待root验收，不标Done、不推进JB17/18，无push/PR/部署/Linear/真实平台操作；原软链保留。
+
+## 2026-11-12 JB17 部分候选：只读恢复识别冻结计划键
+
+起点48adee03，代码候选d4b63a34。真实两账户SDK丢响应→HTTP恢复暴露M2名称含`:plan_key`但M1扫描regex拒绝的缺陷；修复原owner，不改冻结请求或新增恢复worker。空/多/缺字段保留UNKNOWN，唯一Campaign MATCH后T15回RUNNING，7次创建基线和成功兄弟保持。真实多候选误认领源码探针红→finally/cmp恢复绿；101项M1扫描/字段检查绿。R10有界模型及R9/R13/Authority复验已跑，范围见[JB17候选证据](validation/2026-11-12-jb17-native-batch-recovery.md)。
+
+**整票未完成**：浏览器恢复、T16–T18、完整恢复scope/creative/事件接线和M1运行时恢复仍需验收。不能放行JB18，不改Linear/外层协调状态、不push/PR/部署；原未跟踪软链保留。
+
+### 2026-11-13 · JB17 fresh-context 运行补验（未放行18）
+
+起点d982b5030346c34902b2deee889adadc10c47b10，仍在指定feat/jb13-native-series-m2单写者树。产品owner/模型/迁移未改；补原SDK最后Ad丢响应→原HTTP恢复/只读任务→三级READBACK的T16 COMPLETED、T17 PARTIAL。创建基线10/8次不增；原stamp/body/Unit/兄弟事实、恢复后同/不同key原Submission重放保持。Ad真实GET接线覆盖9个代表性缺失/错误候选与完整重排；M1原UNKNOWN运行时间线（含组distribution、Ad addon、连接撤权）定向通过。原页面批准的同Submission在结果页点击真实核查后完成，认证壳合成边界和两次浏览器会话如实记录。
+
+最终终态2 passed/35.62s、浏览器1 passed/24.53s；M1+初版接线6 passed/61.55s。漏READBACK及强制MATCH两个真实源码probe真红、finally/cmp恢复后绿。Ruff三文件和diff check通过；产品前端不变复用构建，R10/R9/R12/R13形式证据复用不推进synccommit。初次属性名、漏只读READBACK、静态CTA fixture路径错误均在报告保留。
+
+**T18仍未满足**：当前SDK明确负面码直接NO_EFFECT，不会产生带该码的新UNKNOWN；丢响应无明确拒绝回执，空GET不能证明未建。历史_recover_known_rejection有owner但本任务无合法历史回执输入，不种植UNKNOWN/伪造confirmedabsence。恢复后FAILED重放也未验。详见docs/validation/2026-11-12-jb17-native-batch-recovery.md的完整owner/指纹/授权映射与命令。JB17仍InProgress，JB18未实施、未放行；root决定合同缺口处理。无push/PR/deploy/Linear/真实平台调用，原untracked .venv/node_modules保留。
+
+### 2026-11-13 JB17 T18 历史条件路径补验
+
+指定集成树起点 9fed527926c795fda1d42baa529d2aa09e056be3；只补测试、同一 Submission 模型与证据文档。
+两 INCLUDED 的原请求明确拒绝回执，经显式合成历史 RESULT_UNKNOWN fixture 绑定原 attempt/body/digest，
+正式 HTTP recovery 闭合到原 Submission FAILED/无完整 MATCH，父级 ID/风险、stamp、请求与计划归属不变；
+同/不同 request key HTTP 重放、重复 recovery/读消息/事件读取零新增远程请求。
+新增负证据模型性质、保留 R9/R10/R13；单/双计划及预期反例实际运行，R12 与前轮浏览器/M1 无变化证据复用。
+源码故障探针串行外备份/finally/cmp 恢复，产品代码未改。详见 docs/validation/2026-11-12-jb17-native-batch-recovery.md
+与 formal skill T18 节。当前 Timeout/空查询仍应 UNKNOWN，无新平台能力。可交 root 验收，非 Done，JB18 放行归 root。
+最终 T18 串行恢复 green：1 passed / 12.41s；两个实际源码故障探针均红，恢复 cmp 一致；Ruff/diffcheck 通过。
+
+### 2026-11-14 JB-23 原生目录识别候选
+
+起点4ddb3e0031b53f1168b22a7185399285f0daa457，在授权共享M3集成树单写者完成现有详情owner只读native投影；目录/报表设置共用展示，精确creative ID关联现有素材事实，保留父级、两层身份、版位、原配置、来源/观察/版本与覆盖未知。无Series实体、缓存、同步/模型/迁移改动或管理动作。
+
+受控官方SDK transport→现有目录暂存/发布→真实PG→真实列表/详情HTTP→工作区浏览器主链通过。相关25项通过；两个实际源码错配探针失败并字节恢复，最终native4项通过，报表/新映射5项和完整配置5项通过，正式/demo构建通过。证据及Testing1–10矩阵见 [JB-23验证](validation/2026-11-14-jb23-native-directory-recognition.md)。完整Celery调度宿主未启动；真实平台字段/Series名称/完整性/生产验收Unknown。独立两轴审查与M3统一接受/集成归root；未自行放行、未push/PR/deploy/改Linear/合main/删树，既有.venv/node_modules链接保留。
+
+### 2026-11-14 M3 R1 未知创意字段修复
+
+Standards R1 PASS，Spec R1 一个 P1：已发布 creative_list/creative_info 为 null 时详情500。root 在原详情投影处理合法未知配置，保留原始null、已观察关系及覆盖原因；未改同步/发布/模型/公开DTO。两个SDK→发布→PG→HTTP场景真实RED→GREEN，丢创意/借组身份两探针均红且字节恢复；相关原生与详情9项通过，Ruff/diffcheck通过。见[修复证据](validation/2026-11-14-native-m3-r1-null-fix.md)。待独立Spec R2，M3未放行；未push/部署/改Linear/合main。
+
+### 2026-11-14 M3 本地验收收口
+
+Spec R2 PASS，P0/P1为0，唯一R1 P1关闭；Standards R1 PASS沿用。root接受M3本地功能与有效验证，正式Spec、三份独立审查报告及[交付验收记录](validation/2026-11-14-native-m3-delivery.md)已入库，进入本地main集成与JB-21/22/23统一收尾。产品源码仍为已审2937e6dc，文档提交不改变行为；落地/状态/回收结果以记录指定的closeout回执为准。真实平台/生产仍Unknown，不push或部署。
+
+### 2026-11-14 JB-25 Campaign Native Growth 本地实施
+
+从 `b0f3b144` 在唯一获批 M4a 集成树串行实现 Campaign walking skeleton：同一 ReportingData 的物理隔离 ParentReportDay、原需求/SDK/Redis/Worker 发布、SQL direct整向量选择、独立覆盖状态、Ad nullable evidence、目录合同及工作区可见来源/窗口/平台与本地ROAS。不派下级、不进入JB-26，不合main/推送/PR/部署/改Linear。
+
+官方SDK transport替身→原网关/Redis/Worker→真实PG→查询HTTP/缓存Worker→真实工作区显示40/30及平台长小数；相关53项通过，后续覆盖修复及账户恢复/原维度查询24项通过，撤权补测1项通过；最终类型合同相关29项及最新本票7项通过。8个源码错误探针实际RED、finally字节恢复、GREEN；构建、Ruff与diffcheck通过。严格mypy全量仍有起点可复现诊断，未称全绿。实现、失败/修复、运行命令、迁移/回滚限制及JB-26消费合同见 [JB-25验证记录](validation/2026-11-14-jb25-native-growth-campaign.md)。独立审查/票状态由root处理，本票不自标Done；M4a剩余票、生产/真实平台仍未验收。
+
+
+### 2026-11-14 JB-25 root接手
+
+在feat/jb24-native-growth-m4a核对0cf93588并独立复跑29项后，修正请求证据与金额所有权：未请求平台ratio不记ABSENT，证据不重复money。新增真实PG回归，30 passed；两个错误探针红→字节恢复→绿。JB-25仅集成基线验收，后续JB-26继续，完整M4a及正式审查未完成；未推送/部署。
+
+## 2026-11-14 JB-26 三层 Native Growth 本地候选
+
+从7d987d8在共享集成树串行加厚Adgroup，新增统一日层级注册、原SDK/需求/Worker/PG发布、Adgroup selected view、三层独立状态HTTP与工作区；保留父级direct与旧广告派生writer隔离。真实刷新HTTP→三层各两页SDKtransport→Worker函数→PG/Redis→query/status HTTP→工作区各父级40/Ad dash通过；空发布/失败回滚、真实广告发布/重建/账户恢复及源码错误探针通过。R4/R10专属有限模型48状态通过，非全MMF形式验收。
+
+验证与未闭合项详见 `docs/validation/2026-11-14-jb26-native-growth-levels.md`。frontend build/Ruff/diff通过；严格mypy最终410条既有诊断未全绿（精确起点412，诊断集合无新增）；旧planner/health任务种类断言已独立起点源码/独立库复现，另外三层健康夹具的合同差异留root审定，未改旧断言。未自标Done、启动后票、改Linear、push/PR/合main/部署或操作真实广告。保留原软链。
+
+
+### 2026-11-14 JB-26 root消费者验收
+
+已核对2662522d候选并修复未知范围遗漏creative探测；其余测试按三层合同准备精确scope/水位与四类调度任务，没有放宽隔离/去重。health+planner83通过，closeout/dedup/正常热轮74通过，关键复验3通过；两个源码探针红→恢复绿，R4/R10 48状态模型及错误变体亲跑。可交JB-27/JB-28继续，完整M4a未完成；无push/PR/部署。
+
+### 2026-11-14 JB-27 三层刷新可靠性候选
+
+从7941c176在唯一共享集成树串行实施同观测no-op/冲突、单页及归并重复拒绝、冻结请求形状、重试等待即公开本层失败、三层刷新概览与查询依赖。沿用原SDK/Worker/fence/route/PG锁与事实事务；新增真实SDK额度续页、单层失败/旧值/恢复、两线程反序/撤权、两独立Celery进程canonical消息重复投递。现有formal owner扩展R7有限模型及源码破坏恢复检查。详细AC/结果/基线与运行层级见 [JB27验证记录](validation/2026-11-14-jb27-native-growth-publication.md)。仅本票候选，不标Done、不启动后票、不改Linear/推送/PR/合main/部署。
+
+
+### 2026-11-14 JB-27 root阶段验收
+
+亲核b17b9b36，publication/levels/watermark84项通过（含独立Celery投递），R7有界正常模型及四错误变体亲跑符合预期；无需追加产品修复。继续JB-28筛选范围/ROAS，完整M4a与正式两轴review仍待后续。无推送、PR或部署。
+
+## 2026-11-14 JB-28 partial WIP
+
+From d72d5837967fc5619f2dcbd8f5a577f2a94f6ae1, same authorized integration tree.
+Implemented daily denominator completeness in SQL threshold/order/summary and
+MetricVector; account/drama now route Campaign selected-day facts. Real PG107
+passed; after isolating material legacy behavior31 passed. Three real-source
+mutations red/byte-restore/green; bounded six-example arithmetic oracle only.
+Strict mypy remains410, exact-start normalized diagnostics unchanged. Full
+JB28 source/contract/scope buckets, subset handling, aggregate provenance, UI,
+performance and exhaustive formal coverage remain incomplete. Do not accept
+JB28, start JB29, release this WIP, or mark M4a complete. Details and AC matrix:
+`docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`.
+
+### 2026-11-14 JB28 source/scope continuation checkpoint — not accepted
+
+Exact start854b86ec8800b39f9ccbfe26223f400f4b18c9f9, same authorized M4a tree,
+Sol/high sole writer, no child agent or branch/checkout changes. Real PG failure
+40direct+20derived=60 fixed by source/level/contract/currency SQL buckets; page
+hydration now reuses the same facts builder. Canonical explicit Ad contribution
+scope preserves5 spend without parent40, ids remains whole-object. Unknown direct
+contracts NULL/CONTRACT_MISMATCH; platform.801 vs local.8 and multiday NON_ADDITIVE
+retain daily Decimal observations. UI has scope/bucket/partial/reason explanations.
+
+Final six reporting suites120 passed/37.48s; official/demo builds/tsc/Ruff/diff
+passed. Four new concrete source assertion probes + three inherited denominator
+probes restored bytes and reran green. Small synthetic real PG EXPLAIN and
+first39.214ms/cursor13.887ms recorded. Mypy410 unchanged normalized diagnostics
+against inherited final log, not all green. No dependency reinstall/FLUSHDB or
+real platform requests. Original untracked.venv/node_modules symlinks preserved.
+
+Context boundary checkpoint, **JB28 still incomplete and JB29 blocked**: full
+aggregate provenance/counts/windows/watermarks and empty-bucket coordinates,
+all-entry/consumer audit, five-view/subset/partial browser demonstration,
+representative scale plan, outstanding source probes and generated R2/R5/R6/R8
+model remain. Full superseding17-AC matrix and exact next steps are in
+`docs/validation/2026-11-14-jb28-native-growth-scope-roas.md`. Do not freeze current
+payload as accepted JB29 input; no snapshot freeze/CSV or following-ticket work.
+No Linear writes, main merge, push/PR/deploy or production migration.
+
+### 2026-11-14 JB28 658e7700 产品合同候选
+
+在原共享M4a树Sol/high唯一写者串行补齐行/summary共用provenance（五维度、counts/完整分母、合同/范围/逐日观察/水位），原发布状态新增nullable publication_coordinates及本地迁移，空桶NULL且不借当前账户时区；行/桶合同冲突独立拒绝。显式AdContributionScope接到真实工作区，Account/Drama展示来源与可展开平台观察，保留原消费者owner。
+
+定向产品39项与发布68项通过；SDK transport→Worker/真实PG/Redis/HTTP→浏览器五视图/同名ID/部分收益/子集5及切层通过；2,000合成Campaign首查3.49s、续页1.30s，非生产容量。两个新增源码消融断言RED→字节恢复→GREEN；build/tsc/Ruff/diff通过，mypy仍继承410且无新增。详细Superseding矩阵、初始失败、精确JB29字段和fresh验证交接见 `docs/validation/2026-11-14-jb28-native-growth-scope-roas.md` 最末。同一SDK fixture52个Campaign的实际浏览器50/2条分页与返回通过。R2/R5/R6/R8完整生成模型、余下源码探针和完整组合筛选矩阵仍待下一验证上下文，JB28未整票接受，JB29未放行。不改Linear/Spec、不push/PR/合main/deploy或生产迁移；原软链保留。
+
+
+### 2026-11-14 JB28 fresh Sol/high 验证候选
+
+在唯一共享M4a树从精确a749ad484ed76d48d41bde2c588eb62706996669开始，
+仅维护原formal owner、测试及文档，产品字节保留，无分支/checkout/下级代理。
+旧48/57状态与六例检查亲跑；新增1,296算术组合、9坐标分区、12本地时间案例，
+真实PG36字段状态组合与三层目录/父路径/Ad贡献mask矩阵、跨币种/来源合同和
+Account/Drama同层去重。聚焦suite78 passed/1 deselected，新增阈值组合和拒绝边界再定向验收。
+七条新增源码探针实际业务断言RED、外备份finally/cmp恢复GREEN；
+旧多日平台比率探针因源码移动重映射并RED→GREEN，其余匹配证据明确继承。
+Ruff/diff及实际skill入口通过；不重跑浏览器/构建/2k计划/旧mypy410。
+[完整17AC矩阵及边界](validation/2026-11-14-jb28-native-growth-formal.md)。
+尚待root独立验收，不自标Done或放行M4a/JB29；无Linear/Spec/main/push/PR/deploy/生产操作，
+原未跟踪.venv/node_modules保留。
+
+## 2026-11-14 JB28 root phase acceptance
+
+- Root independently ran scope+dimension: 79 passed/1 deselected; generated model 1296 arithmetic/9 coordinate/12 clock cases passed. Inherited matching browser/build/source-probe evidence.
+- Real PG RED reproduced empty-summary ABSENT versus NO_RETURNED_ROW and missing CPM formula multiplier; corrected shared vector_provenance only, preserved monetary/source contracts.
+- Final affected scope: 63 passed/1 deselected (28.97s), Ruff passed. No source decision or arithmetic model drift; bounded assumptions remain explicit.
+- JB28 locally accepted for JB29 consumption. All M4a tickets remain open until full review/local integration; no push/deploy/real platform acceptance. See docs/validation/2026-11-14-jb28-native-growth-formal.md.
+
+## 2026-11-14 JB29 frozen query observation candidate
+
+Sol/high唯一产品写者，自精确47359643e6662568c124d314f0684d943e3bcbb0沿共享M4a树串行实现。
+同一SQL选择计划冻结成员/阈值/排序/summary与所选指标；RR内100行分批组装，续页与详情读取
+短期frozen_result，保留合同副本与账户×层×日发布map；无snapshot详情返回自己的账户本地日查询。
+当前目录属性独立标识，源发布提示“有新数据”后由人加载；素材沿原刷新合同。未改决策输入或CSV。
+
+新增本地additive迁移native_frozen_query，旧合同/空或不兼容载荷/scope变化/过期拒绝重查；
+每次读仍重验当前权限。真实PG109项通过，补充迁移/消费者10项通过；真实SDK/Redis/Celery/
+Worker/HTTP/Vite/浏览器冻结详情及40→80刷新链通过。7源码探针业务RED→仓外备份finally/cmp恢复→GREEN。
+2k合成首查8.96s/续页1.62s/详情0.75s，PG载荷11.68MB，22批清理89ms；非生产容量。
+Ruff、主/演示build含tsc、diff通过；窄mypy仅继承1条旧注解问题，原410基线不冒称绿。
+
+完整AC/失败修复/实测与继承边界、生产统一reader/writer及回滚约束、JB30消费合同见
+[JB29 validation](validation/2026-11-14-jb29-native-growth-snapshot.md)。formal owner扩展R9且单独同步提交。
+候选待root独立review，不标Done，不宣称M4a完成。无tracker/main/推送/PR/部署/生产迁移/真实平台写；
+原未跟踪.venv/node_modules软链保留。
+
+JB29 产品候选提交：`8f986018f3dc389aeebaf8002a82e86e1d1ff947`。
+形式维护按该精确产品头更新R9，原48/57与新增128正常通过，破坏模式拒绝，完整snapshot PG 8项通过。
+迁移实测保留旧快照成员/总数及direct金额，拒绝旧合同；真实两连接在SQL选择与格式化之间发布新观测，
+旧行/summary保持10/20、新查询100/200。最终源码探针与skill同步单列提交，产品字节不再修改。
+
+## 2026-11-14 JB29 root phase acceptance
+
+Root independently checked frozen payload/contract, RR build, page/detail and current authorization, legacy exit/migration; 19 snapshot/reuse checks passed and R9 normal/broken variant behaved as expected. No product changes. JB30 released locally; tracker remains open until whole M4a review/local merge.
+
+## 2026-11-14 — JB30 Native Growth frozen CSV local candidate
+
+- Sole writer Sol/high in approved shared `feat/jb24-native-growth-m4a`, start
+  `696d37c949a184d5ff9104c26cf2c8bdde5aa6c4`; original dependency symlinks kept.
+- Existing export creation/task/worker/download now copy the frozen ReportRow,
+  result contract, publication map, scope and evidence; no current-fact/native
+  directory recomputation. NULL/zero/Decimal and structured provenance survive
+  CSV. Account/Drama share it; material and business/automatic rules unchanged.
+- Additive `native_frozen_export`; old completed CSV kept, pending incompatible
+  task fails/reexport; original snapshot may expire/clean after legal creation.
+  Existing 24h cleanup also clears copied payload. Current grants rechecked.
+- 13 targeted tests pass; real SDK transport→existing sync Worker→PG/Redis→
+  HTTP/browser/query/detail→export→real Celery/Redis→download passes, including
+  post-refresh equality and HTTP revoke rejection. Six real source mutation
+  probes produce business RED→external/finally/cmp restoration→GREEN. Frontend
+  build/tsc passes; new strict typing issue fixed (three inherited task diagnostics).
+- Separate local DB actual old git-code writer→process exit→Alembic upgrade→
+  same-version SDK/HTTP/Worker/export seam passes; old 10/20 unchanged,
+  LEGACY_UNKNOWN and no parent backfill. Downgrade refuses; no production action.
+- Full 16AC and T1–T11/R1–R10 rollup, inherited measurements and limits:
+  `docs/validation/2026-11-14-jb30-native-growth-csv.md`.
+- Candidate only; no Linear change, push/PR/main merge, deploy or whole M4a release.
+  Root fresh Standards/Spec reviews and local integration remain outstanding.
+- JB30 product candidate `2a42c983e6dd364032f6ea7875b29d2be1080a90`.
+  Separate formal upkeep extends R9 export lifetime at this source sync, keeps
+  unchanged R4/R7/R10/vector mappings, and retains guarded isolated upgrade
+  rehearsal plus six real-code export probes. Final export PG cases: 3 pass.
+
+## 2026-11-14 — M4a R1 唯一 P1 定向事实 provenance 修复
+
+指定集成树从 `573ebc8fc2f50d212856c9d8ec23a29645ae3b59` 修复：原 Ad 行 evidence 保存真实精确 scope 发布坐标，不推进整账户 COMPLETE/version；ordinary/contribution/CHILD_DERIVED 共用 SQL 选择并保留逐子观测，RR/CSV 冻结实际发布图。真实 PG 初始反例 RED；相关134测试通过；两项真实源码消融 RED→finally/cmp→GREEN。三个 P2 留 root，native_levels 的已知 ratio P2 失败如实保留；未放行 M4a。见 `docs/validation/2026-11-14-native-m4a-r1-targeted-provenance.md`。产品/测试与形式模型维护独立提交，不推送/集成/部署。
+
+本轮产品提交 `95c5f2728b626522c9228a5090ba3393a380fa5c`。形式维护独立提交：新增8例精确scope模型及两个真实PG源码消融，skill同步至该产品源码；账户完整性/原子发布假设未扩大。
+
+## 2026-11-14 M4a R1 root P2 repair
+
+JB31 creative snapshot serializer and JB32 legacy/unrequested evidence states fixed by root. Three real PG regressions RED on pinned product then GREEN; setup errors excluded. Targeted/snapshot/export/new-state regression28 passed; full native_levels False SDK/Worker/HTTP/browser/CSV chain1 passed/6 deselected (68.06s), including original NOT_REQUESTED assertion. Targeted8 and snapshot128 bounded models passed; Ruff/format/diff pass. No source selection/amount or model atomicity changed by root P2 fixes. P1 implementation inherited134/17 plus root28 checks; fresh R2 both axes required for changed public provenance. No push/deploy/main integration yet.
+
+## 2026-11-14 M4a final local acceptance
+
+All six implementation slices and R1 fixes accepted; fresh Standards/Spec R2 PASS, no outstanding P0/P1. Full acceptance and four review reports preserved under docs/validation/2026-11-14-native-m4a-acceptance.md and native-m4a-review/. Ready for local main fast-forward and tracker completion only; no push/deployment/real-platform write. Existing unrelated main artifacts retained.
+
+## 2026-11-14 JB34 素材实例首切（待root独立验收）
+
+在指定共享集成树、基准1c987867上实施：素材query合同3与material-instance-result-v1显式冻结；精确单creative实例与独立FULL_PARENT_AD对照接入原素材详情/CSV，40/100/40不混算。事实坐标取原creative事实，收益语义未确认；旧合同重查、旧成品文件保留。原SQL成员/排序/汇总、授权、outbox/Worker及TTL owner复用，无新迁移或开关。
+
+真实SDKtransport→同步Worker→PG/Redis→Uvicorn/Vite/浏览器筛选展开→原导出按钮→Celery→CSV通过；相关22项、原Campaign浏览器1项，tsc/双构建/Ruff/diff通过。独立有界素材模型及四类真实源码RED/恢复cmp/GREEN记录在 `docs/validation/2026-11-14-jb34-material-instance-tracer.md`；形式维护独立提交。单实例payload测量不构成容量承诺，官方creative支持/D0/流量/成熟截止Unknown。只完成JB34可审首切，不代表整个M4b或生产验收；JB35由root验收后再启动。不push/PR/合main/部署，不改Linear。
+
+## 2026-11-14 JB34 root phase acceptance
+
+Root22 relevant checks passed including material browser/Celery/CSV. Corrected locally known creative observed contract mismatch via central constant, real PG RED then3 related GREEN; bounded32 PASS; Ruff/format/diff pass. JB34 narrow phase accepted for JB35; remaining identity/evidence/metrics/lifecycle slices and whole M4b review outstanding. No push/main merge/deploy.
+
+## 2026-11-14 JB35 素材身份与逐事实证据（本地候选）
+
+在feat/jb33-native-material-m4b、起点cf20640上串行厚化原contract3冻结结果：多creative、精确MID、COMPOSITE/UNMAPPED_CREATIVE、连接歧义、publisher五态与自身观测scope/version/digest；原UI/CSV共源。新增本地additive creative_fact_evidence迁移，旧事实保留NULL证据。真实SDKtransport/原sync与export Workers/PGRedis/浏览器/HTTP/CSV通过，21相关检查绿；creative_reporting既有调度期望失配单列。窄mypy新增0，未宣称全仓绿。详见docs/validation/2026-11-14-jb35-material-identity-evidence.md。等待root阶段接受/全MMF审查，未写tracker/推送/合并/部署；JB36完整指标与对账仍待实施。
+
+- M4b JB35 root阶段接受：候选6454a666，独立核心21 passed、creative_reporting修正M4a旧数量断言后6 passed；32+12有限案例通过。产品调度不改，原软链保留。下一fresh Sol/high推进JB36指标/父Ad对账；M4b整体未放行。
+
+## 2026-11-14 JB36 / M4B-03 本地候选
+
+从root接受的8a743863开始，在指定feat/jb33-native-material-m4b共享树串行实现。素材行/实例启用Decimal完整分母，原冻结owner保存逐指标creative未知合同、独立FULL_PARENT_AD控制和严格逐字段对账；普通实例summary不含特殊/父/差额。原CSV Worker输出最终五类及身份/证据/coverage/digest，原素材Sheet展示ROAS/availability与不可比原因。无新owner、表、开关或平台调用。
+
+新鲜验证：metrics+tracer13 passed（真实browser→HTTP→PG/Redis→原同步/导出Worker→CSV），受影响既有四文件25 passed，tsc+双Vite/Ruff/diff通过。32有界模型和四种破坏模型；四个实际源码探针业务RED→外部备份finally恢复/cmp→PG GREEN。官方creative支持/D0/流量/成熟及生产容量Unknown，合成437107-byte完整payload不作容量承诺。详见 `docs/validation/2026-11-14-jb36-material-metrics-reconciliation.md`。
+
+JB37消费完整contract3/material-instance-result-v1及新增metrics/reconciliation_rows，负责查询原子失败/TTL/重查；JB38消费同一export.frozen_rows，负责幂等/故障/撤权/到期。Linear状态和依赖未改；未push/PR/merge/deploy。MMF仍待root独立Standards/Spec和最终本地集成。
+
+JB36产品候选提交 `981579bc`；形式化模型与源码绑定单独提交随后记录于Git。源探针保留仓外备份/finally恢复/cmp；初次无效parent.ids绑定已替换为真正父控制来源。提交前无关状态始终只有原`.venv`/`node_modules`软链（形式化文件在第二提交前待暂存）。
+
+JB36最终入口补证：Playwright查看vid1指标及轮播后清空筛选，浏览器取得完整五类快照并点击原导出；真实Celery/PG/Redis/HTTP下载核对1 passed / 15.34s，完整payload437107 bytes、CSV357311 bytes。HTTP仅保留补充断言，不代替完整浏览器导出。产品981579bc、形式化03ccd781；入口补证单独提交。
+
+- M4b JB36 root阶段接受：精确候选c6282cd3，独立metrics+tracer13 passed（完整真实浏览器/Worker/五类CSV），32有限组合通过；源码/构建继承候选有效证据。下一fresh Sol/high推进JB37查询原子失败、15分钟到期、显式重查，再JB38导出生命周期。M4b整体未放行。
+
+### 2026-11-14 · JB37 / M4B-04 本地查询生命周期候选
+
+指定M4b共享树从 `b62be2ca` 串行实施，一名写者/无子代理，原依赖链接保留。原page_cache将本代真实构建失败显式传至HTTP，沿原缓存/租约/force刷新；工作区显示“重新查询”、清旧快照/游标并停止错误自动重试。query_models统一合同判断接入query_reuse全部候选：旧ID退出，新查询跳过旧合同另建身份。完整冻结仍由原RR一次提交，contract3/material-instance-result-v1和15分钟TTL不变，无新owner/迁移。
+
+亲跑JB36最终payload/五CSV前置13 passed；三类PG存储故障各两次失败/完整回滚、HTTP503和失败ID导出404，修复后新ID；过期和旧合同page/detail/新export拒绝，旧成品字节/原24小时期限保持，旧待生成合同不重解。真实浏览器持续错误→重查失败→修复成功以及原Worker同冻结CSV通过。最终相关四模块35 passed/1清理测试夹具随机游标失败；只固定其自身扫描窗口后定向1 passed，业务清理未改。最终tsc/Vite构建、Ruff和diff检查通过。
+
+现有reporting-data skill新增24有界生命周期组合及3种broken模型拒错；四个实际源码探针和既有四个隔离探针均RED→外部备份/finally/cmp→GREEN。详情、准确命令/日志/计数/digest/失败修复、继承证据及JB38消费合同见 [JB37验证](validation/2026-11-14-jb37-material-query-lifecycle.md)。本地AC闭合；JB38完整导出故障/重试/幂等/阶段权限/24小时矩阵和整个MMF fresh两轴审查/集成由root继续。JB35/JB36阶段接受不改，Linear状态/依赖不动；未推送、PR、合并或部署，平台语义/生产容量Unknown。
+
+JB37实现/验收提交 `96d041d27c3fdb633e707e1de45253aa3f26624b`；形式化模型和现有skill同步单独随后提交。没有main集成或整个MMF完成声明。
+
+- M4b JB37 root阶段接受：候选708cc31a，独立lifecycle+tracer12 passed（PG故障/TTL/旧合同/新ID及真实浏览器重查/原Worker五类CSV），24有限组合通过。继续fresh Sol/high JB38导出故障、重试、阶段撤权和24h到期；整体未放行。
+
+## 2026-11-14 JB38 / M4B-05 本地实现候选
+
+- 从 `6bcf1addccb659ee98414e9331d76c36d2d2883c` 在用户指定M4b串行树实现原导出生命周期：原Worker行锁防重复发布、写后当前权限/到期重查、失败对象清理、跨写入EXPIRED，以及FAILED重试复用原outbox消息并重新排队。冻结payload、合同、publication_map、snapshot身份和24小时期限保持原owner，无迁移/新系统/UI变更。
+- 本轮真实存储/PG/HTTP阶段撤权、并发/重复、snapshot删除后生成、源更新/目录删除后的重复下载；原完整浏览器→Redis/Celery→五类CSV，357311 bytes，sha256 `78df6695657f2886e01386b8b095c9e50cdc49d8db9fa99290ec14d1f0bc238b`。最初空夹具及异步轮询工装错误已记录并由有效payload结果替代。
+- 详见 `docs/validation/2026-11-14-jb38-material-export-lifecycle.md`，含整个M4b T1–T12/R1–R10的新/继承证据、限制、具体命令与root审阅包。formal单独提交；root fresh Standards/Spec、整个MMF接受/本地集成/关闭仍待执行。平台creative支持/口径/成熟度与生产容量Unknown；没有Linear写入、推送、PR、main合并、部署、平台操作或补写源数据。
+- JB38产品候选提交 `e400e45e86be7acacfb3464ab8a5531b7279c425`；formal扩展以此为sync_commit，64组合与四类破坏模型、五个实际源码拒错/外部finally恢复/cmp以及各轮15项GREEN。最终三次真实队列重复投递浏览器纵切1 passed /13.11s；Ruff/py_compile/diff check通过。formal独立提交于其后。
+
+- M4b JB38 root阶段接受：候选ff62f283，独立export_lifecycle+tracer21 passed（含真实完整CSV和导出故障/权限/到期），64有限组合通过；五票阶段均接受。下一整M4b fresh Standards/Spec R1，审查前不合main/关闭票。无push/deploy。
+
+- M4b整体：fresh Standards/Spec R1均PASS，P0/P1=0；root直接修复JB41旧投影时间、JB42残差CSV坐标、JB43实例导航。数据回归2绿与两项源码RED/cmp/GREEN；真实浏览器导航/原Worker完整CSV1绿，相关14项沿用有效结果；TS/build/Ruff通过。验收见2026-11-14-native-m4b-acceptance.md。准备本地main集成/直接票关闭，无push/deploy/生产迁移。
+
+- M5a JB59 root阶段接受：候选5f4b0166，独立native HTTP子集12passed/31.35s，Ruff/diff通过；浏览器6场景/119回归/6拒错继承。START已有SQL计数26>25单列未改，不报全绿。专用PG17已恢复运行，供fresh Sol/high JB60接续；整体未放行。
+
+
+- M5a JB60 本地候选：START `2e3a52b6fb278fb924b3f21cbc0fe31e01243662`；源码 `c6694ca837650c77efc0f21db2d8b51dddd10ccc`；有界验证说明 `f4c8fd50dd58c2e67f49cb707f53870e12723df5`；queued restore 撤权增强 `24548ccf75a5243710f9ac9eb927b16527eb15c4`。仅原 prepare_restore 修复硬编码 DISABLE，使用冻结原值对称判断；不改直接受理/异步框架/预算ROAS改名，无迁移。
+- 自有64针对性检查，最终4类UNKNOWN观察→实际反向恢复UI加1个JB59代表UI共5 passed；20个真实owner有限状态组合、12个read/queued restore撤权、六类实际源码RED/外部finally恢复/cmp/逐项GREEN。UNKNOWN来自官方SDK传输发送后丢失响应；核查误写2!=1、自动重放4!=3均被物理写数断言拒绝。
+- 审阅包 `docs/validation/2026-11-15-jb60-native-status-recovery.md` 覆盖全部JB60 AC和整个C01–C10，区分本轮与继承。保留早期目录一次pump后待刷新/一次预览NO_CHANGE的时序Unknown，后续绿跑不宣称根因已修复；原START SQL26>25失败不改阈值、不隐藏。Root阶段接受、fresh Standards/Spec整体审查、本地main集成和关闭仍待执行；两票保持InProgress与依赖，不报M5a Done。无push/PR/Linear/部署/生产或真实平台操作，专用PG17/Redis保留供root收尾。
+
+- M5a JB60 root阶段接受：精确候选0ddc58c2，独立33项混合/恢复/撤权通过（82.90s），Ruff/diff绿；五UI及源码反例继承。保留早期目录时序Unknown和START SQL26>25失败，不报整套全绿。两票完成本地阶段，进入整片fresh双轴R1，尚未合main/闭票。
+
+
+## 2026-11-15 — M5a 本地验收与集成收口
+
+- 用户批准 JB59→JB60 原生三层启停验证与必要修复；保留直接受理/异步准备，不采用未获批的强制预览草案。按用户指定 fresh Codex gpt-6.1-sol/high 完成两票及独立 Standards/Spec R1。
+- 固定审查头 d1bcbe60：两轴 PASS、P0/P1=0；Standards S1 已登记 JB61 并由 root 修复于 f7d83f83。无可用目录计划时保留实际 ACCEPTED 与冻结原值，观察/任务 NEEDS_REVIEW，停止无效唤醒；不制造观察或重发状态写。
+- 首轮整合复跑暴露 Native 测试夹具残留调度窗口；审查头同库复现。保留旧证据库，使用新 UTF8 专用库，夹具退出只释放自己租户的未完目录调度。产品调度未改。
+- 最终相关真实 HTTP/PG17/Redis/原 Worker/SDK transport 替身检查55通过、10页面用例排除；已有六条状态页面、四条核查恢复页面及其它源码拒错证据按匹配源码继承。Ruff/TypeScript/diff通过。
+- 完整依据、两轴报告及边界：[M5a 本地接受](validation/2026-11-15-native-m5a-acceptance.md)。旧 SQL26>25 基线失败保留；早期时序是否全部同因仍Unknown。无生产/真实平台/独立broker投递验收；不推送或部署。EpicJB19其它阶段保持原状态。
+
+
+## 2026-11-15 — JB62 root阶段验收
+
+精确候选959bc8198aec326c579701ddc4f7120b9988ef4e的预算归属、冻结金额/币种、来源及实际预算对象映射、新鲜回读经root源审及7项HTTP/PG17/Redis定向复验通过（25.58s）。其余匹配源码证据继承，详见JB62验证记录。释放同树JB63 fresh Codex gpt-6.1-sol/high；不提前关闭JB62，不改变原生依赖边。整个M5b仍待异常/恢复、fresh两轴审查与本地集成；无push/PR/deploy/真实平台操作。
+
+
+## 2026-11-15 — JB63 Native预算异常与恢复本地候选
+
+- START `34b1e0cf5b4fa7670995390d99504a0ca1684c48`；产品源码 `208ef0302872ed9e365656cc961b67337fbf6abe`。fresh Codex gpt-6.1-sol/high，指定原树唯一 writer，无子代理或checkout。
+- 恢复预览与任务详情共用冻结预算owner/原目标→原原值/账户币种/sources/affected_refs；预算Decimal相等比较接入原预览与发送前核验；冻结原请求时间以拒绝旧目录恢复。UNKNOWN来源补入既有管理权限核验，保留显式反向恢复而不重发原UNKNOWN。
+- 最终预算专项32通过（真实HTTP/PG17/Redis/原Worker/目录发布/SDK transport替身，含两个真实工作区场景）；最新权限回归10通过；七个源码RED探针finally/cmp还原；tsc、正式/demo build、Ruff、diff通过。原大组122通过/1个旧状态stale浏览器失败，隔离单例通过，保留间歇失败及根因Unknown；不称全历史绿跑。
+- 详细七AC、独立Decimal预期、命令、RED/GREEN、继承证据和限制：[JB63验证记录](validation/2026-11-15-jb63-native-budget-recovery.md)。旧SQL26>25失败未改；真实平台/生产/独立broker投递Unknown。
+- 只交本地候选给root整片M5b Standards/Spec两轴审查；JB62/JB63不提前关闭，不宣称整个M5b完成。无tracker写、push、PR、main合并、部署或真实广告操作；服务与原共享链接保留。
+
+
+## 2026-11-15 — M5b 本地接受与集成收口
+
+JB62/JB63按用户批准的预算两票完成，保留原直接受理/异步准备和通用owner；冻结金额币种/来源映射、真实预算回读、UNKNOWN只读及显式恢复门禁已贯通。root阶段亲跑7与17项通过；其它源码匹配预算/浏览器/构建/实际源码拒错证据继承。固定0e7cf885...d033bd243整片fresh Codex gpt-6.1-sol/high Standards/Spec R1均PASS、四级问题均0。详见[本地接受记录](validation/2026-11-15-native-m5b-acceptance.md)。
+
+后续按项目规则快进本地main、最小原工作区恢复纵链检查与两票闭合/专用环境清理；实际读回保存在外部closeout.json。旧SQL26>25断言和状态stale间歇根因Unknown保留；无push/PR/deploy/真实平台/生产验收，不关闭EpicJB19。
+
+
+## 2026-11-15 — JB64 root 阶段接受
+
+候选43b21ea9的 CBO/ABO、Decimal、新鲜逐成员回读经源审与12项HTTP/PG17/Redis复验通过。root 补现并修复同准备块 ABO 选择来源混入兄弟组的问题；来源与正常链10项通过，近似错误 CBO 来源共享探针实际 RED→finally/cmp恢复→2项GREEN。固定Ruff/diff通过，详见[JB64验收追加](validation/2026-11-15-jb64-native-roas-readback.md)。释放同树 fresh Codex gpt-6.1-sol/high JB65，64不提前Done；整个M5c待恢复、两轴独立审查与本地集成。无push/PR/deploy/真实平台操作。
+
+## 2026-11-15 — JB65 目标 ROAS 核查与显式恢复候选
+
+从 root 阶段接受 `5ce82f647d3a0fc8a83aec6e2f2e65feec6241d2` 串行实施，产品 source `4832fcd15e9311524ddfec2dbb51d1e1f810ab9f`。沿原核查/恢复/发送 owner，UNKNOWN 不改写不重放；有效 ACCEPTED 或已发送 UNKNOWN 可另行明确确认反向意图。原预览显示 ROAS 冻结/当前证据，CBO 全成员集合、原/目标一致和各自发送后观察在 preview/send 双重校验；ABO 各自恢复原比例。没有新 executor、全局预览政策或真实广告操作。
+
+最终源 JB65 43 个检查分段全部通过（含两条真浏览器），另 M5a/M5b 代表回归各1；四个真实错误源码探针拒错并 finally/cmp 恢复。Ruff/check-format、TypeScript、diff 检查通过。一次最终组合人工 round 夹具失败已定位修正并由最终五条 round 检查替代；详细每 AC、命令/失败/来源/Unknown 见 [JB65验证记录](validation/2026-11-15-jb65-native-roas-recovery.md)。
+
+原 SQL26>25、旧间歇状态 stale、真实 Native 适用/传播/接受和生产 Unknown 保留。只交 root 阶段接受和 whole-M5c fresh Standards/Spec 审查；无 tracker 写、push/PR/deploy、main/其他树修改或子代理；自有测试服务和原共享链接保留。
+
+
+## 2026-11-15 — M5c 本地接受与集成收口
+
+JB64/JB65按用户批准两票完成，保持原直接受理/异步准备/官方SDK管理owner。CBO/ABO、比例/来源冻结、逐成员新鲜观察、UNKNOWN只读与明确反向恢复已贯通。root阶段亲跑正常/来源12与10项（重叠）及恢复4项；其它匹配源码的浏览器/回归/实际源码探针证据继承。固定26ea29fd..c81ec608整片fresh Sol/high Standards与Spec R1均PASS，各0P0/0P1，同一基线P2统一登记JB66。缺证据处理按现有已发布目录准备流程明确，不新增自动刷新门禁。
+
+详见[M5c本地接受](validation/2026-11-15-native-m5c-acceptance.md)。后续本地main快进、最小恢复UI纵切及两票关闭/专用环境回收的实际读回保存在private closeout.json。真实平台/生产/独立broker宿主、旧SQL26>25和stale UI根因Unknown保留；无push/PR/deploy，不关闭Epic19或基线66。

@@ -33,7 +33,10 @@ from app.modules.builds.submissions import (
     get_submission,
     group_material_state,
 )
-from app.modules.tenants.permissions import require_tenant
+from app.modules.tenants.permissions import (
+    require_build_authorization_stamp,
+    require_tenant,
+)
 
 STEP_TASK = "builds.execute_step"
 READ_TASK = "builds.reconcile_step"
@@ -73,6 +76,23 @@ def queue_step(
 ) -> None:
     if (step.tenant_id, step.submission_id) != (submission.tenant_id, submission.id):
         raise DomainError("resource_not_found", "执行步骤范围无效")
+    if not reconcile and submission.progress.get("local_cancelled"):
+        if (
+            step.status in {"PENDING", "QUEUED"}
+            and not step.remote_id
+            and step.request_body is None
+            and step.kind != "READBACK"
+        ):
+            step.status, step.phase, step.error_code = (
+                "FAILED",
+                "DONE",
+                "local_submission_cancelled",
+            )
+            step.dispatch_revision += 1
+            step.dispatch_id = None
+            evidence(session, step=step, claim=None, conclusion="LOCAL_CANCELLED")
+            session.add(step)
+        return
     if not reconcile and (
         step.remote_id
         or (
@@ -85,6 +105,46 @@ def queue_step(
         raise DomainError(
             "execution_requires_reconciliation", "该步骤必须先核实远端结果"
         )
+    if not reconcile:
+        from .native_execution import validate
+        from .preview_models import BuildPreview, BuildUnit
+        from .routes import verify_unit_route
+
+        frozen_unit = session.get(BuildUnit, step.unit_id)
+        if frozen_unit is not None and "native_request" in frozen_unit.scene_snapshot:
+            try:
+                require_build_authorization_stamp(session, submission=submission)
+                context = _context(submission)
+                require_tenant(
+                    session,
+                    actor_id=context.actor_id,
+                    tenant_id=context.tenant_id,
+                    action="build",
+                )
+                route = verify_unit_route(
+                    session, context=context, unit=frozen_unit, capability="build"
+                )
+                validate(
+                    session,
+                    context=context,
+                    preview=session.get(BuildPreview, step.preview_id),
+                    route=route,
+                    unit_id=step.unit_id,
+                    refreshing=True,
+                )
+            except DomainError as error:
+                # 仅本 Unit 停止；不把本地围栏错误记录成平台拒绝。
+                step.status, step.phase, step.error_code = "FAILED", "DONE", error.code
+                step.dispatch_id = None
+                evidence(
+                    session,
+                    step=step,
+                    claim=None,
+                    conclusion="LOCAL_FAILED",
+                    summary={"reason_code": error.code},
+                )
+                session.add(step)
+                return
     name = READ_TASK if reconcile else STEP_TASK
     step.resolved = {**step.resolved, "dispatch_task": name}
     step.dispatch_revision += 1
@@ -285,6 +345,17 @@ def finalize_submission(
             row.status = "NEEDS_REVIEW"
         elif row.status in {"QUEUED", "COMPLETED", "PARTIAL", "FAILED"}:
             row.status = "RUNNING"
+        if row.status == "COMPLETED":
+            from .preview_models import BuildPreview
+
+            preview = session.get(BuildPreview, row.preview_id)
+            # 提交的 preview_id 外键保留冻结预览。
+            assert preview is not None
+            if "native_request" in preview.config or "native_batch" in preview.config:
+                from .native_completion import all_native_matched
+
+                if not all_native_matched(session, row, preview):
+                    row.status = "NEEDS_REVIEW"
         row.updated_at = datetime.now(UTC)
         session.add(row)
 

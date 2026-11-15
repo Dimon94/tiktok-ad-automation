@@ -29,6 +29,7 @@ SDK_ENDPOINTS = {
     "materials.share_assets": "POST /open_api/v1.3/creative/asset/share/",
     "scene.get_identity_video": "GET /open_api/v1.3/identity/video/info/",
     "scene.list_identities": "GET /open_api/v1.3/identity/get/",
+    "scene.list_native_series": "GET /open_api/v1.3/identity/native_series/get/",
     "scene.list_minis": "GET /open_api/v1.3/minis/get/",
     "scene.recommend_ctas": "GET /open_api/v1.3/creative/cta/recommend/",
     "scene.check_vbo": "GET /open_api/v1.3/tool/vbo_status/",

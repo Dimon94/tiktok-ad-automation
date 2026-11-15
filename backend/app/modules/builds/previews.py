@@ -316,6 +316,10 @@ def _generate_preview(
         return identity
     if draft.status != "READY":
         raise DomainError("draft_not_ready", "草稿尚未准备完成")
+    if (draft.scene_selection or {}).get("kind") == "NATIVE_SERIES_DIRECT_VIDEO":
+        from .native_preview import generate
+
+        return generate(session, context=context, draft=draft)
     from app.modules.builds.identity_selection import require_preview_identity
     from app.modules.builds.mini_selection import require_preview_mini
 
@@ -1325,6 +1329,11 @@ def get_preview_summary(
     session: Session, *, context: TenantContext, preview_id: UUID
 ) -> PreviewSummary:
     preview = _preview(session, context, preview_id)
+    if "native_request" in preview.config or "native_batch" in preview.config:
+        from .native_preview import batch_summary
+
+        # 单项是 canonical 计划集的特例，历史平铺由冻结读取器适配。
+        return batch_summary(session, context=context, preview=preview)
     rows = session.exec(
         select(
             col(BuildUnit.readiness),
@@ -1755,6 +1764,8 @@ def get_preview_units(
                 currency=u.currency,
                 budget=Decimal(preview.config["copy_daily_budget_sum"])
                 if preview.config.get("campaign_copy_version") in {1, 2}
+                else Decimal(u.scene_snapshot["native_request"]["campaign"]["budget"])
+                if u.scene_snapshot.get("native_request") is not None
                 else preview.budget,
                 campaign_name=u.campaign_name,
                 readiness=cast(Readiness, u.readiness),
@@ -1843,6 +1854,7 @@ def planned_unit_snapshot(
 
 def _unit_snapshot(preview, unit, drama, descriptor) -> FrozenUnit:
     return FrozenUnit(
+        native_request=unit.scene_snapshot.get("native_request"),
         contract_version=descriptor.version,
         media_kind=descriptor.media_kind,
         unit_id=unit.id,
@@ -1859,7 +1871,9 @@ def _unit_snapshot(preview, unit, drama, descriptor) -> FrozenUnit:
         campaign_name=unit.campaign_name,
         protected_base=drama.protected_base,
         url=drama.url,
-        budget=preview.budget,
+        budget=Decimal(unit.scene_snapshot["native_request"]["campaign"]["budget"])
+        if unit.scene_snapshot.get("native_request") is not None
+        else preview.budget,
         target_roas=preview.target_roas,
         budget_strategy=unit.scene_snapshot.get(
             "budget_strategy", preview.config.get("budget_strategy", "SERIES")

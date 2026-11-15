@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -114,6 +114,7 @@ _OPERATION_CAPABILITIES: dict[str, Capability] = {
     "scene.list_identities": "read",
     "scene.get_identity_video": "read",
     "scene.list_minis": "read",
+    "scene.list_native_series": "read",
     "scene.recommend_ctas": "read",
     "scene.list_regions": "read",
     "scene.check_vbo": "read",
@@ -258,6 +259,7 @@ def open_tiktok_gateway(
     task_deadline: datetime,
     workload: Workload = "live",
     before_request: Callable[[], None] | None = None,
+    send_scope: Callable[[], AbstractContextManager[None]] | None = None,
     response_observer: ResponseObserver | None = None,
     group_isolation: FrozenGroupIsolation | None = None,
     before_isolation_write: Callable[[], None] | None = None,
@@ -537,6 +539,9 @@ def open_tiktok_gateway(
                 from app.integrations.tiktok.platform_quotas import sdk_endpoint
 
                 with (
+                    send_scope()
+                    if send_scope is not None and operation.startswith("build.create_")
+                    else nullcontext(),
                     physical_attempt_scope(official, sdk_endpoint(operation))
                     if current_attempt_observer() is not None
                     else nullcontext(),

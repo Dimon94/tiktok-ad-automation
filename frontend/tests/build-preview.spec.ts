@@ -1055,3 +1055,207 @@ test("原任务结果待核实的组合不能继续提交", async ({ page }) => 
     page.getByRole("button", { name: "刷新续建预览", exact: true }),
   ).toBeEnabled()
 })
+
+test("原生冻结预览展示全部分配及占用范围", async ({ page }) => {
+  const api = await buildsBoundary(page)
+  Object.assign(api.preview, {
+    native_request: {
+      selection: {
+        advertiser_id: "native-account",
+        native_series_id: "exact-series",
+        regions: ["US"],
+        series_identity: { identity_id: "series-owner" },
+        creative_identity: { identity_id: "creative-owner" },
+      },
+      campaign: { budget: "1000.01", currency: "USD" },
+      adgroup: { target_roas: "1.08" },
+      occupancy: {
+        coverage: "PARTIAL",
+        observed_at: null,
+        published_version: 3,
+        scope_limits: ["仅当前授权账户，不覆盖其他账户或BC"],
+        visible_conflicts: [{ remote_id: "old-group", state: "UNKNOWN" }],
+      },
+      ads: Array.from({ length: 6 }, (_, i) => ({
+        base_ad_no: 1,
+        creative_no: i + 1,
+        text: `Actual copy ${i + 1}`,
+        cta: {
+          recommend_assets: [
+            { asset_ids: ["watch"], asset_content: "Watch now" },
+          ],
+        },
+        materials: [
+          {
+            material_id: "source-video",
+            video_id: "target-vid",
+            image_id: "verified-cover",
+          },
+        ],
+      })),
+    },
+  })
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(
+    page.getByRole("heading", { name: /Series 直接视频投放预览/ }),
+  ).toBeVisible()
+  await expect(page.getByText(/CBO 日预算 1000.01 USD/)).toBeVisible()
+  await expect(page.getByText("Actual copy 6", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("cell", { name: "target-vid", exact: true }),
+  ).toHaveCount(6)
+  await expect(
+    page.getByRole("cell", { name: "verified-cover", exact: true }),
+  ).toHaveCount(6)
+  await expect(
+    page.getByText("仅当前授权账户，不覆盖其他账户或BC", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "创建并立即启用" }),
+  ).toBeEnabled()
+})
+
+test("原生真实后端提交与响应丢失恢复 @native-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_TEST_HOST, "仅隔离数据库 runner 启动")
+  await buildsBoundary(page)
+  let lost = false
+  await page.route(
+    /\/api\/tenants\/[^/]+\/(build-previews|submissions|submission-requests)\//,
+    async (route) => {
+      const response = await route.fetch({
+        url:
+          process.env.NATIVE_TEST_HOST +
+          new URL(route.request().url()).pathname,
+      })
+      if (route.request().method() === "POST" && !lost) {
+        expect(response.status()).toBe(202)
+        lost = true
+        await route.abort("connectionreset")
+      } else await route.fulfill({ response })
+    },
+  )
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(
+    page.getByRole("heading", { name: /Series 直接视频投放预览/ }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: /^创建并立即启用/ }).click()
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "确认创建并立即启用" })
+    .click()
+  await expect(
+    page.getByRole("button", { name: "查询原提交结果" }),
+  ).toBeVisible()
+  await page.getByRole("button", { name: "查询原提交结果" }).click()
+  await expect(page).toHaveURL(/build-tasks\//)
+  await expect(page.getByRole("heading", { name: /^任务 / })).toBeVisible()
+  const submissionId = /build-tasks\/([^?]+)/.exec(page.url())![1]
+  await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  await expect(page.getByRole("link", { name: "返回任务详情" })).toBeVisible()
+  await page.getByRole("link", { name: "返回任务详情" }).click()
+  await expect(page).toHaveURL(new RegExp(submissionId))
+})
+
+test("真实多计划冻结预览 @native-batch-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_TEST_HOST, "仅隔离数据库 runner 启动")
+  await buildsBoundary(page)
+  await page.route(/\/api\/tenants\/[^/]+\/(build-drafts|build-previews|submissions|submission-requests)\//, async (route) => {
+    const response = await route.fetch({
+      url:
+        process.env.NATIVE_TEST_HOST + new URL(route.request().url()).pathname + new URL(route.request().url()).search,
+    })
+    await route.fulfill({ response })
+  })
+  if (process.env.NATIVE_PLAN_MODE === "batch-cancel") {
+    await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
+    await expect(page.getByRole("button", {name: "取消未发送步骤"})).toBeEnabled()
+    const cancelling = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/cancel"))
+    await page.getByRole("button", {name: "取消未发送步骤"}).click()
+    expect((await cancelling).status()).toBe(200)
+    await expect(page.getByText("已取消未发送步骤。", {exact: true})).toBeVisible()
+    await page.reload()
+    await expect(page.getByText(/计划 .* · CANCELLED/)).toHaveCount(2)
+    await expect(page.getByText(/计划 .* · EXCLUDED/)).toHaveCount(1)
+    await expect(page.getByRole("button", {name: "取消未发送步骤"})).toHaveCount(0)
+    await page.screenshot({path: "/tmp/tkada-native-series-20261112/m2-implementation/jb18-cancel.png", fullPage: true})
+    return
+  }
+  if (process.env.NATIVE_PLAN_MODE === "batch-recovery") {
+    await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
+    await expect(page.getByText(/计划 .* · NEEDS_REVIEW/)).toHaveCount(1)
+    const response = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/reconcile"))
+    await page.getByRole("button", { name: /^核查待核实项/ }).click()
+    const receipt = await response
+    expect(receipt.status()).toBe(202)
+    const advanced = await page.request.post(`${process.env.NATIVE_TEST_HOST}/test-drive/${(await receipt.json()).recovery_id}`)
+    expect(advanced.ok()).toBeTruthy()
+    await page.reload()
+    await expect(page.getByText(/计划 .* · COMPLETED/)).toHaveCount(2)
+    await expect(page.getByText("已完成", {exact: true}).first()).toBeVisible()
+    await expect(page.getByText(/已创建对象可能产生消耗/)).toBeVisible()
+    await page.screenshot({path: "/tmp/tkada-native-series-20261112/m2-implementation/jb17-recovered.png", fullPage: true})
+    return
+  }
+  if (process.env.NATIVE_PLAN_MODE === "batch-result") {
+    await page.goto(`/tenants/${T}/build-tasks/${process.env.NATIVE_TEST_SUBMISSION}?bc_id=${BC}`)
+    await expect(page.getByText(/计划 .* · COMPLETED/)).toHaveCount(2)
+    await expect(page.getByText(/计划 .* · EXCLUDED/)).toHaveCount(1)
+    for (const account of ["actual-account", "second-account", "not-authorized"]) {
+      await expect(page.getByText(new RegExp(`账户 ${account} · Series`))).toBeVisible()
+    }
+    await expect(page.getByText(/CAMPAIGN: remote-/)).toHaveCount(2)
+    await expect(page.getByText(/ADGROUP: remote-/)).toHaveCount(2)
+    await expect(page.getByText("已完成", {exact: true}).first()).toBeVisible()
+    await expect(page.getByText(/已创建对象可能产生消耗/)).toBeVisible()
+    await page.screenshot({path: "/tmp/tkada-native-series-20261112/m2-implementation/jb16-result.png", fullPage: true})
+    return
+  }
+  if (process.env.NATIVE_PLAN_MODE === "batch-workspace") {
+    await page.goto(`/tenants/${T}/build-drafts/${process.env.NATIVE_TEST_DRAFT}?bc_id=${BC}`)
+    const preparing = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/prepare"))
+    await page.getByRole("button", {name: "解析并准备", exact: true}).click()
+    const preparation = await preparing
+    expect(preparation.status()).toBe(202)
+    const task = (await preparation.json()).task_id
+    const advanced = await page.request.post(`${process.env.NATIVE_TEST_HOST}/test-drive/${task}`)
+    expect(advanced.ok()).toBeTruthy()
+    await page.reload()
+    await page.getByRole("button", {name: "生成搭建预览", exact: true}).click()
+    await expect(page).toHaveURL(/build-previews\//)
+  } else {
+    await page.goto(`/tenants/${T}/build-previews/${P}?bc_id=${BC}`)
+  }
+  await expect(
+    page.getByRole("heading", { name: /Series 批量冻结预览/ }),
+  ).toBeVisible()
+  await expect(page.getByText(/CBO 日预算合计 200.50 USD/)).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: /计划 .*INCLUDED/ }),
+  ).toHaveCount(2)
+  await expect(
+    page.getByText(/账户 actual-account · Series exact-series/),
+  ).toBeVisible()
+  await expect(
+    page.getByText(/账户 second-account · Series second-series/),
+  ).toBeVisible()
+  await expect(page.getByText(/基础广告 [12] · 文案版本/)).toHaveCount(4)
+  await expect(
+    page.getByRole("button", { name: /^创建并立即启用/ }),
+  ).toBeEnabled()
+  await expect(page.getByRole("heading", { name: /计划 .*EXCLUDED/ })).toHaveCount(1)
+  await expect(page.getByText(/账户 not-authorized · Series exact-series/)).toBeVisible()
+  await expect(page.getByText(/排除原因：/)).toBeVisible()
+  await page.getByRole("button", { name: /^创建并立即启用/ }).click()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog.getByText(/纳入 2 项 · 排除 1 项/)).toBeVisible()
+  await expect(dialog.getByText(/CBO 日预算合计/)).toContainText("200.5")
+  await expect(dialog.getByText(/账户 second-account/)).toBeVisible()
+  await expect(dialog.getByText(/观察覆盖/)).toHaveCount(3)
+  await dialog.getByRole("button", { name: "确认创建并立即启用" }).click()
+  await expect(page).toHaveURL(/build-tasks\//)
+  await expect(page.getByText("逐计划结果", {exact:true})).toBeVisible()
+  await page.screenshot({
+    path: "/tmp/tkada-native-series-20261112/m2-implementation/jb16-confirm.png",
+    fullPage: true,
+  })
+})

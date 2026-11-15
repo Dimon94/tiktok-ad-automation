@@ -815,3 +815,388 @@ for (const branch of ["empty", "uses", "carousel", "complete-empty"] as const) {
     }
   })
 }
+
+test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
+  test.skip(!process.env.DIRECTORY_TENANT, "由独立 M3 PostgreSQL runner 启动")
+  await page.addInitScript(() =>
+    localStorage.setItem("access_token", "local-test-actor"),
+  )
+  const requests: string[] = []
+  page.on("request", (request) => {
+    if (request.url().includes("/api/")) requests.push(request.url())
+  })
+  await page.goto(
+    `/tenants/${process.env.DIRECTORY_TENANT}/ads?bc_id=${process.env.DIRECTORY_BC}`,
+  )
+  const directory = page.getByRole("region", { name: "广告目录" })
+  await directory.getByRole("combobox", { name: "目录账户" }).click()
+  await page
+    .getByRole("dialog")
+    .getByText(/account-a/)
+    .first()
+    .click()
+  await expect(
+    directory.getByRole("button", { name: "重复名称 · c1", exact: true }),
+  ).toBeVisible()
+  await directory.getByRole("button", { name: "下一页", exact: true }).click()
+  await expect(
+    directory.getByRole("button", { name: "重复名称 · c22", exact: true }),
+  ).toBeVisible()
+  await directory.getByRole("button", { name: "上一页", exact: true }).click()
+  await directory
+    .getByRole("button", { name: "重复名称 · c1", exact: true })
+    .click()
+  const sheet = page.getByRole("dialog")
+  if (!process.env.DIRECTORY_NATIVE)
+    await expect(sheet.getByText(/发布版本：1/)).toBeVisible()
+  for (const identity of ["g1", "a1", "cr1"]) {
+    await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
+    await sheet
+      .getByRole("button", { name: `重复名称 · ${identity}`, exact: true })
+      .click()
+    await expect(
+      sheet.getByText(new RegExp(`· ${identity} · 账户`)),
+    ).toBeVisible()
+    await expect(sheet.getByText(/来源连接：/)).toBeVisible()
+    if (process.env.DIRECTORY_NATIVE && identity !== "cr1") {
+      const native = sheet.getByRole("region", { name: "原生 Series 与身份" })
+      await expect(
+        native.getByText('"series-1"', { exact: true }),
+      ).toBeVisible()
+      await expect(native.getByText('"group-1"', { exact: true })).toBeVisible()
+      await expect(
+        native.getByText('"group-bc-1"', { exact: true }),
+      ).toBeVisible()
+      await expect(
+        native.getByText('["PLACEMENT_TIKTOK"]', { exact: true }),
+      ).toBeVisible()
+      await expect(native.getByText("[]", { exact: true })).toBeVisible()
+      if (identity === "g1") {
+        await sheet.getByRole("button", { name: /查看父对象 · c1/ }).click()
+        await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
+        await sheet
+          .getByRole("button", { name: "重复名称 · g2", exact: true })
+          .click()
+        await expect(
+          sheet
+            .getByRole("region", { name: "原生 Series 与身份" })
+            .getByText('"series-2"', { exact: true }),
+        ).toBeVisible()
+        await expect(
+          sheet
+            .getByRole("region", { name: "原生 Series 与身份" })
+            .getByText('"group-2"', { exact: true }),
+        ).toBeVisible()
+        await sheet.getByRole("button", { name: /查看父对象 · c1/ }).click()
+        await sheet.getByRole("tab", { name: "下级对象", exact: true }).click()
+        await sheet
+          .getByRole("button", { name: "重复名称 · g1", exact: true })
+          .click()
+      }
+      if (identity === "a1") {
+        for (const i of [1, 2]) {
+          const creative = native.getByRole("region", {
+            name: `创意 cr${i}`,
+            exact: true,
+          })
+          await expect(
+            creative.getByText(`"creative-${i}"`, { exact: true }),
+          ).toBeVisible()
+          await expect(
+            creative.getByText(`"creative-bc-${i}"`, { exact: true }),
+          ).toBeVisible()
+          await expect(
+            creative.getByText('"shared-video"', { exact: true }),
+          ).toBeVisible()
+        }
+      }
+    }
+  }
+  await expect(sheet.getByText(/cr1/).first()).toBeVisible()
+  await sheet.getByRole("tab", { name: "报表", exact: true }).click()
+  await expect(
+    sheet.getByText("目录入口没有报表上下文，暂无报表数据。"),
+  ).toBeVisible()
+  await expect(
+    sheet.getByRole("button", { name: /启用|停用|改预算|复制/ }),
+  ).toHaveCount(0)
+  await sheet.getByRole("button", { name: /查看父对象 · a1/ }).click()
+  await expect(sheet.getByText(/ad · a1 · 账户/)).toBeVisible()
+  expect((await page.request.post("/api/test-directory-revoke")).status()).toBe(
+    200,
+  )
+  await sheet.getByRole("button", { name: /查看父对象 · g1/ }).click()
+  await expect(sheet.getByRole("alert")).toContainText("对象详情读取失败", {
+    timeout: 15000,
+  })
+  await expect(sheet.getByText(/来源连接：/)).toHaveCount(0)
+  await sheet.getByRole("button", { name: "Close", exact: true }).click()
+  await directory.getByRole("button", { name: "下一页", exact: true }).click()
+  await expect(directory.getByRole("alert")).toContainText("目录读取失败", {
+    timeout: 15000,
+  })
+  await expect(
+    directory.getByRole("button", { name: /重复名称 · c/ }),
+  ).toHaveCount(0)
+  expect(
+    requests
+      .filter((url) => /\/ads\/(campaign|adgroup|ad|creative)\//.test(url))
+      .every((url) => !url.includes("snapshot_id")),
+  ).toBe(true)
+})
+
+if (process.env.NATIVE_MANAGEMENT_TENANT) test.use({ channel: "chrome" })
+
+test("原生三层直接启停与实际目录回读 @native-management-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 M5a 隔离数据库 runner 启动")
+  test.setTimeout(90000)
+  page.setDefaultTimeout(15000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const final = process.env.NATIVE_MANAGEMENT_FINAL!
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  const base = `/api/tenants/${tenant}`
+  page.on("response", r => { if (r.url().includes("/api/") && r.status() >= 400) void r.text().then(body => console.log("HTTP failure", r.status(), r.url(), body)) })
+  async function openObject() {
+    await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+    await page.getByRole("tab", { name: { campaign: "系列", adgroup: "广告组", ad: "广告" }[kind]!, exact: true }).click()
+    await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+    await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+    await page.getByRole("button", { name: new RegExp(`^object-${kind}-native$|^native observed$`) }).first().click()
+
+  }
+  await openObject()
+  const response = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("dialog").getByRole("button", { name: final === "ENABLE" ? "启用" : "暂停", exact: true }).click()
+  const accepted = await response
+  expect(accepted.status()).toBe(202)
+  const task = (await accepted.json()).task_id
+  const sentBody = accepted.request().postDataJSON()
+  expect(sentBody.mutation).toEqual({ field: "status", mode: "set", value: final })
+  expect((await page.request.post(`${base}/ad-management-requests`, { data: sentBody })).status()).toBe(202)
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  const detailUrl = `${base}/ads/${kind}/${kind}-native?bc_id=${bc}&advertiser_id=management-race-account`
+  expect((await (await page.request.get(detailUrl)).json()).statuses.operation).toBe(final === "ENABLE" ? "DISABLE" : "ENABLE")
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByRole("cell", { name: "平台已接收", exact: true }).first()).toBeVisible()
+  expect((await page.request.post(`/api/test-native-management/${task}/read`)).ok()).toBeTruthy()
+  expect((await (await page.request.get(detailUrl)).json()).statuses.operation).toBe(final)
+  const completed = await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()
+  expect(completed.status).toBe("SUCCEEDED")
+  expect(completed.items[0]).toMatchObject({ original_value: final === "ENABLE" ? "DISABLE" : "ENABLE", final_value: final, execution_result: "ACCEPTED", observation_state: "ACCEPTED" })
+  await openObject()
+  await expect(page.getByRole("dialog").getByTitle(final, { exact: true }).first()).toBeVisible()
+})
+
+test("原生 UNKNOWN 只读核查与安全恢复预览 @native-recovery-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 M5a 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: "广告", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  await page.getByRole("button", { name: "object-ad-native", exact: true }).click()
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("dialog").getByRole("button", { name: "暂停", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByRole("cell", { name: "结果待核查", exact: true }).first()).toBeVisible()
+  const queued = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith(`/ad-management-tasks/${task}/reconcile`))
+  await page.getByRole("button", { name: "核查本地状态", exact: true }).click()
+  expect((await queued).status()).toBe(200)
+  expect((await page.request.post(`/api/test-native-management/${task}/reconcile`)).ok()).toBeTruthy()
+  await page.reload()
+  const observation = process.env.NATIVE_RECOVERY_OBSERVATION!
+  const observedLabel = observation === "match" ? "观察值符合目标，受理仍未知" : observation === "different" ? "观察值与目标不同，受理仍未知" : "核查未取得新鲜证据，需人工检查"
+  await expect(page.getByText(observedLabel, { exact: true }).first()).toBeVisible()
+  const item = (await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]
+  expect(item).toMatchObject({ execution_result: "UNKNOWN", original_value: "ENABLE", final_value: "DISABLE" })
+  expect(item.attempts[0].request_id).toBeNull()
+  expect((await page.request.post(`/api/test-native-management/${task}/publish`)).ok()).toBeTruthy()
+  await page.getByRole("button", { name: "生成恢复预览", exact: true }).click()
+  await expect(page.getByText("恢复预览", { exact: true })).toBeVisible()
+  const submitted = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-tasks"))
+  await page.getByRole("button", { name: "提交恢复任务", exact: true }).click()
+  const restore = (await (await submitted).json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${restore}/restore`)).ok()).toBeTruthy()
+  const restored = (await (await page.request.get(`${base}/ad-management-tasks/${restore}`)).json()).items[0]
+  expect(restored.execution_result).toBe("ACCEPTED")
+  expect(restored.final_value).toBe("ENABLE")
+  expect(restored.observation_state).toBe("ACCEPTED")
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]).toEqual(item)
+})
+
+test("原生预算任务冻结金额及实际回读 @native-budget-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 JB62 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: kind === "ad" ? "广告" : "系列", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `object-${kind}-native`, exact: true }) })
+  await row.getByRole("checkbox").check()
+  await page.getByRole("button", { name: "修改预算", exact: true }).click()
+  await page.getByRole("textbox", { name: "管理新值" }).fill("120.125")
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("button", { name: "提交管理任务", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByText(/原预算 .* → 目标预算 120.125 USD/).first()).toBeVisible()
+  await expect(page.getByText(/来源：(系列 · campaign-native|广告 · ad-native)/).first()).toBeVisible()
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0].observation_state).toBe("REFRESH_PENDING")
+  expect((await page.request.post(`/api/test-native-management/${task}/read`)).ok()).toBeTruthy()
+  await page.reload()
+  const result = await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()
+  expect(result.items[0]).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", final_value: "120.125" })
+  await expect(page.getByText(/原预算 .* → 目标预算 120.125 USD/).first()).toBeVisible()
+})
+
+test("原生预算 UNKNOWN 与反向恢复 @native-budget-recovery-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 JB62 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: kind === "ad" ? "广告" : "系列", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `object-${kind}-native`, exact: true }) })
+  await row.getByRole("checkbox").check()
+  await page.getByRole("button", { name: "修改预算", exact: true }).click()
+  await page.getByRole("textbox", { name: "管理新值" }).fill("120.125")
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("button", { name: "提交管理任务", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByText(/原预算 .* → 目标预算 120.125 USD/).first()).toBeVisible()
+  await expect(page.getByText(/来源：(系列 · campaign-native|广告 · ad-native)/).first()).toBeVisible()
+  const queued = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith(`/ad-management-tasks/${task}/reconcile`))
+  await page.getByRole("button", { name: "核查本地状态", exact: true }).click()
+  expect((await queued).status()).toBe(200)
+  expect((await page.request.post(`/api/test-native-management/${task}/reconcile`)).ok()).toBeTruthy()
+  await page.reload()
+  await expect(page.getByText("观察值符合目标，受理仍未知", { exact: true }).first()).toBeVisible()
+  const frozen = (await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]
+  expect(frozen.execution_result).toBe("UNKNOWN")
+  expect((await page.request.post(`/api/test-native-management/${task}/publish`)).ok()).toBeTruthy()
+  await page.getByRole("button", { name: "生成恢复预览", exact: true }).click()
+  const preview = page.getByTestId("restore-budget-item").first()
+  await expect(preview.getByText(/原预算 120.125 → 目标预算 .* USD/)).toBeVisible()
+  await expect(preview.getByText(/预算归属：/)).toBeVisible()
+  await expect(preview.getByText(/来源：/).first()).toBeVisible()
+  await expect(preview.getByText(/影响：/)).toBeVisible()
+  const submitted = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-tasks"))
+  await page.getByRole("button", { name: "提交恢复任务", exact: true }).click()
+  const restore = (await (await submitted).json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${restore}/restore`)).ok()).toBeTruthy()
+  const restored = (await (await page.request.get(`${base}/ad-management-tasks/${restore}`)).json()).items[0]
+  expect(restored).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", budget_facts: frozen.budget_facts })
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]).toEqual(frozen)
+})
+
+test("原生 ROAS 比例及逐成员回读 @native-roas-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 JB62 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: kind === "ad" ? "广告" : kind === "adgroup" ? "广告组" : "系列", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `object-${kind}-native`, exact: true }) })
+  await row.getByRole("checkbox").check()
+  await page.getByRole("button", { name: "修改目标 ROAS", exact: true }).click()
+  await page.getByRole("textbox", { name: "管理新值" }).fill("1.32")
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("button", { name: "提交管理任务", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByText(/原比例 .* → 目标比例 1.32/).first()).toBeVisible()
+  await expect(page.getByText(/来源：(系列 · campaign-native|广告 · ad-native)/).first()).toBeVisible()
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0].observation_state).toBe("REFRESH_PENDING")
+  expect((await page.request.post(`/api/test-native-management/${task}/read`)).ok()).toBeTruthy()
+  await page.reload()
+  const result = await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()
+  expect(result.items[0]).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", final_value: "1.32" })
+  await expect(page.getByText(/原比例 .* → 目标比例 1.32/).first()).toBeVisible()
+})
+
+test("原生 ROAS UNKNOWN 与反向恢复 @native-roas-recovery-live", async ({ page }) => {
+  test.skip(!process.env.NATIVE_MANAGEMENT_TENANT, "由 JB62 隔离 runner 启动")
+  test.setTimeout(90000)
+  const tenant = process.env.NATIVE_MANAGEMENT_TENANT!
+  const bc = process.env.NATIVE_MANAGEMENT_BC!
+  const kind = process.env.NATIVE_MANAGEMENT_KIND!
+  const base = `/api/tenants/${tenant}`
+  await page.addInitScript(() => localStorage.setItem("access_token", "synthetic-local-actor"))
+  await page.goto(`/tenants/${tenant}/ads?bc_id=${bc}`)
+  await page.getByRole("tab", { name: kind === "ad" ? "广告" : "系列", exact: true }).click()
+  await page.getByRole("checkbox", { name: "显示无数据对象", exact: true }).check()
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  const row = page.getByRole("row").filter({ has: page.getByRole("button", { name: `object-${kind}-native`, exact: true }) })
+  await row.getByRole("checkbox").check()
+  await page.getByRole("button", { name: "修改目标 ROAS", exact: true }).click()
+  await page.getByRole("textbox", { name: "管理新值" }).fill("1.32")
+  const pending = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-requests"))
+  await page.getByRole("button", { name: "提交管理任务", exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(202)
+  const task = (await response.json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${task}/write`)).ok()).toBeTruthy()
+  await page.goto(`/tenants/${tenant}/ad-management-tasks/${task}?bc_id=${bc}`)
+  await expect(page.getByText(/原比例 .* → 目标比例 1.32/).first()).toBeVisible()
+  await expect(page.getByText(/来源：(系列 · campaign-native|广告 · ad-native)/).first()).toBeVisible()
+  const queued = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith(`/ad-management-tasks/${task}/reconcile`))
+  await page.getByRole("button", { name: "核查本地状态", exact: true }).click()
+  expect((await queued).status()).toBe(200)
+  expect((await page.request.post(`/api/test-native-management/${task}/reconcile`)).ok()).toBeTruthy()
+  await page.reload()
+  await expect(page.getByText("观察值符合目标，受理仍未知", { exact: true }).first()).toBeVisible()
+  const frozen = (await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]
+  expect(frozen.execution_result).toBe("UNKNOWN")
+  expect((await page.request.post(`/api/test-native-management/${task}/publish`)).ok()).toBeTruthy()
+  await page.getByRole("button", { name: "生成恢复预览", exact: true }).click()
+  const preview = page.getByTestId("restore-budget-item").first()
+  await expect(preview.getByText(/原比例 1.32 → 目标比例 .*/)).toBeVisible()
+  await expect(preview.getByText(/模式：/)).toBeVisible()
+  await expect(preview.getByText(/来源：/).first()).toBeVisible()
+  await expect(preview.getByText(/影响：/)).toBeVisible()
+  const submitted = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/ad-management-tasks"))
+  await page.getByRole("button", { name: "提交恢复任务", exact: true }).click()
+  const restore = (await (await submitted).json()).task_id
+  expect((await page.request.post(`/api/test-native-management/${restore}/restore`)).ok()).toBeTruthy()
+  const restoredItems = (await (await page.request.get(`${base}/ad-management-tasks/${restore}`)).json()).items.filter((i: { ref: { kind: string } }) => i.ref.kind === "adgroup")
+  expect(restoredItems.length).toBe(2)
+  for (const item of restoredItems) expect(item).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED" })
+  const restored = restoredItems[0]
+  expect(restored).toMatchObject({ execution_result: "ACCEPTED", observation_state: "ACCEPTED", roas_facts: frozen.roas_facts })
+  expect((await (await page.request.get(`${base}/ad-management-tasks/${task}`)).json()).items[0]).toEqual(frozen)
+})

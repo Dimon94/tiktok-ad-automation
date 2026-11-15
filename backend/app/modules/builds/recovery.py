@@ -229,6 +229,7 @@ RECONCILE_CANDIDATES = """(
  AND child.kind='READBACK' AND child.status<>'SUCCEEDED'
  AND child.status<>'UNKNOWN' AND NOT child.mismatch
 ) candidates JOIN execution_step s ON s.id=candidates.id"""
+RETRY += " AND NOT EXISTS (SELECT 1 FROM build_submission cancelled WHERE cancelled.id=s.submission_id AND cancelled.tenant_id=s.tenant_id AND cancelled.progress->'local_cancelled'='true'::jsonb)"
 RETRY += " AND NOT " + resolved_sql("s")
 RETRY += " AND NOT " + superseded_sql()
 RECONCILE = f"""

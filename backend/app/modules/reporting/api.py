@@ -26,8 +26,10 @@ from sqlmodel import Session, col, select
 from app.api.deps import CurrentUser, SessionDep
 from app.core.config import settings
 from app.core.context import TenantContext
+from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.accounts.models import AdvertiserAccount, TenantBC
+from app.modules.ads.directory import DirectoryObjectPage, read_directory_objects
 from app.modules.reporting.ad_materials import (
     AdMaterialsPublic,
     freeze_ad_material_selection,
@@ -42,7 +44,14 @@ from app.modules.reporting.exports import (
     list_exports,
 )
 from app.modules.reporting.filters import authorized_grants
-from app.modules.reporting.metric_catalog import METRIC_CATALOG, table_label
+from app.modules.reporting.metric_catalog import (
+    DERIVED_RATIOS,
+    METRIC_CATALOG,
+    NATIVE_CONTRACT,
+    platform_ratio_contract,
+    semantics_for,
+    table_label,
+)
 from app.modules.reporting.page_cache import query_cached_ads
 from app.modules.reporting.planner import (
     backfill_allowed,
@@ -59,6 +68,7 @@ from app.modules.reporting.preferences import (
 )
 from app.modules.reporting.query_reuse import QueryCancellation
 from app.modules.reporting.schemas import (
+    AdContributionScope,
     AdMaterialSelectionRequest,
     AdsQueryPage,
     ExportCreate,
@@ -123,6 +133,7 @@ def _filters(
     sort_by: str,
     sort_direction: Literal["asc", "desc"],
     include_empty: bool,
+    ad_contribution_ids: str | None = None,
 ) -> ReportingFilter:
     return ReportingFilter(
         dimension=dimension,
@@ -130,6 +141,9 @@ def _filters(
         end_date=end_date,
         advertiser_ids=(advertiser_id,) if advertiser_id else (),
         ids=_tuple(ids),
+        contribution=AdContributionScope(kind="ad", ids=_tuple(ad_contribution_ids))
+        if ad_contribution_ids
+        else None,
         query=query,
         ad_types=_tuple(ad_types),
         operation_statuses=_tuple(operation_statuses),
@@ -172,6 +186,7 @@ async def query_ads_route(
     end_date: date | None = None,
     advertiser_id: str | None = Query(default=None, max_length=128),
     ids: CSV = None,
+    ad_contribution_ids: CSV = None,
     query: CSV = None,
     ad_types: CSV = None,
     operation_statuses: CSV = None,
@@ -202,6 +217,7 @@ async def query_ads_route(
         end_date=end_date or today,
         advertiser_id=advertiser_id,
         ids=ids,
+        ad_contribution_ids=ad_contribution_ids,
         query=query,
         ad_types=ad_types,
         operation_statuses=operation_statuses,
@@ -280,6 +296,11 @@ def metric_catalog_route(
     return tuple(
         MetricDefinitionPublic(
             **asdict(item),
+            source_kind="LOCAL_CALCULATION"
+            if any(r[0] == item.key for r in DERIVED_RATIOS)
+            else "PLATFORM_DIRECT",
+            contract=semantics_for(item.key, NATIVE_CONTRACT),
+            platform_observation=platform_ratio_contract(item.key),
             basic_label=table_label(item.basic_name_zh),
             material_label=table_label(item.material_name_zh)
             if item.material_name_zh
@@ -375,6 +396,54 @@ def freeze_ad_material_selection_route(
     )
     session.commit()
     return result
+
+
+@router.get(
+    "/ad-directory", response_model=DirectoryObjectPage, name="read_directory_objects"
+)
+def directory_objects_route(
+    tenant_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+    bc_id: Annotated[str, Query(min_length=1, max_length=128)],
+    kind: Literal["campaign", "adgroup", "ad", "creative"],
+    advertiser_ids: Annotated[list[str], Query(min_length=1, max_length=100)],
+    parent_kind: Literal["campaign", "adgroup", "ad"] | None = None,
+    parent_remote_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    parent_advertiser_id: Annotated[
+        str | None, Query(min_length=1, max_length=128)
+    ] = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> DirectoryObjectPage:
+    context = _context(session, user, tenant_id)
+    if (parent_kind is None) != (parent_remote_id is None):
+        raise HTTPException(422, detail="invalid_directory_scope")
+    parent_account = parent_advertiser_id or (
+        advertiser_ids[0] if len(advertiser_ids) == 1 else None
+    )
+    if parent_kind is not None and not parent_account:
+        raise HTTPException(422, detail="invalid_directory_scope")
+    parent = None
+    if parent_kind:
+        # 上述成对参数与账户范围校验已经排除了空值。
+        assert parent_account is not None and parent_remote_id is not None
+        parent = EntityRef(tenant_id, parent_account, parent_kind, parent_remote_id)
+    try:
+        return read_directory_objects(
+            session,
+            context=context,
+            bc_id=bc_id,
+            advertiser_ids=tuple(advertiser_ids),
+            kind=kind,
+            parent=parent,
+            cursor=cursor,
+            limit=limit,
+        )
+    except DomainError as exc:
+        if exc.code == "invalid_cursor" or exc.code == "invalid_directory_scope":
+            raise HTTPException(400, detail=exc.code) from exc
+        raise HTTPException(404, detail="ad_not_found") from exc
 
 
 @router.get("/ads/{kind}/{remote_id}", response_model=AdDetailPublic, name="ad_detail")
@@ -718,6 +787,10 @@ def get_ad_sync_status_route(
             col(ReportSyncState.stat_date) <= end_date,
         )
     ).all()
+    from app.modules.reporting.levels import LEVELS
+    from app.modules.reporting.schemas import LevelSyncStatus
+
+    level_index = {(r.advertiser_id, r.report_kind, r.stat_date): r for r in states}
     by_key = {
         (r.advertiser_id, r.stat_date): r for r in states if r.report_kind == "ad_day"
     }
@@ -748,6 +821,27 @@ def get_ad_sync_status_route(
         )
         .scalar_one()
     )
+    from app.modules.reporting.frozen_result import RESULT_CONTRACT
+
+    # 源证据/派生修订也能改变结果；金额相同不能吞掉新数据提示。
+    bucket_versions = (
+        session.connection()
+        .execute(
+            text("""
+        SELECT advertiser_id,kind,bucket,source_revision,derived_revision
+        FROM read_bucket_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs)
+        AND (bucket BETWEEN :start AND :end OR bucket=DATE '1970-01-01')
+        ORDER BY advertiser_id,kind,bucket
+    """),
+            {
+                "tenant": tenant_id,
+                "advs": list(allowed),
+                "start": start_date,
+                "end": end_date,
+            },
+        )
+        .all()
+    )
     # 素材发布与失败覆盖也推进版本，页面不能只看广告日的最后成功时间。
     version = sha256(
         repr(
@@ -758,11 +852,18 @@ def get_ad_sync_status_route(
                     str(r.stat_date),
                     r.status,
                     str(r.last_success_at),
+                    r.publication_version,
+                    str(r.observed_at),
+                    r.active_contract,
+                    r.publication_digest,
+                    str(r.updated_at),
                 )
                 for r in states
             )
             + balance_version
             + [("directory", directory_version)]
+            + [tuple(r) for r in bucket_versions]
+            + [("result_contract", RESULT_CONTRACT)]
         ).encode()
     ).hexdigest()
     days = [
@@ -784,6 +885,22 @@ def get_ad_sync_status_route(
                 advertiser_id=account.advertiser_id,
                 timezone=account.timezone,
                 local_today=today,
+                levels=tuple(
+                    LevelSyncStatus(
+                        level=contract.level,
+                        stat_date=day,
+                        status=state.status if state else "MISSING",
+                        last_success_at=state.last_success_at if state else None,
+                        last_attempt_at=state.updated_at if state else None,
+                        observed_at=state.observed_at if state else None,
+                        publication_version=state.publication_version if state else 0,
+                        contract_revision=state.active_contract if state else None,
+                        reason=state.error_code if state else "NO_OBSERVATION",
+                    )
+                    for kind, contract in LEVELS.items()
+                    for day in current_days
+                    for state in [level_index.get((account.advertiser_id, kind, day))]
+                ),
                 last_success_at=min(successes) if successes else None,
                 incomplete_dates=tuple(
                     day

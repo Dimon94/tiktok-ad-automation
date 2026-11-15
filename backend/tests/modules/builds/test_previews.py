@@ -859,9 +859,9 @@ def test_identity_picker_keeps_same_named_authorizations_separate_and_saves_choi
     assert draft is not None
     assert draft.status == "PREPARING"
     assert (
-        draft.identity_id,
-        draft.identity_type,
-        draft.identity_authorized_bc_id,
+        draft.scene_selection["creative_identity"]["identity_id"],
+        draft.scene_selection["creative_identity"]["identity_type"],
+        draft.scene_selection["creative_identity"]["identity_authorized_bc_id"],
         draft.identity_display_name,
     ) == ("bc-auth-id", "BC_AUTH_TT", "bc-draft", "star_isle_drama")
 

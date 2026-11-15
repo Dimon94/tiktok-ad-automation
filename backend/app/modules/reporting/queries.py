@@ -24,10 +24,10 @@ from app.core.db import engine
 from app.modules.accounts.models import TenantBC
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.dimension_query import (
-    materialize_rows,
     metric_vector,
 )
 from app.modules.reporting.filters import authorized_grants, compile_filter
+from app.modules.reporting.levels import query_kind
 from app.modules.reporting.query_models import (
     QuerySnapshot,
     read_snapshot,
@@ -55,7 +55,7 @@ from app.modules.reporting.schemas import (
     QuerySnapshotPublic,
     ReportingFilter,
 )
-from app.modules.reporting.snapshot_members import pin_snapshot_names, snapshot_members
+from app.modules.reporting.snapshot_members import pin_snapshot_names
 from app.modules.reporting.store_models import METRIC_COLUMNS, ReportSyncState
 from app.modules.tenants.permissions import require_tenant
 
@@ -84,7 +84,9 @@ def _decode_cursor(value: str) -> dict[str, Any]:
         raise HTTPException(404, detail="query_cursor_not_found") from exc
 
 
-def _summary(totals: SnapshotTotals) -> dict[str, Any]:
+def _summary(
+    totals: SnapshotTotals, *, strict_denominators: bool = True
+) -> dict[str, Any]:
     """汇总按币种分桶，与行内合并共用部分合计规则（数据库内按成员计算）。
 
     混口径/混币种桶仍按桶展示，不偷偷换汇。缺覆盖的成员不当成 0：已同步部分照常
@@ -94,18 +96,47 @@ def _summary(totals: SnapshotTotals) -> dict[str, Any]:
     unsupported = frozenset()
     buckets = []
     for bucket in totals.buckets:
-        values = {
+        values: dict[str, Any] = {
             name: Decimal(bucket[name]) if bucket.get(name) is not None else None
             for name in METRIC_COLUMNS
             if name not in unsupported
         }
+        values.update(
+            {
+                key: bucket[key]
+                for key in ("level", "source_kind", "contract_revision")
+                if key in bucket
+            }
+        )
         vector = metric_vector(
             values,
             currency=bucket["currency"],
             timezone=bucket["tz"],
             unsupported=unsupported,
             partial={name for name in values if bucket.get(f"{name}_partial")},
+            missing_denominators={
+                name
+                for name in values
+                if strict_denominators and bucket.get(f"{name}_missing")
+            },
         )
+        if bucket.get("observations"):
+            from app.modules.reporting.dimension_query import vector_provenance
+
+            observations = [
+                r for group in bucket["observations"] if group for r in group
+            ]
+            scope = hashlib.sha256(
+                json.dumps(
+                    sorted(
+                        {
+                            (r["advertiser_id"], r["remote_id"], r["local_day"])
+                            for r in observations
+                        }
+                    )
+                ).encode()
+            ).hexdigest()
+            vector = vector_provenance(vector, observations, scope)
         buckets.append(vector.model_dump(mode="json"))
     return {
         "row_count": totals.total,
@@ -127,6 +158,8 @@ def _snapshot_public(snapshot: QuerySnapshot) -> QuerySnapshotPublic:
         expires_at=snapshot.expires_at,
         filters=ReportingFilter.model_validate(snapshot.filters),
         publication_versions=snapshot.publication_versions,
+        result_contract=snapshot.result_contract,
+        publication_map=tuple(snapshot.publication_map),
     )
 
 
@@ -164,7 +197,7 @@ def _build_snapshot(
     bc_id: str,
     filters: ReportingFilter,
 ) -> QuerySnapshot:
-    """在数据库内一次算出并写入快照成员与顺序，再落汇总；行内容不入快照。"""
+    """同一SQL选择计划冻结成员与指标，RR内完成展示投影。"""
     transaction_started = (
         begin_evidence_snapshot(session)
         if filters.dimension in {"material", "campaign", "drama"}
@@ -245,7 +278,9 @@ def _build_snapshot(
         else pin_snapshot_names(session, snapshot=snapshot)
     )
     snapshot.total = totals.total
-    snapshot.summary = _summary(totals)
+    snapshot.summary = _summary(
+        totals, strict_denominators=filters.dimension != "material"
+    )
     snapshot.coverage = {
         "status": "EMPTY"
         if not totals.total
@@ -271,6 +306,41 @@ def _build_snapshot(
             if not totals.complete
             else snapshot.coverage["status"],
         }
+    if filters.dimension == "material":
+        from app.modules.reporting.frozen_result import (
+            MATERIAL_RESULT_CONTRACT,
+            freeze_material_results,
+        )
+
+        snapshot.result_contract = MATERIAL_RESULT_CONTRACT
+        freeze_material_results(session, snapshot, filters)
+    else:
+        from app.modules.reporting.frozen_result import RESULT_CONTRACT, freeze_results
+
+        snapshot.result_contract = RESULT_CONTRACT
+        snapshot.publication_map = [
+            dict(r)
+            for r in session.connection()
+            .execute(
+                text("""SELECT advertiser_id,report_kind,stat_date,publication_version,observed_at,
+                last_success_at,status,error_code,active_contract,publication_digest,publication_coordinates
+                FROM report_sync_state WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs)
+                AND report_kind IN ('campaign_day','adgroup_day','ad_day')
+                AND stat_date BETWEEN :start AND :end ORDER BY advertiser_id,report_kind,stat_date"""),
+                {
+                    "tenant": context.tenant_id,
+                    "advs": allowed_ids,
+                    "start": filters.start_date,
+                    "end": filters.end_date,
+                },
+            )
+            .mappings()
+        ]
+        # JSON边界统一序列化时间/日期；没有发布记录的坐标保持缺失而非借用当前值。
+        snapshot.publication_map = json.loads(
+            json.dumps(snapshot.publication_map, default=str)
+        )
+        freeze_results(session, snapshot, filters)
     session.add(snapshot)
     session.flush()
     return snapshot
@@ -308,14 +378,9 @@ def _read_page(
     )
     # 分页会话与构建RR连接独立；同样只在本次读事务禁用一次性LLVM编译。
     session.connection().execute(text("SET LOCAL jit = off"))
-    members = snapshot_members(session, snapshot=snapshot, rows=rows)
-    items = materialize_rows(
-        session,
-        tenant_id=context.tenant_id,
-        filters=filters,
-        members=[members[row.row_key] for row in rows],
-        advertisers=snapshot.advertiser_ids,
-    )
+    from app.modules.reporting.frozen_result import frozen_row
+
+    items = tuple(frozen_row(row) for row in rows)
     if filters.dimension == "account":
         # 账户行保留其下全部系列引用供冻结选择展开；列表响应不返回，避免每行带回上百条。
         items = tuple(item.model_copy(update={"refs": ()}) for item in items)
@@ -333,38 +398,18 @@ def _read_page(
         )
     metrics_coverage = {}
     if filters.dimension == "material":
-        metrics_coverage = read_projection_coverage(
-            session,
-            kind="creative_material",
-            tenant_id=context.tenant_id,
-            advertisers=snapshot.advertiser_ids,
-            start=filters.start_date,
-            end=filters.end_date,
-        )
+        metrics_coverage = snapshot.coverage["projection"]
         raw_observed = metrics_coverage["metrics_observed_at"]
         observed = datetime.fromisoformat(raw_observed) if raw_observed else None
     else:
-        state_model = (
-            AccountReportDayState if filters.dimension == "account" else ReportSyncState
-        )
-        conditions = (
-            []
-            if filters.dimension == "account"
-            else [ReportSyncState.report_kind == "ad_day"]
-        )
-        observed = session.exec(
-            select(
-                func.max(
-                    func.coalesce(state_model.observed_at, state_model.last_success_at)
-                )
-            ).where(
-                state_model.tenant_id == context.tenant_id,
-                col(state_model.advertiser_id).in_(snapshot.advertiser_ids),
-                *conditions,
-                state_model.stat_date >= filters.start_date,
-                state_model.stat_date <= filters.end_date,
-            )
-        ).one()
+        times = [
+            r.get("observed_at") or r.get("last_success_at")
+            for r in snapshot.publication_map
+            if r["report_kind"] == query_kind(filters.dimension)
+            or r.get("selected_level")
+            == query_kind(filters.dimension).removesuffix("_day")
+        ]
+        observed = max((datetime.fromisoformat(t) for t in times if t), default=None)
     return AdsQueryPage(
         snapshot=_snapshot_public(snapshot),
         items=items,

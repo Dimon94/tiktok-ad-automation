@@ -56,9 +56,10 @@ export function toAdsQuery(
   search: AdsSearch,
   snapshotId?: string,
 ): Omit<adsReportingQueryAdsData["query"], "bc_id"> {
-  const { page: _page, ...filters } = search
+  const { page: _page, contribution, ...filters } = search
   return {
     ...filters,
+    ad_contribution_ids: contribution?.ids.join(","),
     query: filters.query || undefined,
     ids: filters.ids?.length ? filters.ids.join(",") : undefined,
     advertiser_id: filters.advertiser_ids?.[0],

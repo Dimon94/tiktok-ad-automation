@@ -91,7 +91,7 @@ class SceneJob(SQLModel, table=True):
             name="ck_build_scene_job_status",
         ),
         CheckConstraint(
-            "resource IN ('capabilities','identity','minis','cta','vbo','regions','budget','done')",
+            "resource IN ('capabilities','native_series','native_tt_identity','native_bc_identity','identity','minis','cta','vbo','regions','budget','done')",
             name="ck_build_scene_job_resource",
         ),
         CheckConstraint(
@@ -142,6 +142,9 @@ class SceneJob(SQLModel, table=True):
     # 仅保留历史场景的来源记录；新场景按账户与 Mini 复用。
     provider_connection_id: UUID | None = None
     application_id: str | None = Field(default=None, max_length=255)
+    native_selection: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
+    )
     minis_id: str | None = Field(default=None, max_length=255)
     media_kind: MediaKind = Field(
         default="VIDEO", sa_column=Column(String(16), nullable=False)
@@ -197,7 +200,7 @@ class SceneJobPage(SQLModel, table=True):
         UniqueConstraint("job_id", "resource", "page", name="uq_build_scene_job_page"),
         CheckConstraint("page > 0", name="ck_build_scene_job_page_number"),
         CheckConstraint(
-            "resource IN ('identity','minis','cta','vbo','regions','budget')",
+            "resource IN ('native_series','native_tt_identity','native_bc_identity','identity','minis','cta','vbo','regions','budget')",
             name="ck_build_scene_job_page_resource",
         ),
         CheckConstraint(
@@ -250,6 +253,9 @@ class DraftScenePreparation(SQLModel, table=True):
     preparation_id: UUID = Field(primary_key=True)
     draft_id: UUID
     frozen_route: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
+    )
+    native_materials: dict[str, Any] | None = Field(
         default=None, sa_column=Column(JSONB(none_as_null=True), nullable=True)
     )
     connection_after: UUID | None = None

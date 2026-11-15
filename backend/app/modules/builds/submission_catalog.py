@@ -772,7 +772,11 @@ def enrich_steps(
     rows = (
         cast(SASession, session)
         .execute(
-            text("""SELECT e.id,d.title,u.advertiser_id,g.group_no,a.creative_no
+            text("""SELECT e.id,d.title,u.advertiser_id,g.group_no,a.creative_no,
+ coalesce((SELECT r.resolved->'reconciliation'->'candidate'->'differences'
+ FROM execution_step r WHERE r.tenant_id=e.tenant_id AND r.submission_id=e.submission_id
+ AND r.kind='READBACK' AND (r.id=e.id OR r.parent_step_id=e.id)
+ ORDER BY r.updated_at DESC LIMIT 1),'[]'::jsonb) readback_differences
  FROM execution_step e JOIN build_unit u ON u.tenant_id=e.tenant_id AND u.preview_id=e.preview_id AND u.id=e.unit_id
  JOIN preview_drama d ON d.tenant_id=u.tenant_id AND d.preview_id=u.preview_id AND d.drama_id=u.drama_id
  LEFT JOIN planned_group g ON g.tenant_id=e.tenant_id AND g.preview_id=e.preview_id AND g.id=e.group_id
@@ -790,7 +794,13 @@ def enrich_steps(
     indexed = {r["id"]: r for r in rows}
     for item in items:
         item.can_historical_read = item.step_id in eligible
-        for key in ["title", "advertiser_id", "group_no", "creative_no"]:
+        for key in [
+            "title",
+            "advertiser_id",
+            "group_no",
+            "creative_no",
+            "readback_differences",
+        ]:
             setattr(item, key, indexed[item.step_id][key])
     enrich_corrections(
         session, context=context, submission_id=submission_id, items=items

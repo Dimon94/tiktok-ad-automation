@@ -122,6 +122,7 @@ class ExcludedDramaPublic(BaseModel):
 
 
 class PreviewSummary(BaseModel):
+    native_request: dict[str, Any] | None = None
     copy_group_settings: list[dict[str, Any]] = Field(default_factory=list)
     can_refresh_continuation: bool = False
     continuation_source_ids: list[UUID] = Field(default_factory=list)
@@ -201,6 +202,7 @@ class PreviewUnit(BaseModel):
 
 
 class FrozenUnit(BaseModel):
+    native_request: dict[str, Any] | None = None
     contract_version: Literal[1, 2]
     media_kind: Literal["VIDEO", "CAROUSEL"]
     targeting: AudienceTargeting | None = None

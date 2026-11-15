@@ -82,6 +82,7 @@ def _roas_scope(command: ManagementCommand) -> tuple[Any, ...] | None:
         command.field != "roas"
         or command.ref.kind != "adgroup"
         or not _smart_plus(command)
+        or (command.original.get("roas_facts") or {}).get("budget_strategy") != "CBO"
     ):
         return None
     campaign = command.original.get("campaign_id")

@@ -360,6 +360,9 @@ class CreativeMaterialEntityDay(_ReadDay, table=True):
     """独立创意素材投影：每个经济事实只一行，筛选在汇总之前进行。"""
 
     __tablename__ = "creative_material_entity_day"
+    evidence: dict[str, Any] | None = Field(
+        default=None, sa_column=Column(JSONB, nullable=True)
+    )
     __table_args__ = (
         Index("ix_creative_material_period", "tenant_id", "stat_date", "advertiser_id"),
         account_reference(),

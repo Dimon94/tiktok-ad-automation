@@ -193,9 +193,32 @@ export type Action_Output = {
 };
 
 /**
+ * AdContributionScope
+ *
+ * 广告贡献子集独立于当前维度 ids；不把对象搜索暗改成子集。
+ */
+export type AdContributionScope = {
+    /**
+     * Kind
+     */
+    kind: 'ad';
+    /**
+     * Ids
+     */
+    ids: Array<string>;
+};
+
+/**
  * AdDetailPublic
  */
 export type AdDetailPublic = {
+    native?: NativeDirectoryPublic | null;
+    report_snapshot?: QuerySnapshotPublic | null;
+    report_result?: ReportRow | null;
+    /**
+     * Directory Time Basis
+     */
+    directory_time_basis?: string;
     ref: EntityRef;
     /**
      * Name
@@ -232,6 +255,18 @@ export type AdDetailPublic = {
      * Observed At
      */
     observed_at: string;
+    /**
+     * Published Version
+     */
+    published_version: number;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
 };
 
 /**
@@ -733,6 +768,73 @@ export type Body_login_login_access_token = {
      * Client Secret
      */
     client_secret?: string | null;
+};
+
+/**
+ * BucketStamp
+ */
+export type BucketStamp = {
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Level
+     */
+    level: 'campaign' | 'adgroup' | 'ad';
+    /**
+     * Stat Date
+     */
+    stat_date: string;
+    /**
+     * Contract Revision
+     */
+    contract_revision: string;
+    /**
+     * Publication Version
+     */
+    publication_version: number;
+    /**
+     * Observed At
+     */
+    observed_at: string | null;
+    /**
+     * Published At
+     */
+    published_at: string | null;
+    /**
+     * Last Attempt Status
+     */
+    last_attempt_status: 'PENDING' | 'COMPLETE' | 'STALE' | 'FAILED';
+};
+
+/**
+ * BudgetFactsPublic
+ */
+export type BudgetFactsPublic = {
+    /**
+     * Currency
+     */
+    currency: string;
+    /**
+     * Sources
+     */
+    sources: Array<BudgetSourcePublic>;
+    /**
+     * Affected Refs
+     */
+    affected_refs: Array<EntityRef>;
+};
+
+/**
+ * BudgetSourcePublic
+ */
+export type BudgetSourcePublic = {
+    ref: EntityRef;
+    /**
+     * Reason
+     */
+    reason: 'owner_selected' | 'campaign_budget_owner' | 'adgroup_budget_owner' | 'campaign_adgroups_expanded';
 };
 
 /**
@@ -1915,6 +2017,15 @@ export type Create = {
  * CreateDraftRequest
  */
 export type CreateDraftRequest = {
+    structure_override?: StructureOverride | null;
+    /**
+     * Scene Selection
+     */
+    scene_selection?: ({
+        kind: 'MINI_APP';
+    } & MiniAppSelection) | ({
+        kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    } & NativeSeriesPlanSet) | null;
     /**
      * Media Kind
      */
@@ -2226,6 +2337,166 @@ export type DirectManagementRequest = {
      * Row Problems
      */
     row_problems?: Array<RenameRowProblem>;
+};
+
+/**
+ * DirectoryCreativePublic
+ */
+export type DirectoryCreativePublic = {
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Published Version
+     */
+    published_version?: number | null;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
+    /**
+     * Creative Id
+     */
+    creative_id: string | null;
+    identity: DirectoryIdentityPublic | null;
+    /**
+     * Configuration
+     */
+    configuration: {
+        [key: string]: unknown;
+    };
+    /**
+     * Materials
+     */
+    materials: Array<DirectoryMaterialPublic>;
+    /**
+     * Coverage Reasons
+     */
+    coverage_reasons: Array<string>;
+};
+
+/**
+ * DirectoryIdentityPublic
+ */
+export type DirectoryIdentityPublic = {
+    /**
+     * Identity Type
+     */
+    identity_type?: string | null;
+    /**
+     * Identity Id
+     */
+    identity_id?: string | null;
+    /**
+     * Identity Authorized Bc Id
+     */
+    identity_authorized_bc_id?: string | null;
+};
+
+/**
+ * DirectoryMaterialPublic
+ */
+export type DirectoryMaterialPublic = {
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Published Version
+     */
+    published_version?: number | null;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
+    /**
+     * Platform Material Id
+     */
+    platform_material_id: string;
+    /**
+     * Material Type
+     */
+    material_type: string;
+    /**
+     * Name
+     */
+    name?: string | null;
+    /**
+     * Ad Material Id
+     */
+    ad_material_id?: string | null;
+};
+
+/**
+ * DirectoryObjectPage
+ */
+export type DirectoryObjectPage = {
+    /**
+     * Items
+     */
+    items: Array<DirectoryObjectPublic>;
+    /**
+     * Next Cursor
+     */
+    next_cursor: string | null;
+};
+
+/**
+ * DirectoryObjectPublic
+ */
+export type DirectoryObjectPublic = {
+    ref: EntityRef;
+    /**
+     * Name
+     */
+    name: string;
+    parent: EntityRef | null;
+    /**
+     * Observed At
+     */
+    observed_at: string;
+    /**
+     * Published Version
+     */
+    published_version: number;
+};
+
+/**
+ * DirectoryParentPublic
+ */
+export type DirectoryParentPublic = {
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Published Version
+     */
+    published_version?: number | null;
+    /**
+     * Source Connection Id
+     */
+    source_connection_id?: string | null;
+    /**
+     * Source Channel
+     */
+    source_channel?: string | null;
+    ref: EntityRef;
+    /**
+     * Configuration
+     */
+    configuration: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -2574,6 +2845,14 @@ export type DraftSaved = {
  * DraftSummary
  */
 export type DraftSummary = {
+    /**
+     * Scene Selection
+     */
+    scene_selection?: ({
+        kind: 'MINI_APP';
+    } & MiniAppSelection) | ({
+        kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    } & NativeSeriesPlanSet) | null;
     structure_override?: StructureOverride;
     /**
      * Media Kind
@@ -2604,7 +2883,7 @@ export type DraftSummary = {
     /**
      * Provider Connection Id
      */
-    provider_connection_id: string;
+    provider_connection_id: string | null;
     /**
      * Execution Connection Id
      */
@@ -2612,7 +2891,7 @@ export type DraftSummary = {
     /**
      * Application Id
      */
-    application_id: string;
+    application_id: string | null;
     /**
      * Link Config
      */
@@ -3291,6 +3570,12 @@ export type FrozenTikTokRoute = {
  * FrozenUnit
  */
 export type FrozenUnit = {
+    /**
+     * Native Request
+     */
+    native_request?: {
+        [key: string]: unknown;
+    } | null;
     /**
      * Contract Version
      */
@@ -4452,6 +4737,48 @@ export type InputLine = {
 };
 
 /**
+ * LevelSyncStatus
+ */
+export type LevelSyncStatus = {
+    /**
+     * Level
+     */
+    level: 'campaign' | 'adgroup' | 'ad';
+    /**
+     * Stat Date
+     */
+    stat_date: string;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Last Success At
+     */
+    last_success_at?: string | null;
+    /**
+     * Last Attempt At
+     */
+    last_attempt_at?: string | null;
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Publication Version
+     */
+    publication_version?: number;
+    /**
+     * Contract Revision
+     */
+    contract_revision?: string | null;
+    /**
+     * Reason
+     */
+    reason?: string | null;
+};
+
+/**
  * LinkConfigField
  */
 export type LinkConfigField = {
@@ -4703,6 +5030,16 @@ export type ManagementItemPublic = {
      * Final Value
      */
     final_value?: string | string | null;
+    budget_facts?: BudgetFactsPublic | null;
+    restore_observation?: { source_task_id: string; value: string | null; observed_at: string | null; source_connection_id: string | null } | null;
+    roas_facts?: {
+        budget_strategy: 'CBO' | 'ABO';
+        mode: string;
+        campaign_ref: EntityRef;
+        parent_configuration: Record<string, unknown>;
+        sources: EntityRef[];
+        affected_refs: EntityRef[];
+    } | null;
     /**
      * Reason
      */
@@ -4982,6 +5319,62 @@ export type MappingInput = {
      * Drama Id
      */
     drama_id: string;
+};
+
+/**
+ * MaterialInstanceResult
+ */
+export type MaterialInstanceResult = {
+    /**
+     * Row Kind
+     */
+    row_kind?: 'INSTANCE' | 'COMPOSITE' | 'UNMAPPED_CREATIVE';
+    /**
+     * Identity Reason
+     */
+    identity_reason?: string | null;
+    /**
+     * Field State Counts
+     */
+    field_state_counts?: {
+        [key: string]: {
+            [key: string]: number;
+        };
+    };
+    /**
+     * Key
+     */
+    key: {
+        [key: string]: string | null;
+    };
+    /**
+     * Creative Ids
+     */
+    creative_ids: Array<string>;
+    /**
+     * Fact Keys
+     */
+    fact_keys: Array<string>;
+    /**
+     * Metric Buckets
+     */
+    metric_buckets: Array<MetricVector>;
+    /**
+     * Coverage
+     */
+    coverage: {
+        [key: string]: unknown;
+    };
+    /**
+     * Observations
+     */
+    observations: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Evidence Digest
+     */
+    evidence_digest: string;
 };
 
 /**
@@ -5401,6 +5794,52 @@ export type Message = {
 };
 
 /**
+ * MetricContract
+ */
+export type MetricContract = {
+    /**
+     * Revision
+     */
+    revision: string;
+    /**
+     * Field
+     */
+    field: string | null;
+    /**
+     * Unit
+     */
+    unit: 'MONEY' | 'RATIO' | 'COUNT';
+    /**
+     * Traffic Scope
+     */
+    traffic_scope: 'ALL_TRAFFIC' | 'PAID' | 'UNCONFIRMED';
+    /**
+     * Window
+     */
+    window: 'NOT_APPLICABLE' | 'TOTAL_CUTOFF_UNKNOWN' | 'CLICK_HOURS' | 'CALENDAR_DAY' | 'UNCONFIRMED';
+    /**
+     * Click Hours
+     */
+    click_hours: number | null;
+    /**
+     * Aggregation
+     */
+    aggregation: 'SUM_SAME_LEVEL' | 'RATIO_OF_SUMS' | 'SINGLE_OBSERVATION_ONLY';
+    /**
+     * Definition Ref
+     */
+    definition_ref: string;
+    /**
+     * Numerator
+     */
+    numerator?: string | null;
+    /**
+     * Denominator
+     */
+    denominator?: string | null;
+};
+
+/**
  * MetricDefinitionPublic
  */
 export type MetricDefinitionPublic = {
@@ -5441,6 +5880,16 @@ export type MetricDefinitionPublic = {
      */
     material_name_en: string | null;
     /**
+     * Levels
+     */
+    levels?: Array<'campaign' | 'adgroup' | 'ad'>;
+    /**
+     * Source Kind
+     */
+    source_kind: 'PLATFORM_DIRECT' | 'LOCAL_CALCULATION';
+    contract: MetricContract;
+    platform_observation?: MetricContract | null;
+    /**
      * Basic Label
      */
     basic_label: string;
@@ -5448,6 +5897,73 @@ export type MetricDefinitionPublic = {
      * Material Label
      */
     material_label: string | null;
+};
+
+/**
+ * MetricProvenance
+ */
+export type MetricProvenance = {
+    /**
+     * Level
+     */
+    level: 'campaign' | 'adgroup' | 'ad';
+    /**
+     * Source Kind
+     */
+    source_kind: 'PLATFORM_DIRECT' | 'CHILD_DERIVED';
+    /**
+     * Contract Revision
+     */
+    contract_revision: string;
+    /**
+     * Scope Digest
+     */
+    scope_digest: string;
+    /**
+     * Buckets
+     */
+    buckets: Array<BucketStamp>;
+    /**
+     * Field State Counts
+     */
+    field_state_counts: {
+        [key: string]: number;
+    };
+    /**
+     * Reason
+     */
+    reason: string | null;
+    /**
+     * Formula
+     */
+    formula: string | null;
+    /**
+     * Known Count
+     */
+    known_count?: number;
+    /**
+     * Missing Count
+     */
+    missing_count?: number;
+    /**
+     * Denominator Known Count
+     */
+    denominator_known_count?: number | null;
+    /**
+     * Denominator Missing Count
+     */
+    denominator_missing_count?: number | null;
+    /**
+     * Local Ranges
+     */
+    local_ranges?: Array<string>;
+    /**
+     * Observations
+     */
+    observations?: Array<{
+        [key: string]: unknown;
+    }>;
+    metric_contract?: MetricContract | null;
 };
 
 /**
@@ -5467,6 +5983,18 @@ export type MetricVector = {
      */
     attribution: string;
     /**
+     * Level
+     */
+    level?: 'campaign' | 'adgroup' | 'ad' | 'creative' | 'material_instance' | null;
+    /**
+     * Source Kind
+     */
+    source_kind?: 'PLATFORM_DIRECT' | 'CHILD_DERIVED' | null;
+    /**
+     * Contract Revision
+     */
+    contract_revision?: string | null;
+    /**
      * Optimization Goal
      */
     optimization_goal?: string | null;
@@ -5482,6 +6010,29 @@ export type MetricVector = {
     availability?: {
         [key: string]: 'AVAILABLE' | 'PARTIAL' | 'MISSING' | 'UNAVAILABLE' | 'UNSUPPORTED' | 'FAILED';
     };
+    /**
+     * Reasons
+     */
+    reasons?: {
+        [key: string]: string;
+    };
+    /**
+     * Provenance
+     */
+    provenance?: {
+        [key: string]: MetricProvenance;
+    };
+};
+
+/**
+ * MiniAppSelection
+ */
+export type MiniAppSelection = {
+    /**
+     * Kind
+     */
+    kind?: 'MINI_APP';
+    creative_identity?: SelectionIdentity | null;
 };
 
 /**
@@ -5777,6 +6328,278 @@ export type MutationSpec = {
      * Max Value
      */
     max_value?: number | string | null;
+};
+
+/**
+ * NativeCheckpoint
+ */
+export type NativeCheckpoint = {
+    /**
+     * State
+     */
+    state: 'PENDING' | 'BLOCKED' | 'UNVERIFIED' | 'READY';
+    /**
+     * Reason Codes
+     */
+    reason_codes: Array<string>;
+    /**
+     * Draft Revision
+     */
+    draft_revision: number;
+    /**
+     * Scope Basis
+     */
+    scope_basis: string;
+    /**
+     * Route
+     */
+    route: {
+        [key: string]: unknown;
+    };
+    selection: NativeSeriesSelection;
+    /**
+     * Evidence Ids
+     */
+    evidence_ids?: Array<string>;
+    /**
+     * Observed At
+     */
+    observed_at?: string | null;
+    /**
+     * Expires At
+     */
+    expires_at?: string | null;
+    /**
+     * Facts
+     */
+    facts?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Materials State
+     */
+    materials_state?: 'PENDING' | 'BLOCKED' | 'UNVERIFIED' | 'READY';
+    /**
+     * Materials Ready
+     */
+    materials_ready?: boolean;
+    /**
+     * Materials
+     */
+    materials?: Array<NativeMaterialMapping>;
+    /**
+     * Material Issues
+     */
+    material_issues?: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+/**
+ * NativeDirectoryPublic
+ */
+export type NativeDirectoryPublic = {
+    /**
+     * Series Id
+     */
+    series_id?: string | null;
+    /**
+     * Series Name
+     */
+    series_name?: string | null;
+    group_identity?: DirectoryIdentityPublic | null;
+    /**
+     * Placement Type
+     */
+    placement_type?: string | null;
+    /**
+     * Placements
+     */
+    placements?: Array<string> | null;
+    /**
+     * Tiktok Subplacements
+     */
+    tiktok_subplacements?: Array<string> | null;
+    parent_adgroup?: DirectoryParentPublic | null;
+    /**
+     * Creatives
+     */
+    creatives?: Array<DirectoryCreativePublic> | null;
+    /**
+     * Coverage Reasons
+     */
+    coverage_reasons?: Array<string>;
+};
+
+/**
+ * NativeMaterialMapping
+ */
+export type NativeMaterialMapping = {
+    /**
+     * Position
+     */
+    position: number;
+    /**
+     * Material Id
+     */
+    material_id: string;
+    /**
+     * Cover Material Id
+     */
+    cover_material_id?: string | null;
+    /**
+     * Video Id
+     */
+    video_id: string;
+    /**
+     * Image Id
+     */
+    image_id: string;
+    /**
+     * Video Evidence Id
+     */
+    video_evidence_id: string;
+    /**
+     * Cover Evidence Id
+     */
+    cover_evidence_id: string;
+    /**
+     * Video Task Id
+     */
+    video_task_id?: string | null;
+    /**
+     * Cover Task Id
+     */
+    cover_task_id?: string | null;
+    /**
+     * Preparation Id
+     */
+    preparation_id: string;
+};
+
+/**
+ * NativePlanResult
+ */
+export type NativePlanResult = {
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    /**
+     * Unit Id
+     */
+    unit_id?: string | null;
+    /**
+     * Selection
+     */
+    selection: {
+        [key: string]: unknown;
+    };
+    /**
+     * Occupancy
+     */
+    occupancy: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Reason Codes
+     */
+    reason_codes: Array<string>;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Remote Ids
+     */
+    remote_ids: Array<{
+        [key: string]: string;
+    }>;
+};
+
+/**
+ * NativeSeriesBatchCheckpoint
+ */
+export type NativeSeriesBatchCheckpoint = {
+    /**
+     * Draft Revision
+     */
+    draft_revision: number;
+    /**
+     * Plans
+     */
+    plans: Array<({
+        state: 'READY';
+    } & ReadyNativePlan) | ({
+        state: 'BLOCKED' | 'PENDING' | 'UNVERIFIED';
+    } & UnavailableNativePlan)>;
+};
+
+/**
+ * NativeSeriesPlan
+ */
+export type NativeSeriesPlan = {
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    selection: NativeSeriesSelection;
+};
+
+/**
+ * NativeSeriesPlanSet
+ */
+export type NativeSeriesPlanSet = {
+    /**
+     * Kind
+     */
+    kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    /**
+     * Plans
+     */
+    plans: Array<NativeSeriesPlan>;
+};
+
+/**
+ * NativeSeriesSelection
+ */
+export type NativeSeriesSelection = {
+    /**
+     * Kind
+     */
+    kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Native Series Id
+     */
+    native_series_id?: string | null;
+    /**
+     * Video Sources
+     */
+    video_sources?: Array<NativeVideoSource>;
+    series_identity?: SelectionIdentity | null;
+    creative_identity?: SelectionIdentity | null;
+    /**
+     * Regions
+     */
+    regions: Array<string>;
+};
+
+/**
+ * NativeVideoSource
+ */
+export type NativeVideoSource = {
+    /**
+     * Material Id
+     */
+    material_id: string;
+    /**
+     * Cover Material Id
+     */
+    cover_material_id?: string | null;
 };
 
 /**
@@ -6584,6 +7407,36 @@ export type Page_VersionPublic_ = {
 };
 
 /**
+ * ParentAdControl
+ */
+export type ParentAdControl = {
+    /**
+     * Key
+     */
+    key: {
+        [key: string]: string | null;
+    };
+    /**
+     * Scope
+     */
+    scope?: 'FULL_PARENT_AD';
+    /**
+     * Metric Buckets
+     */
+    metric_buckets: Array<MetricVector>;
+    /**
+     * Coverage
+     */
+    coverage: {
+        [key: string]: unknown;
+    };
+    /**
+     * Evidence Digest
+     */
+    evidence_digest: string;
+};
+
+/**
  * ParentRestrictionPublic
  */
 export type ParentRestrictionPublic = {
@@ -6610,6 +7463,15 @@ export type ParentRestrictionPublic = {
  * PatchDraftRequest
  */
 export type PatchDraftRequest = {
+    structure_override?: StructureOverride | null;
+    /**
+     * Scene Selection
+     */
+    scene_selection?: ({
+        kind: 'MINI_APP';
+    } & MiniAppSelection) | ({
+        kind: 'NATIVE_SERIES_DIRECT_VIDEO';
+    } & NativeSeriesPlanSet) | null;
     /**
      * Request Id
      */
@@ -6939,6 +7801,12 @@ export type PreviewRequest = {
  * PreviewSummary
  */
 export type PreviewSummary = {
+    /**
+     * Native Request
+     */
+    native_request?: {
+        [key: string]: unknown;
+    } | null;
     /**
      * Copy Group Settings
      */
@@ -7584,6 +8452,18 @@ export type QuerySnapshotPublic = {
     expires_at: string;
     filters: ReportingFilter_Output;
     /**
+     * Result Contract
+     */
+    result_contract?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Publication Map
+     */
+    publication_map?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
      * Publication Versions
      */
     publication_versions?: {
@@ -7745,6 +8625,21 @@ export type RatePublic = {
      * Periods
      */
     periods: Array<RatePeriod>;
+};
+
+/**
+ * ReadyNativePlan
+ */
+export type ReadyNativePlan = {
+    /**
+     * State
+     */
+    state: 'READY';
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    checkpoint: NativeCheckpoint;
 };
 
 /**
@@ -8027,6 +8922,24 @@ export type ReportRow = {
      */
     row_key: string;
     /**
+     * Material Instances
+     */
+    material_instances?: Array<MaterialInstanceResult>;
+    /**
+     * Parent Controls
+     */
+    parent_controls?: Array<ParentAdControl>;
+    /**
+     * Reconciliation Rows
+     */
+    reconciliation_rows?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Evidence Digest
+     */
+    evidence_digest?: string;
+    /**
      * Carousel Creatives
      */
     carousel_creatives?: Array<CarouselCreativeIdentity>;
@@ -8096,6 +9009,7 @@ export type ReportingFilter_Input = {
      * Ids
      */
     ids?: Array<string>;
+    contribution?: AdContributionScope | null;
     /**
      * Query
      */
@@ -8190,6 +9104,7 @@ export type ReportingFilter_Output = {
      * Ids
      */
     ids?: Array<string>;
+    contribution?: AdContributionScope | null;
     /**
      * Query
      */
@@ -8907,6 +9822,24 @@ export type SelectedDramaRetry = {
 };
 
 /**
+ * SelectionIdentity
+ */
+export type SelectionIdentity = {
+    /**
+     * Identity Type
+     */
+    identity_type: 'TT_USER' | 'BC_AUTH_TT';
+    /**
+     * Identity Id
+     */
+    identity_id: string;
+    /**
+     * Identity Authorized Bc Id
+     */
+    identity_authorized_bc_id?: string | null;
+};
+
+/**
  * SelectionRequest
  */
 export type SelectionRequest = {
@@ -9135,6 +10068,10 @@ export type StepPublic = {
      * Mismatch
      */
     mismatch: boolean;
+    /**
+     * Readback Differences
+     */
+    readback_differences?: Array<string>;
     /**
      * Checked At
      */
@@ -9789,6 +10726,18 @@ export type SubmissionUnitPublic = {
  * SubmissionView
  */
 export type SubmissionView = {
+    /**
+     * Native Plans
+     */
+    native_plans?: Array<NativePlanResult>;
+    /**
+     * Local Cancelled
+     */
+    local_cancelled?: boolean;
+    /**
+     * Can Cancel
+     */
+    can_cancel?: boolean;
     reused?: ObjectCounts;
     /**
      * Continuation Source Ids
@@ -9921,6 +10870,10 @@ export type SubmitRequest = {
  * SyncAccountStatus
  */
 export type SyncAccountStatus = {
+    /**
+     * Levels
+     */
+    levels?: Array<LevelSyncStatus>;
     /**
      * Advertiser Id
      */
@@ -10303,6 +11256,25 @@ export type TrendPublic = {
      * Syncing
      */
     syncing?: boolean;
+};
+
+/**
+ * UnavailableNativePlan
+ */
+export type UnavailableNativePlan = {
+    /**
+     * State
+     */
+    state: 'PENDING' | 'BLOCKED' | 'UNVERIFIED';
+    /**
+     * Plan Key
+     */
+    plan_key: string;
+    selection: NativeSeriesSelection;
+    /**
+     * Reason Codes
+     */
+    reason_codes: Array<string>;
 };
 
 /**
@@ -14836,6 +15808,10 @@ export type adsReportingQueryAdsData = {
          */
         ids?: string | null;
         /**
+         * Ad Contribution Ids
+         */
+        ad_contribution_ids?: string | null;
+        /**
          * Query
          */
         query?: string | null;
@@ -15129,6 +16105,69 @@ export type adsReportingFreezeAdMaterialSelectionResponses = {
 };
 
 export type adsReportingFreezeAdMaterialSelectionResponse = adsReportingFreezeAdMaterialSelectionResponses[keyof adsReportingFreezeAdMaterialSelectionResponses];
+
+export type adsReportingReadDirectoryObjectsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Bc Id
+         */
+        bc_id: string;
+        /**
+         * Kind
+         */
+        kind: 'campaign' | 'adgroup' | 'ad' | 'creative';
+        /**
+         * Advertiser Ids
+         */
+        advertiser_ids: Array<string>;
+        /**
+         * Parent Kind
+         */
+        parent_kind?: 'campaign' | 'adgroup' | 'ad' | null;
+        /**
+         * Parent Remote Id
+         */
+        parent_remote_id?: string | null;
+        /**
+         * Parent Advertiser Id
+         */
+        parent_advertiser_id?: string | null;
+        /**
+         * Cursor
+         */
+        cursor?: string | null;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/tenants/{tenant_id}/ad-directory';
+};
+
+export type adsReportingReadDirectoryObjectsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type adsReportingReadDirectoryObjectsError = adsReportingReadDirectoryObjectsErrors[keyof adsReportingReadDirectoryObjectsErrors];
+
+export type adsReportingReadDirectoryObjectsResponses = {
+    /**
+     * Successful Response
+     */
+    200: DirectoryObjectPage;
+};
+
+export type adsReportingReadDirectoryObjectsResponse = adsReportingReadDirectoryObjectsResponses[keyof adsReportingReadDirectoryObjectsResponses];
 
 export type adsReportingAdDetailData = {
     body?: never;
@@ -19714,6 +20753,51 @@ export type buildsUpdateImageStructureResponses = {
 
 export type buildsUpdateImageStructureResponse = buildsUpdateImageStructureResponses[keyof buildsUpdateImageStructureResponses];
 
+export type buildsNativeCheckpointData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Draft Id
+         */
+        draft_id: string;
+    };
+    query?: {
+        /**
+         * Plan Key
+         */
+        plan_key?: string | null;
+        /**
+         * View
+         */
+        view?: 'plan' | 'plans';
+    };
+    url: '/api/tenants/{tenant_id}/build-drafts/{draft_id}/native-checkpoint';
+};
+
+export type buildsNativeCheckpointErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type buildsNativeCheckpointError = buildsNativeCheckpointErrors[keyof buildsNativeCheckpointErrors];
+
+export type buildsNativeCheckpointResponses = {
+    /**
+     * Response Builds-Native Checkpoint
+     *
+     * Successful Response
+     */
+    200: NativeCheckpoint | NativeSeriesBatchCheckpoint;
+};
+
+export type buildsNativeCheckpointResponse = buildsNativeCheckpointResponses[keyof buildsNativeCheckpointResponses];
+
 export type campaignCopiesCreateData = {
     body: CopyCreateRequest;
     path: {
@@ -20678,3 +21762,37 @@ export type buildsGetSubmissionRecoveryResponses = {
 };
 
 export type buildsGetSubmissionRecoveryResponse = buildsGetSubmissionRecoveryResponses[keyof buildsGetSubmissionRecoveryResponses];
+
+export type buildsCancelSubmissionData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Submission Id
+         */
+        submission_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/submissions/{submission_id}/cancel';
+};
+
+export type buildsCancelSubmissionErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type buildsCancelSubmissionError = buildsCancelSubmissionErrors[keyof buildsCancelSubmissionErrors];
+
+export type buildsCancelSubmissionResponses = {
+    /**
+     * Successful Response
+     */
+    200: SubmissionReceipt;
+};
+
+export type buildsCancelSubmissionResponse = buildsCancelSubmissionResponses[keyof buildsCancelSubmissionResponses];

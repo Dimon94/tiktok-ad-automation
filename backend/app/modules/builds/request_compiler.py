@@ -22,6 +22,9 @@ from app.integrations.tiktok.contracts.builds import (
     FrozenModel,
     Id,
     IdentityFields,
+    NativeAdCreate,
+    NativeAdGroupCreate,
+    NativeAdGroupObservedFacts,
     VideoCreative,
 )
 from app.integrations.tiktok.contracts.common import (
@@ -55,6 +58,14 @@ class _Targeting(FrozenModel):
 
 
 class _AdGroupBody(AdGroupCreate):
+    name: Id = Field(alias="adgroup_name")
+
+
+class _NativeAdGroupBody(NativeAdGroupCreate):
+    name: Id = Field(alias="adgroup_name")
+
+
+class _NativeObservedGroupBody(NativeAdGroupObservedFacts):
     name: Id = Field(alias="adgroup_name")
 
 
@@ -116,6 +127,11 @@ class _AdBody(FrozenModel):
     ad_configuration: _AdConfiguration
 
 
+class _NativeAdBody(_AdBody):
+    landing_page_url_list: None = None
+    ad_text_list: tuple[_Text, ...] = Field(min_length=1, max_length=1)
+
+
 class _CtaBody(FrozenModel):
     advertiser_id: Id
     creative_portfolio_type: Literal["CTA"]
@@ -161,7 +177,9 @@ def decode_intent(kind: str, body: dict[str, object]) -> CreateIntent:
     return decode_observed_intent(kind, values)
 
 
-def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
+def decode_observed_intent(
+    kind: str, body: dict[str, object], *, native_observation: bool = False
+) -> CreateIntent:
     """远端只接受精确金额类型；SDK 浮点可能已舍入，不能转回文本冒充精确事实。"""
     if not isinstance(body, dict) or "kind" in body:
         raise _invalid("body", body)
@@ -176,10 +194,22 @@ def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
             raise _invalid("targeting_spec", values)
         targeting = _Targeting.model_validate(values.pop("targeting_spec", None))
         values.update(targeting.model_dump(exclude_none=True))
-        parsed_group = _AdGroupBody.model_validate(values)
-        return AdGroupCreate.model_validate(parsed_group.model_dump())
+        group_type = (
+            _NativeAdGroupBody
+            if values.get("promotion_type") == "NATIVE_SERIES"
+            else _AdGroupBody
+        )
+        intent_type = (
+            NativeAdGroupCreate if group_type is _NativeAdGroupBody else AdGroupCreate
+        )
+        if native_observation and group_type is _NativeAdGroupBody:
+            parsed_group = _NativeObservedGroupBody.model_validate(values)
+            return NativeAdGroupObservedFacts.model_validate(parsed_group.model_dump())
+        parsed_group = group_type.model_validate(values)
+        return intent_type.model_validate(parsed_group.model_dump())
     if kind == "AD":
-        ad = _AdBody.model_validate(values)
+        native = "landing_page_url_list" not in values
+        ad = (_NativeAdBody if native else _AdBody).model_validate(values)
         info = ad.creative_list[0].creative_info
         identity = (
             info.identity_type,
@@ -196,43 +226,47 @@ def decode_observed_intent(kind: str, body: dict[str, object]) -> CreateIntent:
             for item in ad.creative_list
         ):
             raise _invalid("creative_list.identity", values["creative_list"])
-        return AdCreate(
-            advertiser_id=ad.advertiser_id,
-            adgroup_id=ad.adgroup_id,
-            name=ad.ad_name,
-            operation_status=ad.operation_status,
-            identity_type=info.identity_type,
-            identity_id=info.identity_id,
-            identity_authorized_bc_id=info.identity_authorized_bc_id,
-            text=ad.ad_text_list[0].ad_text,
-            text_variants=tuple(item.ad_text for item in ad.ad_text_list)
-            if len(ad.ad_text_list) > 1
-            else None,
-            dark_post_status=ad.ad_configuration.dark_post_status,
-            product_info_enabled=ad.ad_configuration.product_info_enabled,
-            landing_page_url=ad.landing_page_url_list[0].landing_page_url,
-            portfolio_id=ad.ad_configuration.call_to_action_id,
-            assets=tuple(
-                (
-                    VideoCreative(
-                        kind="VIDEO",
-                        video_id=item.creative_info.video_info.video_id,
-                        file_name=item.creative_info.video_info.file_name,
-                        cover_image_id=item.creative_info.image_info[0].web_uri
-                        if item.creative_info.image_info
-                        else None,
+        return (NativeAdCreate if native else AdCreate).model_validate(
+            {
+                "advertiser_id": ad.advertiser_id,
+                "adgroup_id": ad.adgroup_id,
+                "name": ad.ad_name,
+                "operation_status": ad.operation_status,
+                "identity_type": info.identity_type,
+                "identity_id": info.identity_id,
+                "identity_authorized_bc_id": info.identity_authorized_bc_id,
+                "text": ad.ad_text_list[0].ad_text,
+                "text_variants": tuple(item.ad_text for item in ad.ad_text_list)
+                if len(ad.ad_text_list) > 1
+                else None,
+                "dark_post_status": ad.ad_configuration.dark_post_status,
+                "product_info_enabled": ad.ad_configuration.product_info_enabled,
+                "landing_page_url": None
+                if native
+                else ad.landing_page_url_list[0].landing_page_url,
+                "portfolio_id": ad.ad_configuration.call_to_action_id,
+                "assets": tuple(
+                    (
+                        VideoCreative(
+                            kind="VIDEO",
+                            video_id=item.creative_info.video_info.video_id,
+                            file_name=item.creative_info.video_info.file_name,
+                            cover_image_id=item.creative_info.image_info[0].web_uri
+                            if item.creative_info.image_info
+                            else None,
+                        )
+                        if isinstance(item.creative_info, _VideoInfo)
+                        else CarouselCreative(
+                            kind="CAROUSEL",
+                            image_ids=tuple(
+                                image.web_uri for image in item.creative_info.image_info
+                            ),
+                            music_id=item.creative_info.music_info.music_id,
+                        )
                     )
-                    if isinstance(item.creative_info, _VideoInfo)
-                    else CarouselCreative(
-                        kind="CAROUSEL",
-                        image_ids=tuple(
-                            image.web_uri for image in item.creative_info.image_info
-                        ),
-                        music_id=item.creative_info.music_info.music_id,
-                    )
-                )
-                for item in ad.creative_list
-            ),
+                    for item in ad.creative_list
+                ),
+            }
         )
     if kind == "CTA":
         cta = _CtaBody.model_validate(values)
@@ -301,7 +335,15 @@ def encode_intent(intent: CreateIntent) -> dict[str, object]:
             "ad_text_list": [
                 {"ad_text": text} for text in intent.text_variants or (intent.text,)
             ],
-            "landing_page_url_list": [{"landing_page_url": intent.landing_page_url}],
+            **(
+                {
+                    "landing_page_url_list": [
+                        {"landing_page_url": intent.landing_page_url}
+                    ]
+                }
+                if intent.landing_page_url is not None
+                else {}
+            ),
             "ad_configuration": {
                 "call_to_action_id": intent.portfolio_id,
                 **{
@@ -352,12 +394,12 @@ def read_arguments(query: BuildReadQuery) -> tuple[str, dict[str, object]]:
             filtering[identifiers[kind]] = [query.remote_id]
         elif kind in names:
             filtering[names[kind]] = body[names[kind]]
-        if isinstance(query.intent, AdGroupCreate):
+        if isinstance(query.intent, (AdGroupCreate, NativeAdGroupCreate)):
             filtering["campaign_ids"] = [query.intent.campaign_id]
-        elif isinstance(query.intent, AdCreate):
+        elif isinstance(query.intent, (AdCreate, NativeAdCreate)):
             filtering["adgroup_ids"] = [query.intent.adgroup_id]
         fields = list(body)
-        fields.append(identifiers[kind][:-1])
+        fields.extend([identifiers[kind][:-1], "secondary_status"])
         arguments.update(filtering=filtering, page=query.page, page_size=100)
         # 原生 Smart+ 广告组的字段筛选会漏掉 targeting_spec 和状态；读取完整对象。
         # 仍严格校验父级、分页及所有冻结字段，不从请求补造缺失事实。
