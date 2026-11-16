@@ -19,7 +19,7 @@ TABLES = {"material_post_link", "material_report_day", "material_link_scan"}
 
 
 def _seed(db):
-    seed = sync_seed.__wrapped__(db)
+    seed = sync_seed.__wrapped__(db, historical=True)
     now = datetime.now(UTC)
     db.add(
         AdSyncBc(

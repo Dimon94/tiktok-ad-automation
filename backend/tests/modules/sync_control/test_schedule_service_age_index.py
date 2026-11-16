@@ -212,10 +212,32 @@ def test_actual_ready_union_has_bounded_service_age_scan_and_same_eligibility(
 def test_service_age_index_upgrade_downgrade_upgrade_preserves_schedule(monkeypatch):
     with historical_database(monkeypatch, PREVIOUS) as (engine, config):
         with Session(engine) as session, session.begin():
-            seed = seed_fixture.__wrapped__(session)
+            seed = seed_fixture.__wrapped__(session, historical=True)
             now = datetime.now(UTC)
-            enqueue(session, seed, now, tier="hot", accounts=["acc-1"])
-            template = session.exec(select(SyncScope)).one()
+            from app.modules.sync_control.scopes import ensure_scope
+            from tests.modules.reporting.test_jobs import _route
+
+            # 旧索引迁移只播种当时的 scope/head，不能调用今日要求新授权列的入队服务。
+            template = ensure_scope(
+                session,
+                route=_route(seed),
+                actor_id=seed.actor_id,
+                advertiser_id="acc-1",
+                resource="ad_day",
+                query={"campaign_ids": ["scope"]},
+                timezone="Asia/Hong_Kong",
+                metric_contract="report-v2",
+            )
+            session.add(
+                SyncSchedule(
+                    scope_id=template.id,
+                    tenant_id=seed.tenant_id,
+                    work_class="realtime",
+                    next_eligible_at=now,
+                    oldest_pending_at=now,
+                    physical_endpoint=report_endpoint("ad_day"),
+                )
+            )
             _heads(session, template, now)
         with engine.connect() as connection:
             before = (

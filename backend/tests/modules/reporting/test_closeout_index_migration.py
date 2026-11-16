@@ -10,7 +10,8 @@ from sqlmodel import Session
 from app.modules.reporting.store_models import ReportSyncJob
 from tests.migration_database import historical_database
 from tests.modules.reporting.sync_conftest import sync_seed
-from tests.modules.reporting.test_day_closeout import NOW, plan_for
+from tests.modules.reporting.test_day_closeout import NOW
+from tests.modules.reporting.test_jobs import _route
 
 REVISION = "0064_closeout_job_scope"
 PREVIOUS = "0062_directory_pending_index"
@@ -31,13 +32,12 @@ def test_closeout_index_roundtrip_preserves_all_job_states(
 ):
     with historical_database(monkeypatch, PREVIOUS) as (engine, config):
         with Session(engine) as session, session.begin():
-            seed = cast(Any, sync_seed).__wrapped__(session)
-            plan = plan_for(session, seed)
+            seed = cast(Any, sync_seed).__wrapped__(session, historical=True)
             job = ReportSyncJob(
                 tenant_id=seed.tenant_id,
-                bc_id=plan.bc_id,
+                bc_id="bc-a",
                 actor_id=seed.actor_id,
-                frozen_route=plan.frozen_route,
+                frozen_route=_route(seed),
                 kind="ad_day",
                 priority=0,
                 status="QUEUED",

@@ -29,3 +29,10 @@
 环境失败独立记录：本机PG17锁池64在造数、尚未到SLO时不足；仅owned51165测试集群对齐CI既有1024，重启保留原数据，Redis未改。新的私有guard仅改数据库名、权限0600。直接pytest没有加载CI结果插件；正式runner通过 `-p pytest_results` 加载 `deploy/ci/pytest_results.py`，既有文件间干净head-template隔离继续保留。
 
 根代理完整ty检查暴露两个类型边界（SQLModel四列select重载与JSON stamp混合字典），分别使用SQLAlchemy Core select及明确TypedDict，不改SQL或数据。修正后全app ty、Ruff、原三层SQL门槛3 passed/5.39s。最初错误cwd导致的环境解析告警与真实类型错误分别留档；不把环境错误算产品缺陷。46路径格式/Ruff及差异检查通过。最终独立审查和远端门禁仍待后续源修复完成后执行。
+
+
+## 第二分区的补充历史用例
+
+另9条失败沿同一反射历史夹具修复，8文件仅测试改动。旧索引数据准备使用既有 `_route(seed)`、`ensure_scope` 和 `SyncSchedule`，避免调用今日需要新User授权列的planner/入队服务；当前运行路径仍由同文件其他用例验证。原50001行索引样本、状态计数、迁移升降往返、锁及冻结JSON断言保留。9 failed/18.53s后，包含前一阶段仅静态覆盖的5项共14项取得通过证据：首轮13 passed/1 failed/89.75s，最后历史scope播种修正后1 passed/5.39s。未重放此前52项通过集合，语法/Ruff/格式/差异检查通过。
+
+正式ee4879fa两个完整分区产物均已获取：138/88条失败摘要，和旧两分区对比仅新增一条business prefix进度测试，单独核对上游独立日志规划合同。该正式头仍为6项成功、两个模块分区及汇总失败，不能将本地修复写成已远端全绿。

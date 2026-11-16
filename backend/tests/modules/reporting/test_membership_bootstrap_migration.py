@@ -40,7 +40,10 @@ def _names(connection, tenant, advertiser):
 def test_membership_bootstraps_preserve_payload_without_runtime_locks(monkeypatch):
     with historical_database(monkeypatch, "0102_business_rate_periods") as (engine, _):
         with Session(engine) as session, session.begin():
-            seeds = [sync_seed.__wrapped__(session), sync_seed.__wrapped__(session)]
+            seeds = [
+                sync_seed.__wrapped__(session, historical=True),
+                sync_seed.__wrapped__(session, historical=True),
+            ]
             for offset, seed in enumerate(seeds):
                 session.execute(
                     text("""INSERT INTO advertiser_account

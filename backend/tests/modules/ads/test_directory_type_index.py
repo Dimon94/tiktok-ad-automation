@@ -25,8 +25,8 @@ def test_directory_type_index_roundtrip_semantics_and_bounded_probes(
     with historical_database(monkeypatch, PREVIOUS) as (engine, config):
         now = datetime.now(UTC)
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
-            other = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
+            other = sync_seed.__wrapped__(session, historical=True)
             # 接近生产多账户分布，避免“全表只有一个重账户”使 LIMIT 成本偏向顺扫。
             session.execute(
                 insert(AdvertiserAccount),

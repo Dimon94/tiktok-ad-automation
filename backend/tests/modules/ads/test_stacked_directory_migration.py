@@ -17,7 +17,7 @@ def test_stacked_queued_directory_runs_are_cancelled(monkeypatch):
         config,
     ):
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             route = {
                 "tenant_id": str(seed.tenant_id),
                 "bc_id": "bc-a",

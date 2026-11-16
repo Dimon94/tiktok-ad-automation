@@ -6,10 +6,10 @@ from alembic import command
 from sqlalchemy import text
 from sqlmodel import Session
 
-from app.modules.accounts.routing import freeze_route
 from app.modules.ads.sync_models import AdDirectoryRun
 from tests.migration_database import historical_database
 from tests.modules.reporting.sync_conftest import sync_seed
+from tests.modules.reporting.test_jobs import _route
 
 REVISION = "0117_directory_status_version"
 PREVIOUS = "0116_drop_legacy_material"
@@ -19,13 +19,7 @@ INDEX = "ix_directory_status_version"
 def test_directory_status_index_roundtrip_preserves_publications(monkeypatch):
     with historical_database(monkeypatch, PREVIOUS) as (engine, config):
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
-            route = freeze_route(
-                session,
-                context=seed.context,
-                bc_id="bc-a",
-                connection_id=seed.connection.id,
-            )
+            seed = sync_seed.__wrapped__(session, historical=True)
             run = AdDirectoryRun(
                 tenant_id=seed.tenant_id,
                 advertiser_id="acc-1",
@@ -33,7 +27,7 @@ def test_directory_status_index_roundtrip_preserves_publications(monkeypatch):
                 actor_id=seed.actor_id,
                 connection_id=seed.connection.id,
                 channel="OFFICIAL_API",
-                frozen_route=route.model_dump(mode="json"),
+                frozen_route=_route(seed),
                 partition_key=uuid4().hex * 2,
                 query={},
                 kind="ad",
