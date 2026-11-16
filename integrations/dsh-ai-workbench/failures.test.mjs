@@ -12,6 +12,7 @@ test('model errors distinguish rejection, capacity, quota, authentication and un
     ['RATE_LIMIT', 'secret', 'MODEL_RATE_LIMIT', false],
     ['INVALID_REQUEST', 'secret', 'MODEL_INVALID_REQUEST', false],
     ['TRANSPORT', 'secret', 'MODEL_TRANSPORT', true],
+    ['PI_AI_ERROR', '{"error":{"message":"upstream SSE stream disconnected","type":"api_error"},"type":"error"}', 'MODEL_TRANSPORT', true],
     ['TIMEOUT', 'secret', 'MODEL_TIMEOUT', true],
     ['SERVER', 'secret', 'MODEL_SERVER', true],
     ['EMPTY_RESPONSE', 'secret', 'MODEL_EMPTY_RESPONSE', true],

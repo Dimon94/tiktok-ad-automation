@@ -11,6 +11,9 @@ export function modelFailure(reason) {
   else if (code === 'CONTEXT_WINDOW_EXCEEDED') { category = 'MODEL_CONTEXT_LIMIT'; description = '模型上下文达到服务限制'; recoverable = true }
   else if (code === 'PI_AI_ERROR' && /selected model cannot continue this conversation/i.test(message)) {
     category = 'MODEL_SESSION_REJECTED'; description = '模型服务拒绝继续当前会话，具体上游原因未提供'; recoverable = true
+  } else if (code === 'PI_AI_ERROR' && /\bupstream SSE stream disconnected\b/i.test(message)) {
+    // 公司网关将明确断流包在JSON error中，DSH未将其细分为TRANSPORT；只识别已确认的断流文本。
+    category = 'MODEL_TRANSPORT'; description = '模型服务响应流断开'; recoverable = true
   } else if (['TRANSPORT', 'STREAM_CLOSED', 'TIMEOUT', 'SERVER', 'EMPTY_RESPONSE'].includes(code)) {
     category = 'MODEL_' + code; description = '模型服务连接中断、超时或未返回有效结果'; recoverable = true
   } else if (code === 'INVALID_REQUEST') { category = 'MODEL_INVALID_REQUEST'; description = '模型服务拒绝请求参数，请管理员检查适配配置' }

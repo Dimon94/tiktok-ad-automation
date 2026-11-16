@@ -39,4 +39,15 @@ DSH_TEST_PACKAGE_ROOT="$PWD/.runtime/dsh-session-test" \
 
 本轮仅DSH插件文件及测试/文档变更，无数据库迁移、运行配置/开关/并发/权限变化。候选从本轮提交的干净源码生成，不包含当前工作区其他搭建功能的未提交改动。发布只需构建精确SHA的DSH镜像，在共享发布锁下核对并保留现有Deployment配置，正常退出旧DSH后切换镜像；应用服务及数据库无需随之更换。
 
-当前仅本地验证与提交，未推送、构建/上传生产镜像或切换生产，未重启13:00两轮任务。推送遵守仓库AGENTS的明确授权要求。上线后可用现有任务重启接口续接两轮，保持原冻结证据、方法与业务授权；真实分析通过领域结果COMPLETE验收，不将原生测试通过当作生产复盘已恢复。
+用户随后明确授权推送、发布并续跑两轮。远端main已由并行任务推进到9bde1aea，包含本轮25a24ac5；未重复推送或把并行搭建改动带入DSH。DSH镜像由25a24ac536ba4d8130b78eee7908f2192b91402d的Git归档构建，摘要sha256:cd38d2f93fdbee30cabffbc80084f6947b7f5c39e7336476fcc97e1cd20c509c。
+
+等待并行搭建发布释放共享锁后，本轮取得同一ConfigMap发布锁。原Recreate/60秒退出宽限保持，DSH正常退出并切换至25a24ac5，实际Pod镜像摘要一致且Ready；完整DSH spec仅镜像改变，其他11应用Deployment spec与本轮切换前一致（应用镜像为并行任务已发布的9bde1aea）。运行Secret及DSH挂载Secret的resourceVersion保持，发布锁已释放。未创建/检查备份或执行恢复演练，无迁移。
+
+通过业务`ai_tasks.restart_task`复核权限、当前优化师版本及MANUAL模式后，原两轮生成新fence并排队。星屿任务restart_generation=2、24203来源保留；50账户任务restart_generation=1、911来源保留。两轮原方法仍1.8.4，未用1.9.0正文覆盖历史冻结方法。50账户任务于15:57:52开始、16:04:28完成，6分36秒、56次工具调用、8节报告、无新提案；原生turn/end为completed，无模型错误。星屿排队时五分钟短授权到期，由既有领取逻辑再生成新fence（generation=3）后，于16:04:58开始分析；尚未宣称其真实复盘完成。私有发布回执及观察记录在`.runtime/review-failure-recovery-20261116/`。
+
+
+## 星屿真实续跑暴露的第二类错误
+
+星屿首次续跑16:04:58→16:15:51，45次工具调用后上游返回JSON SSE错误：`upstream SSE stream disconnected`，宿主仍归类`PI_AI_ERROR`。这次是明确的响应流断开，不能当作13:00同文会话拒绝的底层原因证明。初版运行器未识别此网关包装文本，将其显示为MODEL_ERROR并终止，未触发新会话接续；新增分析/回放/笔记已保存，50账户COMPLETE保持。
+
+针对该真实错误追加精确分类为MODEL_TRANSPORT，沿用原最多两次接续、授权及完成保护。新增分类用例在旧代码先失败（MODEL_ERROR≠MODEL_TRANSPORT）；追加真实DSH宿主Anthropic `event:error` JSON断流运输替身，验证会创建新Agent并完成结果。修改后全套**41项通过、0失败、0跳过**，语法与差异检查通过。未将其他未知PI_AI_ERROR一概当作可重试网络错误。此次增量只有错误分类、回归及本调查记录，无DDL或配置变更。

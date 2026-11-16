@@ -170,7 +170,7 @@ test('production entrypoint boots real DSH, polls TK-ADA and serves readiness wi
 })
 
 // 必须经过真实 Agent 工厂与 standard 预设；服务级 scope 替身无法发现会话缺少 inject。
-for (const recover of [false, true]) test(`claimed review ${recover ? 'recovers from Anthropic session refusal in a new real Agent' : 'mounts task skills in a real Agent and completes through model transport'}`, { skip: !packageRoot, timeout: 45000 }, async () => {
+for (const recover of [false, 'refusal', 'disconnect']) test(`claimed review ${recover ? `recovers from Anthropic ${recover} in a new real Agent` : 'mounts task skills in a real Agent and completes through model transport'}`, { skip: !packageRoot, timeout: 45000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'tkada-dsh-claimed-'))
   const { loadMethods } = await import('../methods.mjs')
   const methods = await loadMethods()
@@ -187,6 +187,11 @@ for (const recover of [false, true]) test(`claimed review ${recover ? 'recovers 
           : modelCalls === 4 || modelCalls === 5 ? { name: 'tkada_complete_review', arguments: { report, summary: 'fixture review complete', proposals: [] } } : null
         response.writeHead(200, { 'content-type': 'text/event-stream' })
         const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+        if (recover === 'disconnect' && modelCalls === 2) {
+          event('error', { error: { type: 'api_error', message: 'upstream SSE stream disconnected' } })
+          response.end()
+          return
+        }
         event('message_start', { message: { id: `msg-${modelCalls}`, type: 'message', role: 'assistant', model: 'fixture', content: [], stop_reason: null, usage: { input_tokens: 100, output_tokens: 0 } } })
         if (call) {
           event('content_block_start', { index: 0, content_block: { type: 'tool_use', id: `tool-${modelCalls}`, name: call.name, input: {} } })
@@ -249,7 +254,7 @@ for (const recover of [false, true]) test(`claimed review ${recover ? 'recovers 
     assert.deepEqual(completion.method_usage, ['ai-delivery-review'])
     assert.notEqual(completion.failed, true)
     if (recover) {
-      assert.match(output, /MODEL_SESSION_REJECTED; starting recovery 1\/2/)
+      assert.match(output, recover === 'disconnect' ? /MODEL_TRANSPORT; starting recovery 1\/2/ : /MODEL_SESSION_REJECTED; starting recovery 1\/2/)
       const dirs = await readdir(join(root, 'home/sessions'))
       const sessions = (await Promise.all(dirs.map(d => readdir(join(root, 'home/sessions', d))))).flat()
       assert.ok(sessions.some(s => s.endsWith('-resume-1')), `No fresh recovery session: ${sessions}`)
