@@ -768,9 +768,16 @@ def get_ad_sync_status_route(
         today = local_today(account.timezone or "UTC", now)
         current_days = [day for day in days if day <= today]
         current = [by_key.get((account.advertiser_id, day)) for day in current_days]
+        # 今日时效与历史完整性分开：历史成功时间不能拉低今日水位，
+        # 今日缺失也不能借历史成功伪装成新鲜；日期缺口仍逐日返回。
+        freshness_rows = (
+            [by_key.get((account.advertiser_id, today))]
+            if today in current_days
+            else current
+        )
         successes = [
             r.last_success_at
-            for r in current
+            for r in freshness_rows
             if r is not None and r.last_success_at is not None
         ]
         result.append(

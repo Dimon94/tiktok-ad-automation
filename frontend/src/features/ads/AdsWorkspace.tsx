@@ -784,6 +784,7 @@ export function AdsWorkspace() {
         status={syncStatus.data}
         selectedAdvertiserIds={applied.advertiser_ids}
         startDate={applied.start_date}
+        endDate={applied.end_date}
         coverage={ads.query.data?.coverage}
         notice={syncNotice}
         onLoadLatest={newDataAvailable ? () => loadLatest() : undefined}

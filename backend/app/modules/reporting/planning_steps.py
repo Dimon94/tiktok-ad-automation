@@ -39,13 +39,22 @@ PHASES = (
 PHASE_ORDER = tuple(
     item
     for phase in PHASES
-    if phase not in {"screen_hot", "hot", "material"}
-    for item in ("screen_hot", "hot", "material", "hot", "material", phase)
+    if phase not in {"screen_hot", "hot", "material", "empty_hot"}
+    for item in (
+        "screen_hot",
+        "hot",
+        "material",
+        "empty_hot",
+        "hot",
+        "material",
+        "empty_hot",
+        phase,
+    )
 )
 BATCH = 64
 SECONDS = 3
 SCREEN_START_SECONDS = 2.2  # SDK至少2秒，另给页游标原子提交留0.2秒。
-REALTIME_PHASES = frozenset({"screen_hot", "hot", "material"})
+REALTIME_PHASES = frozenset({"screen_hot", "hot", "material", "empty_hot"})
 
 
 class ScreenYield(Exception):
@@ -275,7 +284,10 @@ def _execute(
                 if state.get("metadata_missing"):
                     plan.active_screened_at = None
                 plan.last_active_advertiser_ids = active
-                state["empty_hot"] = _new(at, active=active)
+                # 大池的空桶确认可能尚未扫到尾部，后来的筛查不能重置已提交游标。
+                # 当前活跃集合在执行时再次合并，避免旧筛查把新活跃账户当空桶。
+                if state.get("empty_hot", {}).get("done", True):
+                    state["empty_hot"] = _new(at, active=active)
                 # 保留已检查的前缀和未扫尾部，只将新发现的前缀账户加入补偿重试。
                 # covered只代表已规划活跃/已有事实，不能拿它当全部已检查账户。
                 for name in ("hot", "material"):
@@ -392,6 +404,17 @@ def _finish_phase(plan, state, now, timezones, valid_accounts):
             # force_live只请求当前工作，保留已配置的下一规则相位。
             state["force_live"] = True
         state["live"]["done"] = True
+    empty = state.get("empty_hot")
+    if (
+        empty
+        and empty.get("done")
+        and plan.active_screened_at
+        and datetime.fromisoformat(empty["at"]) < plan.active_screened_at
+    ):
+        # 先扫完旧尾部，再承接最新完整筛查；水位使用证据时间，不用写入时间。
+        state["empty_hot"] = _new(
+            plan.active_screened_at, active=plan.last_active_advertiser_ids
+        )
     if "daily" in state and all(
         state.get(p, {}).get("done") for p in ("daily", "empty_daily")
     ):
@@ -482,7 +505,7 @@ def _plan_step(
         can_screen = available >= SCREEN_START_SECONDS
         facts_ready = prefer_facts and any(
             _eligible(state, name, plan, now, allow_backfill, valid_accounts)
-            for name in ("hot", "material")
+            for name in ("hot", "material", "empty_hot")
         )
         if (
             state.get("screen_waiting_since")
@@ -500,7 +523,7 @@ def _plan_step(
                 offsets.sort(
                     key=lambda offset: (
                         PHASE_ORDER[(phase_cursor + offset) % len(PHASE_ORDER)]
-                        not in {"hot", "material"}
+                        not in {"hot", "material", "empty_hot"}
                     )
                 )
             for offset in offsets:
@@ -654,7 +677,7 @@ def _plan_step(
         if phase.startswith("screen_"):
             metrics["screen_attempts"] = metrics.get("screen_attempts", 0) + 1
             metrics["facts_since_screen"] = 0
-        elif phase in {"hot", "material"}:
+        elif phase in {"hot", "material", "empty_hot"}:
             metrics["facts_since_screen"] = metrics.get("facts_since_screen", 0) + 1
         outcome = "completed" if completed else "deferred"
         metrics[outcome] = metrics.get(outcome, 0) + 1

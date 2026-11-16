@@ -939,13 +939,14 @@ def test_live_batches_get_a_turn_between_each_background_phase(
         "_execute",
         lambda _session, _plan, _state, phase, *_args: phases.append(phase),
     )
-    for _ in range(12):
+    for _ in range(16):
         steps.plan_step(
             engine, redis_client, (seed.tenant_id, "bc-a"), now=now, allow_backfill=True
         )
     assert phases.count("hot") == phases.count("material") == 4
     assert phases.count("screen_hot") == 2
-    for _ in range(30):
+    assert phases.count("empty_hot") == 4
+    for _ in range(40):
         steps.plan_step(
             engine, redis_client, (seed.tenant_id, "bc-a"), now=now, allow_backfill=True
         )
@@ -967,7 +968,7 @@ def test_live_batches_get_a_turn_between_each_background_phase(
     def slow_background(_session, _plan, _state, phase, *_args):
         phases.append(phase)
         budget = _args[-1]
-        clock[0] += min(budget, 0.05 if phase in {"hot", "material"} else 3)
+        clock[0] += min(budget, 0.05 if phase in {"hot", "material", "empty_hot"} else 3)
 
     monkeypatch.setattr(steps, "_execute", slow_background)
     # 入口10秒中维护已花3秒；每个后台批用满3秒，实时规划0.05秒/64户。

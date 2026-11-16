@@ -359,3 +359,70 @@ def test_four_bc_screens_rotate_after_maintenance_without_starving_facts(
             assert set(reads) == set(bcs) and len(reads) == 4
             assert facts == {(bc, kind) for bc in bcs for kind in ("hot", "material")}
     assert pages == dict.fromkeys(bcs, 2)
+
+
+def test_confirmed_empty_tail_continues_in_realtime_lane(
+    monkeypatch, committed_sync_seed, redis_client
+):
+    seed, factory = committed_sync_seed
+    now = datetime.now(UTC)
+    with factory() as session, session.begin():
+        plan = _prepared(session, seed, now, "empty_hot")
+        state = plan.screening_progress[steps.KEY]
+        for name in ("screen_hot", "hot", "material"):
+            state[name]["done"] = True
+        state["live"]["done"] = True
+        state["empty_hot"] = steps._new(now, active=[])
+        steps._save(plan, state)
+        plan.next_hot_at = plan.next_material_at = now + timedelta(minutes=15)
+    with factory() as session:
+        assert any(
+            p.bc_id == "bc-a"
+            for p in planner.due_plans(
+                session,
+                now=now,
+                realtime_only=True,
+            )
+        )
+    phases = []
+    monkeypatch.setattr(
+        steps, "_execute", lambda _s, _p, _v, phase, *_: phases.append(phase)
+    )
+    steps.plan_step(
+        engine,
+        redis_client,
+        (seed.tenant_id, "bc-a"),
+        now=now,
+        allow_backfill=False,
+        realtime_only=True,
+    )
+    assert phases == ["empty_hot"]
+
+
+def test_new_screen_keeps_unfinished_empty_tail_and_catches_up_after_completion(
+    monkeypatch, session, sync_seed, redis_client
+):
+    now = datetime.now(UTC)
+    plan = _prepared(session, sync_seed, now, "screen_hot")
+    accounts = planner.owned_accounts(session, plan)
+    state = plan.screening_progress[steps.KEY]
+    old = now - timedelta(minutes=15)
+    state["empty_hot"] = steps._new(old, active=[], after=accounts[0])
+    monkeypatch.setattr(job_tasks, "_active", lambda *_a, **_kw: [])
+    steps._execute(
+        session, plan, state, "screen_hot", accounts, now, engine, redis_client, 8
+    )
+    assert state["empty_hot"]["after"] == accounts[0]
+    assert state["empty_hot"]["at"] == old.isoformat()
+    state["empty_hot"]["done"] = True
+    plan.active_screened_at = now
+    steps._finish_phase(
+        plan,
+        state,
+        now,
+        planner._timezones(session, plan.tenant_id, accounts),
+        accounts,
+    )
+    assert state["empty_hot"]["at"] == now.isoformat()
+    assert state["empty_hot"]["after"] == ""
+    assert not state["empty_hot"]["done"]

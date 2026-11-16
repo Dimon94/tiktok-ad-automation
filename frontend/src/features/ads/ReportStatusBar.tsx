@@ -105,6 +105,7 @@ export function ReportStatusBar({
   status,
   selectedAdvertiserIds,
   startDate,
+  endDate,
   coverage,
   notice,
   onLoadLatest,
@@ -112,6 +113,7 @@ export function ReportStatusBar({
   status?: SyncStatusPublic
   selectedAdvertiserIds?: string[]
   startDate?: string
+  endDate?: string
   coverage?: Record<string, unknown>
   notice: string | null
   /** 正在操作时保留快照，用户仍可主动加载后台发布的新数据。 */
@@ -138,6 +140,10 @@ export function ReportStatusBar({
   const pending = applicable.filter((account) => !account.last_success_at)
   const stale = applicable.filter(
     (account) =>
+      // 20分钟是今日实时水位要求，历史日期按缺失/失败判断完整性。
+      account.local_today &&
+      startDate && startDate <= account.local_today &&
+      endDate && account.local_today <= endDate &&
       account.last_success_at &&
       now - Date.parse(account.last_success_at) > 20 * 60_000,
   )

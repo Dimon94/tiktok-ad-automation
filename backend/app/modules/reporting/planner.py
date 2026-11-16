@@ -305,7 +305,7 @@ def due_plans(
         OR screening_progress->'planning_steps_v1'->>'force_live' = 'true'
         OR EXISTS (
           SELECT 1 FROM jsonb_each(COALESCE(screening_progress->'planning_steps_v1','{}'::jsonb)) p
-          WHERE p.key IN ('screen_hot','hot','material')
+          WHERE p.key IN ('screen_hot','hot','material','empty_hot')
             AND p.value->>'at' IS NOT NULL
             AND COALESCE(p.value->>'done','false') != 'true'
             AND COALESCE((p.value->>'retry_at')::timestamptz,'-infinity'::timestamptz) <= :live_now
