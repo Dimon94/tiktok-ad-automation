@@ -5,6 +5,8 @@ test('plugin owns versioned methods and native registry exposes frozen task skil
   const { loadMethods, mountTaskSkills, skillName } = await import('./methods.mjs')
   const methods = await loadMethods()
   assert.equal(methods.main.key, 'ai-delivery-review')
+  assert.match(methods.main.body, /经营报告：先解释钱和回收/)
+  assert.match(methods.main.body, /report.executive/)
   assert.equal(methods.references.length, 5)
   const registered = new Map(), tools = new Map()
   const ctx = { skills: { register: definition => registered.set(definition.name, definition), get: async name => registered.get(name) }, tools: { register: tool => tools.set(tool.name, tool) } }

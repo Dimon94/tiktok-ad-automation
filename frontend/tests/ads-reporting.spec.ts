@@ -511,7 +511,12 @@ test("下钻指定账户后覆盖状态仅统计所选账户", async ({ page }) 
 
 test("接口版本不变时数据超过20分钟仍自动显示超时提示", async ({ page }) => {
   await page.clock.install({ time: new Date("2026-10-18T06:00:00Z") })
-  await adsBoundary(page, { lastSuccess: "2026-10-18T05:40:01Z" })
+  await adsBoundary(page, {
+    syncAccounts: [{
+      advertiser_id: "adv-1", timezone: "Asia/Hong_Kong",
+      local_today: "2026-10-18", last_success_at: "2026-10-18T05:40:01Z",
+    }],
+  })
   await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
   await expect(
     page.getByText("最旧有效数据更新到 13:40（账户本地）", { exact: true }),
@@ -1194,4 +1199,21 @@ test("冻结来源按行内游标读取，数值和原发布时间保持原样",
     )
   }
   expect(requests[1].searchParams.get("evidence_cursor")).toBe("inner-1")
+})
+
+test("历史完整报表不套用今日20分钟超时要求", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-10-18T06:00:00Z") })
+  await adsBoundary(page, {
+    syncAccounts: [{
+      advertiser_id: "adv-1", timezone: "Asia/Hong_Kong",
+      local_today: "2026-10-18", last_success_at: "2026-10-17T05:00:00Z",
+      incomplete_dates: [], failed_dates: [],
+    }],
+  })
+  await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await page.locator("#ads-start").fill("2026-10-16")
+  await page.locator("#ads-end").fill("2026-10-17")
+  await page.getByRole("button", { name: "应用筛选", exact: true }).click()
+  await expect(page.getByText(/个账户数据超过 20 分钟/)).toHaveCount(0)
+  await expect(page.getByText(/个账户有日期缺失/)).toHaveCount(0)
 })

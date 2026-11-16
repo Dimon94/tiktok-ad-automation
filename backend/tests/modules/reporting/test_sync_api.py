@@ -338,3 +338,77 @@ def test_status_directory_version_reads_one_row_per_account(
     record_property("directory_rows_scanned", scanned)
     record_property("directory_probe_ms", plan["Execution Time"])
     assert scanned <= 2, plan
+
+
+def test_multi_day_status_uses_today_freshness_without_hiding_history_gaps(
+    sync_api, session, sync_seed
+):
+    from datetime import UTC, datetime, timedelta
+
+    from app.modules.accounts.models import AdvertiserAccount
+    from app.modules.reporting.store_models import ReportSyncState
+
+    now = datetime.now(UTC)
+    account = session.get(AdvertiserAccount, (sync_seed.tenant_id, "acc-1"))
+    account.timezone = "UTC"
+    today = now.date()
+    for day, at in [(today - timedelta(days=2), now - timedelta(days=1)), (today, now)]:
+        session.add(
+            ReportSyncState(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id="acc-1",
+                report_kind="ad_day",
+                stat_date=day,
+                status="COMPLETE",
+                last_success_at=at,
+            )
+        )
+    session.flush()
+    client, path = sync_api
+    response = client.get(
+        f"{path}/ad-sync-status",
+        params={
+            "bc_id": "bc-a",
+            "start_date": str(today - timedelta(days=2)),
+            "end_date": str(today),
+        },
+    )
+    assert response.status_code == 200, response.text
+    row = next(r for r in response.json()["accounts"] if r["advertiser_id"] == "acc-1")
+    assert datetime.fromisoformat(row["last_success_at"].replace("Z", "+00:00")) == now
+    assert row["incomplete_dates"] == [str(today - timedelta(days=1))]
+
+
+def test_missing_today_cannot_borrow_historical_success(sync_api, session, sync_seed):
+    from datetime import UTC, datetime, timedelta
+
+    from app.modules.accounts.models import AdvertiserAccount
+    from app.modules.reporting.store_models import ReportSyncState
+
+    now = datetime.now(UTC)
+    account = session.get(AdvertiserAccount, (sync_seed.tenant_id, "acc-1"))
+    account.timezone = "UTC"
+    session.add(
+        ReportSyncState(
+            tenant_id=sync_seed.tenant_id,
+            advertiser_id="acc-1",
+            report_kind="ad_day",
+            stat_date=now.date() - timedelta(days=1),
+            status="COMPLETE",
+            last_success_at=now,
+        )
+    )
+    session.flush()
+    client, path = sync_api
+    response = client.get(
+        f"{path}/ad-sync-status",
+        params={
+            "bc_id": "bc-a",
+            "start_date": str(now.date() - timedelta(days=1)),
+            "end_date": str(now.date()),
+        },
+    )
+    assert response.status_code == 200, response.text
+    row = next(r for r in response.json()["accounts"] if r["advertiser_id"] == "acc-1")
+    assert row["last_success_at"] is None
+    assert row["incomplete_dates"] == [str(now.date())]

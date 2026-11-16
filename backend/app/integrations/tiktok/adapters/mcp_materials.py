@@ -70,6 +70,13 @@ class MCPMaterialOperations(MaterialReadAdapter):
         )
         return share_receipt(response, request)
 
+    def upload_video_id(
+        self, request: contracts.VIDVideoUpload, *, budget: contracts.RemoteCallBudget
+    ) -> contracts.VideoReceipt:
+        raise RemoteCallError(
+            "material_channel_unverified", effect="NOT_SENT", evidence=CallEvidence()
+        )
+
     def upload_video_url(
         self, request: contracts.URLVideoUpload, *, budget: contracts.RemoteCallBudget
     ) -> contracts.VideoReceipt:

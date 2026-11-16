@@ -7,6 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { type Performance, ReportPerformance } from "./ReportPerformance"
 
 export type Proposal = {
   id: string
@@ -32,6 +33,8 @@ export type Proposal = {
   published_version_id?: string
 }
 export type ReviewTask = {
+  performance?: Performance
+  captured_at?: string
   id: string
   status: string
   created_at?: string
@@ -56,6 +59,16 @@ export type ReviewTask = {
   result?: {
     summary?: string
     report?: {
+      executive?: {
+        assessment: string
+        drivers: Array<{
+          finding: string
+          impact: string
+          action: string
+          evidence_ids: string[]
+        }>
+        next_review: string
+      }
       headline: string
       verdict: string
       sections: Array<{
@@ -114,12 +127,13 @@ export function ReviewText({ text }: { text?: string }) {
 }
 export function EvidenceIds({ ids }: { ids?: string[] }) {
   return ids?.length ? (
-    <p className="break-all text-xs text-muted-foreground">
-      证据：{ids.join("、")}
-    </p>
-  ) : (
-    <p className="text-xs text-muted-foreground">未提供证据引用</p>
-  )
+    <details className="text-xs text-muted-foreground">
+      <summary className="cursor-pointer">
+        查看依据来源（{ids.length} 项）
+      </summary>
+      <p className="mt-2 break-all">{ids.join("、")}</p>
+    </details>
+  ) : null
 }
 export function ReviewReport({ task }: { task: ReviewTask }) {
   const result = task.result
@@ -131,45 +145,117 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
   const report = result.report
   return (
     <div className="flex min-w-0 flex-col gap-5" data-testid="review-report">
+      {report?.headline && (
+        <header className="border-b pb-5">
+          <p className="mb-2 text-xs tracking-widest text-muted-foreground">
+            投放经营复盘
+          </p>
+          <h2 className="text-xl font-semibold leading-8 sm:text-2xl">
+            {report.headline}
+          </h2>
+        </header>
+      )}
+      <ReportPerformance performance={task.performance} />
+      {report?.executive && (
+        <section
+          className="flex flex-col gap-4"
+          aria-label="主要拖累与优先动作"
+        >
+          <h3 className="text-lg font-semibold">02　主要拖累与优先动作</h3>
+          <ReviewText text={report.executive.assessment} />
+          {report.executive.drivers.map((driver, index) => (
+            <section key={index} className="rounded-lg border p-4">
+              <h4 className="font-semibold">
+                {index + 1}. {driver.finding}
+              </h4>
+              <p className="mt-2 text-sm leading-7">{driver.impact}</p>
+              <p className="mt-3 border-l-2 pl-3 text-sm leading-7">
+                <strong>优先动作：</strong>
+                {driver.action}
+              </p>
+              <EvidenceIds ids={driver.evidence_ids} />
+            </section>
+          ))}
+          <p className="rounded-md bg-muted p-3 text-sm leading-7">
+            <strong>下次验收：</strong>
+            {report.executive.next_review}
+          </p>
+        </section>
+      )}
       <section className="flex flex-col gap-3" aria-label="复盘报告">
-        <h3 className="font-semibold">{report?.headline || "复盘报告"}</h3>
+        <h3 className="text-lg font-semibold">
+          {report?.executive
+            ? "03　专项决策与分析附录"
+            : "02　经营判断与专项决策"}
+        </h3>
+        {!report?.executive && (
+          <p className="text-sm text-muted-foreground">
+            历史报告保留原始判断；金额和数据日期见上方概览。
+          </p>
+        )}
         {report ? (
           <>
-            <ReviewText text={report.verdict} />
-            {report.sections.map((section, index) => (
-              <section key={index} className="flex flex-col gap-2">
-                <h4 className="font-medium">{section.title}</h4>
-                <ReviewText text={section.body} />
-                {section.table && (
-                  <div className="overflow-auto rounded-md border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          {section.table.columns.map((column, col) => (
-                            <TableHead key={col}>{column}</TableHead>
-                          ))}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {section.table.rows.map((row, index) => (
-                          <TableRow key={index}>
-                            {row.map((cell, col) => (
-                              <TableCell
-                                key={col}
-                                className="whitespace-normal"
-                              >
-                                {cell}
-                              </TableCell>
-                            ))}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+            {!report.executive && <ReviewText text={report.verdict} />}
+            {report.sections.map((section, index) => {
+              const decision =
+                /^决策[一二三123：:]|^(控损|放量|新剧测试)(建议|决策)/.test(
+                  section.title,
+                )
+              const [action, ...analysis] = section.body.split(/\n\s*\n/)
+              const Detail = decision ? "details" : "div"
+              return (
+                <details
+                  key={index}
+                  open={decision && !report.executive}
+                  className="rounded-md border p-4"
+                >
+                  <summary className="cursor-pointer font-medium">
+                    {section.title}
+                  </summary>
+                  <div className="mt-3 flex flex-col gap-3">
+                    {decision && <ReviewText text={action} />}
+                    <Detail className="flex flex-col gap-3">
+                      {decision && (
+                        <summary className="cursor-pointer text-sm text-muted-foreground">
+                          查看分析依据与验证
+                        </summary>
+                      )}
+                      <ReviewText
+                        text={decision ? analysis.join("\n\n") : section.body}
+                      />
+                      {section.table && (
+                        <div className="overflow-auto rounded-md border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                {section.table.columns.map((column, col) => (
+                                  <TableHead key={col}>{column}</TableHead>
+                                ))}
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {section.table.rows.map((row, index) => (
+                                <TableRow key={index}>
+                                  {row.map((cell, col) => (
+                                    <TableCell
+                                      key={col}
+                                      className="whitespace-normal"
+                                    >
+                                      {cell}
+                                    </TableCell>
+                                  ))}
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                      <EvidenceIds ids={section.evidence_ids} />
+                    </Detail>
                   </div>
-                )}
-                <EvidenceIds ids={section.evidence_ids} />
-              </section>
-            ))}
+                </details>
+              )
+            })}
           </>
         ) : (
           <ReviewText text={result.summary} />
@@ -184,21 +270,26 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
             INSUFFICIENT_EVIDENCE: "证据不足",
           }[report?.rule_decision.status ?? ""] ?? "未记录结构化结论"}
         </Badge>
-        <ReviewText
-          text={
-            report?.rule_decision.reason ||
-            (result.proposals?.length
-              ? "本轮有可执行变更，请查看下方变更记录及其发布状态。"
-              : "本轮未提交可执行变更。报告中的分析和普通建议不会自动修改规则；历史报告未记录不调整或证据不足的具体原因。")
-          }
-        />
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            查看规则判断依据
+          </summary>
+          <ReviewText
+            text={
+              report?.rule_decision.reason ||
+              (result.proposals?.length
+                ? "本轮有可执行变更，请查看下方变更记录及其发布状态。"
+                : "本轮未提交可执行变更。报告中的分析和普通建议不会自动修改规则；历史报告未记录不调整或证据不足的具体原因。")
+            }
+          />
+        </details>
       </section>
       <section className="flex flex-col gap-3" aria-label="普通建议">
         <h3 className="font-semibold">
-          普通建议（{result.recommendations?.length ?? 0}）
+          后续行动（{result.recommendations?.length ?? 0}）
         </h3>
         <p className="text-xs text-muted-foreground">
-          用于后续行动和验证，不会作为规则变更发布。
+          以下是需要跟进的运营动作；确认规则请查看规则建议。
         </p>
         {result.recommendations?.map((item, index) => (
           <div key={index} className="flex flex-col gap-2 border-l-2 pl-4">
@@ -214,100 +305,6 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
           <p className="text-sm text-muted-foreground">本轮没有普通建议。</p>
         )}
       </section>
-    </div>
-  )
-}
-
-function flatten(value: unknown, prefix = ""): Record<string, unknown> {
-  // 条件数组也逐字段对照，使嵌套规则阈值变化有明确位置。
-  if (Array.isArray(value) && value.length)
-    return Object.fromEntries(
-      value.flatMap((child, index) =>
-        Object.entries(flatten(child, `${prefix}[${index}]`)),
-      ),
-    )
-  if (
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.keys(value).length
-  )
-    return Object.fromEntries(
-      Object.entries(value).flatMap(([key, child]) =>
-        Object.entries(flatten(child, prefix ? `${prefix}.${key}` : key)),
-      ),
-    )
-  return { [prefix || "值"]: value }
-}
-function display(value: unknown): string {
-  if (value === undefined) return "未设置"
-  if (value === null) return "空"
-  if (typeof value === "boolean") return value ? "是" : "否"
-  if (Array.isArray(value)) return value.map(display).join("、") || "无"
-  if (typeof value === "object")
-    return Object.entries(value)
-      .map(([key, item]) => `${key}：${display(item)}`)
-      .join("；")
-  return String(value)
-}
-export function ReadableValues({ value }: { value: unknown }) {
-  return (
-    <dl className="grid gap-2 text-sm">
-      {Object.entries(flatten(value)).map(([key, item]) => (
-        <div key={key} className="flex flex-wrap gap-2">
-          <dt className="text-muted-foreground">{key}</dt>
-          <dd className="min-w-0 break-all">{display(item)}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-export function ProposalDiff({
-  before,
-  after,
-}: {
-  before: unknown
-  after: unknown
-}) {
-  const previous = flatten(before),
-    next = flatten(after)
-  const keys = Array.from(
-    new Set([...Object.keys(previous), ...Object.keys(next)]),
-  )
-  const changed = keys.filter(
-    (key) => JSON.stringify(previous[key]) !== JSON.stringify(next[key]),
-  )
-  return (
-    <div className="overflow-auto rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>调整字段</TableHead>
-            <TableHead>调整前</TableHead>
-            <TableHead>调整后</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {changed.map((key) => (
-            <TableRow key={key}>
-              <TableCell className="whitespace-normal break-all">
-                {key}
-              </TableCell>
-              <TableCell className="whitespace-normal break-all">
-                {display(previous[key])}
-              </TableCell>
-              <TableCell className="whitespace-normal break-all">
-                {display(next[key])}
-              </TableCell>
-            </TableRow>
-          ))}
-          {!changed.length && (
-            <TableRow>
-              <TableCell colSpan={3}>未记录字段差异</TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
     </div>
   )
 }

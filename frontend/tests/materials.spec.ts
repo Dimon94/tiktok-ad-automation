@@ -123,6 +123,8 @@ async function boundary(
         { code: "action_forbidden", message: "读取素材失败" },
         options.deny,
       )
+    if (path.includes("/link-uploads/material-items/"))
+      return reply({ items: [], total: 0 })
     if (path.endsWith("/materials")) return reply(paged(records))
     if (path.endsWith("/preview"))
       return reply({
@@ -926,3 +928,161 @@ for (const [label, patch] of [
     )
   })
 }
+
+const LINK_VID = "v1c033g50000dbk8b4nog65o4ru0ciu0"
+const LINK_URL = `https://ad-creative-studio-platform.tiktok-row.net/preview?vid=${LINK_VID}`
+const LINK_BATCH = "77777777-7777-4777-8777-777777777777"
+const LINK_ITEM = "88888888-8888-4888-8888-888888888888"
+
+async function linkBoundary(page: Page, options: { uncertain?: boolean } = {}) {
+  await boundary(page)
+  const submissions: any[] = []
+  const previews: URLSearchParams[] = []
+  const batch = {
+    id: LINK_BATCH,
+    bc_id: BC,
+    naming_date: "20261116",
+    input_count: 2,
+    unique_count: 1,
+    duplicate_count: 1,
+    account_count: 2,
+    total: 2,
+    counts: { success: 2 },
+    created_at: "2026-11-16T02:00:00Z",
+  }
+  const item = {
+    id: LINK_ITEM,
+    batch_id: LINK_BATCH,
+    bc_id: BC,
+    line_no: 1,
+    source_url: LINK_URL,
+    source_video_id: LINK_VID,
+    advertiser_id: "7667028228640866325",
+    requested_file_name: `20261116_${LINK_VID}_001.mp4`,
+    actual_file_name: `20261116_${LINK_VID}_001.mp4`,
+    status: "success",
+    video_id: "v10033g50000dbk82c7og65i8qejbr60",
+    mid: "7703549200025944084",
+    material_id: null,
+    duplicate_of: null,
+    duplicate_line_no: null,
+    error_code: null,
+    error_message: null,
+    request_id: "offline-request",
+    can_retry: false,
+    can_recheck: false,
+    updated_at: batch.created_at,
+  }
+  await page.route("**/api/**/materials/link-uploads**", async (route) => {
+    const req = route.request(),
+      u = new URL(req.url())
+    if (req.method() === "POST") {
+      submissions.push(req.postDataJSON())
+      if (options.uncertain && submissions.length === 1)
+        return route.abort("failed")
+      return route.fulfill({ json: batch, status: 201 })
+    }
+    if (u.pathname.includes("material-items"))
+      return route.fulfill({ json: { items: [], total: 0 } })
+    if (u.pathname.endsWith("/items"))
+      return route.fulfill({ json: { items: [item], total: 1 } })
+    if (u.pathname.endsWith(LINK_BATCH)) return route.fulfill({ json: batch })
+    return route.fulfill({ json: { items: [batch], total: 1 } })
+  })
+  await page.route(
+    "**/api/**/materials/account-video-preview?**",
+    async (route) => {
+      previews.push(new URL(route.request().url()).searchParams)
+      return route.fulfill({
+        json: {
+          bc_id: BC,
+          advertiser_id: item.advertiser_id,
+          video_id: item.video_id,
+          url: `${new URL(route.request().url()).origin}/fixture-account-video`,
+          width: 1080,
+          height: 1920,
+          duration: 10,
+          format: "mp4",
+        },
+      })
+    },
+  )
+  await page.route("**/fixture-account-video", () => new Promise(() => {}))
+  return { submissions, previews, item }
+}
+
+test("链接上传校验无效行并按有效链接与多账户计算任务", async ({ page }) => {
+  const { submissions } = await linkBoundary(page)
+  await page.goto(url)
+  await page.getByRole("button", { name: "素材链接上传", exact: true }).click()
+  const sheet = page.getByRole("dialog", { name: "素材链接上传" })
+  await sheet
+    .getByLabel("素材预览链接", { exact: true })
+    .fill(`${LINK_URL}\nhttps://example.com/bad`)
+  await expect(
+    sheet.getByText("第 2 行不是支持的 TikTok 素材预览链接"),
+  ).toBeVisible()
+  await sheet
+    .getByLabel("目标广告账户", { exact: true })
+    .fill("7667028228640866325\n123")
+  await expect(sheet.getByRole("button", { name: /开始上传/ })).toBeDisabled()
+  await sheet
+    .getByLabel("素材预览链接", { exact: true })
+    .fill(`${LINK_URL}\n${LINK_URL}`)
+  await expect(
+    sheet.getByText(/1 个有效链接 · 1 个重复链接 · 2 个账户 · 2 条上传任务/),
+  ).toBeVisible()
+  await sheet.getByRole("button", { name: "开始上传 2 条任务" }).click()
+  await expect(page.getByRole("region", { name: "链接上传队列" })).toBeVisible()
+  expect(submissions).toHaveLength(1)
+  expect(submissions[0].advertiser_ids).toEqual(["7667028228640866325", "123"])
+  expect(submissions[0].bc_id).toBe(BC)
+  await expect(page).toHaveURL(/link_batch_id=/)
+})
+
+test("链接上传未知提交复用原请求标识和原始输入", async ({ page }) => {
+  const { submissions } = await linkBoundary(page, { uncertain: true })
+  await page.goto(url)
+  await page.getByRole("button", { name: "素材链接上传", exact: true }).click()
+  const sheet = page.getByRole("dialog", { name: "素材链接上传" })
+  await sheet.getByLabel("素材预览链接", { exact: true }).fill(LINK_URL)
+  await sheet.getByLabel("目标广告账户", { exact: true }).fill("123")
+  await sheet.getByRole("button", { name: "开始上传 1 条任务" }).click()
+  await expect(sheet.getByLabel("素材预览链接", { exact: true })).toBeDisabled()
+  await sheet.getByRole("button", { name: "核实原提交" }).click()
+  await expect(page).toHaveURL(/link_batch_id=/)
+  expect(submissions).toHaveLength(2)
+  expect(submissions[1]).toEqual(submissions[0])
+})
+
+test("链接批次刷新后可打开详情并按实际账户 VID 预览", async ({ page }) => {
+  const { previews, item } = await linkBoundary(page)
+  await page.goto(`${url}&tab=links&link_batch_id=${LINK_BATCH}`)
+  await page.getByRole("button", { name: "查看详情", exact: true }).click()
+  const sheet = page.getByRole("dialog", { name: "链接上传详情" })
+  await expect(sheet.getByText(item.video_id, { exact: true })).toBeVisible()
+  expect(previews).toHaveLength(0)
+  await sheet.getByRole("button", { name: "预览账户素材", exact: true }).click()
+  await expect(sheet.getByLabel("账户素材预览", { exact: true })).toBeVisible()
+  expect(previews[0].get("advertiser_ids")).toBe(item.advertiser_id)
+  expect(previews[0].get("video_id")).toBe(item.video_id)
+  expect(previews[0].get("bc_id")).toBe(BC)
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: "查看详情", exact: true }),
+  ).toBeVisible()
+})
+
+test("链接批次不能在其他 BC 读取条目或打开预览", async ({ page }) => {
+  const { previews } = await linkBoundary(page)
+  await page.goto(
+    `/tenants/${A}/materials?bc_id=${BC2}&tab=links&link_batch_id=${LINK_BATCH}`,
+  )
+  await expect(
+    page.getByText("该批次属于其他 BC，请切换到对应 BC 查看。"),
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "查看详情", exact: true }),
+  ).toHaveCount(0)
+  expect(previews).toHaveLength(0)
+})

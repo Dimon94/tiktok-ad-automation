@@ -1154,3 +1154,49 @@ def test_cached_unknown_identity_keeps_mid_before_later_asset_observation(
     session.flush()
     backfill_creatives(session, **args)
     assert _get(session, directory_seed, "cached").identity_status == "CONFLICT"
+
+
+@pytest.mark.parametrize(
+    "configuration,expected_assets,expected_status",
+    [
+        (
+            {"video_id": "cached-video"},
+            [{"platform_material_id": "cached-video", "material_type": "VIDEO"}],
+            "RESOLVED",
+        ),
+        (
+            {"image_ids": ["b", "a"]},
+            [{"platform_material_id": p, "material_type": "IMAGE"} for p in ["b", "a"]],
+            "COMPOSITE",
+        ),
+        ({"advertiser_id": "foreign", "video_id": "foreign-video"}, [], "UNRESOLVED"),
+        ({}, [], "UNRESOLVED"),
+    ],
+)
+def test_live_child_publication_uses_explicit_cached_assets_without_material_references(
+    session, directory_seed, configuration, expected_assets, expected_status
+):
+    _authority(session, directory_seed)
+    parent = directory_seed.row.ref
+    source = _source_page(
+        directory_seed, 1, [(parent.remote_id, "group")], terminal=True
+    )
+    child = replace(
+        source.items[0],
+        ref=EntityRef(parent.tenant_id, parent.advertiser_id, "creative", "native"),
+        parent_ref=parent,
+        ad_type="REGULAR",
+        configuration=configuration,
+    )
+    run = _run(session, directory_seed, kind="creative", ad_type="REGULAR")
+    stage_directory_page(
+        session,
+        run_id=run.id,
+        page=replace(source, items=(child,), materials=()),
+        claim_generation=1,
+    )
+    publish_directory(session, run_id=run.id, claim_generation=1)
+    row = _get(session, directory_seed, "native")
+    assert row.identity_status == expected_status
+    assert row.assets == expected_assets
+    assert row.ad_remote_id == parent.remote_id

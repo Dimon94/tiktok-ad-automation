@@ -66,3 +66,38 @@ def test_upgrade_archive_and_native_heads_preserves_data(monkeypatch, revision):
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalars().all() == ["0132_native_ai_archive_merge"]
+
+
+@pytest.mark.parametrize(
+    "revision", ["0132_native_ai_archive_merge", "0132_material_link_upload"]
+)
+def test_upgrade_material_and_native_heads_preserves_data(monkeypatch, revision):
+    with historical_database(monkeypatch, revision) as (engine, config):
+        tenant_id = uuid4()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO tenant (id,name,active) VALUES (:id,'material merge tenant',true)"
+                ),
+                {"id": tenant_id},
+            )
+        command.upgrade(config, "0133_native_material_merge")
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT name,active FROM tenant WHERE id=:id"), {"id": tenant_id}
+            ).one() == ("material merge tenant", True)
+            inspector = inspect(connection)
+            assert all(
+                inspector.has_table(table)
+                for table in (
+                    "ai_review_source",
+                    "ai_review_receipt",
+                    "ai_review_artifact",
+                    "parent_report_day",
+                    "material_link_batch",
+                    "material_link_item",
+                )
+            )
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalars().all() == ["0133_native_material_merge"]

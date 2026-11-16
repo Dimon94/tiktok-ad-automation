@@ -91,3 +91,18 @@
 隔离Linux原6c源码的完整Nativelevels[False]先失败：两个Celery消息均SUCCESS/IGNORED、无SDK请求、任务仍RUNNING；PendingDispatch正式task_name为reporting.backfill_step，测试helper硬编码reporting.job_step，消费端正确拒绝。helper在现有session内保存record.task_name并发送相同正式消息两次；不改产品围栏、等待时间、计数或重试。固定副本完整场景1 passed/76.72s，包括两页发布和真实浏览器；两次投递分别COMPLETE及重复竞争失败，PG最终COMPLETE/request_count2/pages2。诊断补丁与正式两行修复分离，主分支只纳入后者。
 
 原EE与6c的helper/dispatcher/envelope/job_tasks blob相同，旧红绿证据适用于该根因；最终合并头Linux场景仍待验证。独立容器、网络及PG测试卷已清理，仅保留依赖缓存镜像；本地ownedPG/Redis继续用于根代理集成。Python语法/Ruff、JSON与差异检查通过。
+
+
+## 最新主线 b5ee9fa4 联合集成
+
+非破坏性合并b5ee9fa4，保留上游素材链接、AI经营报告/说明恢复、报表时效与空尾页续跑、目录身份、任务收尾及侧栏改动。客户端按两侧实际声明并集保留1756个唯一类型及SDK引用，不全量刷新无关schema；前端用例保留当前冻结选择/来源分页和上游历史时效两侧行为。文档完整保留两侧时间线，上游生产记录不代表本PR已部署。
+
+新增纯合并0133_native_material_merge连接0132_native_ai_archive_merge与0132_material_link_upload。原分支历史迁移逐文件字节不变，新0132与上游字节一致；原迁移测试保留，新两侧升级保留tenant及Native/AI/素材链接表，迁移图/真实升级9项通过9.44秒。
+
+Python冲突保留上游批量说明恢复及captured_at投影、SQLModel列类型边界。上游两处类型诊断以col/纯typing.cast解决，不改查询或身份逻辑。调度保留上游可执行候选/归档摘要围栏、UNKNOWN/在途判定及业务更新时间，也保留Native授权/本地取消与all_native_matched闸门。
+
+联合125项先124 passed/1 failed：缺失回读用例拿排队前NEEDS_REVIEW摘要比较新RUNNING。真实PG采集表明显式单元唤醒已重新排队1条只读READBACK，修正测试按新时点重读公共结果并保留排队前NEEDS_REVIEW断言，精确验证新RUNNING/1条QUEUED；未为该例增加生产状态补丁。
+
+另补既有MATERIAL/CTA两个前置失败例的真实续跑：实际PendingDispatch→deliver_step/finish_delivery唤醒→成功兄弟MATCH；新主线原始步骤标签会使已确定Native计划PARTIAL仍存RUNNING。现在仅在无实际在途步骤的收尾阶段复用native_completion.batch_results canonical owner，内部事实汇总不依赖原操作者仍可读公共API；非Native/真正QUEUED/RUNNING/UNKNOWN分支保留。真实红后专项16项通过66.18秒，包括兄弟成功/失败计划隔离、撤销账户无平台写、操作者停用后仍保留PARTIAL、上游收尾7例、实际financial-review-v2分析归档到HTTP封面（D7有效/缺失、精确金额及截止）。
+
+最终全app ty、Ruff、生产/demo构建通过；独立端口且重试0的冻结来源/今日超时/历史完整三项前端通过4.6秒。默认本地服务器/环境组合此前三例未加载工作台，独立端口及明确本地API构建后通过，不将其判为源码修复。DSH联合12通过/2既有真实运行时门槛未运行；严格证据工具2例包含在其中。通过集合重叠不相加。最终提交后的两轴复审、合并头Linux及远端完整CI仍待，不宣称已上线。

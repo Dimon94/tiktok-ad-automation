@@ -608,16 +608,17 @@ def test_native_six_creates(
                 )
             ).all()
             created = [x for x in actual if x.remote_id]
-            assert len(created) == {
-                "cta_unknown": 0,
-                "campaign_reject": 1,
-                "group_reject": 2,
-                "campaign_unknown": 1,
-                "revision": 0,
-                "revision_after_cta": 1,
-            }[failure], [
-                (x.kind, x.status, x.phase, x.error_code, x.remote_id) for x in actual
-            ]
+            assert (
+                len(created)
+                == {
+                    "cta_unknown": 0,
+                    "campaign_reject": 1,
+                    "group_reject": 2,
+                    "campaign_unknown": 1,
+                    "revision": 0,
+                    "revision_after_cta": 1,
+                }[failure]
+            ), [(x.kind, x.status, x.phase, x.error_code, x.remote_id) for x in actual]
             result = submissions.get_submission(
                 s, context=context, submission_id=receipt.submission_id
             )
@@ -747,7 +748,10 @@ def test_native_six_creates(
     )
     with Session(native.engine) as s:
         status = s.get(Submission, receipt.submission_id).status
-        if readback:
+        if readback == "absent":
+            # 续跑已重新排队只读校验；此处观察的是新一轮执行状态。
+            assert status == "RUNNING"
+        elif readback:
             assert status == ("COMPLETED" if readback == "match" else "NEEDS_REVIEW")
         else:
             assert status in {"RUNNING", "NEEDS_REVIEW"}
@@ -799,9 +803,7 @@ def test_native_submission_rejects_changed_freeze(
             connection.authorization_revision += 1
             s.add(connection)
         else:
-            summary = previews.get_preview_summary(
-                s, context=context, preview_id=pid
-            )
+            summary = previews.get_preview_summary(s, context=context, preview_id=pid)
             plan = next(
                 item
                 for item in summary.native_request["plans"]

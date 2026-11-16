@@ -327,6 +327,12 @@ def complete(
         cited.update(
             str(e) for section in body.report.sections for e in section.evidence_ids
         )
+        if body.report.executive is not None:
+            cited.update(
+                str(e)
+                for driver in body.report.executive.drivers
+                for e in driver.evidence_ids
+            )
     from app.modules.ai_workbench.review_store import delivered_evidence_ids
 
     if not cited.issubset(delivered_evidence_ids(session, task)):

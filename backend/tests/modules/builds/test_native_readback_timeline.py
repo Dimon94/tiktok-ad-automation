@@ -155,7 +155,23 @@ def reconcile_created(
         database_engine=engine, context=context, submission_id=submission_id
     )
     with Session(engine) as db:
-        assert db.get(Submission, submission_id).status == summary.status
+        current = submissions.get_submission(
+            db, context=context, submission_id=submission_id
+        )
+        assert db.get(Submission, submission_id).status == current.status
+        if scenario == "absent":
+            # 上面的单元唤醒已重新投递缺失对象回读；旧摘要属于排队前。
+            assert current.status == "RUNNING"
+            pending_reads = db.exec(
+                select(ExecutionStep).where(
+                    ExecutionStep.submission_id == submission_id,
+                    ExecutionStep.kind == "READBACK",
+                    ExecutionStep.status == "QUEUED",
+                )
+            ).all()
+            assert len(pending_reads) == 1
+        else:
+            assert current.status == summary.status
         if scenario in {
             "difference",
             "rejected",

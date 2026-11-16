@@ -3,7 +3,7 @@
 import json
 from collections.abc import Iterator, Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import inspect, text
@@ -724,7 +724,8 @@ def publish_staged_creatives(
         .execute(
             text(f"""
         SELECT o.kind,o.remote_id,o.parent_kind,o.parent_remote_id,o.ad_type,
-               o.name,o.operation_status,o.observed_at,p.operation_status AS parent_status
+               o.name,o.operation_status,o.observed_at,o.configuration,o.published_version,
+               p.operation_status AS parent_status
         FROM {entities_table} s JOIN ad_object o
           ON o.tenant_id=:tenant AND o.advertiser_id=:account AND o.kind=s.kind AND o.remote_id=s.remote_id
         LEFT JOIN ad_object p ON p.tenant_id=o.tenant_id AND p.advertiser_id=o.advertiser_id
@@ -797,6 +798,26 @@ def publish_staged_creatives(
         existing = {row["creative_id"]: row for row in known}
         for entity in candidates:
             original = existing.get(entity["remote_id"])
+            # 仅解析缺少本页素材引用的子对象，复用账户/父广告校验和轮播完整性校验。
+            parsed = (
+                next(
+                    (
+                        row
+                        for row in _cached_rows(
+                            cast(Mapping[str, Any], entity),
+                            tenant_id,
+                            advertiser_id,
+                            None,
+                        )
+                        if row["assets"]
+                    ),
+                    None,
+                )
+                if entity["kind"] == "creative"
+                else None
+            )
+            # 完整子目录按当前胜出版本发布；空内容继续保全既有正向身份。
+            # 与既有资产不一致仍由统一UPSERT记录真实冲突，不能静默覆盖。
             # 空资产只代表未知；后续同父广告完整证据可显式补齐并留下enrichment证据。
             rows.append(
                 {
@@ -804,8 +825,11 @@ def publish_staged_creatives(
                     "ad_remote_id": entity["parent_remote_id"]
                     if entity["kind"] == "creative"
                     else entity["remote_id"],
-                    "ad_material_id": original["ad_material_id"] if original else None,
-                    "assets": original["assets"] if original else [],
+                    "ad_material_id": (parsed.get("ad_material_id") if parsed else None)
+                    or (original["ad_material_id"] if original else None),
+                    "assets": parsed["assets"]
+                    if parsed
+                    else (original["assets"] if original else []),
                     "name": entity["name"],
                     "operation_status": entity["operation_status"],
                     # 子对象ENABLE不能推翻父广告的明确删除；父状态在账户发布锁下

@@ -77,10 +77,11 @@ def metadata(
 
 # Page-level equivalent of the authoritative summary's frozen object partition.
 # MATERIAL/CTA/READBACK are dependency facts, never additional advertising objects.
+# 与详情汇总一致，先物化组合范围，避免历史核查状态投影反复展开整个账户图。
 
 COUNTS = (
     """
-, scope_basis AS (
+, scope_basis AS MATERIALIZED (
  SELECT p.id submission_id,u.*, EXISTS (
   SELECT 1 FROM build_submission old JOIN build_unit ou ON ou.tenant_id=old.tenant_id AND ou.preview_id=old.preview_id
   WHERE old.tenant_id=p.tenant_id AND old.draft_id=p.draft_id AND old.ordinal<p.ordinal

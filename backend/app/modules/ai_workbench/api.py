@@ -323,7 +323,7 @@ def create_review(
             "evidence": task.evidence,
             "result": task.result,
         },
-        proposals=[proposals._public(row) for row in rows],
+        proposals=[proposals.public_proposal(session, row) for row in rows],
     )
 
 
@@ -367,7 +367,7 @@ def accept_proposal(
         request_id=_body.request_id,
     )
     session.commit()
-    return proposals._public(row)
+    return proposals.public_proposal(session, row)
 
 
 @router.post("/ai-optimizers/{optimizer_id}/proposals/{proposal_id}/reject")
@@ -388,7 +388,7 @@ def reject_proposal(
         request_id=body.request_id,
     )
     session.commit()
-    return proposals._public(row)
+    return proposals.public_proposal(session, row)
 
 
 @router.get("/ai-optimizers/{optimizer_id}/reviews")
@@ -517,10 +517,13 @@ def get_review(
         optimizer_id=optimizer_id,
         task_id=task_id,
     )
+    from app.modules.ai_workbench.report_performance import report_performance
+
     return {
         "id": task.id,
         "status": task.status,
         "result": task.result,
+        "performance": report_performance(session, task),
         "created_at": task.created_at,
         "finished_at": task.finished_at,
         "optimizer_version": task.optimizer_version,

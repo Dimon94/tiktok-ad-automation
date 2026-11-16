@@ -34,8 +34,24 @@ class RuleDecision(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
 
 
+class ReportDriver(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    finding: str = Field(min_length=1, max_length=160)
+    impact: str = Field(min_length=1, max_length=350)
+    action: str = Field(min_length=1, max_length=250)
+    evidence_ids: list[UUID] = Field(min_length=1, max_length=30)
+
+
+class ReportExecutive(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    assessment: str = Field(min_length=1, max_length=300)
+    drivers: list[ReportDriver] = Field(min_length=1, max_length=3)
+    next_review: str = Field(min_length=1, max_length=250)
+
+
 class ReviewReport(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    executive: ReportExecutive | None = None
     headline: str = Field(min_length=1, max_length=160)
     verdict: str = Field(min_length=1, max_length=1000)
     sections: list[ReportSection] = Field(min_length=1, max_length=12)

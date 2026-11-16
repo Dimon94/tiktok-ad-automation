@@ -153,6 +153,25 @@ def test_manual_contract_does_not_forbid_candidates_and_requires_report(
     assert (
         client.post(base + "/complete", headers=headers, json=unread).status_code == 404
     )
+    unread_executive = {**payload, "report": report()}
+    unread_executive["report"]["executive"] = {
+        "assessment": "消耗上升，回收不足",
+        "drivers": [
+            {
+                "finding": "高消耗账户拖累",
+                "impact": "需要核对金额",
+                "action": "检查账户",
+                "evidence_ids": [str(uuid4())],
+            }
+        ],
+        "next_review": "下一完整日复核",
+    }
+    assert (
+        client.post(
+            base + "/complete", headers=headers, json=unread_executive
+        ).status_code
+        == 404
+    )
     contradictory = {**payload, "report": report("PROPOSED")}
     assert (
         client.post(base + "/complete", headers=headers, json=contradictory).status_code

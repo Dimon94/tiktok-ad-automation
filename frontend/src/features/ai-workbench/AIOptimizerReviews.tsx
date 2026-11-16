@@ -1,9 +1,17 @@
+import { useQuery } from "@tanstack/react-query"
 import { useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Field, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -21,17 +29,22 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { catalogQuery } from "../automation-rules/queries"
 import { aiRequest, createRequestIdentity, errorMessage } from "./api"
+import {
+  proposalTitle,
+  publicationEffect,
+  RuleProposalSummary,
+  StrategyProposalSummary,
+} from "./RuleProposalSummary"
 import {
   activeStatuses,
   dateLabel,
-  ProposalDiff,
-  ReadableValues,
+  type Proposal,
   ReviewReport,
+  type ReviewTask,
   ReviewText,
   statusLabel,
-  type Proposal,
-  type ReviewTask,
 } from "./reviewPresentation"
 
 type Props = { tenantId: string; optimizerId: string }
@@ -56,10 +69,12 @@ export function AIOptimizerReviews(props: Props) {
   )
 }
 function ReviewWorkspace({ tenantId, optimizerId }: Props) {
+  const catalog = useQuery(catalogQuery(tenantId))
   const base = `/api/tenants/${tenantId}/ai-optimizers/${optimizerId}`
   const [page, setPage] = useState<HistoryPage | null>(null)
   const [historyOffset, setHistoryOffset] = useState(0)
   const [historyStatus, setHistoryStatus] = useState("all")
+  const [reportOpen, setReportOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [task, setTask] = useState<ReviewTask | null>(null)
   const [active, setActive] = useState<ReviewTask | null>(null)
@@ -85,6 +100,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
     lifecycle.current = controller
     return () => controller.abort()
   }, [])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 刷新计数用于人工刷新及处理决定后的重新读取。
   useEffect(() => {
     if (!optimizerId) {
       setLoadingHistory(false)
@@ -104,7 +120,6 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
         if (controller.signal.aborted) return
         setPage(result)
         setActive(result.active_task)
-        setSelectedId((previous) => previous ?? result.items[0]?.id ?? null)
       })
       .catch((reason) => {
         if (!controller.signal.aborted) setError(errorMessage(reason))
@@ -114,6 +129,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
       })
     return () => controller.abort()
   }, [base, optimizerId, historyOffset, historyStatus, refresh])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 刷新计数用于人工刷新及处理决定后的重新读取。
   useEffect(() => {
     if (!selectedId) return
     const controller = new AbortController()
@@ -129,6 +145,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
       })
     return () => controller.abort()
   }, [base, selectedId, detailRefresh])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 刷新计数用于人工刷新及处理决定后的重新读取。
   useEffect(() => {
     if (!optimizerId) {
       setLoadingProposals(false)
@@ -242,6 +259,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
         setActive(result.task)
         setSelectedId(result.task.id)
         setTask(result.task)
+        setReportOpen(true)
         setHistoryOffset(0)
         setRefresh((value) => value + 1)
       }
@@ -321,11 +339,16 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
               活动复盘 · {statusLabel(active.status)}
               {active.preparation &&
                 ` · 账户数据准备 ${active.preparation.completed_accounts ?? 0} / ${active.preparation.total_accounts ?? 0}`}
+              {!!active.preparation?.failed_accounts &&
+                ` · ${active.preparation.failed_accounts} 个账户准备失败`}
             </span>
             <Button
               size="sm"
               variant="outline"
-              onClick={() => setSelectedId(active.id)}
+              onClick={() => {
+                setSelectedId(active.id)
+                setReportOpen(true)
+              }}
             >
               查看活动复盘
             </Button>
@@ -372,7 +395,8 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
             <Table data-testid="review-history">
               <TableHeader>
                 <TableRow>
-                  <TableHead>时间</TableHead>
+                  <TableHead>生成时间</TableHead>
+                  <TableHead>数据冻结</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>短结论</TableHead>
                   <TableHead>详情</TableHead>
@@ -390,9 +414,14 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
                       <TableCell className="text-xs">
                         {dateLabel(item.created_at)}
                       </TableCell>
+                      <TableCell className="text-xs">
+                        {dateLabel(item.captured_at)}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline">
-                          {statusLabel(item.status)}
+                          {item.status === "PENDING"
+                            ? "待确认"
+                            : statusLabel(item.status)}
                         </Badge>
                       </TableCell>
                       <TableCell
@@ -408,17 +437,18 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
                           aria-label={`查看复盘 ${item.id}`}
                           onClick={() => {
                             setSelectedId(item.id)
+                            setReportOpen(true)
                             setProposalOffset(0)
                           }}
                         >
-                          查看
+                          查看报告
                         </Button>
                       </TableCell>
                     </TableRow>
                   ))}
                 {(loadingHistory || !page?.items.length) && (
                   <TableRow>
-                    <TableCell colSpan={4}>
+                    <TableCell colSpan={5}>
                       {loadingHistory ? "正在读取历史…" : "暂无复盘历史。"}
                     </TableCell>
                   </TableRow>
@@ -448,77 +478,76 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
             </Button>
           </div>
         </section>
-        {selectedId && (
-          <section
-            className="flex min-w-0 flex-col gap-4 rounded-lg border p-4"
-            aria-label="单轮复盘详情"
-            data-testid="review-detail"
+        <Dialog open={reportOpen && !!selectedId} onOpenChange={setReportOpen}>
+          <DialogContent
+            className="flex max-h-[92dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
+            aria-describedby="review-report-description"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="font-semibold">单轮复盘详情</h3>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!!busy}
-                onClick={() => {
-                  setDetailRefresh((value) => value + 1)
-                  setRefresh((value) => value + 1)
-                }}
-              >
-                刷新复盘状态
-              </Button>
-            </div>
-            <p className="break-all text-xs text-muted-foreground">
-              复盘 {selectedId}
-            </p>
-            {!task ? (
-              <p role="status">正在读取报告…</p>
-            ) : (
-              <>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  <Badge variant="outline">{statusLabel(task.status)}</Badge>
-                  <span>
-                    创建 {dateLabel(task.created_at)} · 完成{" "}
-                    {dateLabel(task.finished_at)} · 投手版本 v
-                    {task.optimizer_version ?? "—"}
-                  </span>
-                </div>
-                {task.preparation && (
-                  <p className="text-sm">
-                    账户数据准备 {task.preparation.completed_accounts ?? 0} /{" "}
-                    {task.preparation.total_accounts ?? 0}
-                    {!!task.preparation.failed_accounts &&
-                      `，${task.preparation.failed_accounts} 个账户准备失败，复盘将注明缺口`}
-                  </p>
-                )}
-                {task.error_message && (
-                  <p className="text-sm text-destructive">
-                    {task.error_message}
-                  </p>
-                )}
-                {task.review_context && (
-                  <p className="text-xs text-muted-foreground">
-                    本轮发布方式：
-                    {task.review_context.publication === "AUTHORIZED_AUTO"
-                      ? "授权范围内自动发布"
-                      : "人工确认后发布"}
-                  </p>
-                )}
-                <ReviewReport task={task} />
-                {task.status === "FAILED" && (
-                  <Button
-                    variant="outline"
-                    className="self-start"
-                    disabled={!!busy || !!active || !page?.runtime_ready}
-                    onClick={() => void controlTask("retry", task)}
-                  >
-                    重试复盘
-                  </Button>
-                )}
-              </>
-            )}
-          </section>
-        )}
+            <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12 text-left">
+              <DialogTitle>投放经营复盘报告</DialogTitle>
+              <DialogDescription id="review-report-description">
+                按数据日期阅读消耗、回收表现和经营建议。报告不代表实时数据。
+              </DialogDescription>
+            </DialogHeader>
+            <section
+              className="min-h-0 min-w-0 overflow-y-auto px-5 py-6 sm:px-8"
+              aria-label="单轮复盘详情"
+              data-testid="review-detail"
+              data-review-id={selectedId}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {dateLabel(task?.created_at)} ·{" "}
+                  {task ? statusLabel(task.status) : "读取中"}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setDetailRefresh((value) => value + 1)
+                    setRefresh((value) => value + 1)
+                  }}
+                >
+                  刷新复盘状态
+                </Button>
+              </div>
+
+              {!task ? (
+                <p role="status">正在读取报告…</p>
+              ) : (
+                <>
+                  {task.status === "PREPARING" && task.preparation && (
+                    <p className="text-sm">
+                      账户数据准备 {task.preparation.completed_accounts ?? 0} /{" "}
+                      {task.preparation.total_accounts ?? 0}
+                      {!!task.preparation.failed_accounts &&
+                        `，${task.preparation.failed_accounts} 个账户准备失败，复盘将注明缺口`}
+                    </p>
+                  )}
+                  {task.error_message && (
+                    <p className="text-sm text-destructive">
+                      {task.error_message}
+                    </p>
+                  )}
+                  <div className="mx-auto mt-6 max-w-4xl">
+                    <ReviewReport key={task.id} task={task} />
+                  </div>
+                  {task.status === "FAILED" && (
+                    <Button
+                      variant="outline"
+                      className="self-start"
+                      disabled={!!busy || !!active || !page?.runtime_ready}
+                      onClick={() => void controlTask("retry", task)}
+                    >
+                      重试复盘
+                    </Button>
+                  )}
+                </>
+              )}
+            </section>
+          </DialogContent>
+        </Dialog>
         <section
           className="flex min-w-0 flex-col gap-4"
           aria-label="可执行变更"
@@ -563,7 +592,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
             <p role="status" className="break-all text-sm">
               变更{statusLabel(decisionResult.status)}
               {decisionResult.published_version_id
-                ? `，已发布版本：${decisionResult.published_version_id}`
+                ? "，已保存并发布"
                 : decisionResult.status === "REJECTED"
                   ? `，原因：${decisionResult.decision_reason || "人工不采纳"}`
                   : "，尚无发布版本回读"}
@@ -587,125 +616,152 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
             <Card
               key={item.id}
               data-testid={`proposal-${item.id}`}
-              className="min-w-0"
+              className="min-w-0 gap-0 py-0"
             >
-              <CardHeader>
-                <CardTitle className="flex flex-wrap justify-between gap-2">
-                  {item.title ||
-                    (item.kind === "rule"
-                      ? "自动规则调整"
-                      : item.kind === "strategy"
-                        ? "投放策略调整"
-                        : "可执行变更")}
-                  <Badge variant="outline">{statusLabel(item.status)}</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex min-w-0 flex-col gap-4">
-                {item.review_task_id ? (
-                  <Button
-                    variant="link"
-                    className="h-auto justify-start self-start whitespace-normal break-all p-0 text-left"
-                    onClick={() => {
-                      setSelectedId(item.review_task_id!)
-                      setProposalOffset(0)
-                    }}
-                  >
-                    来源复盘：{item.review_task_id}
-                  </Button>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    未记录所属轮次
+              <details>
+                <summary className="cursor-pointer list-none px-5 py-4">
+                  <span className="flex flex-wrap justify-between gap-2 text-sm font-medium">
+                    {item.title ||
+                      proposalTitle(item.after) ||
+                      (item.kind === "rule"
+                        ? "自动规则调整"
+                        : item.kind === "strategy"
+                          ? "投放策略调整"
+                          : "可执行变更")}
+                    <Badge variant="outline">
+                      {item.status === "PENDING"
+                        ? "待确认"
+                        : statusLabel(item.status)}
+                    </Badge>
+                  </span>
+                  <span className="mt-2 block text-xs text-muted-foreground">
+                    {item.status === "PENDING"
+                      ? publicationEffect(item.after)
+                      : item.published_version_id
+                        ? "已发布"
+                        : item.status === "REJECTED"
+                          ? "已拒绝，未发布"
+                          : "查看处理记录"}{" "}
+                    点击查看建议与处理
+                  </span>
+                </summary>
+                <CardContent className="flex min-w-0 flex-col gap-4">
+                  {item.review_task_id ? (
+                    <Button
+                      variant="link"
+                      className="h-auto justify-start self-start whitespace-normal break-all p-0 text-left"
+                      onClick={() => {
+                        setSelectedId(item.review_task_id!)
+                        setReportOpen(true)
+                        setProposalOffset(0)
+                      }}
+                    >
+                      查看来源复盘
+                    </Button>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      未记录所属轮次
+                    </p>
+                  )}
+                  <p className="rounded-md bg-muted p-3 text-sm leading-6">
+                    {publicationEffect(item.after)}
                   </p>
-                )}
-                {[
-                  ["问题", item.problem],
-                  ["调整依据", item.rationale || item.summary],
-                  ["预期效果", item.expected_effect],
-                  ["验证条件", item.validation],
-                ].map(([label, text]) => (
-                  <div key={label}>
-                    <h4 className="mb-1 text-sm font-medium">{label}</h4>
-                    <ReviewText text={text || "未记录"} />
-                  </div>
-                ))}
-                <ProposalDiff before={item.before} after={item.after} />
-                <p className="break-all text-xs text-muted-foreground">
-                  投手基准 v{item.base_optimizer_version ?? "—"} · 目标{" "}
-                  {item.target_id ?? "—"} · 策略版本{" "}
-                  {item.base_strategy_version_id ?? "—"} · 规则版本{" "}
-                  {item.base_rule_version ?? "—"}
-                </p>
-                <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-                  <div>
-                    <h4 className="mb-2 text-sm font-medium">授权与影响范围</h4>
-                    <ReadableValues value={item.authorization} />
-                  </div>
-                  <div>
-                    <h4 className="mb-2 text-sm font-medium">决策证据</h4>
-                    <ReadableValues value={item.evidence} />
-                  </div>
-                </div>
-                <p className="break-all text-sm">
-                  发布状态：
-                  {item.published_version_id
-                    ? `已发布版本 ${item.published_version_id}`
-                    : item.status === "PENDING"
-                      ? "等待人工确认"
-                      : item.status === "REJECTED"
-                        ? "已拒绝，未发布"
-                        : "暂无发布版本回读"}
-                </p>
-                {item.decision_reason && (
-                  <p className="whitespace-pre-wrap text-sm">
-                    决定原因：{item.decision_reason}
-                  </p>
-                )}
-                <details>
-                  <summary className="cursor-pointer text-sm text-muted-foreground">
-                    原始记录
-                  </summary>
-                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs">
-                    {JSON.stringify(item, null, 2)}
-                  </pre>
-                </details>
-                {item.status === "PENDING" && (
-                  <>
-                    <Field>
-                      <FieldLabel htmlFor={`reject-${item.id}`}>
-                        拒绝原因（选填）
-                      </FieldLabel>
-                      <Input
-                        id={`reject-${item.id}`}
-                        value={reasons[item.id] || ""}
-                        disabled={!!busy}
-                        onChange={(event) =>
-                          setReasons((previous) => ({
-                            ...previous,
-                            [item.id]: event.target.value,
-                          }))
-                        }
-                      />
-                    </Field>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        disabled={!!busy}
-                        onClick={() => void decide(item, "accept")}
-                      >
-                        接受并发布
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!!busy}
-                        onClick={() => void decide(item, "reject")}
-                      >
-                        拒绝
-                      </Button>
+                  <section>
+                    <div className="mt-4 flex flex-col gap-4">
+                      {[
+                        ["为什么需要调整", item.problem],
+                        ["判断依据", item.rationale || item.summary],
+                        ["预期效果与风险", item.expected_effect],
+                        ["如何验证、何时撤回", item.validation],
+                      ].map(([label, text]) => (
+                        <section key={label}>
+                          <h4 className="mb-1 text-sm font-medium">{label}</h4>
+                          <ReviewText
+                            text={
+                              text ||
+                              "这条历史建议缺少说明，建议补充复盘后再确认。"
+                            }
+                          />
+                        </section>
+                      ))}
+                      {item.kind === "rule" ? (
+                        <RuleProposalSummary
+                          before={item.before}
+                          after={item.after}
+                          catalog={catalog.data}
+                        />
+                      ) : (
+                        <StrategyProposalSummary
+                          before={item.before}
+                          after={item.after}
+                        />
+                      )}
                     </div>
-                  </>
-                )}
-              </CardContent>
+                  </section>
+                  <p className="text-sm text-muted-foreground">
+                    {item.published_version_id
+                      ? "已发布"
+                      : item.status === "PENDING"
+                        ? "等待人工确认，尚未修改规则"
+                        : item.status === "REJECTED"
+                          ? "已拒绝，未发布"
+                          : "尚无发布记录"}
+                  </p>
+                  {item.decision_reason && (
+                    <p className="whitespace-pre-wrap text-sm">
+                      决定原因：{item.decision_reason}
+                    </p>
+                  )}
+                  <details>
+                    <summary className="cursor-pointer text-sm text-muted-foreground">
+                      技术记录（供排查使用）
+                    </summary>
+                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs">
+                      {JSON.stringify(item, null, 2)}
+                    </pre>
+                  </details>
+                  {item.status === "PENDING" && (
+                    <>
+                      <Field>
+                        <FieldLabel htmlFor={`reject-${item.id}`}>
+                          拒绝原因（选填）
+                        </FieldLabel>
+                        <Input
+                          id={`reject-${item.id}`}
+                          value={reasons[item.id] || ""}
+                          disabled={!!busy}
+                          onChange={(event) =>
+                            setReasons((previous) => ({
+                              ...previous,
+                              [item.id]: event.target.value,
+                            }))
+                          }
+                        />
+                      </Field>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          disabled={!!busy}
+                          onClick={() => void decide(item, "accept")}
+                        >
+                          {item.kind === "rule" &&
+                          publicationEffect(item.after).startsWith("确认后保存")
+                            ? "确认保存（保持停用）"
+                            : "接受并发布"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!!busy}
+                          onClick={() => void decide(item, "reject")}
+                        >
+                          拒绝
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </details>
             </Card>
           ))}
           <div className="flex flex-wrap items-center justify-end gap-3 text-sm">

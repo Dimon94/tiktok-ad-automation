@@ -53,9 +53,21 @@ def test_create_proposal_uses_domain_service_and_binds_result(
         context=context,
         optimizer_id=optimizer.id,
         review_task=task,
-        change=ProposalInput(kind=kind, operation="create", after=after),
+        change=ProposalInput(
+            kind=kind,
+            operation="create",
+            after=after,
+            problem="低效消耗增加",
+            rationale="历史比较显示可减少低效投放",
+            expected_effect="降低消耗，但有误关风险",
+            validation="观察七天，误关超过8%撤回",
+        ),
     )
     assert proposal.status == "PENDING"
+    assert proposal.evidence["problem"] == "低效消耗增加"
+    assert proposal.evidence["rationale"] == "历史比较显示可减少低效投放"
+    assert proposal.evidence["expected_effect"] == "降低消耗，但有误关风险"
+    assert proposal.evidence["validation"] == "观察七天，误关超过8%撤回"
     if mode == "AUTO":
         publish_auto_proposals(
             session, context=context, optimizer_id=optimizer.id, review_task_id=task.id
@@ -110,3 +122,69 @@ def test_create_rule_cannot_expand_to_entire_bc(session, context):
                 },
             ),
         )
+
+
+def test_historical_new_rule_reads_exact_review_explanations_without_mutation(
+    session, context
+):
+    from app.modules.ai_workbench.proposals import (
+        _public,
+        list_proposals,
+        public_proposal,
+    )
+
+    strategy = seed_optimizer_dependencies(session, context)
+    optimizer = service.create_optimizer(
+        session,
+        context=context,
+        body=OptimizerCreate.model_validate(create_body(strategy.id)),
+    )
+    task = create_review_task(
+        session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
+    )
+    change = ProposalInput(
+        kind="rule",
+        operation="create",
+        after={
+            "name": "历史观察规则",
+            "enabled": False,
+            "definition": base(
+                accounts={"mode": "ACCOUNTS", "advertiser_ids": ["acc-1"]}
+            ),
+        },
+        problem="问题原文",
+        rationale="依据原文",
+        expected_effect="效果原文",
+        validation="条件原文",
+    )
+    row = create_proposal(
+        session,
+        context=context,
+        optimizer_id=optimizer.id,
+        review_task=task,
+        change=change,
+    )
+    # 精确模拟旧新增分支漏存四项说明，但原始复盘完整保存的生产形态。
+    row.evidence = {"review_task_id": str(task.id), "evidence_ids": []}
+    task.result = {"proposals": [change.model_dump(mode="json")]}
+    session.add_all([row, task])
+    session.flush()
+    public = list_proposals(session, context=context, optimizer_id=optimizer.id)[0]
+    assert public["problem"] == "问题原文"
+    assert public_proposal(session, row)["validation"] == "条件原文"
+    assert public["rationale"] == "依据原文"
+    assert public["expected_effect"] == "效果原文"
+    assert "problem" not in row.evidence
+    assert row.status == "PENDING" and row.after["enabled"] is False
+    # 配置不同、重复歧义、操作不同都不能套用另一条建议的说明。
+    original = change.model_dump(mode="json")
+    for wrong in [
+        {**original, "after": {**original["after"], "name": "另一规则"}},
+        {**original, "operation": "update"},
+        {**original, "target_id": str(uuid4())},
+    ]:
+        assert _public(row, review_result={"proposals": [wrong]})["problem"] is None
+    assert (
+        _public(row, review_result={"proposals": [original, original]})["problem"]
+        is None
+    )
