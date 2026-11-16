@@ -316,7 +316,7 @@ test("403 list query stays inside authenticated platform management", async ({
   await page.goto("/admin")
   await expect(
     page.getByRole("link", { name: "DSH 管理台", exact: true }),
-  ).toHaveAttribute("href", "/api/admin/dsh/entry")
+  ).toHaveCount(0)
   await expect(page.getByText("无法读取用户列表")).toBeVisible()
   await expect(
     page.getByRole("alert").getByText("无操作权限", { exact: true }),
