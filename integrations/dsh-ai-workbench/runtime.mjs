@@ -22,7 +22,20 @@ export function createRuntime(config, fetchImpl = fetch) {
   // 队列只作用于本插件的重计算，不改变系统Worker或租户并发设置；失败释放后续工作。
   let heavyTail = Promise.resolve()
   function heavyRpc(path, body, token) {
-    const work = heavyTail.catch(() => {}).then(() => rpc(path, body, token))
+    const work = heavyTail.catch(() => {}).then(async () => {
+      try { return await rpc(path, body, token) }
+      catch (error) {
+        if (!/runtime HTTP 504(?:;| )/.test(error.message)) throw error
+        // 原HTTP超时后计算仍可能运行；只轮询同请求缓存，绝不再发起重计算。
+        const deadline = Date.now() + 180000
+        while (Date.now() < deadline) {
+          const result = await rpc(path, { ...body, cache_only: true }, token)
+          if (result.status !== 'PENDING_COMPUTATION') return result
+          await new Promise(resolve => setTimeout(resolve, 5000))
+        }
+        throw new Error('Frozen analysis did not finish before the result polling deadline')
+      }
+    })
     heavyTail = work.catch(() => {})
     return work
   }

@@ -333,6 +333,7 @@ def timeline_for_task(
     advertiser_id=None,
     offset=0,
     limit=2,
+    cache_only=False,
 ):
     if (
         dimension not in {"campaign", "material"}
@@ -361,6 +362,9 @@ def timeline_for_task(
     ).first()
     if cached:
         return cached.payload
+
+    if cache_only:
+        return {"status": "PENDING_COMPUTATION"}
 
     def packs():
         query = (

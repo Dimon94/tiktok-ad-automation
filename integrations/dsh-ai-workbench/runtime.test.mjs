@@ -178,11 +178,11 @@ test('heavy analysis calls queue without blocking light reads and failures relea
     const runtime = createRuntime({ url: 'https://tkada.example', tokenFile, stateRoot: directory }, async (url) => {
       started.push(url)
       if (url.endsWith('/evidence/timeline') || url.endsWith('/rules/daily-backtest')) await new Promise(resolve => gates.push(resolve))
-      return { ok: !url.endsWith('/evidence/timeline'), status: 504, json: async () => ({}) }
+      return { ok: !url.endsWith('/evidence/timeline'), status: 500, json: async () => ({}) }
     })
     const claim = { task: { id: 't' }, task_token: 'scoped' }
     const first = runtime.analyzeTimeline(claim, {})
-    const rejected = assert.rejects(first, /504/)
+    const rejected = assert.rejects(first, /500/)
     const second = runtime.dailyBacktestRule(claim, {})
     await runtime.listNotes(claim, {})
     assert.equal(started.filter(s => s.endsWith('/rules/daily-backtest')).length, 0)
@@ -190,5 +190,21 @@ test('heavy analysis calls queue without blocking light reads and failures relea
     await new Promise(resolve => setTimeout(resolve, 0))
     assert.equal(started.filter(s => s.endsWith('/rules/daily-backtest')).length, 1)
     gates.shift()(); await second
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('gateway timeout retrieves only the original cached computation, without replaying the work', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-result-poll-'))
+  try {
+    const tokenFile = join(directory, 'token'); await writeFile(tokenFile, 'private')
+    const requests = []
+    const runtime = createRuntime({ url: 'https://tkada.example', tokenFile, stateRoot: directory }, async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body), token: options.headers.authorization })
+      return requests.length === 1 ? { ok: false, status: 504, json: async () => ({}) } : { ok: true, json: async () => ({ id: 'original-result', variants: [] }) }
+    })
+    const result = await runtime.dailyBacktestRule({ task: { id: 't' }, task_token: 'scoped' }, { rule_id: 'rule' })
+    assert.equal(result.id, 'original-result')
+    assert.deepEqual(requests.map(r => r.body), [{ rule_id: 'rule' }, { rule_id: 'rule', cache_only: true }])
+    assert.ok(requests.every(r => r.token === 'Bearer scoped'))
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

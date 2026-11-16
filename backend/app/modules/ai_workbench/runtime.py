@@ -504,6 +504,7 @@ class RuleBacktest(BaseModel):
 class DailyRuleBacktest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rule_id: UUID | None = None
+    cache_only: bool = False
     candidate_definitions: list[dict] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
@@ -534,6 +535,7 @@ def daily_backtest_rule(
         task=task,
         rule_id=body.rule_id,
         candidate_definitions=body.candidate_definitions,
+        cache_only=body.cache_only,
     )
     session.refresh(task, with_for_update=True)
     ai_tasks._check_fence(task, fence=expected_fence)
@@ -697,6 +699,7 @@ def list_review_notes(
 
 
 class ReviewTimelineRequest(BaseModel):
+    cache_only: bool = False
     model_config = ConfigDict(extra="forbid")
     dimension: str = Field(default="campaign", pattern="^(campaign|material)$")
     days: int = Field(default=7, ge=2, le=14)

@@ -397,7 +397,9 @@ def _daily_replay(session, *, task, rule_id, candidate_definitions):
     }
 
 
-def daily_backtest_for_task(session, *, task, rule_id=None, candidate_definitions=None):
+def daily_backtest_for_task(
+    session, *, task, rule_id=None, candidate_definitions=None, cache_only=False
+):
     from app.modules.ai_workbench.review_store import (
         ReviewArtifact,
         archive_artifact,
@@ -419,6 +421,9 @@ def daily_backtest_for_task(session, *, task, rule_id=None, candidate_definition
     ).first()
     if cached:
         return cached.payload
+    if cache_only:
+        # 网关超时不代表后台计算已停止；只查原请求产物，禁止重扫/重复回放。
+        return {"status": "PENDING_COMPUTATION"}
     payload = _daily_replay(
         session, task=task, rule_id=rule_id, candidate_definitions=candidate_definitions
     )

@@ -213,6 +213,20 @@ def test_timeline_http_uses_task_token_and_rechecks_scope(client, reading):  # n
     )
     assert response.status_code == 200, response.text
     assert response.json()["coverage"]["requested_accounts"] == 1
+    cached = client.post(
+        path,
+        headers=headers,
+        json={"dimension": "campaign", "days": 7, "limit": 1, "cache_only": True},
+    )
+    assert cached.status_code == 200 and cached.json() == response.json()
+    pending = client.post(
+        path,
+        headers=headers,
+        json={"dimension": "material", "days": 7, "cache_only": True},
+    )
+    assert pending.status_code == 200 and pending.json() == {
+        "status": "PENDING_COMPUTATION"
+    }
     forbidden = client.post(path, headers=headers, json={"advertiser_id": "outside"})
     assert forbidden.status_code == 403
     wrong_task = client.post(
@@ -271,3 +285,28 @@ def test_empty_observed_days_are_not_reported_as_zero_revenue_loss():
     assert first["spend"] is None and first["loss_proxy"] is None
     assert first["observed_accounts"] == 0
     assert result["partitions"][0]["balanced_panel"]["accounts"] == 0
+
+
+def test_polling_only_reads_same_task_artifact_and_never_scans(
+    session, context, monkeypatch
+):
+    import app.modules.ai_workbench.backtests as backtests
+    import app.modules.ai_workbench.review_timeline as timeline
+    from app.modules.ai_workbench.review_store import delivered_evidence_ids
+    from tests.modules.ai_workbench.test_review_scale import create_task
+
+    task = create_task(session, context)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("polling must not calculate")
+
+    monkeypatch.setattr(timeline, "summarize_packs", forbidden)
+    monkeypatch.setattr(backtests, "_daily_replay", forbidden)
+    before = delivered_evidence_ids(session, task)
+    assert timeline.timeline_for_task(session, task=task, days=2, cache_only=True) == {
+        "status": "PENDING_COMPUTATION"
+    }
+    assert backtests.daily_backtest_for_task(
+        session, task=task, candidate_definitions=[{}], cache_only=True
+    ) == {"status": "PENDING_COMPUTATION"}
+    assert delivered_evidence_ids(session, task) == before
