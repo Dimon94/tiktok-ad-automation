@@ -989,22 +989,18 @@ def materialize_rows(
                 }
             }
         )
-        records = None
-        if selected_facts is not None:
-            pairs = set(identities[member.row_key])
-            records = [
-                r
-                for f in selected_facts
-                if (f["adv"], f["rid"]) in pairs
-                for r in (f.get("observations") or [])
-            ]
+        # 当前页的事实与同步状态已批量读取；空证据也不退回逐行查询。
+        records = [
+            record
+            for pair in dict.fromkeys(identities[member.row_key])
+            for fact in facts.get(pair, ())
+            for record in (fact.get("observations") or [])
+        ]
         row = report_provenance(
-            session,
             row,
-            tenant_id=tenant_id,
             filters=filters,
             selected_records=records,
-            selected_states=layer_states if records is not None else None,
+            selected_states=layer_states,
         )
         result.append(row)
     return tuple(result)
@@ -1351,13 +1347,11 @@ def vector_provenance(
 
 
 def report_provenance(
-    session: Session,
     row: ReportRow,
     *,
-    tenant_id: UUID,
     filters: ReportingFilter,
-    selected_records: list[dict[str, Any]] | None = None,
-    selected_states: Sequence[ReportSyncState] | None = None,
+    selected_records: list[dict[str, Any]],
+    selected_states: Sequence[ReportSyncState],
 ) -> ReportRow:
     """仅对本页冻结成员取逐日证据；金额和成员仍由共同 SQL 选择计划负责。"""
     from app.modules.reporting.metrics import PLATFORM_RATIOS
@@ -1381,62 +1375,8 @@ def report_provenance(
             )
         }
     )
-    records: list[dict[str, Any]] = []
+    records = selected_records
     refs = sorted({(r.advertiser_id, r.kind, r.remote_id) for r in row.refs})
-    if filters.dimension == "account" and selected_records is None:
-        # 账户行身份不是 Campaign refs；贡献集合由同一 selected view 与目录补空确定。
-        adv = str(row.display["advertiser_id"])
-        refs = [
-            (adv, "campaign", rid)
-            for rid in session.connection()
-            .execute(
-                text("""
-            SELECT DISTINCT campaign_id FROM campaign_selected_day
-            WHERE tenant_id=:tenant AND advertiser_id=:adv AND stat_date BETWEEN :start AND :end
-            UNION SELECT remote_id FROM ad_object WHERE tenant_id=:tenant AND advertiser_id=:adv AND kind='campaign'
-        """),
-                {
-                    "tenant": tenant_id,
-                    "adv": adv,
-                    "start": filters.start_date,
-                    "end": filters.end_date,
-                },
-            )
-            .scalars()
-        ]
-    if selected_records is None:
-        from app.modules.reporting.row_set import _facts_cte
-
-        for kind in sorted({k for _, k, _ in refs}):
-            pairs = [(adv, rid) for adv, k, rid in refs if k == kind]
-            table = f"{kind}_selected_day" if kind != "ad" else "ad_report_day"
-            params: dict[str, Any] = {
-                "tenant": tenant_id,
-                "advs": [a for a, _ in pairs],
-                "ids": [rid for _, rid in pairs],
-                "start": filters.start_date,
-                "end": filters.end_date,
-            }
-            if filters.contribution:
-                params["contribution_ids"] = list(filters.contribution.ids)
-            facts = _facts_cte(
-                table,
-                f"{kind}_id",
-                selected_ids=True,
-                contribution=bool(filters.contribution),
-            )
-            fact_observations = (
-                session.connection()
-                .execute(
-                    text(f"WITH {facts} SELECT adv,rid,observations FROM facts"), params
-                )
-                .mappings()
-            )
-            for fact in fact_observations:
-                if (fact["adv"], fact["rid"]) in pairs:
-                    records.extend(fact["observations"] or [])
-    else:
-        records = selected_records
 
     display = dict(row.display)
     observations = [{k: v for k, v in r.items() if k != "fact"} for r in records]
@@ -1471,23 +1411,11 @@ def report_provenance(
     from app.modules.reporting.levels import DAY_KINDS
 
     advs = sorted({a for a, _, _ in refs})
-    states = (
-        session.exec(
-            select(ReportSyncState).where(
-                ReportSyncState.tenant_id == tenant_id,
-                col(ReportSyncState.advertiser_id).in_(advs),
-                col(ReportSyncState.report_kind).in_(DAY_KINDS),
-                ReportSyncState.stat_date >= filters.start_date,
-                ReportSyncState.stat_date <= filters.end_date,
-            )
-        ).all()
-        if selected_states is None
-        else [
-            s
-            for s in selected_states
-            if s.advertiser_id in advs and s.report_kind in DAY_KINDS
-        ]
-    )
+    states = [
+        state
+        for state in selected_states
+        if state.advertiser_id in advs and state.report_kind in DAY_KINDS
+    ]
     complete = len(states) == len(advs) * len(DAY_KINDS) * (
         (filters.end_date - filters.start_date).days + 1
     ) and all(s.status == "COMPLETE" for s in states)

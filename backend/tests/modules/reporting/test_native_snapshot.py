@@ -73,6 +73,7 @@ def test_detail_scope_legacy_empty_and_revocation(session, sync_seed):
             kind="campaign",
             remote_id="c0",
             name="Current name",
+            operation_status="ENABLE",
             ad_type="NATIVE_SERIES",
             observed_at=datetime.now(UTC),
             published_version=1,
@@ -93,6 +94,26 @@ def test_detail_scope_legacy_empty_and_revocation(session, sync_seed):
         snapshot_id=page.snapshot.snapshot_id,
     )
     assert detail.report_result == page.items[0]
+    assert detail.statuses["operation"] == "ENABLE"
+    current = session.get(
+        AdObject, (sync_seed.tenant_id, "acc-1", "campaign", "c0")
+    )
+    current.operation_status = "DISABLE"
+    current.name = "Current renamed"
+    current.published_version += 1
+    session.add(current)
+    session.commit()
+    detail = get_ad_detail(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        ref=ref,
+        snapshot_id=page.snapshot.snapshot_id,
+    )
+    assert detail.statuses["operation"] == "DISABLE"
+    assert detail.name == "Current renamed"
+    assert detail.report_result == page.items[0]
+    assert detail.report_result.display["operation_status"] == "ENABLE"
     publish(session, sync_seed, ("100",), ("200",))
     detail = get_ad_detail(
         session,

@@ -129,17 +129,23 @@ def test_derived_and_contribution_keep_child_observations(
         else None,
     )
     page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
-    vector = page.items[0].metric_buckets[0]
-    assert vector.values["revenue_total"] == Decimal("100" if contribution else "190")
-    assert vector.contract_revision == NATIVE_CONTRACT
-    assert vector.source_kind == (
-        "PLATFORM_DIRECT" if contribution else "CHILD_DERIVED"
-    )
-    assert {p.observed_at for p in vector.provenance["revenue_total"].buckets} == {t1}
-    assert {
-        p["remote_id"] for p in vector.provenance["revenue_total"].observations
-    } == ({"a1"} if contribution else {"a1", "a2"})
+    from app.modules.reporting.dimension_query import build_rows
 
+    direct = build_rows(
+        session, context=sync_seed.context, bc_id="bc-a", filters=filters
+    )
+    # 快照读取与整页/素材父级补全共用精确来源，不能以空证据换取固定查询数。
+    for rows in (page.items, direct):
+        vector = rows[0].metric_buckets[0]
+        assert vector.values["revenue_total"] == Decimal("100" if contribution else "190")
+        assert vector.contract_revision == NATIVE_CONTRACT
+        assert vector.source_kind == (
+            "PLATFORM_DIRECT" if contribution else "CHILD_DERIVED"
+        )
+        assert {p.observed_at for p in vector.provenance["revenue_total"].buckets} == {t1}
+        assert {
+            p["remote_id"] for p in vector.provenance["revenue_total"].observations
+        } == ({"a1"} if contribution else {"a1", "a2"})
 
 def test_snapshot_detail_and_csv_copy_precise_observation(session, sync_seed):
     import csv

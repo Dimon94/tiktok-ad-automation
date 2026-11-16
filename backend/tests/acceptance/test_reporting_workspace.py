@@ -347,6 +347,10 @@ def test_workspace_fastapi_contract_has_no_external_write_routes() -> None:
 
     paths = app.openapi()["paths"]
     expected_operations = {
+        (
+            "GET",
+            "/api/tenants/{tenant_id}/ad-directory",
+        ): "ads_reporting-read_directory_objects",
         ("GET", "/api/tenants/{tenant_id}/ads"): "ads_reporting-query_ads",
         (
             "GET",
