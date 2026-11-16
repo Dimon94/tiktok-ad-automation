@@ -123,6 +123,20 @@ def test_zero_report_navigation_and_scope_bound_pages(navigation):
         )
         assert response.status_code in (400, 403, 404, 422)
         assert "重复名称" not in response.text
+    from sqlmodel import select
+
+    from app.modules.ads.sync_models import AdDirectoryRun
+    from app.modules.reporting.query_models import QuerySnapshot
+
+    # 目录列表不创建报表；随后详情可按 M4b 合同建立自己的本地冻结查询。
+    assert (
+        session.exec(
+            select(QuerySnapshot).where(
+                QuerySnapshot.tenant_id == seed.context.tenant_id
+            )
+        ).all()
+        == []
+    )
     for kind, identity, parent_kind, parent_id in [
         ("adgroup", "g1", "campaign", "c1"),
         ("ad", "a1", "adgroup", "g1"),
@@ -180,19 +194,6 @@ def test_zero_report_navigation_and_scope_bound_pages(navigation):
         )
         assert denied.status_code == 404
         assert "fixture" not in denied.text
-    from sqlmodel import select
-
-    from app.modules.ads.sync_models import AdDirectoryRun
-    from app.modules.reporting.query_models import QuerySnapshot
-
-    assert (
-        session.exec(
-            select(QuerySnapshot).where(
-                QuerySnapshot.tenant_id == seed.context.tenant_id
-            )
-        ).all()
-        == []
-    )
     assert (
         session.exec(
             select(AdDirectoryRun).where(

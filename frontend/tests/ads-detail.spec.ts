@@ -916,12 +916,18 @@ test("无报表的工作区目录导航 @directory-live", async ({ page }) => {
   await expect(sheet.getByText(/cr1/).first()).toBeVisible()
   await sheet.getByRole("tab", { name: "报表", exact: true }).click()
   await expect(
-    sheet.getByText("目录入口没有报表上下文，暂无报表数据。"),
+    sheet.getByText("该对象没有日报指标。"),
   ).toBeVisible()
   await expect(
     sheet.getByRole("button", { name: /启用|停用|改预算|复制/ }),
   ).toHaveCount(0)
+  const parentRead = page.waitForResponse((response) =>
+    response.request().method() === "GET" &&
+    new URL(response.url()).pathname.endsWith("/ads/ad/a1"),
+  )
   await sheet.getByRole("button", { name: /查看父对象 · a1/ }).click()
+  expect((await parentRead).status()).toBe(200)
+  await (await parentRead).finished()
   await expect(sheet.getByText(/ad · a1 · 账户/)).toBeVisible()
   expect((await page.request.post("/api/test-directory-revoke")).status()).toBe(
     200,
