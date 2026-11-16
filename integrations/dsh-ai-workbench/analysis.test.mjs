@@ -33,3 +33,18 @@ test('timeline tool passes bounded scope arguments and honours cancellation', as
   await assert.rejects(tool.execute(args), /cancelled/)
   assert.equal(calls, 1)
 })
+
+test('summary keeps full coverage/totals and citation; ranked rows remain explicitly available', async () => {
+  const tools = new Map(), requests = []
+  const full = { id: 'citable', coverage: { total_accounts: 1344 }, totals: [{ spend: '100' }], items: [{ advertiser_id: 'a', source_refs: ['source'] }] }
+  mountAnalysisTools({ tools: { register: t => tools.set(t.name, t) } }, {}, { analyzeEvidence: async (_claim, args) => { requests.push(args); return full } }, new AbortController().signal)
+  const tool = tools.get('tkada_analyze_evidence')
+  const summary = await tool.execute({ dimension: 'account' })
+  assert.equal(summary.items, undefined)
+  assert.equal(summary.ranked_rows_omitted, 1)
+  assert.deepEqual(summary.totals, full.totals)
+  assert.deepEqual(summary.coverage, full.coverage)
+  assert.equal(summary.id, full.id)
+  assert.equal(await tool.execute({ dimension: 'account', detail: 'ranked', limit: 3 }), full)
+  assert.deepEqual(requests, [{ dimension: 'account' }, { dimension: 'account', limit: 3 }])
+})

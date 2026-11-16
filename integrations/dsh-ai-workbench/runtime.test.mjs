@@ -152,3 +152,19 @@ test('native validation errors expose only bounded locations, types and numeric 
     return true
   })
 })
+
+
+test('native model turn failure is terminal and is not mistaken for normal idle or blindly continued', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-model-error-'))
+  let wakes = 0, disposed = false
+  const results = []
+  const agent = { session: { snapshotEvents: () => [{ type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'PI_AI_ERROR' } } } }] }, followup: () => { wakes++ }, whenIdle: async () => {} }
+  const claim = { task: { id: 't', tenant_id: 'tenant', optimizer_id: 'o', fence: 'f', expires_at: new Date(Date.now()+60000).toISOString(), evidence: { methods: await loadMethods() } } }
+  try {
+    await assert.rejects(runClaim({ agents: { create: async () => ({ agent, dispose: async () => { disposed = true } }) } }, { stateRoot: directory, modelSelection: { provider: 'test', model: 'test' } }, claim, { complete: async (_c, result) => results.push(result) }, { SessionId: x => x, createUserMessage: x => x }), /Native Agent model turn failed/)
+    assert.equal(wakes, 1)
+    assert.equal(results.length, 1)
+    assert.equal(results[0].failed, true)
+    assert.equal(disposed, true)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

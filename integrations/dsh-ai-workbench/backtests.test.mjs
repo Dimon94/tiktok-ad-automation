@@ -31,3 +31,12 @@ test('daily replay permits a new policy without an existing rule id', async () =
   assert.ok(!tool.parameters.required?.includes('rule_id'))
   assert.equal((await tool.execute(args)).rule_id, null)
 })
+
+test('daily replay expands the frozen account reference before domain RPC', async () => {
+  const { mountDailyBacktestTool } = await import('./backtests.mjs')
+  const claim = { task: { evidence: { optimizer: { advertiser_ids: ['a', 'b'] } } } }
+  let tool
+  mountDailyBacktestTool({ tools: { register: t => { tool = t } } }, claim, { dailyBacktestRule: async (_claim, input) => input }, new AbortController().signal)
+  const result = await tool.execute({ candidate_definitions: [{ accounts: { mode: 'REVIEW_ACCOUNTS' } }] })
+  assert.deepEqual(result.candidate_definitions[0].accounts, { mode: 'ACCOUNTS', advertiser_ids: ['a', 'b'] })
+})
