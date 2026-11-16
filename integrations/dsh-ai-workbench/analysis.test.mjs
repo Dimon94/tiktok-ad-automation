@@ -19,3 +19,17 @@ test('analysis and notebook tools use only scoped RPCs and reject cancelled work
   }
   assert.equal(calls.length, 3)
 })
+
+test('timeline tool passes bounded scope arguments and honours cancellation', async () => {
+  const { mountTimelineTool, ANALYZE_TIMELINE } = await import('./analysis.mjs')
+  let tool, calls = 0
+  const controller = new AbortController()
+  const claim = { task: { id: 'task' }, task_token: 'secret' }
+  const args = { dimension: 'material', days: 7, advertiser_id: 'a', offset: 2, limit: 1 }
+  mountTimelineTool({ tools: { register: value => { tool = value } } }, claim, { analyzeTimeline: async (identity, request) => { calls++; assert.equal(identity, claim); assert.equal(request, args); return { id: 'result' } } }, controller.signal)
+  assert.equal(tool.name, ANALYZE_TIMELINE)
+  assert.equal((await tool.execute(args)).id, 'result')
+  controller.abort()
+  await assert.rejects(tool.execute(args), /cancelled/)
+  assert.equal(calls, 1)
+})

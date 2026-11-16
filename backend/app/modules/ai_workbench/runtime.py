@@ -694,3 +694,35 @@ def list_review_notes(
         raise HTTPException(403, "Task scope mismatch")
     _read_task_scope(task, session)
     return list_notes(session, task=task, **body.model_dump())
+
+
+class ReviewTimelineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dimension: str = Field(default="campaign", pattern="^(campaign|material)$")
+    days: int = Field(default=7, ge=2, le=14)
+    advertiser_id: str | None = Field(default=None, max_length=100)
+    offset: int = Field(default=0, ge=0, le=100000)
+    limit: int = Field(default=2, ge=1, le=4)
+
+
+@router.post("/{task_id}/evidence/timeline")
+def analyze_timeline(
+    task_id: UUID,
+    body: ReviewTimelineRequest,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_timeline import timeline_for_task
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    expected_fence = task.fence
+    # 与日回放相同：计算不持有任务行锁，提交前重验fence和当前授权。
+    session.commit()
+    result = timeline_for_task(session, task=task, **body.model_dump())
+    session.refresh(task, with_for_update=True)
+    ai_tasks._check_fence(task, fence=expected_fence)
+    _read_task_scope(task, session)
+    session.commit()
+    return result
