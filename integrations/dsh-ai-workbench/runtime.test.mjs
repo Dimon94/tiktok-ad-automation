@@ -56,6 +56,7 @@ test('native DSH session has only structured result tool and a tenant/task direc
         assert.equal(completions.length, 0)
         for (const maturity_horizon of ['d0', 'd3', 'd7']) await tools.get('tkada_analyze_evidence').execute({ dimension: 'account', maturity_horizon })
         await tools.get('skill').execute({ name: skillName('business') })
+        await tools.get('skill').execute({ name: skillName('builds') })
         await registered.execute({ report, summary: 'insufficient evidence', proposals: [] }) } }
       await input.setup({ inject: async (names, callback) => { assert.deepEqual(names, ['tools', 'skills']); return callback({ skills: { register: s => skills.set(s.name, s), get: async name => skills.get(name) }, tools: { restrict: value => { allowed = value.allow }, guard: value => { guard = value }, register: value => { tools.set(value.name, value); if (value.name === COMPLETE_TOOL) registered = value } } }) } }, agent)
       return { agent, dispose: async () => { disposed = true } }
@@ -70,7 +71,7 @@ test('native DSH session has only structured result tool and a tenant/task direc
     assert.equal(completions.length, 1)
     assert.ok(registered.parameters.required.includes('report'))
     assert.deepEqual(completions[0].result.report, report)
-    assert.deepEqual(completions[0].result.method_usage, ['ai-delivery-review', 'business', 'scale'])
+    assert.deepEqual(completions[0].result.method_usage, ['ai-delivery-review', 'builds', 'business', 'scale'])
     assert.ok(!JSON.stringify(prompt).includes('必需：完整当地日'))
     assert.equal(skills.size, 6)
     assert.equal(disposed, true)
@@ -166,5 +167,28 @@ test('native model turn failure is terminal and is not mistaken for normal idle 
     assert.equal(results.length, 1)
     assert.equal(results[0].failed, true)
     assert.equal(disposed, true)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('heavy analysis calls queue without blocking light reads and failures release the queue', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-heavy-queue-'))
+  try {
+    const tokenFile = join(directory, 'token'); await writeFile(tokenFile, 'secret')
+    const started = [], gates = []
+    const runtime = createRuntime({ url: 'https://tkada.example', tokenFile, stateRoot: directory }, async (url) => {
+      started.push(url)
+      if (url.endsWith('/evidence/timeline') || url.endsWith('/rules/daily-backtest')) await new Promise(resolve => gates.push(resolve))
+      return { ok: !url.endsWith('/evidence/timeline'), status: 504, json: async () => ({}) }
+    })
+    const claim = { task: { id: 't' }, task_token: 'scoped' }
+    const first = runtime.analyzeTimeline(claim, {})
+    const rejected = assert.rejects(first, /504/)
+    const second = runtime.dailyBacktestRule(claim, {})
+    await runtime.listNotes(claim, {})
+    assert.equal(started.filter(s => s.endsWith('/rules/daily-backtest')).length, 0)
+    gates.shift()(); await rejected
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(started.filter(s => s.endsWith('/rules/daily-backtest')).length, 1)
+    gates.shift()(); await second
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

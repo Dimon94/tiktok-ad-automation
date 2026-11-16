@@ -46,7 +46,7 @@ test('bounded reminders preserve scope diagnostics while lower-priority ranking 
 
 test('completion requires actual full-scope work and every rule, independent of reminder eviction', async () => {
   const evidence = { optimizer: { advertiser_ids: ['a', 'b'] }, rules: [{ id: 'r1' }, { id: 'r2' }], source_catalog: ['rule_backtest_inputs', 'history', 'business', 'data_pack_business', 'rule_evidence'].map(category => ({ category, source_count: 2 })) }
-  const methods = new Set(['business', 'materials', 'rules'])
+  const methods = new Set(['business', 'materials', 'rules', 'builds', 'scale'])
   let id = 0
   const v = verificationRuntime({
     analyzeEvidence: async (_claim, request) => ({ id: String(++id), request, totals: [] }),
@@ -81,7 +81,7 @@ test('completion requires actual full-scope work and every rule, independent of 
 
 test('empty knowledge search is a legitimate gap and failed tools never satisfy work', async () => {
   const evidence = { optimizer: { advertiser_ids: ['a'] }, source_catalog: [] }
-  const methods = new Set(['business'])
+  const methods = new Set(['business', 'builds', 'scale'])
   const v = verificationRuntime({ searchKnowledge: async () => ({ items: [] }), analyzeEvidence: async (_claim, request) => { if (request.maturity_horizon === 'd7') throw Error('transport failure'); return { id: 'a', request } } })
   await v.runtime.searchKnowledge()
   for (const maturity_horizon of ['d0', 'd3']) await v.runtime.analyzeEvidence({}, { dimension: 'account', maturity_horizon })
