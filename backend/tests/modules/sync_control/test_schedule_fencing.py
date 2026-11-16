@@ -218,10 +218,10 @@ def test_terminal_failure_retires_execution_but_keeps_unmet_requirement_recovera
 ):
     from datetime import date
 
-    from app.modules.reporting.jobs import enqueue_job
     from app.modules.reporting.store_models import ReportSyncJob
     from app.modules.sync_control.models import SyncExecutionScope
     from app.modules.sync_control.schedule import record_report_outcome
+    from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 
     args = {
         "tenant_id": sync_seed.tenant_id,
@@ -348,8 +348,10 @@ def test_outcome_serializes_lease_release_with_concurrent_claim(
             first, second = _directory(session, seed), _directory(session, seed)
             model, outcome = AdDirectoryRun, directory_outcome
         else:
-            from app.modules.reporting.jobs import enqueue_job
             from app.modules.reporting.store_models import ReportSyncJob
+            from tests.modules.reporting.claiming import (
+                enqueue_single_kind as enqueue_job,
+            )
 
             common = {
                 "tenant_id": seed.tenant_id,

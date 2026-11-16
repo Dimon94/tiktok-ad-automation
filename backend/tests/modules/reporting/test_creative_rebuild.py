@@ -43,7 +43,12 @@ def test_backfill_pairs_sources_and_is_scoped_idempotent(session, sync_seed):
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert {j.kind for j in jobs} == {"ad_day", "creative_day"}
+    assert {j.kind for j in jobs} == {
+        "campaign_day",
+        "adgroup_day",
+        "ad_day",
+        "creative_day",
+    }
     assert all(j.advertiser_ids == ["acc-1"] for j in jobs)
     assert (
         enqueue_backfill(
@@ -103,8 +108,8 @@ def test_backfill_adjacent_chunks_stay_bounded_across_enqueue_rounds(
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert len(jobs) == 6
-    for kind in ("ad_day", "creative_day"):
+    assert len(jobs) == 12
+    for kind in ("campaign_day", "adgroup_day", "ad_day", "creative_day"):
         chunks = sorted((j for j in jobs if j.kind == kind), key=lambda j: j.start_date)
         assert [(j.start_date, j.end_date) for j in chunks] == [
             (start + timedelta(days=i), start + timedelta(days=i + 6))
@@ -150,7 +155,13 @@ def test_backfill_reuses_existing_broad_jobs_without_rewriting_their_contract(
     jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()
-    assert len(jobs) == 2
+    assert len(jobs) == 4
+    assert {j.kind for j in jobs} == {
+        "campaign_day",
+        "adgroup_day",
+        "ad_day",
+        "creative_day",
+    }
     assert all((j.start_date, j.end_date) == (start, end) for j in jobs)
     assert all("execution_window_days" not in j.progress for j in jobs)
 

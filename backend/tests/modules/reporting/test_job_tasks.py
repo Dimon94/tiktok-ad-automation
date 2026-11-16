@@ -163,9 +163,16 @@ def test_low_budget_preserves_realtime_and_pauses_cold(
             select(ReportSyncJob).where(ReportSyncJob.tenant_id == seed.tenant_id)
         ).all()
         cold = [job for job in jobs if job.priority >= 3]
-        assert [(job.id, job.status) for job in cold] == [(cold_id, "QUEUED")]
+        assert {job.kind for job in cold} == {"ad_day", "campaign_day", "adgroup_day"}
+        assert all(job.status == "QUEUED" for job in cold)
+        assert next(job.id for job in cold if job.kind == "ad_day") == cold_id
         live = [job for job in jobs if job.priority <= 2]
-        assert {job.kind for job in live} == {"ad_day", "creative_day"}
+        assert {job.kind for job in live} == {
+            "campaign_day",
+            "adgroup_day",
+            "ad_day",
+            "creative_day",
+        }
         assert all(
             job.status == "RUNNING" and job.start_date == job.end_date == now.date()
             for job in live
@@ -883,8 +890,8 @@ def test_cold_dispatch_window_cannot_block_new_current_day_work(
 
     from app.core.db import engine
     from app.jobs.models import PendingDispatch
-    from app.modules.reporting.jobs import enqueue_job
     from app.modules.reporting.store_models import ReportSyncJob
+    from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
     from tests.modules.reporting.test_jobs import D, _route
 
     seed, factory = committed_sync_seed

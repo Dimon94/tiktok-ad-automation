@@ -20,6 +20,27 @@ from app.modules.accounts.models import (
 from app.modules.tenants.models import Tenant, TenantMembership
 
 
+def grant_accounts(session, seed, accounts, *, bc_id="bc-a"):
+    """合成账户同时具备当前连接的目录授权，测试仍走生产 verify_route。"""
+    from sqlalchemy.dialects.postgresql import insert
+
+    session.flush()
+    rows = [
+        BCAccountAccess(
+            tenant_id=seed.tenant_id,
+            bc_id=bc_id,
+            advertiser_id=advertiser,
+            connection_id=seed.connection.id,
+            in_bc=True,
+            authorized=True,
+            active=True,
+            checked_at=datetime.now(UTC),
+        ).model_dump()
+        for advertiser in accounts
+    ]
+    session.execute(insert(BCAccountAccess), rows)
+
+
 @pytest.fixture
 def sync_seed(session, *, historical=False):
     """真实 PostgreSQL：一个租户、一个 API 连接、两个 BC（bc-a、bc-b），

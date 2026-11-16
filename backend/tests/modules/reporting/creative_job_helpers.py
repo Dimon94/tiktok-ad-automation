@@ -67,7 +67,7 @@ def enqueue(factory, seed, *, start=DAY, end=DAY):
 
 
 def add_third_account(session, seed):
-    from app.modules.accounts.models import AdvertiserAccount
+    from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
 
     session.add(
         AdvertiserAccount(
@@ -75,6 +75,19 @@ def add_third_account(session, seed):
             advertiser_id="acc-3",
             currency="USD",
             timezone="UTC",
+        )
+    )
+    session.flush()
+    session.add(
+        BCAccountAccess(
+            tenant_id=seed.tenant_id,
+            bc_id="bc-a",
+            advertiser_id="acc-3",
+            connection_id=seed.connection.id,
+            in_bc=True,
+            authorized=True,
+            active=True,
+            checked_at=datetime.now(UTC),
         )
     )
     session.flush()

@@ -32,6 +32,9 @@ def _pool(seed, factory, monkeypatch, redis_client):
         """),
             {"tenant": seed.tenant_id},
         )
+        from tests.modules.reporting.sync_conftest import grant_accounts
+
+        grant_accounts(session, seed, [f"adaptive-{i}" for i in range(1, 127)])
         plan = session.get(AdSyncBc, (seed.tenant_id, "bc-a"))
         plan.last_active_advertiser_ids = health.owned_accounts(session, plan)
         session.add(

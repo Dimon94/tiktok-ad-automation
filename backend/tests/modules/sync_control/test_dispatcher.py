@@ -6,10 +6,10 @@ from sqlmodel import select
 from app.core.config import settings
 from app.integrations.tiktok.platform_quotas import quota_configuration
 from app.jobs.models import PendingDispatch
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob
 from app.modules.sync_control.dispatcher import dispatch_due
 from app.modules.sync_control.models import SyncSchedule
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 

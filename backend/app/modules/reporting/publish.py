@@ -10,10 +10,11 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, cast
+from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
 from sqlalchemy import MetaData, delete, insert, or_, text, tuple_
+from sqlalchemy import select as core_select
 from sqlalchemy.sql import ColumnElement
 from sqlmodel import Session, col, select
 
@@ -119,17 +120,28 @@ def _publication_buckets(
 ) -> set[tuple[str, date]]:
     """账户锁内裁决相同观测：重放不写，冲突拒绝，不能借重试推进版本。"""
     writable = set(buckets)
-    for advertiser, day in sorted(buckets):
-        state = session.get(ReportSyncState, (tenant_id, advertiser, kind, day))
-        if state is not None and state.observed_at == observed_at:
+    ordered = sorted(buckets)
+    for offset in range(0, len(ordered), _PUBLISH_BATCH_SIZE):
+        states = session.exec(
+            select(ReportSyncState).where(
+                ReportSyncState.tenant_id == tenant_id,
+                ReportSyncState.report_kind == kind,
+                ReportSyncState.observed_at == observed_at,
+                _bucket_filter(
+                    ReportSyncState, ordered[offset : offset + _PUBLISH_BATCH_SIZE]
+                ),
+            )
+        ).all()
+        for state in states:
+            key = (state.advertiser_id, state.stat_date)
             if (state.active_contract, state.publication_digest) != (
                 NATIVE_CONTRACT,
-                payloads[(advertiser, day)],
+                payloads[key],
             ):
                 raise DomainError(
                     "report_publication_conflict", "同一观测时点的报表内容冲突"
                 )
-            writable.remove((advertiser, day))
+            writable.remove(key)
     return writable
 
 
@@ -137,6 +149,12 @@ def _payload_digest(payload: Sequence[Any]) -> str:
     return hashlib.sha256(
         json.dumps(sorted(payload), sort_keys=True, default=str).encode()
     ).hexdigest()
+
+
+class _AdPublicationStamp(TypedDict):
+    advertiser: str
+    day: str
+    stamp: dict[str, Any]
 
 
 def _bucket_filter(
@@ -153,22 +171,33 @@ def _bucket_days(buckets):
 
 
 @diagnostics.timed("publish_state")
-def _set_state(session, *, tenant_id, kind, buckets, counts, observed_at, job_id=None):
+def _set_state(
+    session,
+    *,
+    tenant_id,
+    kind,
+    buckets,
+    counts,
+    observed_at,
+    job_id=None,
+    publication_metadata=None,
+):
     from app.modules.reporting.store_models import ReportSyncJob
     from app.modules.sync_control.contracts import ExecutionFence
     from app.modules.sync_control.requirements import satisfy_requirements
 
     if not buckets:
-        return
+        return {}
     job = session.get(ReportSyncJob, job_id) if job_id is not None else None
     if job is not None and job.tenant_id != tenant_id:
         raise ValueError("publication job tenant does not match facts")
     now = _database_now(session)
     ordered = sorted(buckets)
+    published_versions = {}
     # _writable_buckets 已持有账户事务锁。固定大小预读并统一 flush，避免
     # 每桶 SELECT/UPDATE/确认需求各往返一次，同时限制 SQL 参数和 ORM 内存。
-    for offset in range(0, len(ordered), 500):
-        batch = ordered[offset : offset + 500]
+    for offset in range(0, len(ordered), _PUBLISH_BATCH_SIZE):
+        batch = ordered[offset : offset + _PUBLISH_BATCH_SIZE]
         states = {
             (state.advertiser_id, state.stat_date): state
             for state in session.exec(
@@ -196,6 +225,13 @@ def _set_state(session, *, tenant_id, kind, buckets, counts, observed_at, job_id
             state.last_success_at = state.updated_at = now
             state.observed_at = observed_at
             state.publication_version += 1
+            if publication_metadata is not None:
+                coordinates, digest = publication_metadata[(advertiser, day)]
+                state.publication_coordinates = coordinates
+                state.active_contract = NATIVE_CONTRACT
+                state.publication_digest = digest
+            # 事实证据复用本事务分配的精确版本，不能逐桶重读或使用整批统一版本。
+            published_versions[(advertiser, day)] = state.publication_version
             versions[(advertiser, day.isoformat())] = state.publication_version
         session.flush()
         if job is not None:
@@ -207,6 +243,7 @@ def _set_state(session, *, tenant_id, kind, buckets, counts, observed_at, job_id
                 observed_at=observed_at,
                 publication_version=versions,
             )
+    return published_versions
 
 
 def mark_failed(
@@ -403,32 +440,43 @@ def publish_ad_day(
         requested_at=requested_at,
     )
     payloads = {}
-    for advertiser, day in sorted(buckets):
-        payload = (
+    ordered = sorted(buckets)
+    # 暂存行已完整校验，按有界日期桶读取摘要输入，避免每个空日期也单独查一次。
+    for offset in range(0, len(ordered), _PUBLISH_BATCH_SIZE):
+        batch = ordered[offset : offset + _PUBLISH_BATCH_SIZE]
+        payload_rows = (
             session.connection()
             .execute(
-                select(
+                core_select(
+                    staged.c.advertiser_id,
+                    staged.c.stat_date,
                     staged.c.ad_id,
                     staged.c.evidence,
                     staged.c.currency,
                     staged.c.timezone,
-                ).where(staged.c.advertiser_id == advertiser, staged.c.stat_date == day)
+                ).where(_bucket_filter(staged.c, batch))
             )
             .all()
         )
-        payloads[(advertiser, day)] = _payload_digest(
-            [
-                (
-                    "",
-                    _publication_coordinates(
-                        "ad", accounts[advertiser], day, campaign_ids=campaign_ids
+        payload_by_bucket = {key: [] for key in batch}
+        for row in payload_rows:
+            payload_by_bucket[(row.advertiser_id, row.stat_date)].append(
+                (row.ad_id, row.evidence, row.currency, row.timezone)
+            )
+        for advertiser, day in batch:
+            payloads[(advertiser, day)] = _payload_digest(
+                [
+                    (
+                        "",
+                        _publication_coordinates(
+                            "ad", accounts[advertiser], day, campaign_ids=campaign_ids
+                        ),
+                        None,
+                        None,
                     ),
-                    None,
-                    None,
-                ),
-                *[(r.ad_id, r.evidence, r.currency, r.timezone) for r in payload],
-            ]
-        )
+                    *payload_by_bucket[(advertiser, day)],
+                ]
+            )
     if not campaign_ids:
         buckets = _publication_buckets(
             session,
@@ -471,8 +519,9 @@ def publish_ad_day(
                 },
             )
     # 系列分片只替换其范围，不能把部分成功声明成整个账户当天 COMPLETE。
+    published_versions = {}
     if not campaign_ids:
-        _set_state(
+        published_versions = _set_state(
             session,
             tenant_id=tenant_id,
             kind="ad_day",
@@ -480,30 +529,23 @@ def publish_ad_day(
             counts=counts,
             observed_at=requested_at,
             job_id=job_id,
+            publication_metadata={
+                (advertiser, day): (
+                    _publication_coordinates("ad", accounts[advertiser], day),
+                    payloads[(advertiser, day)],
+                )
+                for advertiser, day in buckets
+            },
         )
-    if not campaign_ids:
-        for advertiser, day in sorted(buckets):
-            state = cast(
-                ReportSyncState,
-                session.get(ReportSyncState, (tenant_id, advertiser, "ad_day", day)),
-            )
-            state.publication_coordinates = _publication_coordinates(
-                "ad", accounts[advertiser], day
-            )
-            state.active_contract = NATIVE_CONTRACT
-            state.publication_digest = payloads[(advertiser, day)]
-            session.add(state)
     # 行观测与金额同事务落地；定向发布没有整账户版本，使用任务ID和精确范围标识。
     published_at = _database_now(session)
+    stamps: list[_AdPublicationStamp] = []
     for advertiser, day in sorted(buckets):
-        fact_state = session.get(
-            ReportSyncState, (tenant_id, advertiser, "ad_day", day)
-        )
+        if not counts.get((advertiser, day)):
+            continue
         publication = {
             "publication_id": str(job_id),
-            "publication_version": fact_state.publication_version
-            if not campaign_ids and fact_state
-            else 0,
+            "publication_version": published_versions.get((advertiser, day), 0),
             "observed_at": requested_at.isoformat(),
             "last_success_at": published_at.isoformat(),
             "status": "COMPLETE",
@@ -521,25 +563,35 @@ def publish_ad_day(
                 "ad", accounts[advertiser], day, campaign_ids=campaign_ids
             ),
         }
+        stamps.append(
+            {
+                "advertiser": advertiser,
+                "day": day.isoformat(),
+                "stamp": {
+                    "publication": publication,
+                    "observed_at": requested_at.isoformat(),
+                    "publication_version": publication["publication_version"],
+                    "local_day": day.isoformat(),
+                },
+            }
+        )
+    # 精确桶坐标和 job_id 共同限定集合更新；定向发布仍只盖本次实际写入的行。
+    for offset in range(0, len(stamps), _PUBLISH_BATCH_SIZE):
+        batch = stamps[offset : offset + _PUBLISH_BATCH_SIZE]
         session.connection().execute(
             text(
-                "UPDATE ad_report_day SET evidence=evidence || CAST(:stamp AS jsonb) "
-                "WHERE tenant_id=:t AND advertiser_id=:a AND stat_date=:d "
-                "AND sync_job_id=:job"
+                "UPDATE ad_report_day a SET evidence=a.evidence || s.stamp "
+                "FROM jsonb_to_recordset(CAST(:stamps AS jsonb)) "
+                "AS s(advertiser text, day date, stamp jsonb) "
+                "WHERE a.tenant_id=:t AND a.advertiser_id=s.advertiser "
+                "AND a.stat_date=s.day AND a.stat_date=ANY(:days) "
+                "AND a.sync_job_id=:job"
             ),
             {
                 "t": tenant_id,
-                "a": advertiser,
-                "d": day,
+                "days": sorted({date.fromisoformat(item["day"]) for item in batch}),
                 "job": job_id,
-                "stamp": json.dumps(
-                    {
-                        "publication": publication,
-                        "observed_at": requested_at.isoformat(),
-                        "publication_version": publication["publication_version"],
-                        "local_day": str(day),
-                    }
-                ),
+                "stamps": json.dumps(batch),
             },
         )
     with diagnostics.stage("publish_flush"):
@@ -1038,6 +1090,13 @@ def publish_parent_day(
         end=end,
         requested_at=requested_at,
     )
+    payload_by_bucket = {key: [] for key in buckets}
+    for fact in staged:
+        key = (fact.advertiser_id, fact.stat_date)
+        if key in payload_by_bucket:
+            payload_by_bucket[key].append(
+                (fact.remote_id, fact.evidence, fact.currency, fact.timezone)
+            )
     payloads = {
         (advertiser, day): _payload_digest(
             [
@@ -1047,11 +1106,7 @@ def publish_parent_day(
                     None,
                     None,
                 ),
-                *[
-                    (fact.remote_id, fact.evidence, fact.currency, fact.timezone)
-                    for fact in staged
-                    if fact.advertiser_id == advertiser and fact.stat_date == day
-                ],
+                *payload_by_bucket[(advertiser, day)],
             ]
         )
         for advertiser, day in buckets
@@ -1075,7 +1130,7 @@ def publish_parent_day(
     )
     session.add_all([r for r in staged if (r.advertiser_id, r.stat_date) in buckets])
     session.flush()
-    _set_state(
+    published_versions = _set_state(
         session,
         tenant_id=tenant_id,
         kind=kind,
@@ -1083,31 +1138,22 @@ def publish_parent_day(
         counts=counts,
         observed_at=requested_at,
         job_id=job_id,
+        publication_metadata={
+            (advertiser, day): (
+                _publication_coordinates(level, accounts[advertiser], day),
+                payloads[(advertiser, day)],
+            )
+            for advertiser, day in buckets
+        },
     )
-    # 空发布也保存合同/摘要；没有事实行不等于历史来源未知。
-    for advertiser, day in sorted(buckets):
-        state = cast(
-            ReportSyncState,
-            session.get(ReportSyncState, (tenant_id, advertiser, kind, day)),
-        )
-        state.publication_coordinates = _publication_coordinates(
-            level, accounts[advertiser], day
-        )
-        state.active_contract = NATIVE_CONTRACT
-        state.publication_digest = payloads[(advertiser, day)]
-        session.add(state)
+    # 空桶的合同与版本已经和状态一起批量写入；行证据引用同一批精确版本。
     for fact in staged:
         if (fact.advertiser_id, fact.stat_date) in buckets:
-            state = cast(
-                ReportSyncState,
-                session.get(
-                    ReportSyncState,
-                    (tenant_id, fact.advertiser_id, kind, fact.stat_date),
-                ),
-            )
             fact.evidence = fact.evidence | {
                 "observed_at": requested_at.isoformat(),
-                "publication_version": state.publication_version,
+                "publication_version": published_versions[
+                    (fact.advertiser_id, fact.stat_date)
+                ],
                 "local_day": fact.stat_date.isoformat(),
                 "currency": fact.currency,
                 "timezone": fact.timezone,

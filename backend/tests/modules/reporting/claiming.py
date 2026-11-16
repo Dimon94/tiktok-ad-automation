@@ -15,6 +15,17 @@ from app.modules.sync_control.schedule import report_endpoint
 from tests.database import require_test_redis
 
 
+def enqueue_single_kind(session, *, tier, advertiser_ids, **kwargs):
+    """调度/执行层夹具登记精确 kind；上层三层展开仍由 API/planner 集成测试覆盖。"""
+    from app.modules.reporting.jobs import PRIORITY
+    from app.modules.sync_control.report_demand import enqueue_report_requirements
+
+    identities = enqueue_report_requirements(
+        session, priority=PRIORITY[tier], advertiser_groups=[advertiser_ids], **kwargs
+    )
+    return identities[0] if identities else None
+
+
 def claim_jobs(session, *, now, limit):
     from app.modules.reporting import job_tasks  # noqa: F401
 

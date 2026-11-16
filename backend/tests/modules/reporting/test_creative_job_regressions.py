@@ -133,7 +133,10 @@ def test_bulk_enqueue_preserves_coverage_and_unique_job_fallback(
         groups = [["acc-1", "acc-2"], ["acc-1", "acc-2"]]
     ids = jobs.enqueue_jobs(session, advertiser_groups=groups, **common)
     rows = session.exec(
-        select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
+        select(ReportSyncJob).where(
+            ReportSyncJob.tenant_id == sync_seed.tenant_id,
+            ReportSyncJob.kind == "ad_day",
+        )
     ).all()
     assert len(rows) == len(ids) == (2 if tier == "hot" else 1)
     if tier == "hot":

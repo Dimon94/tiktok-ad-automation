@@ -10,8 +10,8 @@ from sqlmodel import select
 from app.core.db import engine
 from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
 from app.modules.reporting import job_tasks
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 

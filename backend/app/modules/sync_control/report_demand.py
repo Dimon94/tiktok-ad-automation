@@ -199,17 +199,13 @@ def enqueue_report_requirements(
     contract = LEVELS[kind].contract if kind in LEVELS else "report-v2"
     if kind in LEVELS:
         from app.core.context import TenantContext
-        from app.modules.accounts.routing import verify_route
+        from app.modules.accounts.routing import verify_read_routes
 
         context = TenantContext(tenant_id=tenant_id, actor_id=actor_id, role="operator")
-        for advertiser in advertisers:
-            verify_route(
-                session,
-                context=context,
-                route=route,
-                advertiser_id=advertiser,
-                capability="read",
-            )
+        # 同一阶段沿正式批量权限入口逐户核验证据，避免三层需求重复逐户查公共权限。
+        verify_read_routes(
+            session, context=context, route=route, advertiser_ids=advertisers
+        )
     if kind in PARENT_KINDS and campaign_ids:
         raise DomainError("report_query_invalid", "父级日报仅允许完整账户日")
     query = {"campaign_ids": sorted(campaign_ids)}

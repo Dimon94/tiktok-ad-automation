@@ -8,13 +8,14 @@ from app.core.errors import DomainError
 from app.integrations.tiktok.contracts.report_reader import RawReportPage
 from app.jobs.models import PendingDispatch
 from app.modules.reporting import job_tasks, planner
-from app.modules.reporting.jobs import enqueue_job, execute_job
+from app.modules.reporting.jobs import execute_job
 from app.modules.reporting.store_models import (
     CreativeReportDay,
     ReportSyncJob,
     ReportSyncState,
 )
 from tests.modules.reporting.claiming import claim_jobs
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 

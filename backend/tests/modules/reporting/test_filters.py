@@ -10,6 +10,7 @@ from app.core.context import TenantContext
 from app.models import User
 from app.modules.ads.models import AdObject, CampaignNameProjection
 from app.modules.reporting.filters import apply_authorized_scope, compile_filter
+from app.modules.reporting.frozen_result import result_contract
 from app.modules.reporting.query_models import QuerySnapshot, read_snapshot
 from app.modules.reporting.schemas import ReportingFilter
 from app.modules.tenants.models import TenantMembership
@@ -218,6 +219,7 @@ def test_snapshot_read_is_tenant_bc_scoped_and_viewer_allowed(report_case):
         actor_id=report_case.context.actor_id,
         advertiser_ids=["report-account"],
         filters={"dimension": "campaign"},
+        result_contract=result_contract("campaign"),
         filter_digest="a" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
     )
@@ -253,6 +255,7 @@ def test_snapshot_read_is_tenant_bc_scoped_and_viewer_allowed(report_case):
         actor_id=viewer.id,
         advertiser_ids=["report-account"],
         filters={"dimension": "campaign"},
+        result_contract=result_contract("campaign"),
         filter_digest="b" * 64,
         expires_at=datetime.now(UTC) + timedelta(minutes=10),
     )

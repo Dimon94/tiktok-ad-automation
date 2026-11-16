@@ -7,12 +7,12 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import select
 
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob
 from app.modules.sync_control.directory_dispatch import dispatch_directories_due
 from app.modules.sync_control.dispatcher import dispatch_due
 from app.modules.sync_control.models import SyncSchedule
 from app.modules.sync_control.worker_pool import lock_background_pool
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 from tests.modules.sync_control.test_schedule_fencing import _directory
 

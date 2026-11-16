@@ -6,8 +6,8 @@ from datetime import UTC, date, datetime
 from sqlalchemy import text
 from sqlmodel import select
 
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.sync_control.models import SyncExecutionScope
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 

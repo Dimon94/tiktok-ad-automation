@@ -12,7 +12,6 @@ from urllib3.response import HTTPResponse
 from app.core.config import settings
 from app.integrations.tiktok.platform_quotas import quota_configuration
 from app.modules.reporting import job_tasks
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob, ReportSyncState
 from app.modules.sync_control.dispatcher import dispatch_due
 from app.modules.sync_control.models import SyncCostLedger
@@ -20,6 +19,7 @@ from tests.integrations.tiktok.gateway_support import database_engine as databas
 from tests.integrations.tiktok.gateway_support import gateway_case as gateway_case
 from tests.modules.accounts.conftest import app_config as app_config
 from tests.modules.accounts.conftest import policy as policy
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.sync_control.test_cost_transport_trace import clear_trace_case
 
 

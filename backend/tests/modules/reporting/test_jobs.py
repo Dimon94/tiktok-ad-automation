@@ -51,7 +51,7 @@ def _route(seed):
 def _claim_one(session):
     jobs = claim_jobs(session, now=datetime.now(UTC) + timedelta(seconds=1), limit=10)
     session.commit()
-    return jobs[0]
+    return next(job for job in jobs if job.kind == "ad_day")
 
 
 def _factory(session):
@@ -170,6 +170,7 @@ def test_truncation_splits_then_fails_visibly(committed_sync_seed):
             select(ReportSyncJob).where(
                 ReportSyncJob.tenant_id == seed.tenant_id,
                 ReportSyncJob.status == "QUEUED",
+                ReportSyncJob.kind == job.kind,
             )
         ).all()
         assert sorted(c.advertiser_ids for c in children) == [["acc-1"], ["acc-2"]]
@@ -179,8 +180,10 @@ def test_truncation_splits_then_fails_visibly(committed_sync_seed):
 
 
 def _enqueue_and_claim(factory, seed, advertisers=None):
+    from tests.modules.reporting.creative_job_helpers import claim
+
     with factory() as s:
-        enqueue_job(
+        job_id = enqueue_job(
             s,
             tenant_id=seed.tenant_id,
             bc_id="bc-a",
@@ -193,18 +196,13 @@ def _enqueue_and_claim(factory, seed, advertisers=None):
             actor_id=seed.actor_id,
         )
         s.commit()
-        job = claim_jobs(s, now=datetime.now(UTC) + timedelta(seconds=1), limit=1)[0]
-        s.commit()
-        return job
+    return claim(factory, job_id)
 
 
 def _reclaim(factory, job_id):
-    with factory() as s:
-        job = s.get(ReportSyncJob, job_id)
-        due = max(datetime.now(UTC), job.due_at) + timedelta(seconds=1)
-        result = claim_jobs(s, now=due, limit=1)[0]
-        s.commit()
-        return result
+    from tests.modules.reporting.creative_job_helpers import claim
+
+    return claim(factory, job_id)
 
 
 def test_first_truncation_discovers_campaigns_and_publishes_whole_account(
@@ -375,8 +373,9 @@ def test_expired_lease_is_reclaimed_and_old_token_cannot_publish(committed_sync_
     with factory() as s:
         job = s.get(ReportSyncJob, old.id)
         due = job.claimed_until + timedelta(seconds=1)
-        claimed = claim_jobs(s, now=due, limit=1)
-        assert len(claimed) == 1 and claimed[0].claim_token != old.claim_token
+        claimed = claim_jobs(s, now=due, limit=100)
+        replacement = next(row for row in claimed if row.id == old.id)
+        assert replacement.claim_token != old.claim_token
         s.commit()
     reader = FakeReader()
     assert (
@@ -669,7 +668,9 @@ def test_current_day_keeps_distinct_frozen_execution_from_cross_day_work(
     assert old_id is not None and current_id is not None
     if not new_head_after_claim:
         first = claim_jobs(session, now=now, limit=10)
-    assert len(first) == 1 and first[0].id in {old_id, current_id}
+    assert {job.kind for job in first} == {"ad_day", "campaign_day", "adgroup_day"}
+    ad_claims = [job for job in first if job.kind == "ad_day"]
+    assert len(ad_claims) == 1 and ad_claims[0].id in {old_id, current_id}
     assert claim_jobs(session, now=now, limit=10) == []
     assert session.get(ReportSyncJob, old_id).start_date == today - timedelta(days=1)
     assert session.get(ReportSyncJob, current_id).start_date == today
@@ -713,7 +714,11 @@ def test_split_child_preserves_intent_but_publishes_its_new_observation(
         children = claim_jobs(
             session, now=datetime.now(UTC) + timedelta(seconds=1), limit=10
         )
-        child = next(job for job in children if job.advertiser_ids == ["acc-1"])
+        child = next(
+            job
+            for job in children
+            if job.kind == "ad_day" and job.advertiser_ids == ["acc-1"]
+        )
         # created_at 使用应用时钟；业务水位只比较数据库观测，不能混用两者。
         assert request_time(child) == request_time(parent)
         assert successful_at > request_time(child)

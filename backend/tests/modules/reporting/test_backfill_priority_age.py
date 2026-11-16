@@ -6,8 +6,9 @@
 from datetime import UTC, datetime, timedelta
 
 from app.modules.accounts.models import AdvertiserAccount, BCAccountAccess
-from app.modules.reporting.jobs import enqueue_job, execute_job
+from app.modules.reporting.jobs import execute_job
 from tests.modules.reporting.claiming import claim_jobs
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import FakeReader, _route
 
 

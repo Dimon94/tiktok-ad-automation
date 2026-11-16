@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from sqlmodel import select
 
-from app.modules.reporting.jobs import enqueue_job
+from app.modules.reporting.levels import LEVELS
 from app.modules.reporting.store_models import ReportSyncJob
 from app.modules.sync_control.contracts import BucketKey, ExecutionFence
 from app.modules.sync_control.models import (
@@ -16,9 +16,52 @@ from app.modules.sync_control.requirements import (
     satisfy_requirements,
 )
 from app.modules.sync_control.scopes import ensure_scope, scope_key
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 DAY = date(2026, 10, 5)
+
+
+@pytest.mark.parametrize("kind", ["ad_day", "campaign_day", "adgroup_day"])
+def test_batch_demand_rechecks_second_account_before_reusing_execution(
+    session, sync_seed, kind
+):
+    from app.core.errors import DomainError
+    from app.modules.accounts.models import BCAccountAccess
+
+    args = {
+        "tenant_id": sync_seed.tenant_id,
+        "bc_id": "bc-a",
+        "kind": kind,
+        "tier": "hot",
+        "advertiser_ids": ["acc-1", "acc-2"],
+        "start": DAY,
+        "end": DAY,
+        "frozen_route": _route(sync_seed),
+        "actor_id": sync_seed.actor_id,
+    }
+    identity = enqueue_job(session, **args)
+    assert identity is not None
+    grant = session.get(
+        BCAccountAccess, (sync_seed.tenant_id, "bc-a", "acc-2", sync_seed.connection.id)
+    )
+    grant.authorized = False
+    session.flush()
+    with pytest.raises(DomainError) as error:
+        enqueue_job(session, **args)
+    assert error.value.code == "account_access_denied"
+    assert [
+        job.id
+        for job in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
+        ).all()
+    ] == [identity]
+    assert {
+        scope.advertiser_id
+        for scope in session.exec(
+            select(SyncScope).where(SyncScope.tenant_id == sync_seed.tenant_id)
+        ).all()
+    } == {"acc-1", "acc-2"}
 
 
 def test_priority_and_batch_do_not_change_frozen_scope(sync_seed):
@@ -164,6 +207,7 @@ def test_publication_only_satisfies_frozen_revision(session, sync_seed):
         actor_id=sync_seed.actor_id,
         advertiser_id="acc-1",
         resource="ad_day",
+        metric_contract=LEVELS["ad_day"].contract,
         query={"campaign_ids": []},
         timezone="Asia/Hong_Kong",
     )

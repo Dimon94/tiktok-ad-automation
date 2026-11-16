@@ -1,11 +1,17 @@
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import event
 from sqlmodel import select
 
+from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.modules.reporting.jobs import enqueue_job
-from app.modules.reporting.publish import AccountMeta, publish_ad_day
+from app.modules.reporting.publish import (
+    AccountMeta,
+    publish_ad_day,
+    publish_parent_day,
+)
 from app.modules.reporting.store_models import ReportSyncState
 from app.modules.sync_control.models import (
     SyncExecutionScope,
@@ -15,12 +21,14 @@ from app.modules.sync_control.models import (
 from tests.modules.reporting.test_jobs import _route
 
 
-def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
+@pytest.mark.parametrize("level", ["ad", "campaign", "adgroup"])
+def test_large_publication_batches_state_and_requirement_io(session, sync_seed, level):
     """600 个可写桶应批量发布；两个受保护的交叉桶不能被一起确认。"""
     now = datetime.now(UTC)
     start = date(2025, 1, 1)
     end = start + timedelta(days=300)
     tenant = sync_seed.tenant_id
+    kind = f"{level}_day"
     accounts = {
         "acc-1": AccountMeta("USD", "Asia/Hong_Kong"),
         "acc-2": AccountMeta("USD", "UTC"),
@@ -29,7 +37,7 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
         session,
         tenant_id=tenant,
         bc_id="bc-a",
-        kind="ad_day",
+        kind=kind,
         tier="history",
         advertiser_ids=list(accounts),
         start=start,
@@ -42,7 +50,7 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
     state_a = ReportSyncState(
         tenant_id=tenant,
         advertiser_id="acc-1",
-        report_kind="ad_day",
+        report_kind=kind,
         stat_date=start,
         status="STALE",
         error_code="old-error",
@@ -52,7 +60,7 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
     state_b = ReportSyncState(
         tenant_id=tenant,
         advertiser_id="acc-2",
-        report_kind="ad_day",
+        report_kind=kind,
         stat_date=start + timedelta(days=1),
         status="COMPLETE",
         row_count=3,
@@ -66,7 +74,7 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
             ReportSyncState(
                 tenant_id=tenant,
                 advertiser_id=advertiser,
-                report_kind="ad_day",
+                report_kind=kind,
                 stat_date=day,
                 status="COMPLETE",
                 row_count=9,
@@ -81,7 +89,7 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
         ReportSyncState(
             tenant_id=foreign_tenant,
             advertiser_id="acc-1",
-            report_kind="ad_day",
+            report_kind=kind,
             stat_date=start,
             status="COMPLETE",
             row_count=17,
@@ -117,7 +125,8 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
     connection = session.connection()
     event.listen(connection, "before_cursor_execute", record_sql)
     try:
-        publish_ad_day(
+        publish = publish_ad_day if level == "ad" else publish_parent_day
+        publish(
             session,
             tenant_id=tenant,
             job_id=job_id,
@@ -126,6 +135,11 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
             end=end,
             rows=[],
             requested_at=now,
+            **(
+                {"level": level, "route": FrozenTikTokRoute(**_route(sync_seed))}
+                if level != "ad"
+                else {}
+            ),
         )
         session.flush()
     finally:
@@ -158,7 +172,7 @@ def test_large_publication_batches_state_and_requirement_io(session, sync_seed):
     )
     assert newer.desired_revision > newer.satisfied_revision
     assert newer.oldest_pending_at is not None
-    foreign = session.get(ReportSyncState, (foreign_tenant, "acc-1", "ad_day", start))
+    foreign = session.get(ReportSyncState, (foreign_tenant, "acc-1", kind, start))
     assert foreign.publication_version == 99 and foreign.row_count == 17
     print(f"publication state/reference SQL statements: {len(statements)}")  # noqa: T201
     assert len(statements) < 40, "publication performs per-bucket database round trips"

@@ -8,10 +8,10 @@ from datetime import UTC, date, datetime, timedelta
 
 from sqlmodel import select
 
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportSyncJob
 from app.modules.sync_control.models import SyncExecutionScope, SyncSchedule
 from tests.modules.reporting.claiming import claim_jobs
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 

@@ -230,7 +230,8 @@ def measure_freshness(session, plan, *, now, accounts=None):
     """分钟检查只读发布水位、筛选与动作队列，不触碰目录或素材关联事实。"""
     owned = owned_accounts(session, plan) if accounts is None else accounts
     params = _measurement_params(session, plan, now=now, owned=owned, coverage=False)
-    # 每账户合并两类水位；只在当地零点后的新鲜度窗口读取昨日，平时主键只读两行。
+    # 每账户一次读取各日层级水位；只在当地零点后的新鲜度窗口读取昨日。
+    # recent 在账户内物化后补齐缺失层级，不能在 kind 展开后重复探测同一账户。
     # 不再让双 JOIN 在大池重复随机读取，或改走整租户历史水位的哈希扫描。
     # 一次求出完整活跃归属集合；只拆SQL执行，不降低覆盖、不分批发布。
     # 每句仍受原5秒限制，调用方10秒总预算覆盖全部批次与后续指标。
@@ -247,23 +248,27 @@ def measure_freshness(session, plan, *, now, accounts=None):
             SELECT a.advertiser_id,a.timezone,a.local_day,kinds.kind AS report_kind,
               kinds.last_success_at,kinds.previous_success_at
             FROM active a
-            CROSS JOIN unnest(CAST(:report_kinds AS text[])) k(kind)
-            LEFT JOIN LATERAL (
-              SELECT max(s.last_success_at) FILTER (WHERE s.stat_date=a.local_day) AS last_success_at,
-                max(s.last_success_at) FILTER (WHERE s.stat_date=a.local_day-1) AS previous_success_at
-              FROM report_sync_state s
-              WHERE s.tenant_id=:t AND s.advertiser_id=a.advertiser_id AND s.report_kind=k.kind
-                AND s.stat_date BETWEEN CASE
-                  WHEN (CAST(:now AS timestamptz) AT TIME ZONE a.timezone)
-                    < a.local_day + CAST(:previous_grace AS interval)
-                  THEN a.local_day-1 ELSE a.local_day END AND a.local_day
-            ) recent ON true
-            CROSS JOIN LATERAL (VALUES
-              (k.kind,recent.last_success_at,recent.previous_success_at)
-            ) kinds(kind,last_success_at,previous_success_at)
-            WHERE k.kind IN ('ad_day','creative_day') OR EXISTS (
+            CROSS JOIN LATERAL (
+              WITH recent AS MATERIALIZED (
+                SELECT s.report_kind,
+                  max(s.last_success_at) FILTER (WHERE s.stat_date=a.local_day) AS last_success_at,
+                  max(s.last_success_at) FILTER (WHERE s.stat_date=a.local_day-1) AS previous_success_at
+                FROM report_sync_state s
+                WHERE s.tenant_id=:t AND s.advertiser_id=a.advertiser_id
+                  AND s.report_kind=ANY(CAST(:report_kinds AS text[]))
+                  AND s.stat_date BETWEEN CASE
+                    WHEN (CAST(:now AS timestamptz) AT TIME ZONE a.timezone)
+                      < a.local_day + CAST(:previous_grace AS interval)
+                    THEN a.local_day-1 ELSE a.local_day END AND a.local_day
+                GROUP BY s.report_kind
+              )
+              SELECT k.kind,recent.last_success_at,recent.previous_success_at
+              FROM unnest(CAST(:report_kinds AS text[])) k(kind)
+              LEFT JOIN recent ON recent.report_kind=k.kind
+            ) kinds
+            WHERE kinds.kind IN ('ad_day','creative_day') OR EXISTS (
               SELECT 1 FROM sync_scope registered WHERE registered.tenant_id=:t
-                AND registered.advertiser_id=a.advertiser_id AND registered.resource=k.kind)
+                AND registered.advertiser_id=a.advertiser_id AND registered.resource=kinds.kind)
         """),
                 {
                     **params,
@@ -384,6 +389,7 @@ def measure_coverage(session, plan, *, now, accounts=None, stage=None):
         {
             "ad": set(),
             "material": set(),
+            **{kind: set() for kind in PARENT_KINDS},
             "directory": {r["advertiser_id"] for r in missing},
         },
     )
@@ -618,7 +624,9 @@ def _repair_health_units(session, plan, row, repairs, now, *, scope, screen_unkn
     """同2秒内轮转两类修复；后续单元失败不能撤销先前已完成的请求。"""
     stop = monotonic() + REPAIR_BUDGET_SECONDS - 0.2
     directory = sorted(repairs.get("directory", ()))
-    regular = screen_unknown or any(repairs[name] for name in ("ad", "material"))
+    regular = screen_unknown or any(
+        repairs[name] for name in ("ad", "material", *PARENT_KINDS)
+    )
     regular = regular or bool(row.metrics.get("pending_actions"))
     state = dict(row.metrics.get(_DIRECTORY_REPAIR_KEY) or {})
     if directory:
@@ -970,7 +978,10 @@ def _new_coverage_progress(scope, hints=None):
         "offset": 0,
         "metrics": {},
         "issues": [],
-        "repairs": {"ad": [], "material": [], "directory": []},
+        # 覆盖续步和新鲜度修复共享完整的日层级合同，即使本阶段没有父级缺口。
+        "repairs": {
+            name: [] for name in ("ad", "material", "directory", *PARENT_KINDS)
+        },
         "stages": stages,
         "continuation_seq": 0,
         "retry_not_before": None,

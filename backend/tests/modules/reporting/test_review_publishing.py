@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlmodel import select
 
 from app.modules.reporting import partitions, publish
-from app.modules.reporting.jobs import enqueue_job, execute_job
+from app.modules.reporting.jobs import execute_job
 from app.modules.reporting.store_models import (
     AccountReconciliationDay,
     AdReportDay,
@@ -17,6 +17,7 @@ from app.modules.reporting.store_models import (
     ReportSyncJob,
     ReportSyncState,
 )
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.test_jobs import (
     D,

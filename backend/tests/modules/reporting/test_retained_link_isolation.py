@@ -47,4 +47,6 @@ def test_retained_links_do_not_map_unknown_creative_or_grant_actions(
     assert [
         (u.ad_ref.remote_id, u.ad_material_id) for u in page.items[1].material_uses
     ] == ([] if ambiguous else [("a1", "m1")])
-    assert sum(Decimal(b["values"]["spend"]) for b in page.summary["buckets"]) == 10
+    assert page.summary["scope"] == "SELECTED_MATERIALS"
+    assert sum(Decimal(b["values"]["spend"]) for b in page.summary["buckets"]) == 3
+    assert page.items[0].metric_buckets[0].values["spend"] == 7

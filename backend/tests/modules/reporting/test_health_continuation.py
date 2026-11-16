@@ -5,11 +5,69 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import text
+from sqlmodel import select
 
 from app.core.context import TenantContext
 from app.modules.reporting import health, planner
 from app.modules.reporting.store_models import AdSyncBc, ReportSyncHealth
+
+
+@pytest.mark.parametrize("stale_kind", ["campaign_day", "adgroup_day"])
+def test_parent_only_staleness_enters_regular_repair(session, sync_seed, stale_kind):
+    from app.modules.reporting.levels import DAY_KINDS, LEVELS
+    from app.modules.reporting.store_models import ReportSyncJob, ReportSyncState
+    from app.modules.sync_control.scopes import ensure_scope
+    from tests.modules.reporting.test_jobs import _route
+
+    now = datetime.now(UTC)
+    planner.ensure_bc_plans(session, now=now)
+    plan = session.get(AdSyncBc, (sync_seed.tenant_id, "bc-a"))
+    plan.active_screened_at = now
+    plan.last_active_advertiser_ids = ["acc-1"]
+    day = planner.local_today("Asia/Hong_Kong", now)
+    for kind in (*DAY_KINDS, "creative_day"):
+        if kind in DAY_KINDS:
+            ensure_scope(
+                session,
+                route=_route(sync_seed),
+                actor_id=sync_seed.actor_id,
+                advertiser_id="acc-1",
+                resource=kind,
+                query={"campaign_ids": []},
+                timezone="Asia/Hong_Kong",
+                metric_contract=LEVELS[kind].contract,
+            )
+        session.add(
+            ReportSyncState(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id="acc-1",
+                report_kind=kind,
+                stat_date=day,
+                status="COMPLETE",
+                publication_version=7,
+                last_success_at=now - timedelta(hours=1) if kind == stale_kind else now,
+            )
+        )
+    session.flush()
+    measurement = health.measure_freshness(session, plan, now=now, accounts=["acc-1"])
+    assert measurement[2][stale_kind] == {"acc-1"}
+    assert measurement[2]["ad"] == measurement[2]["material"] == set()
+    health.observe_health(
+        session, plan, now=now, measurement=measurement, phase="freshness"
+    )
+    jobs = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
+    ).all()
+    assert [(job.kind, job.advertiser_ids) for job in jobs] == [(stale_kind, ["acc-1"])]
+    assert all(
+        session.get(
+            ReportSyncState, (sync_seed.tenant_id, "acc-1", kind, day)
+        ).publication_version
+        == 7
+        for kind in (*DAY_KINDS, "creative_day")
+    )
 
 
 def _case(seed, factory, monkeypatch):

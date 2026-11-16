@@ -27,7 +27,11 @@ def _case(session, seed, count):
         """),
         {"tenant": seed.tenant_id, "last": count - 1},
     )
-    return plan, [f"repair-{i:03d}" for i in range(count)]
+    from tests.modules.reporting.sync_conftest import grant_accounts
+
+    accounts = [f"repair-{i:03d}" for i in range(count)]
+    grant_accounts(session, seed, accounts)
+    return plan, accounts
 
 
 def _pending(session, plan, report_kind, accounts, **changes):
@@ -52,7 +56,10 @@ def _pending(session, plan, report_kind, accounts, **changes):
 
 
 def _repair(session, plan, kind, accounts):
-    repairs = {"ad": set(), "material": set(), "directory": set()}
+    repairs = {
+        name: set()
+        for name in ("ad", "material", "directory", "campaign_day", "adgroup_day")
+    }
     repairs["ad" if kind == "ad_day" else "material"] = set(accounts)
     health._repair_health(
         session, plan, SimpleNamespace(last_repair_at=None), repairs, NOW
@@ -82,7 +89,9 @@ def test_inflight_first_fifty_do_not_consume_repair_slots(session, sync_seed, ki
         )
     session.flush()
     _repair(session, plan, kind, accounts)
-    jobs = session.exec(select(ReportSyncJob)).all()
+    jobs = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+    ).all()
     fresh = [job for job in jobs if job.id not in original_ids and job.kind == kind]
     # 两个当地日合计最多50，缺水位在先，其余按年龄；不能按ID取前50。
     assert {account for job in fresh for account in job.advertiser_ids} == set(
@@ -98,9 +107,15 @@ def test_inflight_first_fifty_do_not_consume_repair_slots(session, sync_seed, ki
     assert all(job.due_at == NOW + timedelta(hours=1) for job in pending)
     # 后续救援只处理剩余10个；再重复不会复制已在途工作，也不会刷新成功水位。
     _repair(session, plan, kind, accounts)
-    after = session.exec(select(ReportSyncJob)).all()
+    after = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+    ).all()
     _repair(session, plan, kind, accounts)
-    assert len(session.exec(select(ReportSyncJob)).all()) == len(after)
+    assert len(
+        session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ) == len(after)
     assert sum(len(job.advertiser_ids) for job in after if job.kind == kind) == 110
     assert (
         session.get(
@@ -156,8 +171,10 @@ def test_other_scope_or_terminal_work_cannot_hide_missing_fact(
     _repair(session, plan, "ad_day", accounts)
     new = [
         job
-        for job in session.exec(select(ReportSyncJob)).all()
-        if job.id != previous.id and job.kind == "ad_day"
+        for job in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+        if job.id != previous.id and job.kind == "ad_day" and job.kind == "ad_day"
     ]
     assert len(new) == 1 and new[0].advertiser_ids == [accounts[0]]
 
@@ -185,12 +202,16 @@ def test_missing_watermark_precedes_oldest_success_and_ignores_other_dates(
     monkeypatch.setattr(health, "MAX_REPAIR_ACCOUNTS", 1)
     _repair(session, plan, "ad_day", accounts)
     jobs = session.exec(
-        select(ReportSyncJob).where(ReportSyncJob.kind == "ad_day")
+        select(ReportSyncJob)
+        .where(ReportSyncJob.tenant_id == plan.tenant_id)
+        .where(ReportSyncJob.kind == "ad_day")
     ).all()
     assert len(jobs) == 1 and jobs[0].advertiser_ids == [accounts[2]]
     _repair(session, plan, "ad_day", accounts)
     jobs = session.exec(
-        select(ReportSyncJob).where(ReportSyncJob.kind == "ad_day")
+        select(ReportSyncJob)
+        .where(ReportSyncJob.tenant_id == plan.tenant_id)
+        .where(ReportSyncJob.kind == "ad_day")
     ).all()
     assert len(jobs) == 2
     assert {account for job in jobs for account in job.advertiser_ids} == set(

@@ -56,9 +56,15 @@ def test_partial_commits_visible_bounded_and_restart_reuses(
         nonlocal calls
         calls += 1
         if calls == 3:
-            # 第二批开始时第一批两项任务已从其他连接可见；旧实现这里为0。
+            # 第二批开始时第一批四层任务已从其他连接可见；旧实现这里为0。
             visible = jobs(factory, seed)
-            assert len(visible) == 2
+            assert {job.kind for job in visible} == {
+                "campaign_day",
+                "adgroup_day",
+                "ad_day",
+                "creative_day",
+            }
+            assert len(visible) == 4
             assert all((j.end_date - j.start_date).days < 7 for j in visible)
             with factory() as observer:
                 days = (
@@ -71,7 +77,7 @@ def test_partial_commits_visible_bounded_and_restart_reuses(
                     )
                     .scalar_one()
                 )
-                assert days == 14
+                assert days == 28
             raise RuntimeError("controlled interruption")
         return real_enqueue(session, **kwargs)
 
@@ -81,7 +87,7 @@ def test_partial_commits_visible_bounded_and_restart_reuses(
         pytest.raises(RuntimeError, match="controlled interruption"),
     ):
         creative_rebuild.enqueue_backfill(writer, **args)
-    assert len(jobs(factory, seed)) == 2
+    assert len(jobs(factory, seed)) == 4
     monkeypatch.setattr(creative_rebuild, "enqueue_job", real_enqueue)
     receipts = []
     with factory() as writer:
@@ -95,7 +101,7 @@ def test_partial_commits_visible_bounded_and_restart_reuses(
     assert all(j.progress["execution_window_days"] == 7 for j in jobs(factory, seed))
     with factory() as writer:
         assert creative_rebuild.enqueue_backfill(writer, **args) == 0
-    assert len(jobs(factory, seed)) == 12
+    assert len(jobs(factory, seed)) == 24
 
 
 @pytest.mark.parametrize("change", ["ownership", "route", "disabled", "plan-route"])
@@ -124,4 +130,4 @@ def test_revalidate_every_batch_after_revocation(committed_sync_seed, change):
         ),
     ):
         creative_rebuild.enqueue_backfill(writer, **args, receipt=revoke)
-    assert len(receipts) == 1 and len(jobs(factory, seed)) == 2
+    assert len(receipts) == 1 and len(jobs(factory, seed)) == 4

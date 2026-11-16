@@ -15,3 +15,17 @@
 验证：当前头代表4项先4 failed/4.47s后同4 passed/5.88s。原52条迁移相关CI失败均有修复后通过证据；71项原失败及共享消费者首轮66 passed/5 failed，修正新暴露的历史播种点、旧合同断言及PG16客户端/PG17服务器不匹配后定点通过。分批共76个不同用例通过，集合重叠不相加、不伪称单次全绿；最新共享消费者5 passed/2.70s、原始证据两项2 passed/3.53s。旧备份用例用匹配的PG17.11客户端；环境失败独立保留。21路径AST/Ruff/格式/差异检查及产品文件ty通过，既有循环外键warning未压制。
 
 其他模块修复和最终独立审查/远端结果继续追加；本节不宣称完整模块门禁通过。本轮没有部署或真实平台操作。
+
+
+## 发布、健康修复与需求登记
+
+- 发布阶段真实2404 SQL：复用 `_set_state` 的500桶批处理，同时写水位、Native合同、坐标和digest，返回本事务各桶精确版本；暂存摘要和Ad证据回写批量执行，Parent不再逐事实重读。定向Ad仍使用精确范围和version0，不推进整账户COMPLETE；原空发布、相同观察重放/冲突、旧观察保护及冻结需求revision保留。
+- coverage两个生产者补齐PARENT_KINDS，父级独有陈旧也进入原修复预算。实际pending-actions链捕获KeyError/campaign_day后修复；新鲜度SQL每账户一次限定窗口读取，再展开层级，保留原扫描和行数预算。
+- `report_demand` 复用已有500账户 `verify_read_routes`，不再每账户重复公共权限查询；仍按阶段读取当前tenant/BC/连接/账户证据及代数，不新增跨阶段缓存或权限绕过。
+- 调度/执行单kind夹具使用canonical需求登记及生产priority映射；API/planner/health/Native上层仍验证真实三层展开。重领按精确job_id；补齐真实BC目录授权证据。冻结状态、pinned名称、普通INSTANCE金额和特殊行可见性的断言按既有合同分别核验。
+
+验证：发布71 passed/13.11s（含Ad/Campaign/Adgroup原600桶`<40`门槛、Native及定向来源）；4BC两参数保留900秒SLO；4859账户两参数、跨kind第二账户撤权、错误BC/scope及四种批量撤权共11 passed/146.11s。健康pending-actions和parent-only核心8项通过。部分旧断言吸入原库历史测试数据，改为本例tenant断言并保留旧数据；涉及正式全局控制器的测试另建同一ownedPG上的全新隔离库，不删除原库。清洁库28 passed/27.40s包含整个actual_cost文件前后顺序、全局job_tasks、原健康1000探测/行数/参考结果门槛；健康日期/时区23 passed/148.99s。集合重叠不相加。
+
+环境失败独立记录：本机PG17锁池64在造数、尚未到SLO时不足；仅owned51165测试集群对齐CI既有1024，重启保留原数据，Redis未改。新的私有guard仅改数据库名、权限0600。直接pytest没有加载CI结果插件；正式runner通过 `-p pytest_results` 加载 `deploy/ci/pytest_results.py`，既有文件间干净head-template隔离继续保留。
+
+根代理完整ty检查暴露两个类型边界（SQLModel四列select重载与JSON stamp混合字典），分别使用SQLAlchemy Core select及明确TypedDict，不改SQL或数据。修正后全app ty、Ruff、原三层SQL门槛3 passed/5.39s。最初错误cwd导致的环境解析告警与真实类型错误分别留档；不把环境错误算产品缺陷。46路径格式/Ruff及差异检查通过。最终独立审查和远端门禁仍待后续源修复完成后执行。

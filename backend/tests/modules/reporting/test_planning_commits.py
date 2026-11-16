@@ -92,7 +92,7 @@ def test_late_sql_cancel_keeps_screen_and_both_live_facts(
                 )
             ).all()
         )
-        assert {"ad_day", "creative_day"} <= kinds
+        assert {"campaign_day", "adgroup_day", "ad_day", "creative_day"} <= kinds
 
 
 @pytest.mark.parametrize("page_seconds", [0, 5])
@@ -339,7 +339,8 @@ def test_soft_timeout_does_not_replay_completed_screen_or_hot_batch(
         before = set(
             session.exec(
                 select(ReportSyncJob.id).where(
-                    ReportSyncJob.tenant_id == seed.tenant_id
+                    ReportSyncJob.tenant_id == seed.tenant_id,
+                    ReportSyncJob.kind == "ad_day",
                 )
             ).all()
         )
@@ -636,7 +637,12 @@ def test_old_screen_finishes_after_new_live_day_without_reverting_fact_window(
             )
         ).all()
         added = [r for r in rows if "acc-2" in r.advertiser_ids]
-        assert {r.kind for r in added} == {"ad_day", "creative_day"}
+        assert {r.kind for r in added} == {
+            "campaign_day",
+            "adgroup_day",
+            "ad_day",
+            "creative_day",
+        }
         assert all(r.start_date == r.end_date == at.date() for r in added)
 
 
@@ -683,7 +689,12 @@ def test_unknown_timezone_waits_for_metadata_without_blocking_valid_accounts(
         rows = session.exec(
             select(ReportSyncJob).where(ReportSyncJob.tenant_id == seed.tenant_id)
         ).all()
-        assert {r.kind for r in rows} == {"ad_day", "creative_day"}
+        assert {r.kind for r in rows} == {
+            "campaign_day",
+            "adgroup_day",
+            "ad_day",
+            "creative_day",
+        }
         assert all(r.advertiser_ids == ["acc-1"] for r in rows)
         plan = session.get(AdSyncBc, (seed.tenant_id, "bc-a"))
         assert plan.active_screened_at is None
@@ -906,8 +917,8 @@ def test_daily_completion_crossing_midnight_immediately_catches_up(
             for row in rows
             if row.end_date == before.date()
             and "acc-1" in row.advertiser_ids
-            and row.kind in {"ad_day", "creative_day"}
-        } == {"ad_day", "creative_day"}
+            and row.kind in {"campaign_day", "adgroup_day", "ad_day", "creative_day"}
+        } == {"campaign_day", "adgroup_day", "ad_day", "creative_day"}
 
 
 def test_live_batches_get_a_turn_between_each_background_phase(

@@ -44,9 +44,13 @@ def test_fresh_fact_coverage_repair_only_creates_targeted_directory(
         session, plan, now=now, measurement=measurement, phase="coverage"
     )
     session.flush()
-    jobs = session.exec(select(ReportSyncJob)).all()
+    jobs = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+    ).all()
     assert [job.id for job in jobs] == [original.id]
-    runs = session.exec(select(AdDirectoryRun)).all()
+    runs = session.exec(
+        select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+    ).all()
     assert {(run.kind, tuple(run.query["ids"])) for run in runs} == {
         ("campaign", ("c0",)),
         ("adgroup", ("g0",)),
@@ -69,12 +73,18 @@ def test_fresh_fact_coverage_repair_only_creates_targeted_directory(
         measurement=measurement,
         phase="coverage",
     )
-    assert {run.id for run in session.exec(select(AdDirectoryRun)).all()} == {
-        run.id for run in runs
-    }
-    assert [job.id for job in session.exec(select(ReportSyncJob)).all()] == [
-        original.id
-    ]
+    assert {
+        run.id
+        for run in session.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        ).all()
+    } == {run.id for run in runs}
+    assert [
+        job.id
+        for job in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ] == [original.id]
 
 
 def test_dense_directory_repair_preserves_progress_inside_two_seconds(
@@ -151,14 +161,19 @@ def test_dense_directory_repair_preserves_progress_inside_two_seconds(
     session.flush()
     elapsed = monotonic() - started
     runs = session.exec(
-        select(AdDirectoryRun).where(AdDirectoryRun.status == "QUEUED")
+        select(AdDirectoryRun)
+        .where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        .where(AdDirectoryRun.status == "QUEUED")
     ).all()
     record_property("repair_elapsed", elapsed)
     record_property("created_runs", len(runs))
     assert row.metrics["missing_directory_ads"] == 100000
-    assert [job.id for job in session.exec(select(ReportSyncJob)).all()] == [
-        original.id
-    ]
+    assert [
+        job.id
+        for job in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ] == [original.id]
     assert runs, (
         "Moving directory planning into control must not roll back all progress at 2s"
     )
@@ -193,10 +208,23 @@ def test_full_measurement_keeps_real_stale_fact_repair_separate(
     health.observe_health(
         session, plan, now=now, measurement=(metrics, issues, repairs)
     )
-    jobs = [j for j in session.exec(select(ReportSyncJob)).all() if j.id != original.id]
-    assert {job.kind for job in jobs} == {"ad_day", "creative_day"}
+    jobs = [
+        j
+        for j in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+        if j.id != original.id
+    ]
+    assert {job.kind for job in jobs} == {"campaign_day", "adgroup_day", "ad_day"}
     assert all(job.advertiser_ids == ["acc-2"] for job in jobs)
-    assert len(session.exec(select(AdDirectoryRun)).all()) == 3
+    assert (
+        len(
+            session.exec(
+                select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+            ).all()
+        )
+        == 3
+    )
 
 
 def test_coverage_redis_checkpoint_continues_as_directory_only(
@@ -215,7 +243,13 @@ def test_coverage_redis_checkpoint_continues_as_directory_only(
             session, plan, health.owned_accounts(session, plan), now=now
         )
         progress = health._new_coverage_progress(scope)
-        progress["repairs"] = {"ad": [], "material": [], "directory": ["acc-2"]}
+        progress["repairs"] = {
+            "ad": [],
+            "material": [],
+            "directory": ["acc-2"],
+            "campaign_day": [],
+            "adgroup_day": [],
+        }
         progress["metrics"] = {"missing_directory_ads": 1, "unmapped_creatives": 0}
         progress["issues"] = ["missing_directory_ads"]
         progress["offset"] = 2
@@ -234,10 +268,24 @@ def test_coverage_redis_checkpoint_continues_as_directory_only(
         assert result == "COMPLETE"
         assert redis_client.get(key) is None
         with factory() as session:
-            assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [
-                original_id
-            ]
-            assert len(session.exec(select(AdDirectoryRun)).all()) == 3
+            assert [
+                j.id
+                for j in session.exec(
+                    select(ReportSyncJob).where(
+                        ReportSyncJob.tenant_id == plan.tenant_id
+                    )
+                ).all()
+            ] == [original_id]
+            assert (
+                len(
+                    session.exec(
+                        select(AdDirectoryRun).where(
+                            AdDirectoryRun.tenant_id == plan.tenant_id
+                        )
+                    ).all()
+                )
+                == 3
+            )
     finally:
         redis_client.delete(key)
 
@@ -257,8 +305,15 @@ def test_unknown_type_waits_for_normal_report_discovery_without_refresh_loop(
     health.observe_health(
         session, plan, now=now, measurement=measurement, phase="coverage"
     )
-    assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [original.id]
-    assert not session.exec(select(AdDirectoryRun)).all()
+    assert [
+        j.id
+        for j in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ] == [original.id]
+    assert not session.exec(
+        select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+    ).all()
     known = planner.known_reporting_accounts(session, plan, accounts=["acc-2"], now=now)
     assert known == {"acc-2"}
     assert (
@@ -275,8 +330,25 @@ def test_unknown_type_waits_for_normal_report_discovery_without_refresh_loop(
     health.observe_health(
         session, plan, now=now, measurement=measurement, phase="coverage"
     )
-    assert len(session.exec(select(ReportSyncJob)).all()) == 3
-    assert len(session.exec(select(AdDirectoryRun)).all()) == 3
+    from collections import Counter
+
+    jobs = session.exec(
+        select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+    ).all()
+    assert Counter(job.kind for job in jobs) == {
+        "ad_day": 2,
+        "campaign_day": 1,
+        "adgroup_day": 1,
+        "creative_day": 1,
+    }
+    assert (
+        len(
+            session.exec(
+                select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+            ).all()
+        )
+        == 3
+    )
 
 
 def test_partial_id_chunk_commits_and_resumes_after_real_sql_cancel(
@@ -311,7 +383,9 @@ def test_partial_id_chunk_commits_and_resumes_after_real_sql_cancel(
         finally:
             event.remove(connection, "before_cursor_execute", slow_second)
     with factory() as session:
-        initial = session.exec(select(AdDirectoryRun)).all()
+        initial = session.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        ).all()
         assert len(initial) == 1 and len(initial[0].query["ids"]) == 100
         initial_id = initial[0].id
         state = session.get(ReportSyncHealth, (seed.tenant_id, "bc-a")).metrics[
@@ -325,7 +399,9 @@ def test_partial_id_chunk_commits_and_resumes_after_real_sql_cancel(
             session, plan, now=now, measurement=measurement, phase="coverage"
         )
     with factory() as session:
-        runs = session.exec(select(AdDirectoryRun)).all()
+        runs = session.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        ).all()
         assert initial_id in {r.id for r in runs}
         ad_ids = [id for r in runs if r.kind == "ad" for id in r.query["ids"]]
         assert len(ad_ids) == len(set(ad_ids)) == 205
@@ -335,9 +411,12 @@ def test_partial_id_chunk_commits_and_resumes_after_real_sql_cancel(
         ]
         assert state["after"] == "acc-2"
         assert not state["unfinished"]
-        assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [
-            original_id
-        ]
+        assert [
+            j.id
+            for j in session.exec(
+                select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+            ).all()
+        ] == [original_id]
 
 
 def _directory_accounts(session, seed, now, *, count, known):
@@ -419,16 +498,25 @@ def test_first_fifty_non_actionable_accounts_do_not_hide_later_gap(
     )
     assert row.metrics[health._DIRECTORY_REPAIR_KEY]["after"] == accounts[49]
     assert not session.exec(
-        select(AdDirectoryRun).where(AdDirectoryRun.advertiser_id == accounts[-1])
+        select(AdDirectoryRun)
+        .where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        .where(AdDirectoryRun.advertiser_id == accounts[-1])
     ).all()
     health.observe_health(
         session, plan, now=now, measurement=measurement, phase="coverage"
     )
     runs = session.exec(
-        select(AdDirectoryRun).where(AdDirectoryRun.advertiser_id == accounts[-1])
+        select(AdDirectoryRun)
+        .where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        .where(AdDirectoryRun.advertiser_id == accounts[-1])
     ).all()
     assert {r.kind for r in runs} == {"campaign", "adgroup", "ad"}
-    assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [original.id]
+    assert [
+        j.id
+        for j in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ] == [original.id]
 
 
 def test_repair_scope_change_restarts_before_previous_prefix(
@@ -466,10 +554,17 @@ def test_repair_scope_change_restarts_before_previous_prefix(
     )
     assert row.metrics[health._DIRECTORY_REPAIR_KEY]["scope"] != previous_scope
     runs = session.exec(
-        select(AdDirectoryRun).where(AdDirectoryRun.advertiser_id == accounts[0])
+        select(AdDirectoryRun)
+        .where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        .where(AdDirectoryRun.advertiser_id == accounts[0])
     ).all()
     assert {r.kind for r in runs} == {"campaign", "adgroup", "ad"}
-    assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [original.id]
+    assert [
+        j.id
+        for j in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ] == [original.id]
 
 
 def test_directory_success_cannot_delay_real_freshness_repair(
@@ -499,8 +594,20 @@ def test_directory_success_cannot_delay_real_freshness_repair(
     health.observe_health(
         session, plan, now=now, measurement=coverage, phase="coverage"
     )
-    assert len(session.exec(select(AdDirectoryRun)).all()) == 3
-    assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [original.id]
+    assert (
+        len(
+            session.exec(
+                select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+            ).all()
+        )
+        == 3
+    )
+    assert [
+        j.id
+        for j in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+    ] == [original.id]
     fresh = health.measure_freshness(session, plan, now=now + timedelta(seconds=1))
     assert (
         fresh[0]["stale_ad_accounts"] == 1 and fresh[0]["stale_material_accounts"] == 0
@@ -512,8 +619,14 @@ def test_directory_success_cannot_delay_real_freshness_repair(
         measurement=fresh,
         phase="freshness",
     )
-    jobs = [j for j in session.exec(select(ReportSyncJob)).all() if j.id != original.id]
-    assert {job.kind for job in jobs} == {"ad_day", "creative_day"}
+    jobs = [
+        j
+        for j in session.exec(
+            select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+        ).all()
+        if j.id != original.id
+    ]
+    assert {job.kind for job in jobs} == {"campaign_day", "adgroup_day", "ad_day"}
     assert all(job.advertiser_ids == ["acc-2"] for job in jobs)
 
 
@@ -550,14 +663,19 @@ def test_health_and_report_publication_share_directory_lock(
         for future in futures:
             future.result(timeout=10)
     with factory() as session:
-        runs = session.exec(select(AdDirectoryRun)).all()
+        runs = session.exec(
+            select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+        ).all()
         for kind, prefix in [("ad", "a"), ("adgroup", "g"), ("campaign", "c")]:
             ids = [id for r in runs if r.kind == kind for id in r.query["ids"]]
             assert len(ids) == len(set(ids)) == 101
             assert set(ids) == {f"{prefix}{i}" for i in range(101)}
-        assert [j.id for j in session.exec(select(ReportSyncJob)).all()] == [
-            original_id
-        ]
+        assert [
+            j.id
+            for j in session.exec(
+                select(ReportSyncJob).where(ReportSyncJob.tenant_id == plan.tenant_id)
+            ).all()
+        ] == [original_id]
 
 
 def test_large_partial_account_yields_to_small_account_within_two_turns(
@@ -590,7 +708,9 @@ def test_large_partial_account_yields_to_small_account_within_two_turns(
         row = health.observe_health(
             session, plan, now=now, measurement=measurement, phase="coverage"
         )
-    runs = session.exec(select(AdDirectoryRun)).all()
+    runs = session.exec(
+        select(AdDirectoryRun).where(AdDirectoryRun.tenant_id == plan.tenant_id)
+    ).all()
     small = [r for r in runs if r.advertiser_id == accounts[1]]
     assert {r.kind for r in small} == {"ad", "adgroup", "campaign"}
     large_ids = [

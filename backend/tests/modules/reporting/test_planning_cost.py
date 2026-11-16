@@ -273,7 +273,7 @@ def test_final_progress_cancel_rolls_back_clock_and_current_jobs_only(
             for j in session.exec(
                 select(ReportSyncJob).where(ReportSyncJob.tenant_id == seed.tenant_id)
             ).all()
-        } == {"ad_day", "creative_day"}
+        } == {"campaign_day", "adgroup_day", "ad_day", "creative_day"}
 
 
 def test_screen_page_is_not_committed_when_final_progress_write_is_cancelled(

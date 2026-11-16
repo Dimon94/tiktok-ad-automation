@@ -7,13 +7,13 @@ from app.core.config import settings
 from app.modules.ads.models import AdObject
 from app.modules.ads.sync_models import AdDirectoryRun
 from app.modules.reporting.directory_refresh import refresh_report_directory
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.publish import (
     AccountMeta,
     publish_ad_day,
     publish_creative_day,
 )
 from app.modules.reporting.store_models import ReportSyncJob
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.sync_conftest import sync_seed as sync_seed
 from tests.modules.reporting.test_creative_reporting import creative_row

@@ -68,7 +68,6 @@ def test_late_invalid_stream_keeps_previous_complete_facts(session, sync_seed):
 def test_cross_batch_duplicate_identity_rolls_back_entire_replacement(
     session, sync_seed
 ):
-    from sqlalchemy.exc import IntegrityError
 
     tenant = sync_seed.tenant_id
     publish_ad_day(session, **args(tenant), rows=[ad_row("old", D, spend="7")])
@@ -78,7 +77,7 @@ def test_cross_batch_duplicate_identity_rolls_back_entire_replacement(
             yield ad_row(str(i), D)
         yield ad_row("1", D, spend="999")
 
-    with pytest.raises(IntegrityError), session.begin_nested():
+    with pytest.raises(DomainError, match="重复身份"), session.begin_nested():
         publish_ad_day(session, **args(tenant), rows=rows())
     facts = session.exec(
         select(AdReportDay).where(AdReportDay.tenant_id == tenant)

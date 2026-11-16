@@ -11,9 +11,17 @@ from tests.modules.reporting.test_queries import filters_for, freeze, query
 
 @pytest.mark.parametrize("dimension", ["campaign", "drama"])
 def test_selection_and_export_expand_original_name_version(report_case, dimension):
+    from sqlmodel import select
+
     from app.modules.ads.directory import append_campaign_name_projection
     from app.modules.reporting.exports import create_export
-    from app.modules.reporting.query_models import FrozenSelectionRecord, ReportExport
+    from app.modules.reporting.query_models import (
+        FrozenSelectionRecord,
+        QuerySnapshot,
+        QuerySnapshotRow,
+        ReportExport,
+    )
+    from app.modules.reporting.snapshot_members import snapshot_members, snapshot_names
 
     case = report_case
     ref = case.seed_campaign("嘉书-旧剧-备注", "report-account", 4, 8)
@@ -47,7 +55,17 @@ def test_selection_and_export_expand_original_name_version(report_case, dimensio
         idempotency_key=f"old-name-{dimension}",
     )
     export = case.session.get(ReportExport, exported.id)
-    assert export.naming_versions == record.naming_versions
+    snapshot = case.session.get(QuerySnapshot, page.snapshot.snapshot_id)
+    assert export.naming_versions == snapshot.naming_versions
+    rows = case.session.exec(
+        select(QuerySnapshotRow).where(QuerySnapshotRow.snapshot_id == snapshot.id)
+    ).all()
+    members = snapshot_members(case.session, snapshot=snapshot, rows=rows)
+    assert (
+        snapshot_names(case.session, snapshot=snapshot, rows=rows, members=members)
+        == record.naming_versions
+    )
+    assert "旧剧" in str(export.frozen_rows[0]["display"])
     assert export.frozen_rows[0]["refs"][0]["remote_id"] == ref.remote_id
 
 

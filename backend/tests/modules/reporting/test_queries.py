@@ -442,7 +442,7 @@ def test_merge_buckets_marks_only_buckets_with_incomplete_contributors():
     assert merged["EUR"].availability["spend"] == "AVAILABLE"
 
 
-def test_same_snapshot_shows_current_status_without_refiltering_or_reordering(
+def test_same_snapshot_keeps_frozen_status_without_refiltering_or_reordering(
     report_case,
 ):
     case = report_case
@@ -462,5 +462,5 @@ def test_same_snapshot_shows_current_status_without_refiltering_or_reordering(
     current = query(case, filters=filters, snapshot_id=old.snapshot.snapshot_id)
     assert current.snapshot.snapshot_id == old.snapshot.snapshot_id
     assert [r.row_key for r in current.items] == [r.row_key for r in old.items]
-    assert current.items[0].display["operation_status"] == "ENABLE"
+    assert current.items[0].display["operation_status"] == "DISABLE"
     assert query(case, filters=filters).items == ()

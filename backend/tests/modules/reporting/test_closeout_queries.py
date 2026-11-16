@@ -12,7 +12,7 @@ from tests.modules.reporting.test_day_closeout import NOW, plan_for, seed_yester
 def test_completed_yesterday_does_not_read_closeout_history(session, sync_seed):
     plan = plan_for(session, sync_seed)
     day, midnight = seed_yesterday(session, sync_seed)
-    for kind in ("ad_day", "creative_day"):
+    for kind in ("campaign_day", "adgroup_day", "ad_day", "creative_day"):
         row = session.get(ReportSyncState, (sync_seed.tenant_id, "acc-1", kind, day))
         if row is None:
             row = ReportSyncState(

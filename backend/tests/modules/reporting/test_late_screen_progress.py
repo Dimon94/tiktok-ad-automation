@@ -35,6 +35,9 @@ def _seed(factory, seed, accounts, now, *, after, covered, done, advanced):
                 for a in accounts
             ]
         )
+        from tests.modules.reporting.sync_conftest import grant_accounts
+
+        grant_accounts(session, seed, accounts)
         planner.ensure_bc_plans(session, now=now)
         plan = session.get(AdSyncBc, (seed.tenant_id, "bc-a"))
         plan.next_hot_at = plan.next_material_at = now + timedelta(minutes=15)

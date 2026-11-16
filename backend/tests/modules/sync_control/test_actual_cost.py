@@ -6,7 +6,6 @@ from uuid import uuid4
 import pytest
 from sqlmodel import select
 
-from app.modules.reporting.jobs import enqueue_job
 from app.modules.reporting.store_models import ReportDispatchCursor, ReportSyncJob
 from app.modules.sync_control.costs import (
     apply_cost_delta,
@@ -15,6 +14,7 @@ from app.modules.sync_control.costs import (
     settle_costs,
 )
 from app.modules.sync_control.models import SyncCostLedger
+from tests.modules.reporting.claiming import enqueue_single_kind as enqueue_job
 from tests.modules.reporting.test_jobs import _route
 
 ENDPOINT = "GET /open_api/v1.3/report/integrated/get/"

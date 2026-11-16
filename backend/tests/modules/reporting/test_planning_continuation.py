@@ -619,6 +619,9 @@ def test_four_bc_capacity_with_real_pg_pages_facts_and_slow_directory(
                 ]
             )
             session.flush()
+            from tests.modules.reporting.sync_conftest import grant_accounts
+
+            grant_accounts(session, seed, accounts, bc_id=bc)
             plan = session.get(AdSyncBc, (seed.tenant_id, bc))
             plan.last_active_advertiser_ids = accounts
             plan.next_daily_at = now + timedelta(days=1)
