@@ -73,6 +73,22 @@ def _validate_archive(session, original, accounts):
             for category in ("rule_backtest_inputs", "attribution", "history")
         )
     )
+    # 原归档不改写；表示合同已变化的来源不能借重分析绕过读取门禁。
+    incompatible = session.execute(
+        scoped(ReviewSource, original)
+        .with_only_columns(ReviewSource.id)
+        .where(
+            ReviewSource.category == "reporting",
+            ReviewSource.payload["status"].astext != "UNAVAILABLE",
+            ReviewSource.payload["projection_contract"].astext.is_distinct_from(
+                "financial-review-v2"
+            ),
+        )
+    ).first()
+    if incompatible:
+        raise DomainError(
+            "ai_review_reanalysis_unavailable", "原报表证据合同已变化，请重新复盘"
+        )
     archived_catalog = original.evidence.get("source_catalog")
     if archived_catalog:
         current_counts = Counter(row[0] for row in rows)

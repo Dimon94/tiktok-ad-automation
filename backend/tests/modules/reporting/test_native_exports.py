@@ -13,6 +13,8 @@ from app.modules.reporting.exports import (
 from app.modules.reporting.queries import query_ads
 from app.modules.reporting.query_models import QuerySnapshot, ReportExport
 from app.modules.reporting.schemas import ReportingFilter
+from tests.modules.reporting.evidence_helpers import assert_csv_evidence
+from tests.modules.reporting.evidence_helpers import records as frozen_records
 from tests.modules.reporting.test_native_scope_roas import D, publish
 
 
@@ -32,7 +34,16 @@ def test_export_copies_observation_before_source_refresh_and_cleanup(
         idempotency_key="frozen",
     )
     export = session.get(ReportExport, public.id)
-    assert export.frozen_rows == [row.model_dump(mode="json") for row in page.items]
+    expected_sources = [
+        frozen_records(session, sync_seed, row.metric_buckets[0]) for row in page.items
+    ]
+    for frozen, row, source in zip(
+        export.frozen_rows, page.items, expected_sources, strict=True
+    ):
+        assert {
+            k: v for k, v in frozen.items() if k != "source_evidence"
+        } == row.model_dump(mode="json", exclude={"source_evidence"})
+        assert frozen["source_evidence"] == source
     snap = session.get(QuerySnapshot, page.snapshot.snapshot_id)
     assert export.result_contract == snap.result_contract
     assert export.publication_map == snap.publication_map
@@ -48,9 +59,7 @@ def test_export_copies_observation_before_source_refresh_and_cleanup(
     assert [r["Native Growth 总展示价值（平台原字段）"] for r in rows] == ["0.3", ""]
     import json
 
-    assert json.loads(rows[0]["metric_vector"]) == page.items[0].metric_buckets[
-        0
-    ].model_dump(mode="json")
+    assert_csv_evidence(rows[0], page.items[0].metric_buckets[0], expected_sources[0])
     assert json.loads(rows[0]["publication_map"]) == export.publication_map
     from datetime import timedelta
 
@@ -87,7 +96,6 @@ def test_export_scope_revocation_and_idempotent_retry(session, sync_seed):
         ),
     )
     args = dict(  # noqa: C408
-
         context=sync_seed.context,
         bc_id="bc-a",
         snapshot_id=page.snapshot.snapshot_id,

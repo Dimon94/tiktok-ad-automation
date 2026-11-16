@@ -208,6 +208,11 @@ async def query_ads_route(
     cursor: Annotated[str | None, Query(max_length=8192)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     force_refresh: bool = False,
+    view: Literal["metrics", "evidence"] = "metrics",
+    evidence_row_key: Annotated[str | None, Query(max_length=512)] = None,
+    evidence_bucket: Annotated[str | None, Query(max_length=1024)] = None,
+    evidence_component: Annotated[str | None, Query(max_length=128)] = None,
+    evidence_cursor: Annotated[str | None, Query(max_length=8192)] = None,
 ) -> AdsQueryPage:
     # 默认日期必须按请求时刻计算；写在参数默认值里会固定为服务启动当天。
     today = date.today()
@@ -240,6 +245,33 @@ async def query_ads_route(
 
     def execute_query() -> AdsQueryPage:
         context = _context(session, user, tenant_id)
+        if view == "evidence":
+            import json
+
+            from pydantic import ValidationError
+
+            from app.modules.reporting.frozen_evidence import read_snapshot_evidence
+            from app.modules.reporting.schemas import EvidenceBucket
+
+            try:
+                bucket = (
+                    EvidenceBucket.model_validate_json(evidence_bucket).model_dump()
+                    if evidence_bucket
+                    else None
+                )
+            except (ValidationError, json.JSONDecodeError) as error:
+                raise HTTPException(422, "invalid_evidence_bucket") from error
+            return read_snapshot_evidence(
+                session,
+                context=context,
+                bc_id=bc_id,
+                snapshot_id=snapshot_id,
+                row_key=evidence_row_key,
+                bucket=bucket,
+                component=evidence_component,
+                cursor=evidence_cursor,
+                limit=limit,
+            )
         result = query_cached_ads(
             session,
             context=context,

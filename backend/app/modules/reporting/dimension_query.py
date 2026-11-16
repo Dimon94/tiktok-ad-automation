@@ -34,7 +34,6 @@ from app.modules.reporting.metric_catalog import (
     DERIVED_RATIOS,
     NATIVE_CONTRACT,
     NO_SPEND_ZERO_METRICS,
-    semantics_for,
 )
 from app.modules.reporting.models import AccountBalanceObservation
 from app.modules.reporting.read_models.models import AdEntityRead as AdObject
@@ -44,8 +43,6 @@ from app.modules.reporting.read_models.models import (
 from app.modules.reporting.row_set import SnapshotMember, entity_ref, ordered_members
 from app.modules.reporting.schemas import (
     Availability,
-    BucketStamp,
-    MetricProvenance,
     MetricVector,
     ReportingFilter,
     ReportRow,
@@ -400,6 +397,16 @@ def _coverage(
         "stale_dates": stale,
         "failed_dates": failed,
         "incomplete_advertiser_ids": incomplete_advertisers,
+        "missing_buckets": [
+            {
+                "advertiser_id": adv,
+                "local_day": day.isoformat(),
+                "status": s.status if s else "MISSING",
+            }
+            for adv in sorted(advertisers)
+            for day in dates
+            if (s := relevant.get((adv, day))) is None or s.status != "COMPLETE"
+        ],
         "updated_at": max(updated).isoformat() if updated else None,
     }
 
@@ -714,7 +721,7 @@ def materialize_rows(
             .mappings()
         ]
     # 页补全复用成员/阈值/summary 的同一个 SQL 事实聚合，不再另造来源选择。
-    from app.modules.reporting.row_set import _facts_cte
+    from app.modules.reporting.row_set import _common_ctes, _facts_cte
 
     table = (
         f"{'campaign' if kind == 'account' else kind}_selected_day"
@@ -733,13 +740,16 @@ def materialize_rows(
         (
             session.connection()
             .execute(
-                text(f"WITH {rows_sql} SELECT * FROM facts WHERE rid=ANY(:ids)"),
+                text(
+                    f"WITH {_common_ctes(query_kind(filters.dimension))}, {rows_sql} SELECT * FROM facts WHERE rid=ANY(:ids)"
+                ),
                 {
                     "tenant": tenant_id,
                     "advs": advertisers,
                     "start": filters.start_date,
                     "end": filters.end_date,
                     "ids": member_ids,
+                    "ndays": (filters.end_date - filters.start_date).days + 1,
                     "contribution_ids": list(filters.contribution.ids)
                     if filters.contribution
                     else [],
@@ -1278,97 +1288,9 @@ def vector_provenance(
     vector: MetricVector, selected: list[dict[str, Any]], scope: str
 ) -> MetricVector:
     """行和 SQL 汇总共用证据解释；不在 Python 决定成员或合计金额。"""
-    selected = sorted(
-        selected, key=lambda record: json.dumps(record, sort_keys=True, default=str)
-    )
-    stamps = tuple(
-        BucketStamp(
-            advertiser_id=r["advertiser_id"],
-            level=r["level"],
-            stat_date=r["local_day"],
-            contract_revision=r["contract_revision"],
-            publication_version=r["publication"].get("publication_version", 0),
-            observed_at=r["publication"].get("observed_at"),
-            published_at=r["publication"].get("last_success_at"),
-            last_attempt_status=r["publication"].get("status", "PENDING"),
-        )
-        for r in selected
-    )
-    provenance = {}
-    for name in vector.values:
-        ratio = next((r for r in DERIVED_RATIOS if r[0] == name), None)
-        counts: dict[str, int] = {}
-        for r in selected:
-            for field in ratio[1:3] if ratio else (name,):
-                state = r["fields"].get(field, {}).get("status") or (
-                    "NO_RETURNED_ROW"
-                    # SQL 空桶保留坐标和 NULL 列，不能用非空字典冒充实际返回行。
-                    if not r.get("returned", bool(r["fact"]))
-                    else "LEGACY_UNKNOWN"
-                    if r["contract_revision"] == "LEGACY_UNKNOWN"
-                    else "VALUE"
-                    if r["fact"].get(field) is not None
-                    else "ABSENT"
-                )
-                counts[state] = counts.get(state, 0) + 1
-        values = [r["fact"].get(name) for r in selected]
-        known = sum(v is not None for v in values)
-        missing = len(values) - known
-        reason = vector.reasons.get(name) or (
-            "PARTIAL_FIELDS"
-            if vector.availability[name] == "PARTIAL"
-            else "NO_RETURNED_ROW"
-            if not any(r.get("returned", bool(r["fact"])) for r in selected)
-            else "MISSING_FIELD"
-            if vector.values[name] is None
-            else None
-        )
-        provenance[name] = MetricProvenance(
-            level=cast(Any, vector.level),
-            source_kind=cast(Any, vector.source_kind),
-            contract_revision=cast(str, vector.contract_revision),
-            scope_digest=scope,
-            buckets=stamps,
-            field_state_counts=counts,
-            reason=reason,
-            formula=(
-                f"SUM({ratio[1]}) / COMPLETE_SUM({ratio[2]})"
-                + (f" * {ratio[3]}" if ratio[3] != 1 else "")
-            )
-            if ratio
-            else None,
-            known_count=known
-            if not ratio
-            else sum(r["fact"].get(ratio[1]) is not None for r in selected),
-            missing_count=missing
-            if not ratio
-            else sum(r["fact"].get(ratio[1]) is None for r in selected),
-            denominator_known_count=sum(
-                r["fact"].get(ratio[2]) is not None for r in selected
-            )
-            if ratio
-            else None,
-            denominator_missing_count=sum(
-                r["fact"].get(ratio[2]) is None for r in selected
-            )
-            if ratio
-            else None,
-            local_ranges=tuple(
-                sorted(
-                    {
-                        f"{r['advertiser_id']} {r['local_day']} {r['timezone']}"
-                        for r in selected
-                    }
-                )
-            ),
-            metric_contract=semantics_for(name, NATIVE_CONTRACT)
-            if vector.contract_revision == NATIVE_CONTRACT
-            else None,
-            observations=tuple(
-                {k: v for k, v in r.items() if k != "fact"} for r in selected
-            ),
-        )
-    return vector.model_copy(update={"provenance": provenance})
+    from app.modules.reporting.frozen_evidence import provenance_for
+
+    return provenance_for(vector, selected, scope)
 
 
 def report_provenance(
@@ -1407,8 +1329,6 @@ def report_provenance(
     refs = sorted({(r.advertiser_id, r.kind, r.remote_id) for r in row.refs})
 
     display = dict(row.display)
-    observations = [{k: v for k, v in r.items() if k != "fact"} for r in records]
-    display["platform_roas_observations"] = json.dumps(observations, ensure_ascii=False)
     display["report_observed_at"] = " / ".join(
         sorted({str(r["publication"].get("observed_at")) for r in records})
     )
@@ -1491,4 +1411,10 @@ def report_provenance(
     display["report_metric_reasons"] = "；".join(
         sorted({p.reason for v in vectors for p in v.provenance.values() if p.reason})
     )
-    return row.model_copy(update={"display": display, "metric_buckets": tuple(vectors)})
+    return row.model_copy(
+        update={
+            "display": display,
+            "metric_buckets": tuple(vectors),
+            "source_evidence": tuple(records),
+        }
+    )

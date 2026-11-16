@@ -54,8 +54,11 @@ def test_five_thousand_accounts_and_hundred_thousand_campaigns_have_bounded_snap
     ):
         connection.execute(text(f"ANALYZE {table}"))
     captured = []
+    sql_calls = 0
 
     def capture(_conn, _cursor, statement, values, _context, _many):
+        nonlocal sql_calls
+        sql_calls += 1
         if "INSERT INTO query_snapshot_row" in statement:
             captured.append((statement, values))
 
@@ -68,7 +71,9 @@ def test_five_thousand_accounts_and_hundred_thousand_campaigns_have_bounded_snap
         )
     finally:
         event.remove(connection, "before_cursor_execute", capture)
-    record_property("snapshot_seconds", monotonic() - started)
+    snapshot_seconds = monotonic() - started
+    record_property("snapshot_seconds", snapshot_seconds)
+    record_property("snapshot_sql_calls", sql_calls)
     started = monotonic()
     page = _read_page(
         case.session,
@@ -94,14 +99,9 @@ def test_five_thousand_accounts_and_hundred_thousand_campaigns_have_bounded_snap
         ).scalar_one()
         == 0
     )
-    # 再次EXPLAIN会写同主键，因此在回滚保存点里用另一随机快照ID捕获执行计划。
+    # 直接使用Connection保存点，确保诊断INSERT回滚后仍是原有完整冻结行。
     statement, values = captured[0]
-    from uuid import uuid4
-
-    with case.session.begin_nested() as savepoint:
-        values = dict(values, snapshot_id=uuid4())
-        # 外键必须引用真实临时快照；复用当前父记录并只清掉当前诊断保存点内的行。
-        values["snapshot_id"] = snapshot.id
+    with connection.begin_nested() as savepoint:
         connection.execute(
             text("DELETE FROM query_snapshot_row WHERE snapshot_id=:s"),
             {"s": snapshot.id},
@@ -122,17 +122,145 @@ def test_five_thousand_accounts_and_hundred_thousand_campaigns_have_bounded_snap
         "ad_object",
         "ad_entity_read",
         "campaign_name_current",
-        "campaign_report_day",
         "account_membership_version",
     }
     facts = [
-        node for node in active if node.get("Relation Name") == "account_report_day"
+        node for node in active if node.get("Relation Name") == "campaign_report_day"
     ]
+    assert facts
     assert (
         sum(
             (n["Actual Rows"] + n.get("Rows Removed by Filter", 0)) * n["Actual Loops"]
             for n in facts
         )
-        <= 5000
+        <= 200000
     )
     record_property("snapshot_plan", json.dumps(plan))
+
+    from collections import defaultdict
+    from decimal import Decimal
+    from hashlib import sha256
+
+    from fastapi.encoders import jsonable_encoder
+    from starlette.responses import JSONResponse
+
+    from app.modules.reporting.frozen_evidence import read_snapshot_evidence
+
+    def digest(value):
+        return sha256(
+            json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode()
+        ).hexdigest()
+
+    summary_bytes = connection.execute(
+        text("SELECT octet_length(summary::text) FROM query_snapshot WHERE id=:s"),
+        {"s": snapshot.id},
+    ).scalar_one()
+    row_bytes = connection.execute(
+        text(
+            "SELECT sum(octet_length(frozen_result::text)) FROM query_snapshot_row WHERE snapshot_id=:s"
+        ),
+        {"s": snapshot.id},
+    ).scalar_one()
+    response_bytes = len(JSONResponse(jsonable_encoder(page)).body)
+    measurements = {
+        "accounts": page.total,
+        "snapshot_seconds": snapshot_seconds,
+        "snapshot_sql_calls": sql_calls,
+        "summary_jsonb_bytes": summary_bytes,
+        "full_frozen_rows_jsonb_bytes": row_bytes,
+        "serialized_http_bytes": response_bytes,
+        "publication_map_bytes": len(
+            json.dumps(page.snapshot.publication_map).encode()
+        ),
+    }
+    for key, value in measurements.items():
+        record_property(key, value)
+    print(  # noqa: T201
+        "QUERY_CAPACITY_SIZE " + json.dumps(measurements, sort_keys=True), flush=True
+    )
+    assert summary_bytes < 64000
+    assert response_bytes < 2 * 1024 * 1024
+    assert not any(row.source_evidence for row in page.items)
+    reference = page.summary["buckets"][0]["evidence_ref"]
+    assert reference["record_count"] == 100000
+    cursor, records_by_row, identities = None, defaultdict(list), set()
+    proof_started = monotonic()
+    while True:
+        proof = read_snapshot_evidence(
+            case.session,
+            context=case.context,
+            bc_id=case.bc_id,
+            snapshot_id=snapshot.id,
+            bucket=reference["bucket"],
+            cursor=cursor,
+            limit=100,
+        ).evidence_page
+        assert len(proof.records) <= 100
+        for record in proof.records:
+            identities.add((record["advertiser_id"], record["remote_id"]))
+            records_by_row[record["selected_row_key"]].append(record)
+            assert Decimal(record["fact"]["spend"]) == 1
+            assert (
+                record["publication"] == {}
+                and record["contract_revision"] == "LEGACY_UNKNOWN"
+            )
+            assert record["returned"] is True
+        cursor = proof.next_cursor
+        if cursor is None:
+            break
+    assert identities == {
+        (f"scale-{a}", f"c-{i}") for a in range(1, 5001) for i in range(1, 21)
+    }
+    # 消费者从冻结指标页取各行scope，再用实际分页交付的原件独立复算总摘要。
+    row_scopes = {}
+    metric_page = page
+    while True:
+        for row in metric_page.items:
+            ref = row.metric_buckets[0].evidence_ref
+            row_scopes[row.row_key] = ref.scope_digest
+        if not metric_page.next_cursor:
+            break
+        metric_page = _read_page(
+            case.session,
+            context=case.context,
+            bc_id=case.bc_id,
+            filters=filters,
+            snapshot=snapshot,
+            cursor=metric_page.next_cursor,
+            limit=100,
+        )
+    parts = [
+        [key, scope, len(records_by_row[key]), digest(records_by_row[key])]
+        for key, scope in sorted(row_scopes.items())
+    ]
+    scope = digest(
+        [
+            {
+                k: snapshot.filters.get(k)
+                for k in ("dimension", "start_date", "end_date", "contribution")
+            },
+            [[p[0], p[1]] for p in parts],
+        ]
+    )
+    assert scope == reference["scope_digest"]
+    assert digest([scope, reference["bucket"], parts]) == reference["evidence_digest"]
+    measurements = {
+        "accounts": page.total,
+        "facts": len(identities),
+        "snapshot_seconds": snapshot_seconds,
+        "snapshot_sql_calls": sql_calls,
+        "summary_jsonb_bytes": summary_bytes,
+        "full_frozen_rows_jsonb_bytes": row_bytes,
+        "serialized_http_bytes": response_bytes,
+        "publication_map_bytes": len(
+            json.dumps(page.snapshot.publication_map).encode()
+        ),
+        "whole_population_proof_seconds": monotonic() - proof_started,
+    }
+    for key, value in measurements.items():
+        record_property(key, value)
+    print(  # noqa: T201
+        "QUERY_CAPACITY_PROOF " + json.dumps(measurements, sort_keys=True)
+    )

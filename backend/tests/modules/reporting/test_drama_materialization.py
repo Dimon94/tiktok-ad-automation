@@ -139,8 +139,8 @@ def test_drama_first_display_and_full_member_metrics_are_identical(
     )[0]
     # 聚合后的报告解释应来自所有成员，不能复制首成员的已解释provenance/display。
     assert actual.model_dump(
-        exclude={"display", "metric_buckets"}
-    ) == expected.model_dump(exclude={"display", "metric_buckets"})
+        exclude={"display", "metric_buckets", "source_evidence"}
+    ) == expected.model_dump(exclude={"display", "metric_buckets", "source_evidence"})
     expected_buckets = {dq.bucket_key(v): v for v in expected.metric_buckets}
     assert {dq.bucket_key(v) for v in actual.metric_buckets} == set(expected_buckets)
     for actual_bucket in actual.metric_buckets:
@@ -153,13 +153,17 @@ def test_drama_first_display_and_full_member_metrics_are_identical(
             for row in singles
             for vector in row.metric_buckets
             if dq.bucket_key(vector) == dq.bucket_key(actual_bucket)
-            for o in vector.provenance["spend"].observations
+            for o in row.source_evidence
+            if (o["currency"], o["level"], o["source_kind"], o["contract_revision"])
+            == dq.bucket_key(vector)
         ]
         import json
 
         assert sorted(
             json.dumps(o, sort_keys=True)
-            for o in actual_bucket.provenance["spend"].observations
+            for o in actual.source_evidence
+            if (o["currency"], o["level"], o["source_kind"], o["contract_revision"])
+            == dq.bucket_key(actual_bucket)
         ) == sorted(json.dumps(o, sort_keys=True) for o in selected)
     base_display = {
         k: v

@@ -85,7 +85,10 @@ def _decode_cursor(value: str) -> dict[str, Any]:
 
 
 def _summary(
-    totals: SnapshotTotals, *, strict_denominators: bool = True
+    totals: SnapshotTotals,
+    *,
+    strict_denominators: bool = True,
+    row_evidence: bool = False,
 ) -> dict[str, Any]:
     """汇总按币种分桶，与行内合并共用部分合计规则（数据库内按成员计算）。
 
@@ -120,7 +123,7 @@ def _summary(
                 if strict_denominators and bucket.get(f"{name}_missing")
             },
         )
-        if bucket.get("observations"):
+        if row_evidence and bucket.get("observations"):
             from app.modules.reporting.dimension_query import vector_provenance
 
             observations = [
@@ -341,6 +344,9 @@ def _build_snapshot(
             json.dumps(snapshot.publication_map, default=str)
         )
         freeze_results(session, snapshot, filters)
+    from app.modules.reporting.frozen_evidence import seal_snapshot_rows
+
+    seal_snapshot_rows(session, snapshot.id)
     session.add(snapshot)
     session.flush()
     return snapshot
@@ -579,7 +585,28 @@ def freeze_review_page(
             "reason": "publication_after_cutoff",
             "rows": [],
         }
-    frozen_rows = [row.model_dump(mode="json") for row in page.items]
+    from app.modules.reporting.frozen_evidence import rebind_report
+    from app.modules.reporting.query_models import QuerySnapshotRow
+
+    def full_rows(items):
+        # 跟随已有指标页批量复制原件，不能为归档的每一行再发一条查询。
+        rows = session.exec(
+            select(QuerySnapshotRow).where(
+                QuerySnapshotRow.snapshot_id == snapshot.id,
+                col(QuerySnapshotRow.row_key).in_([row.row_key for row in items]),
+            )
+        ).all()
+        by_key = {row.row_key: row.frozen_result for row in rows}
+        return [
+            {
+                k: v
+                for k, v in by_key[row.row_key].items()
+                if k != "_source_storage_digest"
+            }
+            for row in items
+        ]
+
+    frozen_rows = full_rows(page.items)
     # 复盘私有存储可有界保存更多页，仍复用同一快照和游标，禁止重查当前版本。
     freeze_limit = freeze_limit or 0
     while page.next_cursor and (
@@ -594,18 +621,20 @@ def freeze_review_page(
             cursor=page.next_cursor,
             limit=100 if freeze_all else min(100, freeze_limit - len(frozen_rows)),
         )
-        frozen_rows.extend(row.model_dump(mode="json") for row in page.items)
-    return {
-        "id": str(snapshot.id),
-        "status": snapshot.coverage["status"],
-        "filters": filters.model_dump(mode="json"),
-        "publication_versions": snapshot.publication_versions,
-        "summary": snapshot.summary,
-        "coverage": snapshot.coverage,
-        "metrics_observed_at": page.metrics_observed_at.isoformat()
-        if page.metrics_observed_at
-        else None,
-        "rows": frozen_rows,
-        "rows_truncated": snapshot.total > len(frozen_rows),
-        "total": snapshot.total,
-    }
+        frozen_rows.extend(full_rows(page.items))
+    return rebind_report(
+        {
+            "id": str(snapshot.id),
+            "status": snapshot.coverage["status"],
+            "filters": filters.model_dump(mode="json"),
+            "publication_versions": snapshot.publication_versions,
+            "summary": snapshot.summary,
+            "coverage": snapshot.coverage,
+            "metrics_observed_at": page.metrics_observed_at.isoformat()
+            if page.metrics_observed_at
+            else None,
+            "rows": frozen_rows,
+            "rows_truncated": snapshot.total > len(frozen_rows),
+            "total": snapshot.total,
+        }
+    )

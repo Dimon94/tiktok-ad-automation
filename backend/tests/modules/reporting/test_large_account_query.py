@@ -59,7 +59,16 @@ def test_account_snapshot_skips_unused_balance_and_name_projection(
     assert "account_balance_observation" not in reads
     assert "campaign_name_current" not in reads
     assert "ad_entity_read" not in reads
-    assert "campaign_report_day" not in reads
+    # Native父级选择允许读取真实Campaign来源，但保持两次线性扫描的边界。
+    assert (
+        sum(
+            (n["Actual Rows"] + n.get("Rows Removed by Filter", 0)) * n["Actual Loops"]
+            for n in _nodes(plan)
+            if n.get("Relation Name") == "campaign_report_day"
+            and n.get("Actual Loops", 0)
+        )
+        <= 2
+    )
 
 
 @pytest.mark.parametrize("sort_by", ["spend", "balance"])

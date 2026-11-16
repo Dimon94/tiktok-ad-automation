@@ -23,3 +23,24 @@ test('evidence tools pass scoped identity and page arguments; cancelled reads ne
   await assert.rejects(tools.get(READ_EVIDENCE).execute(read), /cancelled/)
   assert.equal(calls.length, 2)
 })
+
+
+test('provenance selectors and inner cursor reach the scoped reader and preserve delivered raw proof', async () => {
+  const tools = new Map(), calls = [], claim = { task: { id: 'task-a' }, task_token: 'private' }
+  const record = { remote_id: 'c1', fact: { spend: '0.100000000000000001' }, publication: { publication_version: 7, observed_at: '2026-11-13T01:00:00Z' } }
+  const delivery = { id: 'delivered-page', records: [record], next_cursor: 'inner-next', total_records: 200 }
+  mountEvidenceTools({ tools: { register: tool => tools.set(tool.name, tool) } }, claim, {
+    readEvidence: async (...args) => { calls.push(args); return delivery },
+  }, new AbortController().signal)
+  const tool = tools.get(READ_EVIDENCE)
+  const args = { evidence_id: 'frozen-source', view: 'provenance', report_id: 'archive-report', row_key: 'account-1', bucket: { level: 'campaign', source_kind: 'PLATFORM_DIRECT', contract_revision: 'native-growth-day-v1', currency: 'USD' }, component: 'component-digest', evidence_cursor: 'inner-current', limit: 25 }
+  assert.equal(tool.parameters.additionalProperties, false)
+  assert.ok(Object.keys(args).every(key => key in tool.parameters.properties))
+  assert.deepEqual(tool.parameters.properties.view.enum, ['reading', 'provenance'])
+  assert.deepEqual(tool.parameters.properties.bucket.required.sort(), Object.keys(args.bucket).sort())
+  assert.equal(tool.parameters.properties.bucket.additionalProperties, false)
+  const result = await tool.execute(args)
+  assert.deepEqual(calls, [[claim, args]])
+  assert.deepEqual(JSON.parse(tool.output.render(args, result)[0].text), delivery)
+  assert.equal(result.records[0].fact.spend, '0.100000000000000001')
+})

@@ -407,6 +407,7 @@ export type Adopt = {
  */
 export type AdsQueryPage = {
     snapshot: QuerySnapshotPublic;
+    evidence_page?: EvidencePage | null;
     /**
      * Items
      */
@@ -5906,7 +5907,7 @@ export type MetricProvenance = {
     /**
      * Level
      */
-    level: 'campaign' | 'adgroup' | 'ad';
+    level: 'campaign' | 'adgroup' | 'ad' | 'creative' | 'material_instance';
     /**
      * Source Kind
      */
@@ -5919,10 +5920,6 @@ export type MetricProvenance = {
      * Scope Digest
      */
     scope_digest: string;
-    /**
-     * Buckets
-     */
-    buckets: Array<BucketStamp>;
     /**
      * Field State Counts
      */
@@ -5954,15 +5951,25 @@ export type MetricProvenance = {
      */
     denominator_missing_count?: number | null;
     /**
-     * Local Ranges
+     * Local Day Min
      */
-    local_ranges?: Array<string>;
+    local_day_min?: string | null;
     /**
-     * Observations
+     * Local Day Max
      */
-    observations?: Array<{
-        [key: string]: unknown;
-    }>;
+    local_day_max?: string | null;
+    /**
+     * Observed At Min
+     */
+    observed_at_min?: string | null;
+    /**
+     * Observed At Max
+     */
+    observed_at_max?: string | null;
+    /**
+     * Denominator Coverage Incomplete
+     */
+    denominator_coverage_incomplete?: boolean;
     metric_contract?: MetricContract | null;
 };
 
@@ -6022,6 +6029,7 @@ export type MetricVector = {
     provenance?: {
         [key: string]: MetricProvenance;
     };
+    evidence_ref?: EvidenceRef | null;
 };
 
 /**
@@ -7420,6 +7428,12 @@ export type ParentAdControl = {
      * Scope
      */
     scope?: 'FULL_PARENT_AD';
+    /**
+     * Source Evidence
+     */
+    source_evidence?: Array<{
+        [key: string]: unknown;
+    }>;
     /**
      * Metric Buckets
      */
@@ -8921,6 +8935,12 @@ export type ReportRow = {
      * Row Key
      */
     row_key: string;
+    /**
+     * Source Evidence
+     */
+    source_evidence?: Array<{
+        [key: string]: unknown;
+    }>;
     /**
      * Material Instances
      */
@@ -15895,6 +15915,26 @@ export type adsReportingQueryAdsData = {
          * Force Refresh
          */
         force_refresh?: boolean;
+        /**
+         * View
+         */
+        view?: 'metrics' | 'evidence';
+        /**
+         * Evidence Row Key
+         */
+        evidence_row_key?: string | null;
+        /**
+         * Evidence Bucket
+         */
+        evidence_bucket?: string | null;
+        /**
+         * Evidence Component
+         */
+        evidence_component?: string | null;
+        /**
+         * Evidence Cursor
+         */
+        evidence_cursor?: string | null;
     };
     url: '/api/tenants/{tenant_id}/ads';
 };
@@ -21796,3 +21836,92 @@ export type buildsCancelSubmissionResponses = {
 };
 
 export type buildsCancelSubmissionResponse = buildsCancelSubmissionResponses[keyof buildsCancelSubmissionResponses];
+
+/**
+ * EvidenceBucket
+ */
+export type EvidenceBucket = {
+    /**
+     * Level
+     */
+    level: string | null;
+    /**
+     * Source Kind
+     */
+    source_kind: string | null;
+    /**
+     * Contract Revision
+     */
+    contract_revision: string | null;
+    /**
+     * Currency
+     */
+    currency: string;
+};
+
+/**
+ * EvidencePage
+ */
+export type EvidencePage = {
+    /**
+     * Records
+     */
+    records: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * Next Cursor
+     */
+    next_cursor: string | null;
+    /**
+     * Total Records
+     */
+    total_records: number;
+    /**
+     * Scope Digest
+     */
+    scope_digest: string;
+    /**
+     * Evidence Digest
+     */
+    evidence_digest: string;
+};
+
+/**
+ * EvidenceRef
+ */
+export type EvidenceRef = {
+    /**
+     * Owner
+     */
+    owner: 'QUERY_SNAPSHOT_ROWS' | 'FROZEN_REPORT_ROWS' | 'ROW_EVIDENCE';
+    /**
+     * Owner Id
+     */
+    owner_id: string;
+    /**
+     * Row Key
+     */
+    row_key: string | null;
+    bucket: EvidenceBucket;
+    /**
+     * Component
+     */
+    component?: string | null;
+    /**
+     * Summary
+     */
+    summary?: boolean;
+    /**
+     * Scope Digest
+     */
+    scope_digest: string;
+    /**
+     * Record Count
+     */
+    record_count: number;
+    /**
+     * Evidence Digest
+     */
+    evidence_digest: string;
+};

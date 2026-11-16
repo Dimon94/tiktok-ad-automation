@@ -34,14 +34,13 @@ def _assert_financial_parity(actual, expected):
         "status",
         "filters",
         "publication_versions",
-        "summary",
         "coverage",
         "metrics_observed_at",
         "total",
         "rows_truncated",
     ):
         assert actual[key] == expected[key], key
-    assert actual["projection_contract"] == "financial-review-v1"
+    assert actual["projection_contract"] == "financial-review-v2"
     assert len(actual["rows"]) == len(expected["rows"])
     for a, e in zip(actual["rows"], expected["rows"], strict=True):
         assert a["row_key"] == e["row_key"]
@@ -50,12 +49,24 @@ def _assert_financial_parity(actual, expected):
         def financial(value):
             if isinstance(value, dict):
                 return {
-                    k: financial(v) for k, v in value.items() if k != "scope_digest"
+                    k: financial(v)
+                    for k, v in value.items()
+                    if k not in {"scope_digest", "evidence_ref"}
                 }
             if isinstance(value, list):
                 return [financial(v) for v in value]
             return value
 
+        from tests.modules.reporting.evidence_helpers import archived_records
+
+        assert financial(actual["summary"]) == financial(expected["summary"])
+        for left, right in zip(
+            actual["summary"]["buckets"], expected["summary"]["buckets"], strict=True
+        ):
+            assert archived_records(actual, left) == archived_records(expected, right)
+        assert archived_records(actual, a["metric_buckets"][0]) == archived_records(
+            expected, e["metric_buckets"][0]
+        )
         assert financial(a["metric_buckets"]) == financial(e["metric_buckets"]), a[
             "row_key"
         ]

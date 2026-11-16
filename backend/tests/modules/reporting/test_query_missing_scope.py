@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.modules.reporting.metric_catalog import CREATIVE_OBSERVED_CONTRACT
 from app.modules.reporting.schemas import MetricVector, ReportingFilter
+from tests.modules.reporting.evidence_helpers import records as resolved_records
 from tests.modules.reporting.query_helpers import query_ads
 from tests.modules.reporting.test_material_query import D, material_row, publish, use
 
@@ -135,7 +136,7 @@ def test_legacy_parent_without_children_preserves_value_but_child_null_wins(
     assert vector.values["spend"] == (None if child_exists else Decimal(1))
     assert vector.source_kind == "CHILD_DERIVED"
     assert vector.contract_revision == "LEGACY_UNKNOWN"
-    observation = vector.provenance["spend"].observations[0]
+    observation = resolved_records(case.session, case, vector)[0]
     assert observation["remote_id"] == ("child" if child_exists else "legacy")
     assert observation["returned"] is True
     assert observation["publication"] == {}
@@ -203,7 +204,7 @@ def test_native_known_and_missing_member_keep_denominator_gap_in_row_and_summary
         assert known.availability["roas_total"] == "MISSING"
         assert all(
             o["advertiser_id"] == "acc-1"
-            for o in known.provenance["spend"].observations
+            for o in resolved_records(session, sync_seed, known)
         )
     filtered = query_ads(
         session,
@@ -212,3 +213,110 @@ def test_native_known_and_missing_member_keep_denominator_gap_in_row_and_summary
         filters=filters.model_copy(update={"min_d0_roas": Decimal("0.1")}),
     )
     assert filtered.total == 0
+
+
+def test_partial_window_empty_authority_cannot_make_denominator_zero(
+    session, sync_seed
+):
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
+    from app.modules.ads.models import AdObject, CampaignNameProjection
+    from app.modules.reporting.publish import AccountMeta, publish_campaign_day
+    from tests.modules.reporting.test_jobs import _route
+    from tests.modules.reporting.test_native_scope_roas import D
+
+    end = D + timedelta(days=1)
+    args = {
+        "tenant_id": sync_seed.tenant_id,
+        "requested_at": datetime.now(UTC),
+        "route": FrozenTikTokRoute(**_route(sync_seed)),
+    }
+    publish_campaign_day(
+        session,
+        **args,
+        job_id=uuid4(),
+        accounts={"acc-1": AccountMeta("USD", "UTC")},
+        start=D,
+        end=end,
+        rows=[
+            {
+                "dimensions": {"campaign_id": rid, "stat_time_day": str(day)},
+                "metrics": {
+                    "spend": "5",
+                    "native_growth_total_ad_impression_value": revenue,
+                    "native_growth_ad_revenue_value_d0": revenue,
+                },
+            }
+            for day in (D, end)
+            for rid, revenue in (("c0", "2.5"), ("good", "10"))
+        ],
+    )
+    publish_campaign_day(
+        session,
+        **args,
+        job_id=uuid4(),
+        accounts={"acc-2": AccountMeta("USD", "UTC")},
+        start=D,
+        end=D,
+        rows=[],
+    )
+    for adv, rid, drama in (
+        ("acc-1", "c0", "Drama"),
+        ("acc-2", "missing", "Drama"),
+        ("acc-1", "good", "Other"),
+    ):
+        session.add(
+            AdObject(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id=adv,
+                kind="campaign",
+                remote_id=rid,
+                ad_type="NATIVE_SERIES",
+                name=f"P-{drama}",
+                observed_at=datetime.now(UTC),
+                published_version=1,
+            )
+        )
+        session.add(
+            CampaignNameProjection(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id=adv,
+                campaign_remote_id=rid,
+                raw_name=f"P-{drama}",
+                provider_label="P",
+                drama_name=drama,
+                status="VALID",
+                parser_revision=1,
+                grouping_revision=1,
+                name_revision=1,
+            )
+        )
+    filters = ReportingFilter(
+        dimension="drama",
+        start_date=D,
+        end_date=end,
+        advertiser_ids=("acc-1", "acc-2"),
+        include_empty=True,
+        sort_by="roas_d0",
+        sort_direction="desc",
+    )
+    page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
+    missing = next(r for r in page.items if r.display["name"] == "Drama")
+    for vector, spend in (
+        (missing.metric_buckets[0], Decimal("10")),
+        (MetricVector.model_validate(page.summary["buckets"][0]), Decimal("20")),
+    ):
+        assert vector.values["spend"] == spend
+        assert vector.availability["spend"] == "PARTIAL"
+        assert vector.values["roas_d0"] is None
+        assert vector.availability["roas_d0"] == "MISSING"
+    assert page.items[-1].row_key == missing.row_key
+    filtered = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=filters.model_copy(update={"min_d0_roas": Decimal("0.1")}),
+    )
+    assert [r.display["name"] for r in filtered.items] == ["Other"]

@@ -100,7 +100,7 @@ def freeze_report(session, *, context, bc_id, filters, cutoff, states):
         ]
     )
     # 选中事实自己的发布坐标也受截止约束，不能用较旧账户水位掩盖新事实。
-    for bucket in data.buckets:
+    for bucket in data.row_buckets:
         for group in bucket.get("observations") or []:
             for observation in group or []:
                 publication = observation.get("publication") or {}
@@ -159,9 +159,29 @@ def freeze_report(session, *, context, bc_id, filters, cutoff, states):
                 for bucket in merge_metric_buckets(ordinary, strict_denominators=True)
             ],
         )
+    from app.modules.reporting.frozen_evidence import EvidenceAccumulator, bind_row
+
+    report_id = str(uuid4())
+    accumulator = EvidenceAccumulator(
+        owner="FROZEN_REPORT_ROWS",
+        owner_id=report_id,
+        filters=filters.model_dump(mode="json"),
+    )
+    items = [
+        bind_row(
+            row,
+            owner="FROZEN_REPORT_ROWS",
+            owner_id=report_id,
+            filters=filters.model_dump(mode="json"),
+        )
+        for row in items
+    ]
+    for row in items:
+        accumulator.add(row)
+    summary = accumulator.finalize(summary)
     return {
-        "id": str(uuid4()),
-        "projection_contract": "financial-review-v1",
+        "id": report_id,
+        "projection_contract": "financial-review-v2",
         "status": coverage["status"],
         "filters": filters.model_dump(mode="json"),
         "publication_versions": versions,
@@ -238,7 +258,15 @@ def _analysis_rows(members, buckets, dimension, advertiser_id, states):
                 "metric_buckets": _summary(
                     SnapshotTotals(1, tuple(values), (), (), True),
                     strict_denominators=dimension != "material",
+                    row_evidence=True,
                 )["buckets"],
+                "source_evidence": [
+                    r
+                    for bucket in values
+                    for group in bucket.get("observations", [])
+                    if group
+                    for r in group
+                ],
                 "coverage": coverage,
             }
         )

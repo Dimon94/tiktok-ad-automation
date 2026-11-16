@@ -13,7 +13,11 @@ def metric_buckets_for_reading(buckets: list) -> list:
 
 
 def report_row_for_reading(row: dict) -> dict:
-    result = dict(row)
+    result = {
+        k: v
+        for k, v in row.items()
+        if k not in {"source_evidence", "_source_storage_digest"}
+    }
     if "metric_buckets" in row:
         result["metric_buckets"] = metric_buckets_for_reading(row["metric_buckets"])
     for key in ("material_instances", "parent_controls", "reconciliation_rows"):
@@ -21,7 +25,10 @@ def report_row_for_reading(row: dict) -> dict:
             result[key] = [report_row_for_reading(child) for child in row[key]]
     if "observations" in row:
         result.pop("observations")
-        result["observations_archived"] = bool(row["observations"])
+        result["observations_archived"] = bool(row["observations"]) or any(
+            (v.get("evidence_ref") or {}).get("record_count", 0)
+            for v in row.get("metric_buckets", [])
+        )
     if "platform_roas_observations" in row.get("display", {}):
         result["display"] = {
             key: value

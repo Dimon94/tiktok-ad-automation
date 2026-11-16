@@ -862,7 +862,7 @@ test("Campaign 平台直接收益 @native-campaign-live", async ({ page }) => {
         await expect(rows.first().locator('[data-metric="revenue_total"]')).toContainText("40")
         await expect(rows.first()).toContainText("部分")
         await expect(rows.first()).toContainText("NON_ADDITIVE")
-        await rows.first().getByText("逐日平台观察", { exact: true }).click()
+        await rows.first().getByText(/^逐日平台观察 ·/).first().click()
         await expect(rows.first().locator("pre")).toContainText("0.801234567890123456789")
       }
     }
@@ -987,6 +987,9 @@ test("素材实例与独立父控制 @material-instance-live", async ({ page }) 
   await expect(evidence).toContainText("父广告对照 · ad1")
   await expect(evidence).toContainText("消耗 100")
   await expect(evidence).toContainText("尚未确认")
+  await evidence.getByText("查看来源与冻结身份", { exact: true }).first().click()
+  await evidence.getByText(/^逐日平台观察 ·/).first().click()
+  await expect(evidence.locator("pre").filter({ hasText: '"role": "INSTANCE"' })).toContainText('"creative_id": "cr1"')
   await evidence.getByRole("button", { name: "查看父广告 · ad1", exact: true }).first().click()
   await expect(page.getByRole("heading", { name: "广告ad1", exact: true })).toBeVisible()
   await page.getByRole("button", { name: "返回", exact: true }).last().click()
@@ -1020,6 +1023,27 @@ test("素材实例与独立父控制 @material-instance-live", async ({ page }) 
   )
   await page.getByRole("button", { name: "导出", exact: true }).click()
   const fullExport = await (await fullExportResponse).json()
+  // 在生命周期反例使原快照不可读之前，逐页保存HTTP实际交付的精确原件。
+  for (const row of fullPage.items) {
+    for (const instance of [...row.material_instances, ...row.parent_controls]) {
+      const ref = instance.metric_buckets[0].evidence_ref
+      const records = []
+      let cursor: string | undefined
+      do {
+        const response = await page.request.get(`/api/tenants/${process.env.NATIVE_CAMPAIGN_TENANT}/ads`, { params: {
+          bc_id: "123456", view: "evidence", snapshot_id: ref.owner_id,
+          evidence_row_key: ref.row_key, evidence_bucket: JSON.stringify(ref.bucket),
+          evidence_component: ref.component, ...(cursor ? { evidence_cursor: cursor } : {}), limit: 1,
+        } })
+        expect(response.ok(), await response.text()).toBeTruthy()
+        const proof = (await response.json()).evidence_page
+        records.push(...proof.records)
+        cursor = proof.next_cursor ?? undefined
+      } while (cursor)
+      expect(records).toHaveLength(ref.record_count)
+      instance._test_source_evidence = records
+    }
+  }
   writeFileSync(process.env.JB34_CAPTURE!, JSON.stringify({
     export_id: fullExport.id, page: fullPage,
   }))
@@ -1054,4 +1078,120 @@ test("素材实例与独立父控制 @material-instance-live", async ({ page }) 
     expect((await (await recovered).json()).snapshot.snapshot_id).not.toBe(snapshotId)
     await expect(page.getByRole("button", { name: "vid1.mp4", exact: true }).first()).toBeVisible()
   }
+})
+
+test("冻结来源按行内游标读取，数值和原发布时间保持原样", async ({ page }) => {
+  await adsBoundary(page)
+  const snapshotId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  const rowKey = "adv-1:account:adv-1"
+  const bucket = {
+    level: "campaign",
+    source_kind: "PLATFORM_DIRECT",
+    contract_revision: "native-growth-day-v1",
+    currency: "USD",
+  }
+  const requests: URL[] = []
+  const snapshot = {
+    snapshot_id: snapshotId,
+    snapshot_at: "2026-11-13T01:00:00Z",
+    expires_at: "2099-01-01T00:00:00Z",
+    filters: {
+      dimension: "account",
+      start_date: "2026-11-13",
+      end_date: "2026-11-13",
+    },
+  }
+  await page.route(`**/api/tenants/${TENANT}/ads?*`, async (route) => {
+    const url = new URL(route.request().url())
+    if (url.searchParams.get("view") === "evidence") {
+      requests.push(url)
+      const second = url.searchParams.has("evidence_cursor")
+      return route.fulfill({
+        json: {
+          snapshot,
+          total: 1,
+          evidence_page: {
+            records: [
+              {
+                remote_id: second ? "campaign-second" : "campaign-first",
+                fact: { spend: "0.100000000000000001" },
+                publication: {
+                  observed_at: "2026-11-13T00:59:59Z",
+                  publication_version: 7,
+                },
+              },
+            ],
+            next_cursor: second ? null : "inner-1",
+            total_records: 2,
+            scope_digest: "scope",
+            evidence_digest: "facts",
+          },
+        },
+      })
+    }
+    return route.fulfill({
+      json: {
+        snapshot,
+        total: 1,
+        summary: { buckets: [] },
+        items: [
+          {
+            row_key: rowKey,
+            display: {
+              name: "冻结账户",
+              account_name: "冻结账户",
+              remote_id: "adv-1",
+              report_source: "PLATFORM_DIRECT",
+            },
+            metric_buckets: [
+              {
+                ...bucket,
+                timezone: "UTC",
+                attribution: "default",
+                values: { spend: "0.2" },
+                availability: { spend: "AVAILABLE" },
+                evidence_ref: {
+                  owner: "QUERY_SNAPSHOT_ROWS",
+                  owner_id: snapshotId,
+                  row_key: rowKey,
+                  bucket,
+                  component: null,
+                  summary: false,
+                  scope_digest: "scope",
+                  record_count: 2,
+                  evidence_digest: "facts",
+                },
+              },
+            ],
+            coverage: { status: "COMPLETE" },
+            refs: [],
+            capabilities: {},
+          },
+        ],
+      },
+    })
+  })
+  await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await expect(
+    page.getByText("冻结账户", { exact: true }).first(),
+  ).toBeVisible()
+  expect(requests).toHaveLength(0)
+  await page.getByText("逐日平台观察 · 2 条", { exact: true }).click()
+  await expect(page.getByText(/"campaign-first"/)).toBeVisible()
+  await expect(page.getByText(/0.100000000000000001/)).toBeVisible()
+  await page.getByRole("button", { name: "继续读取", exact: true }).click()
+  await expect(page.getByText(/"campaign-second"/)).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "继续读取", exact: true }),
+  ).toHaveCount(0)
+  expect(requests).toHaveLength(2)
+  for (const request of requests) {
+    expect(request.searchParams.get("snapshot_id")).toBe(snapshotId)
+    expect(request.searchParams.get("bc_id")).toBe(BC_A)
+    expect(request.searchParams.get("evidence_row_key")).toBe(rowKey)
+    expect(JSON.parse(request.searchParams.get("evidence_bucket")!)).toEqual(
+      bucket,
+    )
+  }
+  expect(requests[1].searchParams.get("evidence_cursor")).toBe("inner-1")
 })

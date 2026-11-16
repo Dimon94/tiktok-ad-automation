@@ -3,8 +3,8 @@ import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 import {
   type AdMaterialPublic,
-  type EntityRef,
   AdsReportingService,
+  type EntityRef,
   type MaterialUsePublic,
   type ReportRow,
 } from "@/client"
@@ -25,8 +25,9 @@ import {
 import { useTenantScope } from "@/features/tenants/TenantScope"
 import { type ColumnDef, formatMetric } from "../metricCatalog"
 import { SortableHead } from "../SortableHead"
-import type { LinkedTarget } from "./useLinkedRows"
+import { SourceEvidence } from "../SourceEvidence"
 import { useVideoPreview, VideoPreviewPlayer } from "./MaterialVideoPreview"
+import type { LinkedTarget } from "./useLinkedRows"
 
 const STATUS: Record<string, string> = {
   ENABLE: "已开启",
@@ -616,13 +617,21 @@ function MaterialInstanceEvidence({
                 {
                   key: instance.key,
                   facts: instance.fact_keys,
-                  observations: instance.observations,
                   digest: instance.evidence_digest,
                 },
                 null,
                 2,
               )}
             </pre>
+            {instance.metric_buckets.map(
+              (bucket) =>
+                bucket.evidence_ref && (
+                  <SourceEvidence
+                    key={JSON.stringify(bucket.evidence_ref.bucket)}
+                    reference={bucket.evidence_ref}
+                  />
+                ),
+            )}
           </details>
         </section>
       ))}
@@ -684,6 +693,15 @@ function MaterialInstanceEvidence({
             <pre className="whitespace-pre-wrap break-all text-xs">
               {JSON.stringify(control, null, 2)}
             </pre>
+            {control.metric_buckets.map(
+              (bucket) =>
+                bucket.evidence_ref && (
+                  <SourceEvidence
+                    key={JSON.stringify(bucket.evidence_ref.bucket)}
+                    reference={bucket.evidence_ref}
+                  />
+                ),
+            )}
           </details>
         </section>
       ))}

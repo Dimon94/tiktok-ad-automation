@@ -1,6 +1,7 @@
 import type { QuerySnapshotPublic, ReportRow } from "@/client"
 import { columnsFor, formatMetric, useMetricCatalog } from "../metricCatalog"
 import type { AdsDimension } from "../search"
+import { SourceEvidence } from "../SourceEvidence"
 
 export function FrozenReport({ row, snapshot }: {
   row: ReportRow
@@ -32,16 +33,13 @@ export function FrozenReport({ row, snapshot }: {
               {JSON.stringify(bucket.provenance, null, 2)}
             </pre>
           </details>
+          {bucket.evidence_ref && <SourceEvidence reference={bucket.evidence_ref} />}
         </div>
       ))}
       <p className="text-sm">
         平台返回 ROAS：{row.display?.platform_roas_total ?? "—"} · {row.display?.platform_roas_total_reason}；
         D0：{row.display?.platform_roas_d0 ?? "—"} · {row.display?.platform_roas_d0_reason}
       </p>
-      <details>
-        <summary>逐日平台观察</summary>
-        <pre className="overflow-auto whitespace-pre-wrap text-xs">{row.display?.platform_roas_observations}</pre>
-      </details>
       <p className="whitespace-pre-wrap text-xs">{row.display?.report_layer_status}</p>
       <p className="text-xs">{row.display?.report_semantics}</p>
     </section>

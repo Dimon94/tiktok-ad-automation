@@ -276,6 +276,10 @@ def test_revoked_account_or_changed_optimizer_blocks_task_tools(
     for endpoint, body in (
         ("query", {"category": "reporting"}),
         ("read", {"evidence_id": campaign_source(session, task)["id"]}),
+        (
+            "read",
+            {"evidence_id": campaign_source(session, task)["id"], "view": "provenance"},
+        ),
     ):
         assert (
             client.post(
@@ -443,8 +447,8 @@ def test_native_v2_delivery_projects_provenance_but_archives_full_sources_and_an
     ).one()
     raw = source.payload
     assert source.digest == reviews._digest(raw)
-    assert len(json.dumps(raw, ensure_ascii=False).encode()) > 64000
-    assert raw["summary"]["buckets"][0]["provenance"]["spend"]["observations"]
+    assert raw["rows"][0]["source_evidence"]
+    assert raw["summary"]["buckets"][0]["evidence_ref"]["record_count"] > 0
     page = read_for_task(session, task=task, evidence_id=source.id)
     assert len(json.dumps(page, ensure_ascii=False).encode()) <= 64000
     visible = page["rows"][0]["metric_buckets"][0]
@@ -474,3 +478,108 @@ def test_native_v2_delivery_projects_provenance_but_archives_full_sources_and_an
         raw
     )
     assert read_for_task(session, task=task, evidence_id=source.id) == page
+
+
+def test_provenance_pages_deliver_archive_local_exact_population(
+    client, session, reading
+):
+    import json
+    from decimal import Decimal
+
+    from tests.modules.reporting.evidence_helpers import archived_records
+
+    task, publish, _ = reading
+    _, headers = claim_task(client)
+    source = session.exec(
+        scoped(ReviewSource, task).where(
+            ReviewSource.category == "reporting",
+            ReviewSource.dimension == "account",
+            ReviewSource.maturity_horizon == "d0",
+        )
+    ).one()
+    original_digest = source.digest
+    source_body = json.dumps(source.payload, sort_keys=True)
+    path = f"/api/integrations/ai-workbench/reviews/{task.id}/evidence/read"
+    normal = client.post(
+        path, headers=headers, json={"evidence_id": str(source.id), "limit": 1}
+    )
+    assert normal.status_code == 200, normal.text
+    assert "source_evidence" not in normal.json()["rows"][0]
+    expected = archived_records(source.payload, source.payload["summary"]["buckets"][0])
+    received, receipts, cursor = [], [], None
+    while True:
+        body = {"evidence_id": str(source.id), "view": "provenance", "limit": 17}
+        if cursor:
+            body["evidence_cursor"] = cursor
+        response = client.post(path, headers=headers, json=body)
+        assert response.status_code == 200, response.text
+        assert len(response.content) <= 64000
+        page = response.json()
+        assert page["evidence_ref"]["owner"] == "FROZEN_REPORT_ROWS"
+        assert page["evidence_ref"]["owner_id"] == source.payload["id"]
+        received.extend(page["records"])
+        receipts.append(page["id"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert received == expected
+    assert len(received) == 61
+    assert sum(Decimal(r["fact"]["spend"]) for r in received) == 610
+    assert len(set(receipts)) == len(receipts)
+    assert normal.json()["id"] not in receipts
+    delivered = delivered_evidence_ids(session, task)
+    assert all(receipt in delivered for receipt in receipts)
+    assert str(source.id) not in delivered
+    assert (
+        source.digest == original_digest
+        and json.dumps(source.payload, sort_keys=True) == source_body
+    )
+    publish("900", observed=datetime.now(UTC) + timedelta(seconds=1))
+    repeat = client.post(
+        path,
+        headers=headers,
+        json={"evidence_id": str(source.id), "view": "provenance", "limit": 17},
+    )
+    assert repeat.json()["records"] == received[:17]
+    wrong = client.post(
+        path,
+        headers=headers,
+        json={
+            "evidence_id": str(source.id),
+            "view": "provenance",
+            "limit": 17,
+            "row_key": source.payload["rows"][0]["row_key"],
+            "evidence_cursor": repeat.json()["next_cursor"],
+        },
+    )
+    assert wrong.status_code == 404
+
+
+def test_old_financial_archive_contract_is_not_reinterpreted(session, reading):
+    task, _, _ = reading
+    source = session.exec(
+        scoped(ReviewSource, task).where(
+            ReviewSource.category == "reporting",
+            ReviewSource.dimension == "account",
+            ReviewSource.maturity_horizon == "d0",
+        )
+    ).one()
+    from app.modules.ai_workbench.review_store import archive_source
+
+    source = archive_source(
+        session,
+        task=task,
+        category="reporting",
+        captured_at=source.captured_at,
+        payload=source.payload | {"projection_contract": "financial-review-v1"},
+        identity="old-financial-contract-fixture",
+    )
+    before = delivered_evidence_ids(session, task)
+    for view in ("reading", "provenance"):
+        with pytest.raises(HTTPException) as old:
+            read_for_task(session, task=task, evidence_id=source.id, view=view)
+        assert (old.value.status_code, old.value.detail) == (
+            409,
+            "report_evidence_contract_changed",
+        )
+    assert delivered_evidence_ids(session, task) == before

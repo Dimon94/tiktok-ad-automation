@@ -98,6 +98,9 @@ def analyze_for_task(
     def candidates():
         sequence = 0
         for source in session.exec(query.execution_options(yield_per=1)):
+            from app.modules.reporting.frozen_evidence import archive_reports
+
+            archive_reports(source.payload, source.category)
             report = source.payload
             if _digest(report) != source.digest:
                 raise DomainError("ai_evidence_changed", "冻结证据摘要不一致")

@@ -11,6 +11,10 @@ from app.modules.reporting.publish import AccountMeta, publish_ad_day
 from app.modules.reporting.queries import query_ads
 from app.modules.reporting.schemas import ReportingFilter
 from app.modules.reporting.store_models import ReportSyncState
+from tests.modules.reporting.evidence_helpers import assert_csv_evidence
+from tests.modules.reporting.evidence_helpers import provenance as resolved_provenance
+from tests.modules.reporting.evidence_helpers import records as frozen_records
+from tests.modules.reporting.evidence_helpers import records as resolved_records
 from tests.modules.reporting.sync_conftest import ad_row
 from tests.modules.reporting.test_native_scope_roas import D
 
@@ -59,7 +63,7 @@ def test_targeted_observation(session, sync_seed, prior_full):
     row = next(r for r in page.items if r.refs[0].remote_id == "a1")
     v = row.metric_buckets[0]
     assert v.values["revenue_total"] == Decimal("100")
-    p = v.provenance["revenue_total"]
+    p = resolved_provenance(session, sync_seed, v, "revenue_total")
     assert p.buckets[0].observed_at == t1
     assert p.contract_revision == NATIVE_CONTRACT
     obs = p.observations[0]["publication"]
@@ -78,7 +82,11 @@ def test_targeted_observation(session, sync_seed, prior_full):
         ) == baseline
         other = next(r for r in page.items if r.refs[0].remote_id == "a2")
         assert (
-            other.metric_buckets[0].provenance["revenue_total"].buckets[0].observed_at
+            resolved_provenance(
+                session, sync_seed, other.metric_buckets[0], "revenue_total"
+            )
+            .buckets[0]
+            .observed_at
             == t0
         )
     else:
@@ -137,15 +145,24 @@ def test_derived_and_contribution_keep_child_observations(
     # 快照读取与整页/素材父级补全共用精确来源，不能以空证据换取固定查询数。
     for rows in (page.items, direct):
         vector = rows[0].metric_buckets[0]
-        assert vector.values["revenue_total"] == Decimal("100" if contribution else "190")
+        assert vector.values["revenue_total"] == Decimal(
+            "100" if contribution else "190"
+        )
         assert vector.contract_revision == NATIVE_CONTRACT
         assert vector.source_kind == (
             "PLATFORM_DIRECT" if contribution else "CHILD_DERIVED"
         )
-        assert {p.observed_at for p in vector.provenance["revenue_total"].buckets} == {t1}
         assert {
-            p["remote_id"] for p in vector.provenance["revenue_total"].observations
+            p.observed_at
+            for p in resolved_provenance(
+                session, sync_seed, vector, "revenue_total", rows[0]
+            ).buckets
+        } == {t1}
+        assert {
+            p["remote_id"]
+            for p in resolved_records(session, sync_seed, vector, rows[0])
         } == ({"a1"} if contribution else {"a1", "a2"})
+
 
 def test_snapshot_detail_and_csv_copy_precise_observation(session, sync_seed):
     import csv
@@ -226,9 +243,11 @@ def test_snapshot_detail_and_csv_copy_precise_observation(session, sync_seed):
         session, context=sync_seed.context, bc_id="bc-a", export_id=saved.id
     )
     rows = list(csv.DictReader(io.StringIO(content.decode())))
-    assert json.loads(rows[0]["metric_vector"]) == page.items[0].metric_buckets[
-        0
-    ].model_dump(mode="json")
+    assert_csv_evidence(
+        rows[0],
+        page.items[0].metric_buckets[0],
+        frozen_records(session, sync_seed, page.items[0].metric_buckets[0]),
+    )
     assert json.loads(rows[0]["publication_map"]) == snap.publication_map
 
 
@@ -269,7 +288,12 @@ def test_account_derived_mixed_observations_and_sql_selection(session, sync_seed
     vector = page.items[0].metric_buckets[0]
     assert vector.values["revenue_total"] == Decimal("190")
     assert vector.values["spend"] == Decimal("140")
-    assert {p.observed_at for p in vector.provenance["revenue_total"].buckets} == {
+    assert {
+        p.observed_at
+        for p in resolved_provenance(
+            session, sync_seed, vector, "revenue_total"
+        ).buckets
+    } == {
         t0,
         t1,
     }
@@ -344,7 +368,12 @@ def test_direct_parent_stays_authoritative_after_target_and_empty(
     v = page.items[0].metric_buckets[0]
     assert v.values["revenue_total"] == Decimal("40")
     assert v.source_kind == "PLATFORM_DIRECT"
-    assert v.provenance["revenue_total"].buckets[0].observed_at == t0
+    assert (
+        resolved_provenance(session, sync_seed, v, "revenue_total")
+        .buckets[0]
+        .observed_at
+        == t0
+    )
     publish_parent_day(
         session,
         **parent,

@@ -17,7 +17,7 @@ from app.integrations.tiktok.contracts.carousel import CarouselCreativeIdentity
 from app.modules.reporting.metric_catalog import MetricContract
 
 # 素材经济事实源与行键已切换；缓存和冻结快照必须使用同一合同代数。
-MATERIAL_QUERY_CONTRACT = 3
+MATERIAL_QUERY_CONTRACT = 4
 
 Dimension = Literal["account", "campaign", "adgroup", "ad", "material", "drama"]
 # PARTIAL 表示部分合计：只合计有值的成员（跨日、跨账户或跨对象），缺失成员既不
@@ -160,13 +160,42 @@ class BucketStamp(BaseModel):
     last_attempt_status: Literal["PENDING", "COMPLETE", "STALE", "FAILED"]
 
 
+class EvidenceBucket(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    level: str | None
+    source_kind: str | None
+    contract_revision: str | None
+    currency: str
+
+
+class EvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    owner: Literal["QUERY_SNAPSHOT_ROWS", "FROZEN_REPORT_ROWS", "ROW_EVIDENCE"]
+    owner_id: str
+    row_key: str | None
+    bucket: EvidenceBucket
+    component: str | None = None
+    summary: bool = False
+    scope_digest: str
+    record_count: int
+    evidence_digest: str
+
+
+class EvidencePage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    records: tuple[dict[str, Any], ...]
+    next_cursor: str | None
+    total_records: int
+    scope_digest: str
+    evidence_digest: str
+
+
 class MetricProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    level: Literal["campaign", "adgroup", "ad"]
+    level: Literal["campaign", "adgroup", "ad", "creative", "material_instance"]
     source_kind: Literal["PLATFORM_DIRECT", "CHILD_DERIVED"]
     contract_revision: str
     scope_digest: str
-    buckets: tuple[BucketStamp, ...]
     field_state_counts: dict[str, int]
     reason: str | None
     formula: str | None
@@ -174,8 +203,11 @@ class MetricProvenance(BaseModel):
     missing_count: int = 0
     denominator_known_count: int | None = None
     denominator_missing_count: int | None = None
-    local_ranges: tuple[str, ...] = ()
-    observations: tuple[dict[str, Any], ...] = ()
+    local_day_min: str | None = None
+    local_day_max: str | None = None
+    observed_at_min: str | None = None
+    observed_at_max: str | None = None
+    denominator_coverage_incomplete: bool = False
     metric_contract: MetricContract | None = None
 
 
@@ -196,6 +228,7 @@ class MetricVector(BaseModel):
     availability: dict[str, Availability] = Field(default_factory=dict)
     reasons: dict[str, str] = Field(default_factory=dict)
     provenance: dict[str, MetricProvenance] = Field(default_factory=dict)
+    evidence_ref: EvidenceRef | None = None
 
     @model_validator(mode="after")
     def validate_published_metrics(self) -> MetricVector:
@@ -229,6 +262,7 @@ class ParentAdControl(BaseModel):
 
     key: dict[str, str | None]
     scope: Literal["FULL_PARENT_AD"] = "FULL_PARENT_AD"
+    source_evidence: tuple[dict[str, Any], ...] = ()
     metric_buckets: tuple[MetricVector, ...]
     coverage: dict[str, object]
     evidence_digest: str
@@ -238,6 +272,7 @@ class ReportRow(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     row_key: str
+    source_evidence: tuple[dict[str, Any], ...] = ()
     # 描述性轮播组合；指标仍以广告行唯一键发布。
     material_instances: tuple[MaterialInstanceResult, ...] = ()
     parent_controls: tuple[ParentAdControl, ...] = ()
@@ -270,6 +305,7 @@ class AdsQueryPage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     snapshot: QuerySnapshotPublic
+    evidence_page: EvidencePage | None = None
     items: tuple[ReportRow, ...] = ()
     total: int = 0
     summary: dict[str, object] = Field(default_factory=dict)

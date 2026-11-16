@@ -14,6 +14,34 @@ from app.modules.reporting.query_models import ReportExport
 from tests.modules.reporting.test_native_campaign import TEST_BC, D
 
 
+def frozen_http_records(client, seed, vector):
+    ref = vector["evidence_ref"]
+    cursor, records = None, []
+    while True:
+        params = {
+            "bc_id": TEST_BC,
+            "view": "evidence",
+            "snapshot_id": ref["owner_id"],
+            "evidence_bucket": json.dumps(ref["bucket"]),
+            "limit": 100,
+        }
+        if ref["row_key"] is not None:
+            params["evidence_row_key"] = ref["row_key"]
+        if ref.get("component"):
+            params["evidence_component"] = ref["component"]
+        if cursor:
+            params["evidence_cursor"] = cursor
+        response = client.get(f"/api/tenants/{seed.tenant_id}/ads", params=params)
+        assert response.status_code == 200, response.text
+        page = response.json()["evidence_page"]
+        records.extend(page["records"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert len(records) == ref["record_count"]
+    return records
+
+
 def capture(client, seed):
     pending = []
     for level in ("campaign", "adgroup", "ad"):
@@ -220,9 +248,14 @@ def complete(base_url, seed, factory, pending):
                                 json.loads(csvrow["field_state_counts"])
                                 == instance["field_state_counts"]
                             )
-                            assert (
-                                json.loads(csvrow["observations"])
-                                == instance["observations"]
+                            from tests.modules.reporting.evidence_helpers import (
+                                assert_csv_evidence,
+                            )
+
+                            assert_csv_evidence(
+                                csvrow,
+                                instance["metric_buckets"][0],
+                                instance["_test_source_evidence"],
                             )
                             assert (
                                 csvrow["evidence_digest"] == instance["evidence_digest"]
@@ -268,6 +301,29 @@ def complete(base_url, seed, factory, pending):
                         )
                         parents = [r for r in rows if r["row_kind"] == "PARENT_CONTROL"]
                         assert len(parents) == 1 and parents[0]["消耗"] == "100"
+                        # 同一父广告在多个素材行展示；CSV既有合同只保留首次父控制。
+                        controls = {}
+                        for report in page["items"]:
+                            for control in report["parent_controls"]:
+                                controls.setdefault(
+                                    json.dumps(control["key"], sort_keys=True), control
+                                )
+                        assert len(controls) == len(parents) == 1
+                        for csvrow in parents:
+                            control = controls[
+                                json.dumps(
+                                    json.loads(csvrow["identity"]), sort_keys=True
+                                )
+                            ]
+                            assert_csv_evidence(
+                                csvrow,
+                                control["metric_buckets"][0],
+                                control["_test_source_evidence"],
+                            )
+                            assert all(
+                                record["role"] == "PARENT_CONTROL"
+                                for record in control["_test_source_evidence"]
+                            )
                     else:
                         expected = [
                             (r, v) for r in page["items"] for v in r["metric_buckets"]
@@ -277,15 +333,30 @@ def complete(base_url, seed, factory, pending):
                             rows, expected, strict=True
                         ):
                             assert csvrow["row_key"] == report["row_key"]
-                            assert json.loads(csvrow["metric_vector"]) == vector
+                            from tests.modules.reporting.evidence_helpers import (
+                                assert_csv_evidence,
+                            )
+
+                            records = frozen_http_records(client, seed, vector)
+                            assert_csv_evidence(csvrow, vector, records)
                             assert (
                                 json.loads(csvrow["report_display"])
                                 == report["display"]
                             )
-                            assert (
-                                json.loads(csvrow["publication_map"])
-                                == page["snapshot"]["publication_map"]
+                            publications = json.loads(csvrow["publication_map"])
+                            assert all(
+                                p in page["snapshot"]["publication_map"]
+                                for p in publications
                             )
+                            for record in records:
+                                if record["publication"]:
+                                    assert any(
+                                        all(
+                                            p.get(k) == v
+                                            for k, v in record["publication"].items()
+                                        )
+                                        for p in publications
+                                    )
                         # 金额来自SDK固定夹具：父层40/50，Ad dash；非从被测实现推导。
                         revenue = rows[0]["Native Growth 总展示价值（平台原字段）"]
                         assert revenue == (

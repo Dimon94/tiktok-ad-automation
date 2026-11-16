@@ -264,7 +264,7 @@ def materialize_material_rows(
                 )
             )
         # 先保留每个账户的缺失贡献，不能用共享 VID 另一账户的同币种事实抵消。
-        for _, currency, timezone in {
+        for missing_adv, currency, timezone in {
             (m["advertiser_id"], m["currency"], m["timezone"]) for m in row_missing
         }:
             vector = metric_vector(
@@ -279,7 +279,11 @@ def materialize_material_rows(
             )
             buckets.append(((vector,), True))
             missing_contributions.append(
-                {"vector": vector.model_dump(mode="json"), "incomplete": True}
+                {
+                    "advertiser_id": missing_adv,
+                    "vector": vector.model_dump(mode="json"),
+                    "incomplete": True,
+                }
             )
         for adv in (
             set(row_advs)
@@ -319,6 +323,7 @@ def materialize_material_rows(
             )
             missing_contributions.append(
                 {
+                    "advertiser_id": adv,
                     "vector": missing_vector.model_dump(mode="json"),
                     "incomplete": missing_incomplete,
                 }
@@ -546,6 +551,8 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                         "tenant_id": str(snapshot.tenant_id),
                         "advertiser_id": adv,
                         "creative_id": f["creative_id"],
+                        "currency": f["currency"],
+                        "timezone": f["timezone"],
                         "fact_key": json.dumps(
                             [
                                 str(snapshot.tenant_id),
@@ -662,6 +669,7 @@ def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):
                     },
                     "scope": "FULL_PARENT_AD",
                     "metric_buckets": parent_row.metric_buckets,
+                    "source_evidence": parent_row.source_evidence,
                     "coverage": parent_row.coverage,
                 }
                 controls[parent_key] = ParentAdControl(
@@ -822,7 +830,9 @@ def reconcile_parent(session, *, snapshot, filters, control):
         from datetime import datetime
 
         stamps = {
-            str(b.stat_date): b for p in bucket.provenance.values() for b in p.buckets
+            r["local_day"]: r["publication"]
+            for r in control.source_evidence
+            if r["currency"] == bucket.currency
         }
         for f in facts:
             publication = (f.get("evidence") or {}).get("publication") or {}
@@ -833,16 +843,17 @@ def reconcile_parent(session, *, snapshot, filters, control):
             observed = publication.get("observed_at")
             if (
                 not stamp
-                or not stamp.observed_at
+                or not stamp.get("observed_at")
                 or not observed
-                or stamp.last_attempt_status != "COMPLETE"
+                or stamp.get("status") != "COMPLETE"
             ):
                 reasons.append("OBSERVATION_COVERAGE_UNKNOWN")
                 break
             if (
                 abs(
                     (
-                        stamp.observed_at - datetime.fromisoformat(observed)
+                        datetime.fromisoformat(stamp["observed_at"])
+                        - datetime.fromisoformat(observed)
                     ).total_seconds()
                 )
                 > 1800

@@ -19,6 +19,7 @@ import { Pager } from "@/features/tenants/shared"
 import { AdsNameCell, rowDisplayName } from "./AdsNameCell"
 import { type ColumnDef, formatMetric, isRecoveryOpen } from "./metricCatalog"
 import { SortableHead } from "./SortableHead"
+import { SourceEvidence } from "./SourceEvidence"
 import {
   type AdsDimension,
   DIMENSIONS,
@@ -485,9 +486,9 @@ export function AdsTable({
                                 row.display.platform_roas_d0_reason}
                             </p>
                             <p>表内 ROAS：本地同范围收益 / 花费</p>
-                            {row.display.platform_roas_observations && (
-                              <details><summary>逐日平台观察</summary><pre className="max-w-sm overflow-auto whitespace-pre-wrap">{row.display.platform_roas_observations}</pre></details>
-                            )}
+                            {row.metric_buckets?.map((bucket, index) => bucket.evidence_ref && (
+                              <SourceEvidence key={index} reference={bucket.evidence_ref} />
+                            ))}
                           </div>
                         )}
                     </TableCell>

@@ -13,6 +13,11 @@ from app.modules.reporting.exports import (
 from app.modules.reporting.query_models import ReportExport
 from app.modules.reporting.schemas import ReportingFilter
 from tests.modules.accounts.conftest import app_config as app_config
+from tests.modules.reporting.evidence_helpers import (
+    archived_records,
+    assert_csv_evidence,
+)
+from tests.modules.reporting.evidence_helpers import records as frozen_records
 from tests.modules.reporting.query_helpers import query_ads
 from tests.modules.reporting.test_material_query import D, material_row, publish, use
 
@@ -63,7 +68,7 @@ def test_material_result_is_frozen_before_export(session, sync_seed):
     page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
     print(f"JB34 single material query={(time.perf_counter() - started) * 1000:.2f}ms")  # noqa: T201
     assert (
-        page.snapshot.result_contract.get("revision") == "material-instance-result-v1"
+        page.snapshot.result_contract.get("revision") == "material-instance-result-v2"
     )
     assert len(page.items) == 1
     assert len(page.items[0].material_instances) == 1
@@ -72,8 +77,11 @@ def test_material_result_is_frozen_before_export(session, sync_seed):
     assert instance.key["tenant_id"] == str(sync_seed.tenant_id)
     assert instance.key["bc_id"] == "bc-a"
     assert instance.key["connection_id"] == str(sync_seed.connection.id)
-    assert len(instance.observations) == 1
-    assert instance.observations[0]["creative_id"] == "cr1"
+    assert len(frozen_records(session, sync_seed, instance.metric_buckets[0])) == 1
+    assert (
+        frozen_records(session, sync_seed, instance.metric_buckets[0])[0]["creative_id"]
+        == "cr1"
+    )
     assert instance.metric_buckets[0].values["spend"] == Decimal("40")
     assert instance.metric_buckets[0].reasons.get("spend") != "CONTRACT_MISMATCH"
     assert page.items[0].parent_controls[0].metric_buckets[0].values[
@@ -115,7 +123,11 @@ def test_material_result_is_frozen_before_export(session, sync_seed):
     import json
 
     assert json.loads(rows[0]["identity"]) == instance.key
-    assert json.loads(rows[0]["observations"]) == list(instance.observations)
+    assert_csv_evidence(
+        rows[0],
+        instance.metric_buckets[0],
+        frozen_records(session, sync_seed, instance.metric_buckets[0]),
+    )
     assert page.items[0].coverage["status"] != "BUILDING"
     # 目录改名/删除只能影响新查询；旧展开直接消费冻结载荷。
     session.execute(
@@ -479,16 +491,30 @@ def test_multi_creative_five_states_and_special_identity(session, sync_seed):
         "ABSENT": 1,
         "LEGACY_UNKNOWN": 1,
     }
-    assert [o["field_states"]["spend"] for o in instance.observations] == [
+    assert [
+        o["field_states"]["spend"]
+        for o in frozen_records(session, sync_seed, instance.metric_buckets[0])
+    ] == [
         "VALUE",
         "NULL",
         "DASH",
         "ABSENT",
         "LEGACY_UNKNOWN",
     ]
-    assert instance.observations[0]["publisher"]["scope"]["kind"] == "ACCOUNT_DAY"
-    assert instance.observations[4]["publisher"] is None
-    assert [o["values"]["spend"] for o in instance.observations] == [
+    assert (
+        frozen_records(session, sync_seed, instance.metric_buckets[0])[0]["publisher"][
+            "scope"
+        ]["kind"]
+        == "ACCOUNT_DAY"
+    )
+    assert (
+        frozen_records(session, sync_seed, instance.metric_buckets[0])[4]["publisher"]
+        is None
+    )
+    assert [
+        o["values"]["spend"]
+        for o in frozen_records(session, sync_seed, instance.metric_buckets[0])
+    ] == [
         "10",
         None,
         None,
@@ -591,9 +617,9 @@ def test_special_buckets_and_known_mid_identity(session, sync_seed):
     assert special["conflict"].identity_reason == "CONFLICT"
     assert special["midonly"].key["ad_material_id"] == "historical-mid"
     assert (
-        special["carousel"].observations[0]["identity"]["assets"][1][
-            "platform_material_id"
-        ]
+        frozen_records(session, sync_seed, special["carousel"].metric_buckets[0])[0][
+            "identity"
+        ]["assets"][1]["platform_material_id"]
         == "image2"
     )
     public = create_export(
@@ -831,7 +857,7 @@ def test_stale_deleted_creative_preserves_projected_observation(session, sync_se
     instance = page.items[0].material_instances[0]
     assert instance.metric_buckets[0].values["spend"] == 40
     assert (
-        instance.observations[0]["observed_at"]
+        frozen_records(session, sync_seed, instance.metric_buckets[0])[0]["observed_at"]
         == original["publication"]["observed_at"]
     )
     assert page.coverage["projection"]["pending_bucket_count"] > 0
@@ -925,6 +951,33 @@ def test_review_freeze_preserves_mapped_instance_totals_and_archived_observation
         dimension="material", start_date=D, end_date=D, advertiser_ids=("acc-1",)
     )
     page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
+    # attribution 的复制路径只重绑定定位，不重写 INSTANCE/父控制/特殊行原件。
+    from app.modules.reporting.queries import freeze_review_page
+    from app.modules.reporting.query_models import QuerySnapshotRow
+
+    original_rows = {
+        row.row_key: row.frozen_result["source_evidence"]
+        for row in session.exec(
+            select(QuerySnapshotRow).where(
+                QuerySnapshotRow.snapshot_id == page.snapshot.snapshot_id
+            )
+        ).all()
+    }
+    copied = freeze_review_page(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=filters,
+        freeze_all=True,
+    )
+    assert {
+        row["row_key"]: row["source_evidence"] for row in copied["rows"]
+    } == original_rows
+    for row in copied["rows"]:
+        for child in row["material_instances"] + row["parent_controls"]:
+            for vector in child["metric_buckets"]:
+                assert vector["evidence_ref"]["owner"] == "FROZEN_REPORT_ROWS"
+                assert vector["evidence_ref"]["owner_id"] == copied["id"]
     states = {
         "material": session.exec(
             select(ReadBucketState).where(
@@ -948,15 +1001,39 @@ def test_review_freeze_preserves_mapped_instance_totals_and_archived_observation
         cutoff=datetime.now(UTC),
         states=states,
     )
-    assert report["summary"] == page.summary
+
+    def metrics(value):
+        if isinstance(value, dict):
+            return {
+                k: metrics(v)
+                for k, v in value.items()
+                if k not in {"evidence_ref", "scope_digest"}
+            }
+        if isinstance(value, list):
+            return [metrics(v) for v in value]
+        return value
+
+    assert metrics(report["summary"]) == metrics(page.summary)
+    a_records = archived_records(report, report["summary"]["buckets"][0])
+    b_records = frozen_records(
+        session, sync_seed, page.items[0].material_instances[0].metric_buckets[0]
+    )
+    assert len(a_records) == len(b_records)
+    for a_record, b_record in zip(a_records, b_records, strict=True):
+        for key in a_record.keys() | b_record.keys():
+            assert a_record.get(key) == b_record.get(key), key
     assert report["summary"]["scope"] == "SELECTED_MATERIALS"
     assert report["summary"]["buckets"][0]["values"]["spend"] == "40"
     instance = report["rows"][0]["material_instances"][0]
-    assert instance["row_kind"] == "INSTANCE" and instance["observations"]
+    assert instance["row_kind"] == "INSTANCE" and archived_records(
+        report, instance["metric_buckets"][0]
+    )
     visible = report_for_reading(report)
     assert visible["rows"][0]["material_instances"][0]["observations_archived"]
     assert "observations" not in visible["rows"][0]["material_instances"][0]
     for row in visible["rows"]:
         assert not row.get("refs") and not row.get("material_uses")
         assert all("observations" not in r for r in row["reconciliation_rows"])
-    assert instance["observations"]  # 交付投影不能就地删除归档正文。
+    assert archived_records(
+        report, instance["metric_buckets"][0]
+    )  # 交付投影不能就地删除归档正文。

@@ -85,7 +85,20 @@ def query_for_task(
     }
 
 
-def read_for_task(session, *, task, evidence_id: UUID, offset: int = 0, limit: int = 1):
+def read_for_task(
+    session,
+    *,
+    task,
+    evidence_id: UUID,
+    offset: int = 0,
+    limit: int = 1,
+    view: str = "reading",
+    report_id: str | None = None,
+    row_key: str | None = None,
+    bucket: dict | None = None,
+    component: str | None = None,
+    evidence_cursor: str | None = None,
+):
     if offset < 0 or not 1 <= limit <= 100:
         raise HTTPException(422, "invalid_evidence_page")
     source = session.exec(
@@ -95,6 +108,26 @@ def read_for_task(session, *, task, evidence_id: UUID, offset: int = 0, limit: i
         raise HTTPException(404, "evidence_not_available_in_task_scope")
     if _digest(source.payload) != source.digest:
         raise DomainError("ai_evidence_changed", "冻结证据摘要不一致")
+    from app.modules.reporting.frozen_evidence import archive_reports
+
+    archive_reports(source.payload, source.category)
+    if view == "provenance":
+        return _read_provenance(
+            session,
+            task=task,
+            source=source,
+            report_id=report_id,
+            row_key=row_key,
+            bucket=bucket,
+            component=component,
+            cursor=evidence_cursor,
+            limit=limit,
+        )
+    if view != "reading" or any(
+        value is not None
+        for value in (report_id, row_key, bucket, component, evidence_cursor)
+    ):
+        raise HTTPException(422, "invalid_evidence_view")
     payload = source.payload
     entry = source.source_metadata
     if isinstance(payload, list):
@@ -132,7 +165,8 @@ def read_for_task(session, *, task, evidence_id: UUID, offset: int = 0, limit: i
     # 只缩小页长，不截断单条正文；超大单条给出可操作错误，绝不把残缺对象当完整证据。
     while True:
         page_id = uuid5(
-            task.id, f"{source.id}:{source.digest}:{offset}:{len(selected)}"
+            task.id,
+            f"{source.id}:{source.digest}:financial-review-v2:reading:{offset}:{len(selected)}",
         )
         result = {
             "id": str(page_id),
@@ -240,3 +274,58 @@ def list_notes(session, *, task, offset=0, limit=10):
         "next_offset": offset + len(selected) if len(rows) > len(selected) else None,
         "verified_evidence": False,
     }
+
+
+def _read_provenance(
+    session, *, task, source, report_id, row_key, bucket, component, cursor, limit
+):
+    from app.modules.reporting.frozen_evidence import archive_evidence_page
+
+    identity = {
+        "task_id": str(task.id),
+        "source_id": str(source.id),
+        "source_digest": source.digest,
+        "view": "provenance",
+        "contract": "financial-review-v2",
+    }
+    while True:
+        page = archive_evidence_page(
+            source.payload,
+            category=source.category,
+            identity=identity,
+            report_id=report_id,
+            row_key=row_key,
+            bucket=bucket,
+            component=component,
+            cursor=cursor,
+            limit=limit,
+        )
+        receipt = identity | {
+            "selectors": page["evidence_ref"],
+            "cursor": cursor,
+            "count": len(page["records"]),
+        }
+        page_id = uuid5(task.id, _digest(receipt))
+        result = {
+            "id": str(page_id),
+            **identity,
+            "category": source.category,
+            "cutoff": task.evidence["captured_at"],
+            "captured_at": source.captured_at.isoformat(),
+            **page,
+        }
+        if len(json.dumps(result, ensure_ascii=False).encode()) <= MAX_RESPONSE_BYTES:
+            break
+        if limit == 1:
+            raise DomainError(
+                "ai_evidence_object_too_large", "单条原始证据超过64KB，未交付，不可引用"
+            )
+        limit = max(1, limit // 2)
+    return deliver(
+        session,
+        task=task,
+        identity=page_id,
+        source_id=source.id,
+        digest=source.digest,
+        payload=result,
+    )

@@ -128,9 +128,9 @@ def _rows_for_snapshot(
     ).all()
     if len(rows) != snapshot.total:
         raise HTTPException(409, detail="query_snapshot_incomplete")
-    return [frozen_row(row).model_dump(mode="json") for row in rows], dict(
-        snapshot.naming_versions
-    )
+    return [
+        frozen_row(row, full_evidence=True).model_dump(mode="json") for row in rows
+    ], dict(snapshot.naming_versions)
 
 
 def create_export(
@@ -315,6 +315,7 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
         "evidence_digest",
         "result_digest",
         "observations",
+        "source_evidence",
         "field_state_counts",
         "identity_reason",
         "row_coverage",
@@ -370,6 +371,34 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                 value = display.get(key)
                 data[key] = csv_safe_text(str(value)) if value is not None else ""
             if frozen:
+                from app.modules.reporting.frozen_evidence import (
+                    bucket_of,
+                    digest,
+                    selected_records,
+                )
+
+                original_ref = bucket.get("evidence_ref")
+                evidence = (
+                    selected_records(raw, original_ref)
+                    if original_ref
+                    else raw.get("source_evidence", [])
+                )
+                local_ref = {
+                    "owner": "ROW_EVIDENCE",
+                    "owner_id": str(export.id),
+                    "row_key": raw.get("row_key", ""),
+                    "bucket": bucket_of(bucket),
+                    "component": None,
+                    "summary": False,
+                    "scope_digest": original_ref["scope_digest"]
+                    if original_ref
+                    else digest(
+                        [export.filter_digest, raw.get("row_key"), raw.get("key")]
+                    ),
+                    "record_count": len(evidence),
+                    "evidence_digest": digest(evidence),
+                }
+                bucket = bucket | {"evidence_ref": local_ref}
                 # 向量保留NULL/真零、availability、字段/公式、partial计数和逐日水位；不重算。
                 metadata = {
                     "snapshot_id": str(export.snapshot_id),
@@ -377,7 +406,7 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                     "filter_digest": export.filter_digest,
                     "filters": export.filters,
                     "result_contract": export.result_contract,
-                    "publication_map": export.publication_map,
+                    "publication_map": _row_publications(export, raw, evidence),
                     "metric_vector": bucket,
                     "report_display": display,
                     "row_kind": raw.get("row_kind", "SUMMARY"),
@@ -387,6 +416,7 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                     "evidence_digest": raw.get("evidence_digest", ""),
                     "result_digest": raw.get("result_digest", ""),
                     "observations": raw.get("observations", []),
+                    "source_evidence": evidence,
                     "field_state_counts": raw.get("field_state_counts", {}),
                     "identity_reason": raw.get("identity_reason"),
                     "row_coverage": coverage
@@ -410,6 +440,41 @@ def _csv_rows(export: ReportExport, rows: Iterable[dict[str, Any]]) -> bytes:
                     )
             writer.writerow(data)
     return out.getvalue().encode("utf-8")
+
+
+def _row_publications(export, row, evidence):
+    """仅复制本行真实选择及其覆盖水位；过滤后的单CSV行无需网络或其他行。"""
+    from app.modules.reporting.frozen_evidence import canonical
+
+    advertisers = {r.get("advertiser_id") for r in evidence}
+    advertisers.update(row.get("coverage", {}).get("advertiser_ids", []))
+    advertisers.update(r["advertiser_id"] for r in row.get("refs", []))
+    selected = []
+    for entry in export.publication_map:
+        if entry.get("observation_source") == "SELECTED_FACT":
+            match = any(
+                entry.get("advertiser_id") == record.get("advertiser_id")
+                and all(
+                    entry.get(k) == v
+                    for k, v in (record.get("publication") or {}).items()
+                )
+                for record in evidence
+                if record.get("publication")
+            )
+            # 素材发布图当前直接保存原creative观察，不将同账户其他creative混入。
+            match = match or any(
+                entry.get("fact_key")
+                and entry.get("fact_key") == record.get("fact_key")
+                for record in evidence
+            )
+        else:
+            match = entry.get("advertiser_id") in advertisers and any(
+                entry.get("report_kind") == f"{v.get('level')}_day"
+                for v in row.get("metric_buckets", [])
+            )
+        if match:
+            selected.append(entry)
+    return list({canonical(p): p for p in selected}.values())
 
 
 def _object_path(key: str) -> Path:
@@ -490,7 +555,11 @@ def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, 
     seen_parents = set()
     seen_reconciliation = set()
     for row in export.frozen_rows:
-        common = {"display": row["display"], "result_digest": row["evidence_digest"]}
+        common = {
+            "display": row["display"],
+            "result_digest": row["evidence_digest"],
+            "source_evidence": row["source_evidence"],
+        }
         instances = row.get("material_instances", [])
         for instance in instances:
             yield (
@@ -508,7 +577,11 @@ def _export_rows(_session: Session, export: ReportExport) -> Iterator[dict[str, 
                 yield (
                     common
                     | control
-                    | {"row_key": identity, "row_kind": "PARENT_CONTROL"}
+                    | {
+                        "row_key": identity,
+                        "row_kind": "PARENT_CONTROL",
+                        "source_evidence": row["source_evidence"],
+                    }
                 )
         for difference in row.get("reconciliation_rows", []):
             identity = difference["evidence_digest"]

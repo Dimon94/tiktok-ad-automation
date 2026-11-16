@@ -4,6 +4,7 @@ import hmac
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 from typing import cast as typing_cast
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ from app.modules.ai_workbench.models import AIOptimizer, AIOptimizerVersion
 from app.modules.ai_workbench.proposals import ProposalInput
 from app.modules.ai_workbench.review_report import ReviewReport
 from app.modules.automation_rules.schemas import RuleDefinition
+from app.modules.reporting.schemas import EvidenceBucket
 
 SERVICE_AUDIENCE = "tkada-ai-review"
 router = APIRouter(
@@ -587,6 +589,12 @@ class EvidenceQuery(BaseModel):
 class EvidenceRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evidence_id: UUID
+    view: Literal["reading", "provenance"] = "reading"
+    report_id: str | None = Field(default=None, max_length=128)
+    row_key: str | None = Field(default=None, max_length=512)
+    bucket: EvidenceBucket | None = None
+    component: str | None = Field(default=None, max_length=128)
+    evidence_cursor: str | None = Field(default=None, max_length=8192)
     offset: int = Field(default=0, ge=0, le=1000000000)
     limit: int = Field(default=10, ge=1, le=100)
 

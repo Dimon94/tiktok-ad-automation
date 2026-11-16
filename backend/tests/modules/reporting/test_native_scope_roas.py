@@ -10,6 +10,8 @@ from app.integrations.tiktok.contracts.context import FrozenTikTokRoute
 from app.modules.reporting.publish import AccountMeta, publish_campaign_day
 from app.modules.reporting.queries import query_ads
 from app.modules.reporting.schemas import MetricVector, ReportingFilter
+from tests.modules.reporting.evidence_helpers import provenance as resolved_provenance
+from tests.modules.reporting.evidence_helpers import records as resolved_records
 from tests.modules.reporting.test_jobs import _route
 
 D = date(2026, 11, 13)
@@ -276,8 +278,12 @@ def test_platform_ratio_is_not_averaged_across_days(session, sync_seed):
     ).items[0]
     assert multiple.display["platform_roas_total"] is None
     assert multiple.display["platform_roas_total_reason"] == "NON_ADDITIVE"
-    assert "0.801" in multiple.display["platform_roas_observations"]
-    assert "0.903" in multiple.display["platform_roas_observations"]
+    assert "0.801" in str(
+        resolved_records(session, sync_seed, multiple.metric_buckets[0])
+    )
+    assert "0.903" in str(
+        resolved_records(session, sync_seed, multiple.metric_buckets[0])
+    )
     assert multiple.metric_buckets[0].values["roas_total"] == Decimal("0.8")
 
 
@@ -353,7 +359,7 @@ def test_aggregate_provenance_has_counts_and_original_observations(session, sync
         page = query(session, sync_seed, dimension)
         for row in page.items:
             vector = row.metric_buckets[0]
-            p = vector.provenance["roas_total"]
+            p = resolved_provenance(session, sync_seed, vector, "roas_total")
             assert len(p.buckets) >= 1
             assert p.denominator_missing_count == 0
             assert p.denominator_known_count == len(p.buckets)
@@ -405,7 +411,7 @@ def test_complete_empty_retains_direct_coordinates(session, sync_seed):
             assert vector.contract_revision == "native-growth-day-v1"
             assert vector.values["spend"] == 0
             assert vector.values["revenue_total"] is None
-            assert vector.provenance["spend"].buckets
+            assert resolved_provenance(session, sync_seed, vector, "spend").buckets
             assert vector.provenance["spend"].reason == "NO_RETURNED_ROW"
         summary = MetricVector.model_validate(page.summary["buckets"][0])
         assert summary.provenance["spend"].field_state_counts == {"NO_RETURNED_ROW": 1}
@@ -682,7 +688,7 @@ def test_generated_field_states_pg(session, sync_seed, spend, revenue):
         assert summary.availability["revenue_total"] == (
             "PARTIAL" if missing_r else "AVAILABLE"
         )
-        p = summary.provenance["roas_total"]
+        p = resolved_provenance(session, sync_seed, summary, "roas_total")
         assert (p.denominator_known_count, p.denominator_missing_count) == (
             2 - int(missing_s),
             int(missing_s),

@@ -410,7 +410,7 @@ def _facts_cte(
         ) t"""
     # 完整无返回对象的成本零只影响计算；原始观测仍然是 returned=false/NULL。
     for name in NO_SPEND_ZERO_METRICS:
-        empty = f"t.fetched_at IS NULL AND s.status='COMPLETE' AND ({revision})='{NATIVE_CONTRACT}'"
+        empty = f"t.fetched_at IS NULL AND s.status='COMPLETE' AND ({revision})='{NATIVE_CONTRACT}' AND EXISTS (SELECT 1 FROM cov full_coverage WHERE full_coverage.adv=t.advertiser_id AND full_coverage.complete)"
         metric_sums = (
             metric_sums.replace(
                 f"ELSE t.{name} END",
@@ -624,7 +624,7 @@ def _member_buckets(
     )
     return f"""mb AS (
         SELECT m.row_key, m.adv, m.rid, COALESCE(f.level,'{level}') AS level, COALESCE(f.source_kind,'CHILD_DERIVED') AS source_kind, COALESCE(f.contract_revision,'LEGACY_UNKNOWN') AS contract_revision, COALESCE(f.currency, a.currency) AS currency,
-            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, (f.adv IS NULL AND NOT c.complete) AS scope_missing, f.observations, to_jsonb(f) AS selected_fact, {values}
+            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, ((f.adv IS NULL OR NOT f.has_facts) AND NOT c.complete) AS scope_missing, f.observations, to_jsonb(f) AS selected_fact, {values}
         FROM {members} m
         JOIN acc a ON a.adv = m.adv
         JOIN cov c ON c.adv = m.adv
@@ -1216,7 +1216,9 @@ def _summary_select(
         else "bool_or(mb.incomplete) OVER (PARTITION BY mb.row_key)"
     )
     coordinates = ", x.level, x.source_kind, x.contract_revision" if scoped else ""
-    evidence = ", jsonb_agg(x.observations) AS observations" if scoped else ""
+    evidence = (
+        ", jsonb_agg(x.observations) AS observations" if scoped and per_row else ""
+    )
     source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
     scope_projection = (
         f", bool_or(mb.scope_missing) OVER (PARTITION BY {'mb.row_key,' if per_row else ''}mb.currency) AS scope_incomplete"
