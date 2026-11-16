@@ -89,6 +89,16 @@ def batch_results(session, submission, preview):
             # 与原回执一致：明确失败父级的未发送后代已不可能建成，
             # 调度器稍后记录 dependency_failed 不应使页面一直显示执行中。
             failed = {s.id for s in steps if s.status == "FAILED"}
+            # 原生每计划只有一个组，CTA 和全部素材均是 Campaign 的前置条件，
+            # 这些依赖不在 parent_step_id 中；不能把永久阻断的创建链仍算作等待。
+            if any(s.kind in {"CTA", "MATERIAL"} and s.id in failed for s in steps):
+                failed.update(
+                    s.id
+                    for s in steps
+                    if s.kind == "CAMPAIGN"
+                    and s.status in {"PENDING", "QUEUED", "RETRYABLE"}
+                    and not s.remote_id
+                )
             while True:
                 blocked = {
                     s.id
@@ -104,14 +114,15 @@ def batch_results(session, submission, preview):
             if any(s.mismatch for s in steps):
                 states.add("MISMATCH")
             state = aggregate_status(states)
-            if (steps and all(s.error_code == "local_submission_cancelled" for s in steps)
-                    and all(s.request_body is None and not s.remote_id for s in steps)):
+            if (
+                steps
+                and all(s.error_code == "local_submission_cancelled" for s in steps)
+                and all(s.request_body is None and not s.remote_id for s in steps)
+            ):
                 state = "CANCELLED"
             elif not steps and submission.progress.get("local_cancelled"):
                 state = "CANCELLED"
-            create_steps = [
-                s for s in steps if s.kind in {"CAMPAIGN", "ADGROUP", "AD"}
-            ]
+            create_steps = [s for s in steps if s.kind in {"CAMPAIGN", "ADGROUP", "AD"}]
             if unit_native_matched(session, submission, unit):
                 state = "COMPLETED"
             elif any(s.status in {"UNKNOWN", "MISMATCH"} or s.mismatch for s in steps):
@@ -127,8 +138,15 @@ def batch_results(session, submission, preview):
                 and s.id not in failed
                 and s.status in {"PENDING", "QUEUED", "RUNNING", "RETRYABLE"}
                 for s in steps
+            ) and not (
+                create_steps
+                and all(
+                    s.id in failed or s.status in {"SUCCEEDED", "CANCELLED"}
+                    for s in create_steps
+                )
             ):
                 # 明确失败不能提前终止仍可执行的兄弟步骤。
+                # 创建链已终结时，尚未执行的素材/CTA 不再使整计划停留 RUNNING。
                 state = "RUNNING"
             elif any(
                 s.kind != "READBACK"
@@ -173,9 +191,7 @@ def batch_results(session, submission, preview):
         status = "COMPLETED"
     elif "COMPLETED" in states:
         status = "PARTIAL"
-    elif states == {"PARTIAL"} and sum(
-        p["status"] != "EXCLUDED" for p in results
-    ) == 1:
+    elif states == {"PARTIAL"} and sum(p["status"] != "EXCLUDED" for p in results) == 1:
         # M1 单计划保留已有部分对象的回执；多计划无 MATCH 仍是 FAILED。
         status = "PARTIAL"
     else:

@@ -41,3 +41,16 @@
 ## 上游独立日志规划与经营补源
 
 正式头唯一新增失败 `test_long_pending_continues_bounded_repair_rotation` 来自旧分支仍预期经营补源顺带触发日志规划。上游8091cfdc已按独立规划合同移除挂接，当前业务源码与上游一致。保留日志spy并断言无隐式日志调用，同时完整保留132账户、prefix128、后四账户及每轮两户的经营修复断言。测试及日志独立轮转/历史续接/开关边界4 passed/0.70s；仅测试和说明改动，不恢复旧产品耦合。
+
+
+## Native 前置失败、真实管理回读与浏览器生命周期
+
+`native_completion.batch_results` 原本只沿parent_step_id传播失败，遗漏同计划CTA/素材对未发送Campaign的真实前置约束。现按tenant/submission/unit作用域传播明确失败；创建链已终结时，剩余未执行准备步骤不再把计划保持RUNNING。UNKNOWN/MISMATCH、已成功远端对象及可执行兄弟计划优先级保留，不新写第二份状态。当前revision用例6.99s先失败；真实两账户权限围栏产生MATERIAL/CTA失败的两个新例也先失败，修复后3项通过。
+
+41成员管理测试使用HTTP传输替身，通过真实20/20/1请求、回读outbox、目录worker/发布和观察达到SUCCEEDED，再执行不重发；CBO冲突夹具明确冻结CBO事实。ROAS来源按remote_id核验双方ABO/CBO，不依赖随机首行。c5夹具只为本租户按正确触发器顺序清理名称投影，不禁触发器/FK或删其他租户。目录测试复用真实详情产生的冻结快照，不再造无结果行的空快照。SimpleNamespace及旧冻结USD夹具补齐正式模型字段。
+
+旧flat Native验证依赖本机/tmp历史生成器，CI不存在。原样纳入测试fixture，固定30e3b3c5历史源码及Git blob4512e4c28a9a29bcfa92930ea35ac31c77eedf0b；相对路径读取，不用runtime gitshow、不换当前生成器、不跳过断言。原冻结bytes/digest、真实API和触发器检查通过。
+
+浏览器代理收尾Route already handled及漏入8000请求已孤立复现。先卸载轮询页面，再排空已跟踪代理，最后unroute；未吞异常、增加sleep或重试。原完整编辑/准备浏览器场景1 passed/21.59s。fixture组合35项通过，最后目录快照修正与8种Native成功/UNKNOWN/拒绝/取消状态合计9项通过；分批48个不同相关用例有通过证据，不伪称一次全绿。全app ty、修改Python及原样历史fixture Ruff、前端生产类型检查和差异检查通过。可选全前端测试类型检查仍有既有ES2020/旧fixture类型错误，日志留存，未作为已通过或扩展修复。
+
+临时node_modules链接已移除，主树依赖未改。金融查询和证据容量阶段尚未实现，最终完整远端门禁未通过。

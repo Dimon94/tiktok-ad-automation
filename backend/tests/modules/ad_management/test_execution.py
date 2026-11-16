@@ -140,6 +140,9 @@ def c5_env(monkeypatch):
         # 成功写入现在会立即生成回读 outbox；完整清理本夹具的已提交租户，
         # 避免它的后台任务污染后续用例的全局派发窗口与空队列断言。
         with Session(engine) as cleanup, cleanup.begin():
+            # 删除名称投影会生成新范围证据，先完成触发器写入，再按外键顺序清理。
+            names = SQLModel.metadata.tables["campaign_name_projection"]
+            cleanup.exec(names.delete().where(names.c.tenant_id == context.tenant_id))
             for table in reversed(SQLModel.metadata.sorted_tables):
                 if "tenant_id" in table.c:
                     cleanup.exec(

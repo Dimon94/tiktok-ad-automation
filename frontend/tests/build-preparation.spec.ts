@@ -3077,18 +3077,33 @@ test("真实工作区计划复制、选中批量编辑与回执 @native-plan-liv
 }) => {
   test.skip(!process.env.NATIVE_TEST_DRAFT, "隔离宿主运行")
   await buildsBoundary(page)
+  const inFlight = new Set<Promise<void>>()
   await page.route(
     /\/api\/tenants\/[^/]+\/(build-drafts|build-draft-mutations)\//,
     async (route) => {
-      const response = await route.fetch({
-        url:
-          process.env.NATIVE_TEST_HOST +
-          new URL(route.request().url()).pathname +
-          new URL(route.request().url()).search,
-      })
-      await route.fulfill({ response })
+      const forwarded = (async () => {
+        const response = await route.fetch({
+          url:
+            process.env.NATIVE_TEST_HOST +
+            new URL(route.request().url()).pathname +
+            new URL(route.request().url()).search,
+        })
+        await route.fulfill({ response })
+      })()
+      inFlight.add(forwarded)
+      try {
+        await forwarded
+      } finally {
+        inFlight.delete(forwarded)
+      }
     },
   )
+  const finish = async () => {
+    // 先卸载轮询页面并排空真实代理，避免移除拦截时仍有回执未送达浏览器。
+    await page.goto("about:blank")
+    await Promise.all(inFlight)
+    await page.unrouteAll({ behavior: "wait" })
+  }
   const url = `/tenants/${tenant}/build-drafts/${process.env.NATIVE_TEST_DRAFT}?bc_id=${bc}`
   if (process.env.NATIVE_PLAN_MODE === "readiness") {
     await page.goto(url)
@@ -3096,7 +3111,7 @@ test("真实工作区计划复制、选中批量编辑与回执 @native-plan-liv
     await expect(page.getByText(/· READY/)).toBeVisible()
     await expect(page.getByText(/· BLOCKED/)).toBeVisible()
     await expect(page.getByText(/冻结预览将列出可执行计划/)).toBeVisible()
-    await page.unrouteAll({ behavior: "wait" })
+    await finish()
     return
   }
   await page.goto(url + "&edit=true")
@@ -3131,5 +3146,5 @@ test("真实工作区计划复制、选中批量编辑与回执 @native-plan-liv
   expect(response.status(), await response.text()).toBe(200)
   expect((await preparing).status()).toBe(202)
   await expect(page.getByText(/逐计划准备回执/)).toBeVisible()
-  await page.unrouteAll({ behavior: "wait" })
+  await finish()
 })

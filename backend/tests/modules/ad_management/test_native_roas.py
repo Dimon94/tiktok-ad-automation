@@ -170,11 +170,17 @@ def test_roas_chain(native_status_env, redis_client, monkeypatch, cbo, kind):
 
         frozen = items()
         if kind == "all":
-            assert {r["kind"] for r in frozen[0]["roas_facts"]["sources"]} == {
+            by_id = {item["ref"]["remote_id"]: item for item in frozen}
+            assert {
+                r["kind"] for r in by_id["adgroup-native"]["roas_facts"]["sources"]
+            } == {
                 "campaign",
                 "adgroup",
                 "ad",
             }
+            assert {
+                r["kind"] for r in by_id["adgroup-peer"]["roas_facts"]["sources"]
+            } == ({"campaign", "adgroup", "ad"} if cbo else {"campaign"})
         assert len(frozen) == (2 if cbo or kind in {"campaign", "all"} else 1)
         assert all(i["execution_result"] == "PENDING" for i in frozen), frozen
         assert frozen[0]["roas_facts"]["budget_strategy"] == ("CBO" if cbo else "ABO")

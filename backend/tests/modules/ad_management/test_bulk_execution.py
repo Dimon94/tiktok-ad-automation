@@ -168,42 +168,113 @@ def test_cancelled_batch_never_calls_provider(c5_env, monkeypatch):
     execute_batch(engine, ids)
 
 
-def test_41_members_dispatch_as_twenty_twenty_one(c5_env, monkeypatch):
+def test_41_members_dispatch_as_twenty_twenty_one(c5_env, redis_client, monkeypatch):
+    import json
     from threading import Lock
+    from types import SimpleNamespace
 
+    from cryptography.fernet import Fernet
+    from urllib3.response import HTTPResponse
+
+    from app.core.credentials import encrypt_credentials
+    from app.integrations.tiktok.platform_quotas import quota_configuration
+    from app.modules.accounts.models import TikTokConnection
     from app.modules.ad_management.dispatch_work import execute_task_items
+    from tests.modules.ad_management.test_native_status import drive_directory
 
     monkeypatch.setattr(settings, "REDIS_URL", os.environ["TEST_REDIS_URL"])
-    _, task_id, ids = make_items(c5_env, 41)
-    calls = []
+    monkeypatch.setattr(
+        settings, "CONNECTION_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(settings, "TIKTOK_APP_ID", "bulk-offline")
+    monkeypatch.setattr(settings, "TIKTOK_APP_SECRET", "synthetic")
+    monkeypatch.setattr(
+        settings, "TIKTOK_REDIRECT_URI", "https://example.test/callback"
+    )
+    monkeypatch.setattr(settings, "TIKTOK_CALL_POLICIES", quota_configuration("BASIC"))
+    context, task_id, ids = make_items(c5_env, 41)
+    with Session(engine) as session, session.begin():
+        connection = session.get(TikTokConnection, c5_env[3].connection_id)
+        connection.credential_ciphertext = encrypt_credentials(
+            tenant_id=context.tenant_id, value={"access_token": "synthetic-offline"}
+        )
+        session.add(connection)
+    calls, observed = [], set()
+    remote = {}
     lock = Lock()
 
-    class Wire:
-        def __init__(self, before):
-            self.management, self.before = self, before
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            pass
-
-        def apply_batch(self, commands):
-            self.before()
-            with lock:
-                calls.append(len(commands))
-            return tuple(
-                ManagementReceipt("ACCEPTED", "batch-accepted", False) for _ in commands
+    def transport(pool, method, url, **kwargs):
+        body = (
+            json.loads(kwargs["body"]) if method == "POST" else dict(kwargs["fields"])
+        )
+        assert body["advertiser_id"] == c5_env[2].advertiser_id
+        observer = getattr(pool, "_sync_attempt_observer", None)
+        if observer:
+            observer[0].attempt(observer[1])
+        if method == "POST":
+            assert (
+                url.endswith("/campaign/status/update/") and "/smart_plus/" not in url
             )
+            assert body["operation_status"] == "DISABLE"
+            members = body["campaign_ids"]
+            with lock:
+                calls.append(tuple(members))
+                remote.update(dict.fromkeys(members, "DISABLE"))
+            data = {"campaign_ids": members}
+        else:
+            assert method == "GET" and url.endswith("/get/")
+            filtering = json.loads(body["filtering"])
+            members = filtering["campaign_ids"]
+            found = []
+            if url.endswith("/campaign/get/") and "/smart_plus/" not in url:
+                with lock:
+                    found = [
+                        {
+                            "advertiser_id": body["advertiser_id"],
+                            "campaign_id": identity,
+                            "campaign_name": "bulk",
+                            "operation_status": remote[identity],
+                        }
+                        for identity in members
+                        if identity in remote
+                    ]
+                    observed.update(row["campaign_id"] for row in found)
+            data = {
+                "list": found,
+                "page_info": {
+                    "page": 1,
+                    "page_size": int(body["page_size"]),
+                    "total_page": 1 if found else 0,
+                    "total_number": len(found),
+                },
+            }
+        return HTTPResponse(
+            body=json.dumps(
+                {"code": 0, "request_id": "bulk-" + method, "data": data}
+            ).encode(),
+            status=200,
+            headers={"Content-Type": "application/json"},
+        )
 
-    monkeypatch.setattr(
-        execution, "open_tiktok_gateway", lambda **kw: Wire(kw["before_request"])
-    )
-    monkeypatch.setattr(execution, "_refresh_after_commit", lambda *a, **k: None)
+    monkeypatch.setattr("urllib3.PoolManager.request", transport)
     assert execute_task_items(engine, ids)
-    assert sorted(calls) == [1, 20, 20]
+    assert sorted(map(len, calls)) == [1, 20, 20]
     with Session(engine) as session:
-        assert session.get(ManagementTask, task_id).status == "SUCCEEDED"
+        task = session.get(ManagementTask, task_id)
+        assert task.status == "RUNNING" and task.counts["refresh_pending"] == 41
+        assert task.counts["accepted"] == 41
+    # 原 outbox、目录 worker 和发布器写入发送后的观察，再由管理执行器核验。
+    drive_directory(SimpleNamespace(context=context), redis_client)
+    assert execute_task_items(engine, ids)
+    assert execute_task_items(engine, ids)
+    assert sorted(map(len, calls)) == [1, 20, 20]
+    assert observed == set(remote) and len(observed) == 41
+    with Session(engine) as session:
+        task = session.get(ManagementTask, task_id)
+        assert task.status == "SUCCEEDED" and task.counts["refresh_pending"] == 0
+        assert {
+            session.get(ManagementTaskItem, key).observation_state for key in ids
+        } == {"ACCEPTED"}
 
 
 def test_unknown_members_are_not_replayed(c5_env, monkeypatch):
@@ -252,6 +323,7 @@ def test_roas_conflict_only_blocks_affected_series(c5_env):
             item.capability = {
                 "operation": "update_roas",
                 "ad_type": "SMART_PLUS",
+                "roas_facts": {"budget_strategy": "CBO"},
                 "configuration": {
                     "campaign_id": "conflicting" if index < 2 else "valid"
                 },

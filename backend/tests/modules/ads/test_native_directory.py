@@ -348,21 +348,10 @@ def test_partial_observations_and_exact_creative_identity(native_published):
     assert entries["cr1"]["materials"][0]["published_version"] == 99
     assert entries["cr1"]["materials"][0]["observed_at"].startswith("2021-01-01")
     assert detail["configuration"]["extra_unknown"] == {"kept": True}
-    # 快照只验证报表上下文，不能把当前目录变成历史切片。
-    from app.modules.reporting.query_models import QuerySnapshot
-
-    snapshot = QuerySnapshot(
-        tenant_id=seed.context.tenant_id,
-        bc_id=seed.bc_id,
-        actor_id=seed.context.actor_id,
-        advertiser_ids=["account-a"],
-        filter_digest="f" * 64,
-        publication_versions={"directory": 1},
-    )
-    session.add(snapshot)
-    session.flush()
-    with_snapshot = client.get(url, params=params | {"snapshot_id": str(snapshot.id)})
-    assert with_snapshot.status_code == 200
+    # 复用真实详情查询冻结的合同与对象行；报表快照不改变当前目录详情。
+    snapshot_id = detail["report_snapshot"]["snapshot_id"]
+    with_snapshot = client.get(url, params=params | {"snapshot_id": snapshot_id})
+    assert with_snapshot.status_code == 200, with_snapshot.text
     assert with_snapshot.json()["native"] == native
 
     ad.parent_remote_id = "not-synced"

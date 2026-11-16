@@ -34,10 +34,9 @@ from tests.modules.builds.test_native_plan_set import workspace_client
 def test_legacy_flat_native_request_frozen_read_vertical_slice(
     job_env, wire, redis_client, monkeypatch
 ):
-    source = Path(
-        "/tmp/tkada-native-series-20261112/m2-implementation/"
-        "m2-final-verification/legacy-native-preview-flat.py"
-    )
+    # 原样保存 30e3b3c5:backend/app/modules/builds/native_preview.py，
+    # Git blob 4512e4c28a9a29bcfa92930ea35ac31c77eedf0b；CI 不依赖本机临时目录或 Git 历史。
+    source = Path(__file__).with_name("fixtures") / "legacy_native_preview_flat.py"
     assert source.is_file(), "checked out historical owner is required"
     context = job_env["context"]
     client = workspace_client(job_env)
@@ -70,20 +69,19 @@ def test_legacy_flat_native_request_frozen_read_vertical_slice(
         preview = session.get(BuildPreview, pid)
         original = deepcopy(preview.config["native_request"])
         original_digest = preview.content_digest
-        unit = session.exec(
-            select(BuildUnit).where(BuildUnit.preview_id == pid)
-        ).one()
+        unit = session.exec(select(BuildUnit).where(BuildUnit.preview_id == pid)).one()
         assert "native_batch" not in preview.config
         assert unit.scene_snapshot["native_request"] == original
-        assert session.execute(
-            text(
-                "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN "
-                "('submission_scope', 'execution_step_scope') AND tgenabled = 'O'"
-            )
-        ).scalar_one() == 2
-    response = client.get(
-        f"/tenants/{context.tenant_id}/build-previews/{pid}"
-    )
+        assert (
+            session.execute(
+                text(
+                    "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN "
+                    "('submission_scope', 'execution_step_scope') AND tgenabled = 'O'"
+                )
+            ).scalar_one()
+            == 2
+        )
+    response = client.get(f"/tenants/{context.tenant_id}/build-previews/{pid}")
     assert response.status_code == 200, response.text
     wrapped = response.json()["native_request"]
     assert wrapped["revision"] == "native-series-batch-v1"
@@ -94,7 +92,9 @@ def test_legacy_flat_native_request_frozen_read_vertical_slice(
         preview = session.get(BuildPreview, pid)
         assert preview.config["native_request"] == original
         assert preview.content_digest == original_digest
-        assert session.get(BuildUnit, unit.id).scene_snapshot["native_request"] == original
+        assert (
+            session.get(BuildUnit, unit.id).scene_snapshot["native_request"] == original
+        )
 
     response = client.post(
         f"/tenants/{context.tenant_id}/build-previews/{pid}/submit",
@@ -131,11 +131,15 @@ def test_legacy_flat_native_request_frozen_read_vertical_slice(
         preview = session.get(BuildPreview, pid)
         assert preview.config["native_request"] == original
         assert preview.content_digest == original_digest
-        assert session.get(BuildUnit, unit.id).scene_snapshot["native_request"] == original
+        assert (
+            session.get(BuildUnit, unit.id).scene_snapshot["native_request"] == original
+        )
     with Session(native.engine) as session:
         units = session.exec(select(BuildUnit).where(BuildUnit.preview_id == pid)).all()
         assert len(units) == 1
-        steps = session.exec(select(ExecutionStep).where(ExecutionStep.submission_id == sid)).all()
+        steps = session.exec(
+            select(ExecutionStep).where(ExecutionStep.submission_id == sid)
+        ).all()
         assert {step.unit_id for step in steps} == {unit.id}
     response = client.post(
         f"/tenants/{context.tenant_id}/build-previews/{pid}/submit",

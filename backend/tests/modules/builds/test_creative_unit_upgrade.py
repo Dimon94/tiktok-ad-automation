@@ -28,6 +28,8 @@ def legacy_preview(session, context, draft_id):
             "strategy_version_id": draft.strategy_version_id,
         },
     )
+    # 旧预览也冻结账户币种；catalog 的空配置不是可提交的历史正文。
+    value.config = {"currency": "USD"}
     session.add(
         PreviewContract(
             tenant_id=context.tenant_id,

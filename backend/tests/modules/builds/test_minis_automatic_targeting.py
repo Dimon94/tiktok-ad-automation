@@ -216,6 +216,7 @@ def test_legacy_automatic_scene_defaults_preserve_inflight_intent(
     if mode:
         original["adgroup_fields"]["targeting_optimization_mode"] = mode
     frozen = SimpleNamespace(
+        native_request=None,
         scene_snapshot=original,
         bc_id="bc",
         advertiser_id="100",
