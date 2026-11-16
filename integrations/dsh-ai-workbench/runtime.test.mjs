@@ -118,7 +118,7 @@ test('analysis RPCs never use service credentials and safe errors let an Agent c
 test('heartbeat updates the in-memory token without leaking it to the Agent', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tkada-renew-test-'))
   const originalInterval = globalThis.setInterval
-  let heartbeat, prompt
+  let heartbeat, prompt, renewals = 0
   try {
     globalThis.setInterval = callback => { heartbeat = callback; return { fixture: true } }
     const claim = { task: { id: 'task', tenant_id: 'tenant', optimizer_id: 'optimizer', fence: 'fence', expires_at: new Date(Date.now()+30000).toISOString(), max_expires_at: new Date(Date.now()+7200000).toISOString(), evidence: { methods: await loadMethods() } }, task_token: 'old-private-token' }
@@ -127,13 +127,14 @@ test('heartbeat updates the in-memory token without leaking it to the Agent', as
     const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async input => {
       await input.setup({ inject: async (_names, callback) => callback({ skills: { register: s => skills.set(s.name, s), get: async name => skills.get(name) }, tools: { register: t => tools.set(t.name, t), restrict() {}, guard() {} } }) })
       return { agent: { followup: message => { prompt = message }, whenIdle: async () => {
+        await heartbeat() // 短暂504不应撤销仍然有效的任务。
         await heartbeat()
         await tools.get('skill').execute({ name: skillName('ai-delivery-review') })
         await tools.get(COMPLETE_TOOL).execute({ report, summary: 'draft', proposals: [] }); await tools.get(COMPLETE_TOOL).execute({ report, summary: 'done', proposals: [] })
       } }, dispose: async () => {} }
     } } }
     await runClaim(ctx, { stateRoot: directory, modelSelection: { provider: 'fixture', model: 'fixture' } }, claim,
-      { heartbeat: async () => ({ task_token: 'renewed-private-token', expires_at: new Date(Date.now()+300000).toISOString() }), complete: async (identity) => { completion = identity.task_token; return { status: 'COMPLETE' } } },
+      { heartbeat: async () => { if (!renewals++) throw new Error('TK-ADA runtime HTTP 504; check task'); return { task_token: 'renewed-private-token', expires_at: new Date(Date.now()+300000).toISOString() } }, complete: async (identity) => { completion = identity.task_token; return { status: 'COMPLETE' } } },
       { SessionId: x => x, createUserMessage: x => x, renderSkillContent: s => s.content, scopeOf: () => 'task' })
     assert.equal(completion, 'renewed-private-token')
     assert.doesNotMatch(JSON.stringify(prompt), /private-token/)

@@ -83,16 +83,23 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
   const expires = new Date(task.max_expires_at || task.expires_at).getTime() - Date.now()
   if (!(expires > 1000)) throw new Error('Review authorization expired')
   let handle
-  let heartbeatBusy = false
+  let heartbeatBusy = false, heartbeatFailures = 0
   const heartbeat = runtime.heartbeat ? setInterval(async () => {
     if (heartbeatBusy || completed) return
     heartbeatBusy = true
     try {
       const renewed = await runtime.heartbeat(claim)
+      heartbeatFailures = 0
       if (renewed.task_token) claim.task_token = renewed.task_token
       if (renewed.expires_at) task.expires_at = renewed.expires_at
     }
-    catch { controller.abort(); handle?.agent.cancel({ kind: 'hook', reason: 'Review authorization revoked' }) }
+    catch (error) {
+      heartbeatFailures++
+      const transient = /runtime HTTP (429|502|503|504)(?:;| )/.test(error.message) || ['TimeoutError', 'AbortError', 'TypeError'].includes(error.name)
+      // 仅在已有短令牌仍有效时容忍短暂通道故障；撤权/取消/版本冲突始终立即停止。
+      if (transient && heartbeatFailures < 5 && new Date(task.expires_at).getTime() > Date.now() + 10000) return
+      controller.abort(); handle?.agent.cancel({ kind: 'hook', reason: 'Review authorization renewal failed' })
+    }
     finally { heartbeatBusy = false }
   }, 5000) : null
   const timeout = setTimeout(() => { controller.abort(); handle?.agent.cancel({ kind: 'hook', reason: 'Review authorization expired' }) }, expires - 500)
