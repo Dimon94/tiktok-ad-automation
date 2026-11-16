@@ -403,7 +403,8 @@ def test_complete_empty_retains_direct_coordinates(session, sync_seed):
             assert vector.source_kind == "PLATFORM_DIRECT"
             assert vector.timezone == "America/Los_Angeles"
             assert vector.contract_revision == "native-growth-day-v1"
-            assert vector.values["spend"] is None
+            assert vector.values["spend"] == 0
+            assert vector.values["revenue_total"] is None
             assert vector.provenance["spend"].buckets
             assert vector.provenance["spend"].reason == "NO_RETURNED_ROW"
         summary = MetricVector.model_validate(page.summary["buckets"][0])
@@ -625,7 +626,8 @@ def test_historical_empty_does_not_borrow_current_account_coordinates(
         MetricVector.model_validate(page.summary["buckets"][0]),
     ):
         assert v.currency == v.timezone == "UNKNOWN"
-        assert v.values["spend"] is None
+        assert v.values["spend"] == 0
+        assert v.values["revenue_total"] is None
         assert v.source_kind == "PLATFORM_DIRECT"
         assert v.provenance["spend"].reason == "NO_RETURNED_ROW"
 

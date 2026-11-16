@@ -52,6 +52,7 @@ def freeze_material_results(session, snapshot, filters):
     """复用SQL成员计划，在同一RR内分批冻结展示载荷；后续读取不再解引用目录。"""
     from app.modules.reporting.material_query import (
         freeze_instance_tracer,
+        material_summary_contributions,
         materialize_material_rows,
     )
     from app.modules.reporting.snapshot_members import snapshot_members
@@ -93,11 +94,7 @@ def freeze_material_results(session, snapshot, filters):
             session, snapshot=snapshot, filters=filters, reports=reports, facts=facts
         )
         for row, report in zip(rows, reports, strict=True):
-            ordinary.extend(
-                (i.metric_buckets, i.coverage.get("status") != "COMPLETE")
-                for i in report.material_instances
-                if i.row_kind == "INSTANCE"
-            )
+            ordinary.extend(material_summary_contributions(report))
             row.frozen_result = report.model_dump(mode="json")
             session.add(row)
         session.flush()

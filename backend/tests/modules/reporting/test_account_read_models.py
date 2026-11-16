@@ -252,7 +252,7 @@ def test_large_account_snapshot_cost_does_not_expand_campaigns_or_fact_history(
 
     case = report_case
     params = {"t": case.context.tenant_id}
-    # 大量成员及跨日事实只在同步事务内汇总；构建请求必须仍按账户日行读取。
+    # Native账户取选中Campaign事实；读取必须线性有界，不逐成员展开历史目录。
     case.session.execute(
         text("""INSERT INTO ad_object
       (tenant_id,advertiser_id,kind,remote_id,ad_type,name,configuration,observed_at,published_version)
@@ -322,9 +322,20 @@ def test_large_account_snapshot_cost_does_not_expand_campaigns_or_fact_history(
         "ad_entity_read",
         "campaign_name_current",
         "account_membership_version",
-        "campaign_report_day",
     }
-    assert "account_report_day" in scanned
+    campaign_scans = [
+        n for n in nodes(plan) if n.get("Relation Name") == "campaign_report_day"
+    ]
+    assert campaign_scans
+    # 原事实与已存在成员日期空桶至多各一遍，不允许每成员重复全表。
+    assert (
+        sum(
+            (n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0))
+            * n.get("Actual Loops", 0)
+            for n in campaign_scans
+        )
+        <= 40000
+    )
 
 
 def test_account_daily_and_source_query_match_across_dates_currencies_and_nulls(

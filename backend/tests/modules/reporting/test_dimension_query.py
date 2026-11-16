@@ -296,7 +296,8 @@ def test_summary_counts_incomplete_advertisers_and_dates(session, sync_seed):
     assert summary["row_count"] == 2
     assert summary["incomplete_advertiser_count"] == 1
     assert summary["incomplete_dates"] == [D.isoformat()]
-    (bucket,) = summary["buckets"]
+    assert len(summary["buckets"]) == 2
+    bucket = next(b for b in summary["buckets"] if b["values"]["spend"] is not None)
     assert Decimal(bucket["values"]["spend"]) == Decimal("10")
     assert bucket["availability"]["spend"] == "PARTIAL"
     # JB24 R6 / JB28 AC8：缺账户的成本未知，不能以10作为完整分母。

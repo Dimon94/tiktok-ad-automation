@@ -405,8 +405,25 @@ def test_metric_only_snapshot_scans_compact_facts_and_preserves_partial_values(
         text("EXPLAIN (ANALYZE,FORMAT JSON) " + ctes + " SELECT row_key FROM ordered"),
         params,
     ).scalar_one()[0]["Plan"]
-    assert "entity_metric_day" in str(plan)
-    assert table not in str(plan)
+
+    def nodes(node):
+        yield node
+        for child in node.get("Plans", []):
+            yield from nodes(child)
+
+    active = [n for n in nodes(plan) if n.get("Actual Loops", 0)]
+    assert not {n.get("Relation Name") for n in active} & {
+        "ad_object",
+        "ad_entity_read",
+        "campaign_name_projection",
+    }
+    # 已批准的直接/派生选择读取原事实；两成员不能变成目录/名称历史全扫。
+    source_scans = [n for n in active if n.get("Relation Name", "").startswith(table)]
+    assert source_scans
+    assert (
+        sum(n.get("Actual Rows", 0) * n.get("Actual Loops", 0) for n in source_scans)
+        <= 4
+    )
     facts = session.execute(
         text(
             ctes + " SELECT rid,spend,revenue_d0,revenue_d0_hn FROM facts ORDER BY rid"

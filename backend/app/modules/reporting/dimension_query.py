@@ -33,6 +33,7 @@ from app.modules.reporting.metric_catalog import (
     CREATIVE_OBSERVED_CONTRACT,
     DERIVED_RATIOS,
     NATIVE_CONTRACT,
+    NO_SPEND_ZERO_METRICS,
     semantics_for,
 )
 from app.modules.reporting.models import AccountBalanceObservation
@@ -118,6 +119,7 @@ def metric_vector(
         values=resolved,
         availability=cast(dict[str, Availability], states),
         reasons=reasons
+        | ({"spend": "MISSING_MEMBER_COVERAGE"} if values.get("scope_missing") else {})
         | (
             dict.fromkeys(resolved, "CONTRACT_MISMATCH")
             if values.get("contract_revision")
@@ -143,6 +145,7 @@ def aggregate_metrics(
     *,
     incomplete: bool = False,
     strict_denominators: bool = False,
+    missing_scope: bool = False,
 ) -> MetricVector:
     """合计同币种向量（部分合计规则，设计 7.3）。
 
@@ -170,10 +173,13 @@ def aggregate_metrics(
             and v.availability.get(name) in ("AVAILABLE", "PARTIAL")
         ]
         values[name] = sum(present, Decimal(0)) if present else None
-        if len(present) < len(vectors) or "PARTIAL" in states:
+        if len(present) < len(vectors) or "PARTIAL" in states or missing_scope:
             missing_names.add(name)
         if present and (
-            incomplete or len(present) < len(vectors) or "PARTIAL" in states
+            incomplete
+            or missing_scope
+            or len(present) < len(vectors)
+            or "PARTIAL" in states
         ):
             partial_names.add(name)
     if len({bucket_key(v) for v in vectors}) != 1:
@@ -182,6 +188,9 @@ def aggregate_metrics(
         level=vectors[0].level,
         source_kind=vectors[0].source_kind,
         contract_revision=vectors[0].contract_revision,
+        scope_missing=any(
+            v.reasons.get("spend") == "MISSING_MEMBER_COVERAGE" for v in vectors
+        ),
     )
     zones = {v.timezone for v in vectors}
     return metric_vector(
@@ -206,14 +215,25 @@ def merge_metric_buckets(
     """
     buckets: dict[tuple[Any, ...], list[MetricVector]] = defaultdict(list)
     incomplete: dict[tuple[Any, ...], bool] = defaultdict(bool)
+    missing_currencies: set[str] = set()
     for vectors, member_incomplete in members:
         for vector in vectors:
+            # 尚无事实的成员没有来源合同；它的缺失范围不能被分桶隔离掉。
+            if member_incomplete and (
+                vector.reasons.get("spend") == "MISSING_MEMBER_COVERAGE"
+                or vector.level is None
+                and all(vector.values.get(m) is None for m in METRIC_COLUMNS)
+            ):
+                missing_currencies.add(vector.currency)
             key = bucket_key(vector)
             buckets[key].append(vector)
             incomplete[key] = incomplete[key] or member_incomplete
     return tuple(
         aggregate_metrics(
-            values, incomplete=incomplete[key], strict_denominators=strict_denominators
+            values,
+            incomplete=incomplete[key],
+            strict_denominators=strict_denominators,
+            missing_scope=values[0].currency in missing_currencies,
         )
         for key, values in sorted(buckets.items(), key=lambda item: str(item[0]))
     )
@@ -398,7 +418,10 @@ def empty_metric_values(
         ]
         == "COMPLETE"
     )
-    return {name: Decimal(0) if complete else None for name in METRIC_COLUMNS}
+    return {
+        name: Decimal(0) if complete and name in NO_SPEND_ZERO_METRICS else None
+        for name in METRIC_COLUMNS
+    }
 
 
 def any_of(column: Any, values: Iterable[str]) -> ColumnElement[bool]:
@@ -851,9 +874,7 @@ def materialize_rows(
             complete = coverage_for({adv})["status"] == "COMPLETE"
             # 用户裁定：完整覆盖的无事实对象才为零；缺覆盖不能填零。
             empty_cache[adv] = {
-                name: Decimal(0)
-                if complete and query_kind(filters.dimension) not in PARENT_KINDS
-                else None
+                name: Decimal(0) if complete and name in NO_SPEND_ZERO_METRICS else None
                 for name in METRIC_COLUMNS
             }
         return empty_cache[adv]
@@ -1101,7 +1122,8 @@ def _member_vectors(
     """完整成员展示与剧行轻量成员共用同一指标构造口径。"""
     return tuple(fact_vector(item) for item in items) or (
         metric_vector(
-            empty_values,
+            dict(empty_values)
+            | {"scope_missing": all(v is None for v in empty_values.values())},
             currency=accounts[advertiser_id].currency,
             timezone=accounts[advertiser_id].timezone,
         ),
@@ -1256,6 +1278,9 @@ def vector_provenance(
     vector: MetricVector, selected: list[dict[str, Any]], scope: str
 ) -> MetricVector:
     """行和 SQL 汇总共用证据解释；不在 Python 决定成员或合计金额。"""
+    selected = sorted(
+        selected, key=lambda record: json.dumps(record, sort_keys=True, default=str)
+    )
     stamps = tuple(
         BucketStamp(
             advertiser_id=r["advertiser_id"],
@@ -1375,7 +1400,10 @@ def report_provenance(
             )
         }
     )
-    records = selected_records
+    records = sorted(
+        selected_records,
+        key=lambda record: json.dumps(record, sort_keys=True, default=str),
+    )
     refs = sorted({(r.advertiser_id, r.kind, r.remote_id) for r in row.refs})
 
     display = dict(row.display)
@@ -1452,7 +1480,8 @@ def report_provenance(
                 [
                     refs,
                     filters.model_dump(
-                        mode="json", exclude={"sort_by", "sort_direction"}
+                        mode="json",
+                        include={"dimension", "start_date", "end_date", "contribution"},
                     ),
                 ],
                 sort_keys=True,

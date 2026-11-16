@@ -18,6 +18,10 @@ _PREFIX = "Native Growth "
 NATIVE_CONTRACT = "native-growth-day-v1"
 # 本地 creative 直接观测合同；不代表平台归因窗口或流量口径已确认。
 CREATIVE_OBSERVED_CONTRACT = "creative-observed-v1"
+# 完整覆盖且没有返回对象事实时，沿用既有无投放成本/计数零；收益不能推成零。
+NO_SPEND_ZERO_METRICS = frozenset(
+    {"spend", "impressions", "clicks", "ad_impression_events"}
+)
 
 
 @dataclass(frozen=True)

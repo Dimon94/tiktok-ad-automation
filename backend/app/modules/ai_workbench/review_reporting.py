@@ -250,6 +250,7 @@ def _material_analysis_rows(session, *, context, bc_id, filters, members):
     from app.modules.reporting.creative_query import read_facts
     from app.modules.reporting.material_query import (
         freeze_instance_tracer,
+        material_summary_contributions,
         materialize_material_rows,
     )
     from app.modules.reporting.query_models import QuerySnapshot
@@ -284,10 +285,9 @@ def _material_analysis_rows(session, *, context, bc_id, filters, members):
         session, snapshot=scope, filters=filters, reports=reports, facts=facts
     )
     ordinary = [
-        (instance.metric_buckets, instance.coverage.get("status") != "COMPLETE")
+        contribution
         for report in reports
-        for instance in report.material_instances
-        if instance.row_kind == "INSTANCE"
+        for contribution in material_summary_contributions(report)
     ]
     rows = []
     for report in reports:

@@ -3,7 +3,7 @@
 import json
 from collections import defaultdict
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import text
 from sqlmodel import select
@@ -31,7 +31,7 @@ from app.modules.reporting.read_models.coverage import (
 )
 from app.modules.reporting.read_models.models import CurrentAdMaterial
 from app.modules.reporting.row_set import entity_ref
-from app.modules.reporting.schemas import ReportRow
+from app.modules.reporting.schemas import MetricVector, ReportRow
 from app.modules.reporting.store_models import METRIC_COLUMNS
 
 
@@ -227,6 +227,7 @@ def materialize_material_rows(
                 }
             )
         buckets = []
+        missing_contributions = []
         for f in items:
             incomplete = (
                 _coverage(
@@ -265,18 +266,20 @@ def materialize_material_rows(
         # 先保留每个账户的缺失贡献，不能用共享 VID 另一账户的同币种事实抵消。
         for _, currency, timezone in {
             (m["advertiser_id"], m["currency"], m["timezone"]) for m in row_missing
-        } - {(f["advertiser_id"], f["currency"], f["timezone"]) for f in items}:
-            buckets.append(
-                (
-                    (
-                        metric_vector(
-                            dict.fromkeys(METRIC_COLUMNS),
-                            currency=currency,
-                            timezone=timezone,
-                        ),
-                    ),
-                    True,
-                )
+        }:
+            vector = metric_vector(
+                dict.fromkeys(METRIC_COLUMNS)
+                | {
+                    "level": "creative",
+                    "source_kind": "PLATFORM_DIRECT",
+                    "contract_revision": CREATIVE_OBSERVED_CONTRACT,
+                },
+                currency=currency,
+                timezone=timezone,
+            )
+            buckets.append(((vector,), True))
+            missing_contributions.append(
+                {"vector": vector.model_dump(mode="json"), "incomplete": True}
             )
         for adv in (
             set(row_advs)
@@ -284,29 +287,43 @@ def materialize_material_rows(
             - {m["advertiser_id"] for m in row_missing}
         ):
             account = accounts[adv]
+            missing_vector = metric_vector(
+                empty_metric_values(
+                    states_by_adv[adv],
+                    advertiser=adv,
+                    filters=filters,
+                    kind="creative_material",
+                )
+                | {
+                    "level": "creative",
+                    "source_kind": "PLATFORM_DIRECT",
+                    "contract_revision": CREATIVE_OBSERVED_CONTRACT,
+                },
+                currency=account.currency,
+                timezone=account.timezone,
+            )
+            missing_incomplete = (
+                _coverage(
+                    states_by_adv[adv],
+                    advertisers=[adv],
+                    filters=filters,
+                    kind="creative_material",
+                )["status"]
+                != "COMPLETE"
+            )
             buckets.append(
                 (
-                    (
-                        metric_vector(
-                            empty_metric_values(
-                                states_by_adv[adv],
-                                advertiser=adv,
-                                filters=filters,
-                                kind="creative_material",
-                            ),
-                            currency=account.currency,
-                            timezone=account.timezone,
-                        ),
-                    ),
-                    _coverage(
-                        states_by_adv[adv],
-                        advertisers=[adv],
-                        filters=filters,
-                        kind="creative_material",
-                    )["status"]
-                    != "COMPLETE",
+                    (missing_vector,),
+                    missing_incomplete,
                 )
             )
+            missing_contributions.append(
+                {
+                    "vector": missing_vector.model_dump(mode="json"),
+                    "incomplete": missing_incomplete,
+                }
+            )
+        coverage["missing_contributions"] = missing_contributions
         current_uses = [
             current_by_use[k]
             for u in uses
@@ -357,6 +374,24 @@ def materialize_material_rows(
             )
         )
     return tuple(result)
+
+
+def material_summary_contributions(report: ReportRow):
+    """浏览器与AI冻结共用：金额只来自实例，未观测的素材范围另外保留。"""
+    contributions = [
+        (i.metric_buckets, i.coverage.get("status") != "COMPLETE")
+        for i in report.material_instances
+        if i.row_kind == "INSTANCE"
+    ]
+    if json.loads(report.row_key)[0] == "material":
+        missing = cast(
+            list[dict[str, Any]], report.coverage.get("missing_contributions", [])
+        )
+        contributions.extend(
+            ((MetricVector.model_validate(item["vector"]),), item["incomplete"])
+            for item in missing
+        )
+    return contributions
 
 
 def freeze_instance_tracer(session, *, snapshot, filters, reports, facts):

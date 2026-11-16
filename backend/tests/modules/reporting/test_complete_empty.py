@@ -74,13 +74,12 @@ def rows(session, seed, dimension="campaign", start=D):
 
 @pytest.mark.parametrize(
     "d0,expected,state",
-    [("5", Decimal("5"), "AVAILABLE"), ("-", Decimal("0"), "PARTIAL")],
+    [("5", Decimal("5"), "AVAILABLE"), ("-", None, "MISSING")],
 )
 def test_complete_empty_campaign_does_not_poison_drama_and_platform_null_is_partial(
     session, sync_seed, d0, expected, state
 ):
-    # 部分合计规则：平台显式 NULL 的成员不参与求和也不当成 0，剧行合计其余成员
-    # （此处为确认零消耗的 c2）并标 PARTIAL。
+    # 无投放成本可为零，目录空对象的收益不能抵消平台显式缺项。
     seed_empty(session, sync_seed, d0=d0)
     result = rows(session, sync_seed, "drama")
     assert len(result) == 1
@@ -89,7 +88,9 @@ def test_complete_empty_campaign_does_not_poison_drama_and_platform_null_is_part
     assert vector.availability["spend"] == "AVAILABLE"
     assert vector.values["revenue_d0"] == expected
     assert vector.availability["revenue_d0"] == state
-    assert vector.values["roas_d0"] == expected / Decimal("10")
+    assert vector.values["roas_d0"] == (
+        expected / Decimal("10") if expected is not None else None
+    )
     assert vector.availability["roas_d0"] == state
     assert result[0].coverage["status"] == "COMPLETE"
 
@@ -100,7 +101,13 @@ def test_complete_empty_object_has_zero_additive_metrics_and_null_ratios(
     seed_empty(session, sync_seed)
     empty = next(r for r in rows(session, sync_seed) if r.display["remote_id"] == "c2")
     vector = empty.metric_buckets[0]
-    assert all(vector.values[k] == 0 for k in METRIC_COLUMNS)
+    assert all(
+        vector.values[k] == 0
+        for k in ("spend", "impressions", "clicks", "ad_impression_events")
+    )
+    assert all(
+        vector.values[k] is None for k in METRIC_COLUMNS if k.startswith("revenue_")
+    )
     assert all(
         vector.values[k] is None
         for k in (
@@ -169,7 +176,9 @@ def test_empty_directory_material_uses_own_coverage_and_unsupported_metrics(
     assert len(result) == 1
     vector = result[0].metric_buckets[0]
     for metric in METRIC_COLUMNS:
-        assert vector.values[metric] == (Decimal(0) if complete else None)
+        assert vector.values[metric] == (
+            Decimal(0) if complete and not metric.startswith("revenue_") else None
+        )
     assert vector.values["roas_d0"] is None
     assert result[0].coverage["status"] == ("COMPLETE" if complete else "MISSING")
 
@@ -225,11 +234,12 @@ def test_drama_row_partial_when_member_account_incomplete(session, sync_seed):
         ),
     )
     assert len(result) == 1
-    (vector,) = result[0].metric_buckets
+    assert len(result[0].metric_buckets) == 2
+    vector = next(v for v in result[0].metric_buckets if v.values["spend"] is not None)
     assert vector.values["spend"] == Decimal("10")
     assert vector.availability["spend"] == "PARTIAL"
-    assert vector.values["roas_d0"] == Decimal("0.5")
-    assert vector.availability["roas_d0"] == "PARTIAL"
+    assert vector.values["roas_d0"] is None
+    assert vector.availability["roas_d0"] == "MISSING"
     assert result[0].coverage["status"] != "COMPLETE"
     assert result[0].coverage["incomplete_advertiser_ids"] == ["acc-2"]
 

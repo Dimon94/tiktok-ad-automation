@@ -101,12 +101,15 @@ def test_drama_first_display_and_full_member_metrics_are_identical(
             "refs": tuple(entity_ref(ref) for ref in refs),
             "membership_digest": dq.ref_digest(tuple(entity_ref(ref) for ref in refs)),
             "metric_buckets": dq.merge_metric_buckets(
-                (
-                    row.metric_buckets,
-                    row.display["advertiser_id"]
-                    in coverage["incomplete_advertiser_ids"],
-                )
-                for row in singles
+                [
+                    (
+                        row.metric_buckets,
+                        row.display["advertiser_id"]
+                        in coverage["incomplete_advertiser_ids"],
+                    )
+                    for row in singles
+                ],
+                strict_denominators=True,
             ),
             "directory_versions": {
                 k: v for row in singles for k, v in row.directory_versions.items()
@@ -134,13 +137,47 @@ def test_drama_first_display_and_full_member_metrics_are_identical(
         members=[SnapshotMember(key, tuple(refs), ())],
         advertisers=["acc-1", "acc-2"],
     )[0]
-    assert actual.model_dump() == expected.model_dump()
+    # 聚合后的报告解释应来自所有成员，不能复制首成员的已解释provenance/display。
+    assert actual.model_dump(
+        exclude={"display", "metric_buckets"}
+    ) == expected.model_dump(exclude={"display", "metric_buckets"})
+    expected_buckets = {dq.bucket_key(v): v for v in expected.metric_buckets}
+    assert {dq.bucket_key(v) for v in actual.metric_buckets} == set(expected_buckets)
+    for actual_bucket in actual.metric_buckets:
+        expected_bucket = expected_buckets[dq.bucket_key(actual_bucket)]
+        assert actual_bucket.model_dump(
+            exclude={"provenance"}
+        ) == expected_bucket.model_dump(exclude={"provenance"})
+        selected = [
+            o
+            for row in singles
+            for vector in row.metric_buckets
+            if dq.bucket_key(vector) == dq.bucket_key(actual_bucket)
+            for o in vector.provenance["spend"].observations
+        ]
+        import json
+
+        assert sorted(
+            json.dumps(o, sort_keys=True)
+            for o in actual_bucket.provenance["spend"].observations
+        ) == sorted(json.dumps(o, sort_keys=True) for o in selected)
+    base_display = {
+        k: v
+        for k, v in expected.display.items()
+        if not k.startswith(("report_", "platform_roas_"))
+    }
+    assert {k: actual.display[k] for k in base_display} == base_display
+    assert actual.display["platform_roas_total_reason"] == "NON_ADDITIVE"
     assert actual.display["remote_id"] == "c1"
     assert actual.display["name"] == "共同剧"
     assert actual.display["provider"] == "首版权方、第二版权方"
     assert actual.display["operation_status"] == "ENABLE"
     assert actual.directory_versions == {"acc-1:c1": 3, "acc-2:c9": 5, "acc-2:empty": 7}
-    buckets = {v.currency: v for v in actual.metric_buckets}
+    buckets = {
+        v.currency: v
+        for v in actual.metric_buckets
+        if v.contract_revision == "native-growth-day-v1"
+    }
     assert buckets["USD"].values["spend"] == Decimal(17)
     assert buckets["USD"].values["revenue_d0"] == Decimal(6)
     assert buckets["USD"].timezone == "MIXED"

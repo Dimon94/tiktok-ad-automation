@@ -29,7 +29,7 @@ from app.integrations.tiktok.contracts.ads import EntityRef
 from app.modules.reporting import query_diagnostics
 from app.modules.reporting.filters import CONFIG_SORT_FIELDS, NAME_SORT_FIELDS
 from app.modules.reporting.levels import PARENT_KINDS, query_kind, state_sql
-from app.modules.reporting.metric_catalog import NATIVE_CONTRACT
+from app.modules.reporting.metric_catalog import NATIVE_CONTRACT, NO_SPEND_ZERO_METRICS
 from app.modules.reporting.schemas import ReportingFilter
 from app.modules.reporting.store_models import METRIC_COLUMNS
 
@@ -235,6 +235,7 @@ def _facts_cte(
     include_metadata: bool = True,
     period_scan: bool = False,
     contribution: bool = False,
+    include_empty: bool = False,
 ) -> str:
     meta = ", ".join(
         (
@@ -292,10 +293,20 @@ def _facts_cte(
         wanted_adv = (
             " AND obj.advertiser_id=ANY(:ids)" if selected_ids and not id_column else ""
         )
+        # 默认仅为已有事实成员补日期空桶；不能扫描整个目录来制造成员。
+        # 显式空对象/ID搜索和页内已选身份才需要目录提供候选。
+        objects = (
+            "ad_object"
+            if include_empty or selected_ids
+            else f"""(SELECT DISTINCT tenant_id,advertiser_id,{level}_id AS remote_id
+                FROM {table} WHERE tenant_id=:tenant AND advertiser_id=ANY(:advs)
+                AND stat_date BETWEEN :start AND :end)"""
+        )
+        object_kind = f"AND obj.kind='{level}'" if include_empty or selected_ids else ""
         source = f"""(
             SELECT * FROM {table}
             UNION ALL
-            SELECT empty.* FROM ad_object obj
+            SELECT empty.* FROM {objects} obj
             JOIN advertiser_account account ON account.tenant_id=obj.tenant_id
                 AND account.advertiser_id=obj.advertiser_id
             JOIN report_sync_state pub ON pub.tenant_id=obj.tenant_id
@@ -308,7 +319,7 @@ def _facts_cte(
                 'currency',COALESCE(pub.publication_coordinates->>'currency','UNKNOWN'),
                 'timezone',COALESCE(pub.publication_coordinates->>'timezone','UNKNOWN'))) empty
             WHERE obj.tenant_id=:tenant AND obj.advertiser_id=ANY(:advs)
-                AND obj.kind='{level}' {wanted} {wanted_adv}
+                {object_kind} {wanted} {wanted_adv}
                 AND NOT EXISTS (SELECT 1 FROM {table} present
                     WHERE present.tenant_id=obj.tenant_id AND present.advertiser_id=obj.advertiser_id
                     AND present.{level}_id=obj.remote_id AND present.stat_date=pub.stat_date)
@@ -318,6 +329,9 @@ def _facts_cte(
         AND s.report_kind='{level}_day'"""
     publication = "to_jsonb(s)"
     parent = table.endswith("_selected_day") and not contribution
+    child_exists = (
+        "s.last_success_at IS NULL AND row_evidence.advertiser_id IS NOT NULL"
+    )
     if parent:
         # 父级派生候选按真实子事实分桶；不把多个观测伪装成一次父级刷新。
         state_join += f""" LEFT JOIN LATERAL (
@@ -336,29 +350,39 @@ def _facts_cte(
             metric_sums = (
                 metric_sums.replace(
                     f"sum(t.{name})",
-                    f"sum(CASE WHEN s.last_success_at IS NULL THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END)",
+                    f"sum(CASE WHEN {child_exists} THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END)",
                 )
                 .replace(
                     f"bool_or(t.{name}_has_null OR t.{name} IS NULL)",
-                    f"bool_or(CASE WHEN s.last_success_at IS NULL THEN row_evidence.child_fact->>'{name}' IS NULL ELSE t.{name}_has_null OR t.{name} IS NULL END)",
+                    f"bool_or(CASE WHEN {child_exists} THEN row_evidence.child_fact->>'{name}' IS NULL ELSE t.{name}_has_null OR t.{name} IS NULL END)",
                 )
                 .replace(
                     f"bool_or(t.{name} IS NULL)",
-                    f"bool_or(CASE WHEN s.last_success_at IS NULL THEN row_evidence.child_fact->>'{name}' IS NULL ELSE t.{name} IS NULL END)",
+                    f"bool_or(CASE WHEN {child_exists} THEN row_evidence.child_fact->>'{name}' IS NULL ELSE t.{name} IS NULL END)",
                 )
             )
         publication = "CASE WHEN s.last_success_at IS NULL THEN row_evidence.evidence->'publication' ELSE to_jsonb(s) END"
     else:
-        state_join += """ LEFT JOIN ad_report_day row_evidence ON
-            row_evidence.tenant_id=t.tenant_id AND row_evidence.advertiser_id=t.advertiser_id
-            AND row_evidence.stat_date=t.stat_date AND row_evidence.ad_id=t.ad_id"""
+        if table == "ad_report_day" or contribution:
+            # 已经读取原Ad事实，直接使用本行证据，不再自连接扫描同一事实。
+            state_join += """ LEFT JOIN LATERAL (
+                SELECT t.evidence,t.advertiser_id WHERE t.fetched_at IS NOT NULL
+            ) row_evidence ON TRUE"""
+        else:
+            state_join += """ LEFT JOIN ad_report_day row_evidence ON
+                row_evidence.tenant_id=t.tenant_id AND row_evidence.advertiser_id=t.advertiser_id
+                AND row_evidence.stat_date=t.stat_date AND row_evidence.ad_id=t.ad_id"""
         # 真实行没有自有观测时保持未知；只有无返回行的完整空桶可以使用账户发布。
         publication = "CASE WHEN row_evidence.advertiser_id IS NOT NULL THEN row_evidence.evidence->'publication' ELSE to_jsonb(s) END"
-    observation_id = "row_evidence.observation_id" if parent else f"t.{level}_id"
+    observation_id = (
+        f"COALESCE(row_evidence.observation_id,t.{level}_id)"
+        if parent
+        else f"t.{level}_id"
+    )
 
     def fact_value(m: str) -> str:
         return (
-            f"CASE WHEN s.last_success_at IS NULL THEN row_evidence.child_fact->>'{m}' ELSE t.{m}::text END"
+            f"CASE WHEN {child_exists} THEN row_evidence.child_fact->>'{m}' ELSE t.{m}::text END"
             if parent
             else f"t.{m}::text"
         )
@@ -372,8 +396,8 @@ def _facts_cte(
     for name in METRIC_COLUMNS:
         if parent:
             metric_sums = metric_sums.replace(
-                f"sum(CASE WHEN s.last_success_at IS NULL THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END)",
-                f"sum(CASE WHEN ({revision}) IN ('{NATIVE_CONTRACT}','LEGACY_UNKNOWN') THEN CASE WHEN s.last_success_at IS NULL THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END END)",
+                f"sum(CASE WHEN {child_exists} THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END)",
+                f"sum(CASE WHEN ({revision}) IN ('{NATIVE_CONTRACT}','LEGACY_UNKNOWN') THEN CASE WHEN {child_exists} THEN (row_evidence.child_fact->>'{name}')::numeric ELSE t.{name} END END)",
             )
         metric_sums = metric_sums.replace(
             f"sum(t.{name})",
@@ -384,17 +408,39 @@ def _facts_cte(
             SELECT * FROM {table}
             WHERE tenant_id=:tenant AND stat_date BETWEEN :start AND :end OFFSET 0
         ) t"""
-    observation = f"""jsonb_agg(jsonb_build_object(
+    # 完整无返回对象的成本零只影响计算；原始观测仍然是 returned=false/NULL。
+    for name in NO_SPEND_ZERO_METRICS:
+        empty = f"t.fetched_at IS NULL AND s.status='COMPLETE' AND ({revision})='{NATIVE_CONTRACT}'"
+        metric_sums = (
+            metric_sums.replace(
+                f"ELSE t.{name} END",
+                f"ELSE CASE WHEN {empty} THEN 0::numeric ELSE t.{name} END END",
+            )
+            .replace(
+                f"THEN t.{name} END",
+                f"THEN CASE WHEN {empty} THEN 0::numeric ELSE t.{name} END END",
+            )
+            .replace(f"t.{name} IS NULL", f"(t.{name} IS NULL AND NOT ({empty}))")
+        )
+    returned = (
+        "(row_evidence.advertiser_id IS NOT NULL OR (s.last_success_at IS NULL AND t.fetched_at IS NOT NULL))"
+        if parent
+        else "row_evidence.advertiser_id IS NOT NULL"
+    )
+    observation_record = f"""jsonb_build_object(
         'advertiser_id',t.advertiser_id,'remote_id',{observation_id},'level','{level}',
         'source_kind',{source_kind},'contract_revision',{revision},
         'local_day',t.stat_date,'timezone',t.timezone,'currency',t.currency,
         'fact',jsonb_build_object({",".join(f"'{m}',{fact_value(m)}" for m in METRIC_COLUMNS)}),
-        'returned',row_evidence.advertiser_id IS NOT NULL,
+        'returned',{returned},
         'fields',COALESCE(row_evidence.evidence->'fields','{{}}'::jsonb),
-        'publication',COALESCE({publication},'{{}}'::jsonb))) AS observations,"""
+        'publication',COALESCE({publication},'{{}}'::jsonb))"""
+    # JSONB完整证据作末级排序键，保留同对象不同定向发布，不按金额或父ID去重。
+    observation = f"jsonb_agg({observation_record} ORDER BY t.stat_date,t.{level}_id,{observation_record}) AS observations,"
     return f"""facts AS (
         SELECT {adv} AS adv, {rid} AS rid{extra_select}, {currency} AS currency,
             CASE WHEN min(t.timezone) = max(t.timezone) THEN min(t.timezone) ELSE 'MIXED' END AS tz,
+            bool_or(t.fetched_at IS NOT NULL) AS has_facts,
             '{level}'::text AS level, {source_kind} AS source_kind, {revision} AS contract_revision,
             {meta}
             {observation}
@@ -564,7 +610,6 @@ def _member_buckets(
     members: str,
     *,
     unsupported: frozenset[str],
-    campaign: bool = False,
     level: str = "campaign",
 ) -> str:
     """成员级指标桶：有事实取事实合计，否则按覆盖填 0 或空（用户裁定）。"""
@@ -572,14 +617,14 @@ def _member_buckets(
         f"NULL::numeric AS {m}, false AS {m}_hn"
         if m in unsupported
         else (
-            f"CASE WHEN f.adv IS NULL THEN {'NULL::numeric' if campaign else 'CASE WHEN c.complete THEN 0::numeric END'} ELSE f.{m} END AS {m}, "
+            f"CASE WHEN f.adv IS NULL THEN {'CASE WHEN c.complete THEN 0::numeric END' if m in NO_SPEND_ZERO_METRICS else 'NULL::numeric'} ELSE f.{m} END AS {m}, "
             f"COALESCE(f.{m}_hn, false) AS {m}_hn"
         )
         for m in METRIC_COLUMNS
     )
     return f"""mb AS (
         SELECT m.row_key, m.adv, m.rid, COALESCE(f.level,'{level}') AS level, COALESCE(f.source_kind,'CHILD_DERIVED') AS source_kind, COALESCE(f.contract_revision,'LEGACY_UNKNOWN') AS contract_revision, COALESCE(f.currency, a.currency) AS currency,
-            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, f.observations, to_jsonb(f) AS selected_fact, {values}
+            COALESCE(f.tz, a.tz) AS tz, NOT c.complete AS incomplete, (f.adv IS NULL AND NOT c.complete) AS scope_missing, f.observations, to_jsonb(f) AS selected_fact, {values}
         FROM {members} m
         JOIN acc a ON a.adv = m.adv
         JOIN cov c ON c.adv = m.adv
@@ -593,7 +638,7 @@ def _material_member_buckets() -> str:
         f"f.{m}, COALESCE(f.{m}_hn,false) AS {m}_hn" for m in METRIC_COLUMNS
     )
     empty_values = ", ".join(
-        f"CASE WHEN c.complete THEN 0::numeric END AS {m},false AS {m}_hn"
+        f"{'CASE WHEN c.complete THEN 0::numeric END' if m in NO_SPEND_ZERO_METRICS else 'NULL::numeric'} AS {m},false AS {m}_hn"
         for m in METRIC_COLUMNS
     )
     return f"""mb AS (
@@ -615,9 +660,16 @@ def _material_member_buckets() -> str:
 
 def _row_buckets(*, scoped: bool = False) -> str:
     coordinates = ", level, source_kind, contract_revision" if scoped else ""
+    missing = " OR missing_scope" if scoped else ""
+    source = (
+        "(SELECT mb.*, bool_or(scope_missing) OVER (PARTITION BY row_key,currency) AS missing_scope FROM mb) scoped_mb"
+        if scoped
+        else "mb"
+    )
     return f"""rb AS (
-        SELECT row_key, currency{coordinates}, {", ".join(f"sum({m}) AS {m}, bool_or({m}_hn OR {m} IS NULL) AS {m}_hn" for m in METRIC_COLUMNS)}
-        FROM mb GROUP BY row_key, currency{coordinates}
+        SELECT row_key, currency{coordinates}, {", ".join(f"sum({m}) AS {m}, bool_or({m}_hn OR {m} IS NULL{missing}) AS {m}_hn" for m in METRIC_COLUMNS)}
+        FROM {source}
+        GROUP BY row_key, currency{coordinates}
     ),
     rv AS (
         -- 只有单一币种桶的行有排序值；多口径行与无值行统一排在末尾。
@@ -715,12 +767,13 @@ def _metric_dimension_rows(
             fact,
             f"""mb AS (
             SELECT f.adv || ':{dim}:' || f.rid AS row_key,f.adv,f.rid,f.currency,f.tz,
-                NOT c.complete AS incomplete,f.level,f.source_kind,f.contract_revision,f.observations,to_jsonb(f) AS selected_fact,{values}
+                NOT c.complete AS incomplete,false AS scope_missing,f.level,f.source_kind,f.contract_revision,f.observations,to_jsonb(f) AS selected_fact,{values}
             FROM facts f JOIN acc a ON a.adv=f.adv JOIN cov c ON c.adv=f.adv
+            WHERE f.has_facts
         )""",
             f"""base AS (
             SELECT DISTINCT f.adv || ':{dim}:' || f.rid AS row_key
-            FROM facts f JOIN acc a ON a.adv=f.adv
+            FROM facts f JOIN acc a ON a.adv=f.adv WHERE f.has_facts
         )""",
         ]
     ), "base"
@@ -751,7 +804,7 @@ def _drama_metric_rows(params: _Params, bc_id: str) -> tuple[str, str]:
             _proj_cte(),
             f"""members AS (
                 SELECT {key} AS row_key,e.adv,e.rid
-                FROM (SELECT DISTINCT adv,rid FROM facts) e
+                FROM (SELECT DISTINCT adv,rid FROM facts WHERE has_facts) e
                 JOIN acc a ON a.adv=e.adv
                 LEFT JOIN proj p ON p.adv=e.adv AND p.cid=e.rid
             )""",
@@ -761,7 +814,7 @@ def _drama_metric_rows(params: _Params, bc_id: str) -> tuple[str, str]:
                         ORDER BY adv COLLATE "C",rid COLLATE "C") AS member_keys
                 FROM members GROUP BY row_key
             )""",
-            _member_buckets("members", unsupported=frozenset(), campaign=True),
+            _member_buckets("members", unsupported=frozenset()),
         ]
     ), "base"
 
@@ -836,13 +889,13 @@ def _dimension_rows(
             else f""" UNION ALL
             SELECT d.adv,d.rid,{missing},FALSE AS has_facts FROM {extra} d
             WHERE {f"d.kind='{kind}' AND " if extra == "obj" else ""}
-              NOT EXISTS(SELECT 1 FROM facts f WHERE f.adv=d.adv AND f.rid=d.rid)"""
+              NOT EXISTS(SELECT 1 FROM facts f WHERE f.adv=d.adv AND f.rid=d.rid AND f.has_facts)"""
         )
         # 把事实元数据携带到身份中，不再把去重后的大facts集二次连接。
         # 同一对象多币种的展示仍取currency最前的桶，与原fm一致。
         idn = f"""idn AS (
             SELECT adv,rid,{columns},TRUE AS has_facts FROM (
-                SELECT DISTINCT ON (adv,rid) * FROM facts ORDER BY adv,rid,currency
+                SELECT DISTINCT ON (adv,rid) * FROM facts WHERE has_facts ORDER BY adv,rid,currency
             ) f {additions}
         )"""
         target = "e.target_roas"
@@ -918,6 +971,7 @@ def _dimension_rows(
         id_column,
         include_metadata=account_projection if dim == "account" else True,
         contribution=filters.contribution is not None,
+        include_empty=filters.include_empty or dir_hits is not None,
     )
     # 非递归 CTE 只能引用前面的 CTE：列出无数据对象时身份依赖完整目录，
     # 默认时目录按身份读取，身份需先算出。
@@ -1001,7 +1055,6 @@ def _dimension_rows(
         _member_buckets(
             "members",
             unsupported=frozenset(),
-            campaign=query_kind(dim) in PARENT_KINDS,
             level="ad"
             if filters.contribution
             else "campaign"
@@ -1147,11 +1200,12 @@ def _summary_select(
     per_row: bool = False,
 ) -> str:
     """汇总只算最终行：值为全部成员合计，部分合计规则同 merge_metric_buckets。"""
+    scope_missing = " OR x.scope_incomplete" if scoped else ""
     columns = ", ".join(
         f"sum(x.{m})::text AS {m}, "
-        f"bool_or(x.{m} IS NULL OR x.{m}_hn) AS {m}_missing, "
+        f"bool_or(x.{m} IS NULL OR x.{m}_hn{scope_missing}) AS {m}_missing, "
         f"(sum(x.{m}) IS NOT NULL AND (bool_or(x.row_incomplete) OR bool_or(x.{m} IS NULL) "
-        f"OR bool_or(x.{m}_hn))) AS {m}_partial"
+        f"OR bool_or(x.{m}_hn{scope_missing}))) AS {m}_partial"
         for m in METRIC_COLUMNS
         if m not in unsupported
     )
@@ -1164,9 +1218,14 @@ def _summary_select(
     coordinates = ", x.level, x.source_kind, x.contract_revision" if scoped else ""
     evidence = ", jsonb_agg(x.observations) AS observations" if scoped else ""
     source = "mb" if all_rows else "mb JOIN fr ON fr.row_key = mb.row_key"
+    scope_projection = (
+        f", bool_or(mb.scope_missing) OVER (PARTITION BY {'mb.row_key,' if per_row else ''}mb.currency) AS scope_incomplete"
+        if scoped
+        else ""
+    )
     return f"""SELECT {"x.row_key, bool_or(x.row_incomplete) AS incomplete," if per_row else ""} x.currency{coordinates}{evidence},
             CASE WHEN count(DISTINCT x.tz) = 1 THEN min(x.tz) ELSE 'MIXED' END AS tz, {columns}
-        FROM (SELECT mb.*, {incomplete} AS row_incomplete FROM {source}) x
+        FROM (SELECT mb.*, {incomplete} AS row_incomplete{scope_projection} FROM {source}) x
         GROUP BY {"x.row_key," if per_row else ""} x.currency{coordinates} ORDER BY {"x.row_key," if per_row else ""} x.currency{coordinates}"""
 
 

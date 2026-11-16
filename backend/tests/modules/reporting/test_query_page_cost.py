@@ -67,7 +67,7 @@ def test_page_identity_never_crosses_authorized_accounts(session, sync_seed):
 
 
 def test_campaign_query_does_not_read_wide_directory_or_name_history(report_case):
-    from sqlalchemy import event
+    from sqlalchemy import event, text
 
     from app.modules.reporting.queries import query_ads
     from tests.modules.reporting.test_queries import filters_for
@@ -89,9 +89,40 @@ def test_campaign_query_does_not_read_wide_directory_or_name_history(report_case
         event.remove(connection, "before_cursor_execute", capture)
     assert result.total == 1
     assert result.items[0].metric_buckets[0].values["spend"] == 4
-    assert not any(
-        "from ad_object" in sql or "from campaign_name_projection" in sql
-        for sql in statements
+    assert not any("from campaign_name_projection" in sql for sql in statements)
+    from app.modules.reporting.row_set import _ctes
+
+    ctes, params = _ctes(
+        filters_for(),
+        tenant_id=case.context.tenant_id,
+        advertisers=["report-account"],
+        bc_id=case.bc_id,
+    )
+    plan = connection.execute(
+        text(
+            "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "
+            + ctes
+            + " SELECT row_key FROM ordered"
+        ),
+        params,
+    ).scalar_one()[0]["Plan"]
+
+    def nodes(node):
+        yield node
+        for child in node.get("Plans", []):
+            yield from nodes(child)
+
+    directory_scans = [
+        n
+        for n in nodes(plan)
+        if n.get("Actual Loops", 0)
+        and n.get("Relation Name") in {"ad_object", "ad_entity_read"}
+    ]
+    assert all(
+        (n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0))
+        * n["Actual Loops"]
+        <= 1
+        for n in directory_scans
     )
 
 
