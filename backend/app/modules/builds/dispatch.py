@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, or_, text, update
+from sqlalchemy import and_, func, or_, text, update
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
@@ -12,7 +12,7 @@ from sqlmodel import Session, col, select
 from app.core.context import TenantContext
 from app.core.errors import DomainError
 from app.jobs.models import PendingDispatch
-from app.jobs.outbox import enqueue_after_commit
+from app.jobs.outbox import _payload_digest, enqueue_after_commit
 from app.jobs.tasks import register_dispatch_task
 from app.modules.builds.corrections import resolved_sql
 from app.modules.builds.execution_models import (
@@ -218,6 +218,82 @@ def _dependency(session: Session, context: TenantContext, step: ExecutionStep) -
     return "READY"
 
 
+def _unit_candidates(*, tenant_id: Any, unit_id: Any, now: datetime) -> Any:
+    """执行与丢消息修复共用可运行条件，等待依赖/终态不制造空轮询。"""
+    from app.modules.builds.recovery import DEPENDENCIES_READY, UNARMED_RETRY
+
+    parent = aliased(ExecutionStep)
+    parent_settled = (
+        select(parent.id)
+        .where(
+            parent.tenant_id == ExecutionStep.tenant_id,
+            parent.id == ExecutionStep.parent_step_id,
+            col(parent.status).in_(["SUCCEEDED", "FAILED"]),
+        )
+        .correlate(ExecutionStep)
+        .exists()
+    )
+    current_read = (
+        select(PendingDispatch.id)
+        .where(
+            PendingDispatch.id == ExecutionStep.dispatch_id,
+            PendingDispatch.task_name == READ_TASK,
+        )
+        .exists()
+    )
+    return (
+        select(ExecutionStep)
+        .where(
+            col(ExecutionStep.tenant_id) == tenant_id,
+            col(ExecutionStep.unit_id) == unit_id,
+            col(ExecutionStep.due_at) <= now,
+            or_(
+                and_(
+                    col(ExecutionStep.status) == "FAILED",
+                    col(ExecutionStep.error_code) == "dependency_failed",
+                    text(
+                        "EXISTS (SELECT 1 FROM execution_step s WHERE s.id=execution_step.id "
+                        "AND s.tenant_id=execution_step.tenant_id AND s.phase='DONE' "
+                        "AND s.kind IN ('CAMPAIGN','ADGROUP','AD','READBACK') "
+                        "AND s.dispatch_id IS NULL AND s.lease_token IS NULL "
+                        "AND s.remote_id IS NULL AND NOT s.mismatch AND "
+                        + UNARMED_RETRY
+                        + DEPENDENCIES_READY
+                        + ")"
+                    ),
+                ),
+                and_(
+                    col(ExecutionStep.status).in_(["PENDING", "RETRYABLE"]),
+                    or_(col(ExecutionStep.parent_step_id).is_(None), parent_settled),
+                ),
+                and_(
+                    col(ExecutionStep.status) == "RUNNING",
+                    col(ExecutionStep.lease_expires_at) <= now,
+                ),
+                and_(
+                    col(ExecutionStep.status) == "UNKNOWN",
+                    col(ExecutionStep.kind) != "MATERIAL",
+                    col(ExecutionStep.resolved)[
+                        "dispatch_reconciliation_done"
+                    ].astext.is_distinct_from("true"),
+                    ~current_read,
+                ),
+            ),
+        )
+        .where(text("NOT " + resolved_sql("execution_step")))
+        .where(text("NOT " + obsolete_readback_sql("execution_step")))
+        .where(
+            text(
+                "NOT (kind='MATERIAL' AND status='PENDING' AND ("
+                "(COALESCE(error_code='material_pending',false) AND distribution_id IS NOT NULL) OR "
+                "(COALESCE(error_code='cover_pending',false) AND cover_job_id IS NOT NULL) OR "
+                "COALESCE(error_code='execution_window_wait',false)))"
+            )
+        )
+        .order_by(col(ExecutionStep.due_at), col(ExecutionStep.id))
+    )
+
+
 def finalize_submission(
     *,
     database_engine: Any,
@@ -225,7 +301,7 @@ def finalize_submission(
     submission_id: UUID,
     attention: bool = False,
 ) -> None:
-    """Aggregate only after all unit schedulers and active steps have settled."""
+    """按纳入执行的事实汇总，组合调度通知不参与业务状态判定。"""
     with Session(database_engine) as session, session.begin():
         row = session.exec(
             select(Submission)
@@ -243,24 +319,39 @@ def finalize_submission(
                 SubmissionUnit.tenant_id == row.tenant_id,
                 SubmissionUnit.submission_id == row.id,
                 SubmissionUnit.disposition == "INCLUDED",
+                col(SubmissionUnit.expanded).is_(False),
+            )
+            .limit(1)
+        ).first()
+        # 在途时仅查轻量步骤集合；完整对象投影只在收尾时计算，避免每条
+        # 回执都展开整个大批次的账户×广告图。
+        active_states = session.exec(
+            select(ExecutionStep.status, ExecutionStep.mismatch)
+            .where(
+                ExecutionStep.tenant_id == row.tenant_id,
+                ExecutionStep.submission_id == row.id,
+                text("NOT " + obsolete_readback_sql("execution_step")),
+                text("NOT " + resolved_sql("execution_step")),
+                select(SubmissionUnit.unit_id)
+                .where(
+                    SubmissionUnit.tenant_id == ExecutionStep.tenant_id,
+                    SubmissionUnit.submission_id == ExecutionStep.submission_id,
+                    SubmissionUnit.unit_id == ExecutionStep.unit_id,
+                    SubmissionUnit.disposition == "INCLUDED",
+                )
+                .exists(),
                 or_(
-                    col(SubmissionUnit.expanded).is_(False),
-                    col(SubmissionUnit.dispatch_id).is_not(None),
+                    col(ExecutionStep.status).in_(
+                        ["PENDING", "QUEUED", "RUNNING", "RETRYABLE", "UNKNOWN"]
+                    ),
+                    ExecutionStep.mismatch,
                 ),
             )
-            .limit(1)
-        ).first()
-        active_step = session.exec(
-            select(ExecutionStep.id)
-            .where(
-                col(ExecutionStep.tenant_id) == row.tenant_id,
-                ExecutionStep.submission_id == row.id,
-                col(ExecutionStep.status).in_(["QUEUED", "RUNNING"]),
-                text("NOT " + obsolete_readback_sql("execution_step")),
-            )
-            .limit(1)
-        ).first()
-        if row.expanded and active_unit is None and active_step is None:
+            .group_by(ExecutionStep.status, ExecutionStep.mismatch)
+        ).all()
+        if any(status == "UNKNOWN" or mismatch for status, mismatch in active_states):
+            row.status = "NEEDS_REVIEW"
+        elif row.expanded and active_unit is None and not active_states:
             try:
                 row.status = get_submission(
                     session, context=context, submission_id=row.id
@@ -274,6 +365,14 @@ def finalize_submission(
                         col(ExecutionStep.tenant_id) == row.tenant_id,
                         ExecutionStep.submission_id == row.id,
                         text("NOT " + obsolete_readback_sql("execution_step")),
+                        select(SubmissionUnit.unit_id)
+                        .where(
+                            SubmissionUnit.tenant_id == ExecutionStep.tenant_id,
+                            SubmissionUnit.submission_id == ExecutionStep.submission_id,
+                            SubmissionUnit.unit_id == ExecutionStep.unit_id,
+                            SubmissionUnit.disposition == "INCLUDED",
+                        )
+                        .exists(),
                     )
                     .group_by(col(ExecutionStep.status), col(ExecutionStep.mismatch))
                 ).all()
@@ -283,9 +382,29 @@ def finalize_submission(
                 )
         elif attention:
             row.status = "NEEDS_REVIEW"
-        elif row.status in {"QUEUED", "COMPLETED", "PARTIAL", "FAILED"}:
+        elif active_states or active_unit is not None or not row.expanded:
             row.status = "RUNNING"
-        row.updated_at = datetime.now(UTC)
+        # 总状态/更新时间来自纳入执行的业务事实；消费空消息不能表示新进展。
+        # 同时纠正历史轮询污染的时间，不改任何步骤或平台回执。
+        latest = session.exec(
+            select(func.max(ExecutionStep.updated_at))
+            .join(
+                SubmissionUnit,
+                and_(
+                    SubmissionUnit.tenant_id == ExecutionStep.tenant_id,
+                    SubmissionUnit.submission_id == ExecutionStep.submission_id,
+                    SubmissionUnit.unit_id == ExecutionStep.unit_id,
+                ),
+            )
+            .where(
+                ExecutionStep.tenant_id == row.tenant_id,
+                ExecutionStep.submission_id == row.id,
+                SubmissionUnit.disposition == "INCLUDED",
+                text("NOT " + obsolete_readback_sql("execution_step")),
+            )
+        ).one()
+        if row.expanded:
+            row.updated_at = max(row.created_at, latest or row.created_at)
         session.add(row)
 
 
@@ -297,7 +416,6 @@ def process_unit(
     limit: int = 100,
 ) -> int:
     from app.modules.builds.execution_window import material_unit_admitted
-    from app.modules.builds.recovery import DEPENDENCIES_READY, UNARMED_RETRY
 
     identity, revision = payload_identity(payload, "unit_id")
     if type(limit) is not int or not 1 <= limit <= 100:
@@ -338,78 +456,9 @@ def process_unit(
         ):
             return 0
         now = datetime.now(UTC)
-        parent = aliased(ExecutionStep)
-        parent_settled = (
-            select(parent.id)
-            .where(
-                parent.tenant_id == context.tenant_id,
-                parent.id == ExecutionStep.parent_step_id,
-                col(parent.status).in_(["SUCCEEDED", "FAILED"]),
-            )
-            .exists()
-        )
-        current_read = (
-            select(PendingDispatch.id)
-            .where(
-                PendingDispatch.id == ExecutionStep.dispatch_id,
-                PendingDispatch.task_name == READ_TASK,
-            )
-            .exists()
-        )
-        stmt = (
-            select(ExecutionStep)
-            .where(
-                col(ExecutionStep.tenant_id) == context.tenant_id,
-                col(ExecutionStep.unit_id) == identity,
-                col(ExecutionStep.due_at) <= now,
-                or_(
-                    and_(
-                        col(ExecutionStep.status) == "FAILED",
-                        col(ExecutionStep.error_code) == "dependency_failed",
-                        text(
-                            "EXISTS (SELECT 1 FROM execution_step s WHERE s.id=execution_step.id "
-                            "AND s.tenant_id=execution_step.tenant_id AND s.phase='DONE' "
-                            "AND s.kind IN ('CAMPAIGN','ADGROUP','AD','READBACK') "
-                            "AND s.dispatch_id IS NULL AND s.lease_token IS NULL "
-                            "AND s.remote_id IS NULL AND NOT s.mismatch AND "
-                            + UNARMED_RETRY
-                            + DEPENDENCIES_READY
-                            + ")"
-                        ),
-                    ),
-                    and_(
-                        col(ExecutionStep.status).in_(["PENDING", "RETRYABLE"]),
-                        or_(
-                            col(ExecutionStep.parent_step_id).is_(None), parent_settled
-                        ),
-                    ),
-                    and_(
-                        col(ExecutionStep.status) == "RUNNING",
-                        col(ExecutionStep.lease_expires_at) <= now,
-                    ),
-                    and_(
-                        col(ExecutionStep.status) == "UNKNOWN",
-                        col(ExecutionStep.kind) != "MATERIAL",
-                        col(ExecutionStep.resolved)[
-                            "dispatch_reconciliation_done"
-                        ].astext.is_distinct_from("true"),
-                        ~current_read,
-                    ),
-                ),
-            )
-            .where(text("NOT " + resolved_sql("execution_step")))
-            .where(text("NOT " + obsolete_readback_sql("execution_step")))
-            .where(
-                text(
-                    "NOT (kind='MATERIAL' AND status='PENDING' AND ("
-                    "(COALESCE(error_code='material_pending',false) AND distribution_id IS NOT NULL) OR "
-                    "(COALESCE(error_code='cover_pending',false) AND cover_job_id IS NOT NULL) OR "
-                    "COALESCE(error_code='execution_window_wait',false)))"
-                )
-            )
-            .order_by(col(ExecutionStep.due_at), col(ExecutionStep.id))
-            .limit(limit + 1)
-        )
+        stmt = _unit_candidates(
+            tenant_id=context.tenant_id, unit_id=identity, now=now
+        ).limit(limit + 1)
         permission_error = None
         try:
             require_tenant(
@@ -625,49 +674,112 @@ def repair_execution(*, database_engine: Any, limit: int = 100) -> int:
                     continue
             _repair_message(session, step=step, row=row, now=now)
             count += 1
+    touched: dict[UUID, TenantContext] = {}
     with Session(database_engine) as session, session.begin():
+        runnable = (
+            _unit_candidates(
+                tenant_id=SubmissionUnit.tenant_id,
+                unit_id=SubmissionUnit.unit_id,
+                now=now,
+            )
+            .correlate(SubmissionUnit)
+            .exists()
+        )
         units = session.exec(
             select(SubmissionUnit)
             .where(
+                SubmissionUnit.disposition == "INCLUDED",
+                SubmissionUnit.expanded,
                 or_(
                     col(SubmissionUnit.dispatch_id).is_not(None),
-                    and_(
-                        col(SubmissionUnit.dispatch_id).is_(None),
-                        SubmissionUnit.disposition == "INCLUDED",
-                        SubmissionUnit.expanded,
-                        col(SubmissionUnit.reason_code).is_(None),
-                    ),
+                    and_(col(SubmissionUnit.reason_code).is_(None), runnable),
+                    # 旧修复器可能复活了已压缩的同代消息。先核验摘要，不能
+                    # 将真正的跨租户/参数篡改当作可恢复的归档记录。
+                    SubmissionUnit.reason_code == "dispatch_payload_invalid",
                 ),
                 SubmissionUnit.repair_after <= now,
             )
             .order_by(col(SubmissionUnit.repair_after), col(SubmissionUnit.unit_id))
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(skip_locked=True, of=SubmissionUnit)
         ).all()
         for unit in units:
             row = session.get(Submission, unit.submission_id)
             assert row
-            dispatch = session.get(PendingDispatch, unit.dispatch_id)
-            if (
-                dispatch
-                and dispatch.task_name == UNIT_TASK
-                and dispatch.payload
-                == {"unit_id": str(unit.unit_id), "revision": unit.dispatch_revision}
-                and dispatch.tenant_id == unit.tenant_id
-                and dispatch.actor_id == row.actor_id
+            dispatch = (
+                session.get(PendingDispatch, unit.dispatch_id)
+                if unit.dispatch_id
+                else None
+            )
+            expected_key = f"build-unit:{unit.unit_id}:{unit.dispatch_revision}"
+            payload = {"unit_id": str(unit.unit_id), "revision": unit.dispatch_revision}
+            if unit.reason_code == "dispatch_payload_invalid" and dispatch is None:
+                dispatch = session.exec(
+                    select(PendingDispatch).where(
+                        PendingDispatch.tenant_id == unit.tenant_id,
+                        PendingDispatch.task_key == expected_key,
+                    )
+                ).one_or_none()
+            identity_matches = dispatch is not None and (
+                dispatch.tenant_id,
+                dispatch.actor_id,
+                dispatch.task_name,
+                dispatch.task_key,
+            ) == (unit.tenant_id, row.actor_id, UNIT_TASK, expected_key)
+            archived = bool(
+                identity_matches
+                and dispatch.compacted_at is not None
+                and dispatch.payload == {}
+                and dispatch.payload_digest == _payload_digest(payload)
+            )
+            if unit.reason_code == "dispatch_payload_invalid" and not archived:
+                unit.repair_after = now + timedelta(seconds=REPAIR_SECONDS)
+                session.add(unit)
+                continue
+            if dispatch is not None and not (
+                archived
+                or (
+                    identity_matches
+                    and dispatch.payload == payload
+                    and dispatch.compacted_at is None
+                )
             ):
-                if dispatch.published_at is not None:
-                    dispatch.published_at = None
-                    dispatch.available_at = now
-                    session.add(dispatch)
-            elif dispatch is None:
-                queue_execution_unit(session, submission=row, unit=unit)
+                unit.reason_code, unit.dispatch_id = "dispatch_payload_invalid", None
             else:
-                unit.reason_code = "dispatch_payload_invalid"
-                unit.dispatch_id = None
+                if archived:
+                    unit.reason_code, unit.dispatch_id = None, None
+                    dispatch = None
+                eligible = (
+                    session.exec(
+                        _unit_candidates(
+                            tenant_id=unit.tenant_id, unit_id=unit.unit_id, now=now
+                        ).limit(1)
+                    ).first()
+                    is not None
+                )
+                if not eligible:
+                    # 正在等待有效步骤/依赖时，完成回执会原子唤醒；多余的
+                    # 组合通知可解除指针，旧 broker 投递只会按围栏空返回。
+                    unit.dispatch_id = None
+                elif dispatch is None:
+                    # 旧代已经消费/压缩；新唤醒必须换代，禁止复用幂等墓碑。
+                    unit.dispatch_revision += 1
+                    queue_execution_unit(session, submission=row, unit=unit)
+                elif dispatch.published_at is not None:
+                    # 真正丢失的当前投递仍按原ID重发，保留未发布的broker退避。
+                    dispatch.published_at, dispatch.available_at = None, now
+                    session.add(dispatch)
+                touched[row.id] = _context(row)
             unit.repair_after = now + timedelta(seconds=REPAIR_SECONDS)
             session.add(unit)
             count += 1
+    # 不在单元锁内取得提交锁，避免与完成回执/同批其他单元互锁。
+    for submission_id, context in touched.items():
+        finalize_submission(
+            database_engine=database_engine,
+            context=context,
+            submission_id=submission_id,
+        )
     return count + advance_execution(database_engine=database_engine, limit=limit)
 
 

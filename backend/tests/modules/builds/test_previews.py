@@ -95,13 +95,16 @@ def seed_targeting_directory(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             facts={
                 "identity": {
+                    "seen": 1,
+                    "total_number": 1,
+                    "total_page": 1,
                     "options": [
                         {
                             "identity_id": "identity-1",
                             "identity_type": "BC_AUTH_TT",
                             "identity_authorized_bc_id": "bc-draft",
                         }
-                    ]
+                    ],
                 },
                 "minis": {
                     "matches": [
