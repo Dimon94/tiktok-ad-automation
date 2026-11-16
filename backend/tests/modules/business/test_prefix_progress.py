@@ -524,13 +524,13 @@ def test_long_pending_continues_bounded_repair_rotation(
     session.flush()
     scope = session.get(BusinessScope, (run.tenant_id, run.bc_id))
     monkeypatch.setattr(tasks.settings, "ADS_SYNC_ENABLED", True)
-    # 本例隔离两个规划器的运输边界；操作日志有自己的日期/时区回归，
-    # 这里同时记录新接入的有界轮转，不能让伪账户进入真实日志查询。
+    # 日志规划独立轮转，不依赖经营补源；保留 spy，防止此处重新挂接隐式规划。
     from app.modules.operation_logs import planning as log_planning
 
     log_accounts = []
     monkeypatch.setattr(
-        log_planning, "plan_logs",
+        log_planning,
+        "plan_logs",
         lambda _db, _plan, **values: log_accounts.append(values["accounts"]) or 0,
     )
     monkeypatch.setattr(planner, "owned_accounts", lambda *_args: list(accounts))
@@ -552,9 +552,7 @@ def test_long_pending_continues_bounded_repair_rotation(
         ["repair-130"],
         ["repair-131"],
     ]
-    assert log_accounts == [
-        list(accounts)[offset:offset + 8] for offset in (0, 8, 16)
-    ]
+    assert log_accounts == []
     windows, after = repair_windows(session, run, set(accounts), scope.repair_cursor)
     assert windows == [] and after == "repair-127"
 
