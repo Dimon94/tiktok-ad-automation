@@ -15,7 +15,7 @@ from tests.modules.reporting.test_jobs import _route
 def test_existing_requests_keep_claims_and_get_service_class(monkeypatch):
     with historical_database(monkeypatch, "0038_sync_work_indexes") as (engine, config):
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             table = Table(
                 "ad_directory_run", MetaData(), autoload_with=session.connection()
             )

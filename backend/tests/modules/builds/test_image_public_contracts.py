@@ -614,7 +614,7 @@ def test_selected_retry_migration_preserves_old_preparation(monkeypatch):
         with Session(engine) as session, session.begin():
             context = create_context(session)
             draft, _ = historical_scaffold(
-                session, context, create_intent(session, context)
+                session, context, create_intent(session, context, historical=True)
             )
             identity = uuid4()
             table = Table("music_preparation_run", MetaData(), autoload_with=engine)

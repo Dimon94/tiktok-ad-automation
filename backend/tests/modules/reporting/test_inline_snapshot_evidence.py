@@ -177,7 +177,7 @@ def test_inline_migration_roundtrip_preserves_frozen_versions(monkeypatch):
         config,
     ):
         with Session(database) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             ref = _ref(seed.tenant_id, "acc-1", "ad", "historical-ad")
             identity = _seed_snapshot(
                 session,

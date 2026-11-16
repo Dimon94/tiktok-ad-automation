@@ -20,7 +20,7 @@ def test_drop_directory_main_identity_preserves_report_chain_and_reverses_schema
     with historical_database(monkeypatch, "0041_rule_frequency") as (engine, config):
         now = datetime.now(UTC)
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             table = Table(
                 "ad_material_reference", MetaData(), autoload_with=session.connection()
             )

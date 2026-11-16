@@ -16,7 +16,7 @@ from app.modules.reporting.query_models import (
     read_snapshot,
 )
 from app.modules.reporting.snapshot_members import snapshot_members, snapshot_names
-from tests.migration_database import historical_database
+from tests.migration_database import historical_database, insert_historical_row
 from tests.modules.reporting.sync_conftest import sync_seed
 from tests.modules.reporting.test_queries import filters_for
 
@@ -44,7 +44,7 @@ def _seed_snapshot(session, seed, bc, dimension, advertisers, rows, names):
         summary={"migration": "frozen-summary"},
         coverage={"migration": "frozen-coverage"},
     )
-    session.add(snapshot)
+    insert_historical_row(session, snapshot)
     session.flush()
     for sequence, (row_key, refs, uses) in enumerate(rows):
         version = None
@@ -92,8 +92,8 @@ def test_report_evidence_migration_round_trip_preserves_scope_and_payload(monkey
         config,
     ):
         with Session(engine) as session, session.begin():
-            first = sync_seed.__wrapped__(session)
-            other = sync_seed.__wrapped__(session)
+            first = sync_seed.__wrapped__(session, historical=True)
+            other = sync_seed.__wrapped__(session, historical=True)
             cases = []
             # 两租户共享远端账户/系列/素材ID；同租户第二BC只授权acc-2。
             for seed, bc, advertisers in (
@@ -279,24 +279,17 @@ def test_report_evidence_migration_round_trip_preserves_scope_and_payload(monkey
         with Session(engine) as session:
             for identity, seed, bc in cases:
                 snapshot = session.get(QuerySnapshot, identity)
-                if snapshot.filters["dimension"] == "material":
-                    # 旧素材快照保留审计证据，但新查询合同必须拒绝重用旧补链身份。
-                    with pytest.raises(HTTPException) as retired:
-                        read_snapshot(
-                            session,
-                            context=seed.context,
-                            bc_id=bc,
-                            snapshot_id=identity,
-                        )
-                    assert retired.value.status_code == 409
-                    assert retired.value.detail == "query_snapshot_contract_changed"
-                else:
-                    snapshot = read_snapshot(
+                # 历史证据仍可审计；缺少当代冻结合同的旧身份必须退出复用。
+                assert snapshot.result_contract == {}
+                with pytest.raises(HTTPException) as retired:
+                    read_snapshot(
                         session,
                         context=seed.context,
                         bc_id=bc,
                         snapshot_id=identity,
                     )
+                assert retired.value.status_code == 409
+                assert retired.value.detail == "query_snapshot_contract_changed"
                 assert snapshot.id == identity
                 rows = session.exec(
                     select(QuerySnapshotRow).where(
@@ -308,7 +301,7 @@ def test_report_evidence_migration_round_trip_preserves_scope_and_payload(monkey
                         snapshot_members(session, snapshot=snapshot, rows=rows)
                     assert retired_members.value.status_code == 409
                 else:
-                    # 迁移可逆还不够：真实分页/选择/导出解析器必须立即接受旧证据。
+                    # 原始成员、名称继续可解读用于审计；公开读取仍受上面的合同门禁约束。
                     members = snapshot_members(session, snapshot=snapshot, rows=rows)
                     for key, member in members.items():
                         assert list(member.refs) == before_rows[identity, key]["refs"]
@@ -347,7 +340,7 @@ def test_report_evidence_migration_rejects_mismatched_scalar_atomically(monkeypa
         config,
     ):
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             _seed_snapshot(
                 session,
                 seed,

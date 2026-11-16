@@ -10,7 +10,7 @@ from sqlmodel import Session
 from app.modules.ads.models import AdObject
 from app.modules.reporting.query_models import QuerySnapshot
 from app.modules.reporting.store_models import ReportSyncState
-from tests.migration_database import historical_database
+from tests.migration_database import historical_database, insert_historical_row
 from tests.modules.reporting.sync_conftest import sync_seed
 from tests.modules.reporting.test_queries import filters_for
 
@@ -21,7 +21,7 @@ def test_membership_migration_preserves_old_snapshot_and_round_trips(monkeypatch
         config,
     ):
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             session.add(
                 AdObject(
                     tenant_id=seed.tenant_id,
@@ -45,10 +45,11 @@ def test_membership_migration_preserves_old_snapshot_and_round_trips(monkeypatch
                 total=1,
                 naming_versions={"directory": 1, "acc-1:old-deleted": 7},
             )
-            session.add(snapshot)
+            insert_historical_row(session, snapshot)
             session.flush()
             # 0081允许删除账户后保留canonical金额/状态；派生回填只能取存活账户。
-            session.add(
+            insert_historical_row(
+                session,
                 ReportSyncState(
                     tenant_id=seed.tenant_id,
                     advertiser_id="deleted-account",
@@ -56,10 +57,11 @@ def test_membership_migration_preserves_old_snapshot_and_round_trips(monkeypatch
                     stat_date=filters_for("account").start_date,
                     status="COMPLETE",
                     row_count=1,
-                )
+                ),
             )
             for advertiser, count in (("acc-1", 1), ("acc-2", 0)):
-                session.add(
+                insert_historical_row(
+                    session,
                     ReportSyncState(
                         tenant_id=seed.tenant_id,
                         advertiser_id=advertiser,
@@ -67,7 +69,7 @@ def test_membership_migration_preserves_old_snapshot_and_round_trips(monkeypatch
                         stat_date=filters_for("account").start_date,
                         status="COMPLETE",
                         row_count=count,
-                    )
+                    ),
                 )
             session.execute(
                 text("""INSERT INTO campaign_report_day

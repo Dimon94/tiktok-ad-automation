@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Numeric,
+    Text,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -111,15 +112,17 @@ class ParentReportDay(_Fact, table=True):
             "stat_date",
         ),
         CheckConstraint(
-            "level IN ('campaign','adgroup')", name="ck_parent_report_level"
+            "level IN ('campaign','adgroup')", name="parent_report_day_level_check"
         ),
     )
     level: str = Field(primary_key=True, max_length=16)
     remote_id: str = Field(primary_key=True, max_length=128)
     stat_date: date = Field(primary_key=True)
-    object_name: str | None = None
-    campaign_id: str | None = None
-    campaign_name: str | None = None
+    object_name: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    campaign_id: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    campaign_name: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     evidence: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
 
 

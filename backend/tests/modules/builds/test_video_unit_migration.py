@@ -2,6 +2,7 @@
 
 import pytest
 from alembic import command
+from sqlalchemy import MetaData, Table
 from sqlmodel import Session, select
 
 from app.core.errors import DomainError
@@ -38,13 +39,12 @@ def test_video_backfill_preserves_order_request_and_frozen_bytes(monkeypatch):
     ):
         with Session(engine) as db:
             context = create_context(db)
-            intent = create_intent(db, context)
+            intent = create_intent(db, context, historical=True)
             from tests.modules.builds.test_image_composition_migration import (
                 historical_scaffold,
             )
 
-            draft, drama = historical_scaffold(db, context, intent)
-            draft.media_kind = "VIDEO"
+            draft, drama = historical_scaffold(db, context, intent, media_kind="VIDEO")
             draft_id = draft.id
             files = [
                 material(db, context, name, bc="bc-draft")
@@ -79,6 +79,29 @@ def test_video_backfill_preserves_order_request_and_frozen_bytes(monkeypatch):
             frozen_before = frozen.model_dump(mode="json")
             db.commit()
         command.upgrade(config, "0059_video_creative_units")
+        with Session(engine) as db:
+            table = Table("build_draft", MetaData(), autoload_with=db.connection())
+            historical = db.execute(table.select().where(table.c.id == draft_id)).one()
+            assert historical.request_id == request and historical.media_kind == "VIDEO"
+            assert (
+                db.get(BuildPreview, frozen_id).model_dump(mode="json") == frozen_before
+            )
+            members = video_material_ids(db, historical, drama_id=drama_id)
+            units = ordered_units(db, historical, drama_id=drama_id)
+            assert [members[unit.id] for unit in units] == ids
+            assert [unit.position for unit in units] == [1, 2, 3]
+            assert {members[u.id]: u.content_digest for u in units} == digests
+            assert all(
+                unit.id not in ids and unit.music_status == "NOT_REQUIRED"
+                for unit in units
+            )
+            assert not db.exec(
+                select(DraftGroupMaterial).where(
+                    DraftGroupMaterial.draft_id == draft_id
+                )
+            ).all()
+        # 当期迁移的数据断言完成后，升级到 head 再验证今日业务服务。
+        command.upgrade(config, "head")
         with Session(engine) as db:
             draft = db.get(BuildDraft, draft_id)
             assert draft.request_id == request

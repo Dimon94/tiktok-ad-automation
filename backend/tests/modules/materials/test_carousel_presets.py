@@ -679,11 +679,13 @@ def test_0054_upgrade_preserves_units_and_installs_reference_constraints(monkeyp
             from tests.modules.builds.test_image_composition_migration import unit
 
             draft, drama = historical_scaffold(
-                session, context, create_intent(session, context)
+                session,
+                context,
+                create_intent(session, context, historical=True),
+                active_image_generation=1,
             )
             source = unit(draft, drama)
             session.add(source)
-            draft.active_image_generation = 1
             session.flush()
             source_id, draft_id, drama_id = source.id, draft.id, drama.drama_id
             session.commit()

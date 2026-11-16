@@ -896,7 +896,7 @@ def test_schema_upgrade_preserves_selected_unit_and_requires_draft_scope(monkeyp
         with Session(engine) as session, session.begin():
             context = create_context(session)
             draft, drama = historical_scaffold(
-                session, context, create_intent(session, context)
+                session, context, create_intent(session, context, historical=True)
             )
             existing = unit(draft, drama, music_id="existing", music_revision=3)
             existing.music_status = "READY"

@@ -226,7 +226,7 @@ def test_historical_migration_adds_layout_without_changing_frozen_bytes(monkeypa
         frozen = []
         with Session(engine) as db:
             context = create_context(db)
-            intent = create_intent(db, context)
+            intent = create_intent(db, context, historical=True)
             draft, drama = historical_scaffold(db, context, intent)
             for number, layout in enumerate(("GROUP", "AD"), 1):
                 original = material(db, context, f"{layout}.mp4")

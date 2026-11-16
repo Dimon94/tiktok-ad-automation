@@ -26,7 +26,7 @@ def test_candidate_build_upgrade_preserves_completed_snapshot_and_count(monkeypa
     with historical_database(monkeypatch, "0051_image_state_scope") as (engine, config):
         with Session(engine) as session:
             context = create_context(session)
-            intent = create_intent(session, context)
+            intent = create_intent(session, context, historical=True)
             intent["drama_lines"] = ["Moon"]
             draft, drama = historical_scaffold(session, context, intent)
             image = material(session, context, "Moon.jpg")

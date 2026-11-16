@@ -221,8 +221,16 @@ def test_historical_scene_migration_preserves_ids_and_facts_without_inventing_ro
                 ).scalar_one()
                 == "BLOCKED"
             )
+            state_table = Table(
+                "draft_scene_preparation", MetaData(), autoload_with=db.connection()
+            )
             assert (
-                db.get(DraftScenePreparation, (context.tenant_id, prep_id)).frozen_route
+                db.execute(
+                    select(state_table.c.frozen_route).where(
+                        state_table.c.tenant_id == context.tenant_id,
+                        state_table.c.preparation_id == prep_id,
+                    )
+                ).scalar_one()
                 is None
             )
         for model, key in (
@@ -237,7 +245,17 @@ def test_historical_scene_migration_preserves_ids_and_facts_without_inventing_ro
                         .values(frozen_route=route.model_dump(mode="json"))
                     )
                 else:
-                    db.get(model, key).frozen_route = route.model_dump(mode="json")
+                    table = Table(
+                        model.__tablename__, MetaData(), autoload_with=db.connection()
+                    )
+                    db.execute(
+                        table.update()
+                        .where(
+                            table.c.tenant_id == key[0],
+                            table.c.preparation_id == key[1],
+                        )
+                        .values(frozen_route=route.model_dump(mode="json"))
+                    )
                 db.commit()
 
 

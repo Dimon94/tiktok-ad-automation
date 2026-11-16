@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
-from sqlalchemy import MetaData, Table, null, text
+from sqlalchemy import MetaData, Table, text
 from sqlmodel import Session
 
 from app.modules.accounts.models import TikTokConnection
@@ -22,7 +22,7 @@ from app.modules.builds.models import BuildDraft, DraftInput
 from app.modules.builds.preview_models import BuildPreview, BuildUnit, PreviewDrama
 from app.modules.builds.routes import stable_attempt_id
 from app.modules.providers.models import PromotionLink, ProviderDrama
-from tests.migration_database import historical_database
+from tests.migration_database import historical_database, insert_historical_row
 from tests.modules.builds.test_drafts import account, create_intent
 from tests.modules.conftest import create_context
 
@@ -56,19 +56,7 @@ def historical_rows(
                 ).encode()
             ).hexdigest(),
         )
-        table = Table("build_draft", MetaData(), autoload_with=session.connection())
-        session.execute(
-            table.insert().values(
-                **{
-                    key: null()
-                    if key in {"targeting_override", "structure_override"}
-                    and value is None
-                    else value
-                    for key, value in row.model_dump().items()
-                    if key in table.c
-                }
-            )
-        )
+        insert_historical_row(session, row)
         inputs = Table("draft_input", MetaData(), autoload_with=session.connection())
         for kind in ("drama", "account"):
             seen = {}
@@ -243,7 +231,10 @@ def historical_rows(
         actor_id=context.actor_id,
         ordinal=1,
     )
-    session.add(submission)
+    if current:
+        session.add(submission)
+    else:
+        insert_historical_row(session, submission)
     session.flush()
     session.add(
         SubmissionUnit(
@@ -282,8 +273,7 @@ def historical_rows(
         session.flush()
         return context, preview, step
     # Reflect the historical table: the new current attempt_id column does not exist yet.
-    table = Table("execution_step", MetaData(), autoload_with=session.connection())
-    session.execute(table.insert().values(**step.model_dump(exclude={"attempt_id"})))
+    insert_historical_row(session, step)
     evidence = Table("step_evidence", MetaData(), autoload_with=session.connection())
     for count in (1, 2, 3):
         row = StepEvidence(

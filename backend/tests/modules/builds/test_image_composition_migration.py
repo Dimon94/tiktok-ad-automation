@@ -25,7 +25,7 @@ from app.modules.builds.models import (
     DraftGroupMaterial,
     DraftPreparation,
 )
-from tests.migration_database import historical_database
+from tests.migration_database import historical_database, insert_historical_row
 from tests.modules.builds.test_drafts import account, create_intent, finish, ready_links
 from tests.modules.conftest import create_context
 from tests.modules.materials.test_tenant_materials import material
@@ -64,7 +64,8 @@ def test_upgrade_defaults_old_drafts_without_creating_stale_video_mirror(monkeyp
             identity, request = draft.id, draft.request_id
         command.upgrade(config, "0049_image_composition")
         with Session(engine) as session:
-            row = session.get(BuildDraft, identity)
+            table = Table("build_draft", MetaData(), autoload_with=session.connection())
+            row = session.execute(table.select().where(table.c.id == identity)).one()
             assert (
                 row.media_kind,
                 row.active_image_generation,
@@ -91,7 +92,9 @@ def scaffold(session, context, intent):
     return draft, drama
 
 
-def historical_scaffold(session, context, intent):
+def historical_scaffold(
+    session, context, intent, *, media_kind="CAROUSEL", active_image_generation=0
+):
     """播种迁移输入事实，不让今日准备队列/派发 ORM 读取旧库中尚不存在的列。"""
     from datetime import UTC, datetime
 
@@ -99,10 +102,21 @@ def historical_scaffold(session, context, intent):
     from app.modules.providers.repository import link_reuse_key
 
     account(session, context, historical=True)
-    identity = create_draft(session, context=context, **intent)
-    draft = session.get(BuildDraft, identity)
-    draft.media_kind, draft.status = "CAROUSEL", "READY"
-    session.flush()
+    draft = BuildDraft(
+        tenant_id=context.tenant_id,
+        created_by=context.actor_id,
+        request_id=uuid4(),
+        request_digest="a" * 64,
+        media_kind=media_kind,
+        active_image_generation=active_image_generation,
+        status="READY",
+        **{
+            key: value
+            for key, value in intent.items()
+            if key not in {"drama_lines", "account_lines"}
+        },
+    )
+    insert_historical_row(session, draft)
     title = next(line.strip() for line in intent["drama_lines"] if line.strip())
     provider_drama = ProviderDrama(
         tenant_id=context.tenant_id,

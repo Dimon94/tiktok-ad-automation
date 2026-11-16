@@ -21,11 +21,24 @@ from app.modules.tenants.models import Tenant, TenantMembership
 
 
 @pytest.fixture
-def sync_seed(session):
+def sync_seed(session, *, historical=False):
     """真实 PostgreSQL：一个租户、一个 API 连接、两个 BC（bc-a、bc-b），
     账户 acc-1（香港时区）只在 bc-a，acc-2（UTC）同时在 bc-a 与 bc-b。"""
+
+    def add(row):
+        if historical:
+            from tests.migration_database import insert_historical_row
+
+            insert_historical_row(session, row)
+        else:
+            session.add(row)
+
+    def add_all(rows):
+        for row in rows:
+            add(row)
+
     actor, tenant = uuid4(), uuid4()
-    session.add(
+    add(
         User(
             id=actor,
             username=f"sync-{actor.hex[:10]}",
@@ -33,11 +46,9 @@ def sync_seed(session):
             is_active=True,
         )
     )
-    session.add(Tenant(id=tenant, name=f"t-{tenant.hex[:8]}"))
+    add(Tenant(id=tenant, name=f"t-{tenant.hex[:8]}"))
     session.flush()
-    session.add(
-        TenantMembership(tenant_id=tenant, user_id=actor, role="operator", active=True)
-    )
+    add(TenantMembership(tenant_id=tenant, user_id=actor, role="operator", active=True))
     connection = TikTokConnection(
         tenant_id=tenant,
         status="ACTIVE",
@@ -45,7 +56,7 @@ def sync_seed(session):
         authorization_revision=0,
         adapter_contract_revision="official-api-v1",
     )
-    session.add_all(
+    add_all(
         [
             TenantBC(tenant_id=tenant, bc_id="bc-a"),
             TenantBC(tenant_id=tenant, bc_id="bc-b"),
@@ -53,7 +64,7 @@ def sync_seed(session):
         ]
     )
     session.flush()
-    session.add_all(
+    add_all(
         [
             AdvertiserAccount(
                 tenant_id=tenant,
@@ -81,7 +92,7 @@ def sync_seed(session):
     )
     session.flush()
     for bc in ("bc-a", "bc-b"):
-        session.add(
+        add(
             DiscoveryRun(
                 tenant_id=tenant,
                 actor_id=actor,
@@ -91,7 +102,7 @@ def sync_seed(session):
                 completed_at=datetime.now(UTC),
             )
         )
-        session.add(
+        add(
             BCConnectionBinding(
                 tenant_id=tenant,
                 bc_id=bc,
@@ -103,7 +114,7 @@ def sync_seed(session):
             )
         )
     for bc, acc in (("bc-a", "acc-1"), ("bc-a", "acc-2"), ("bc-b", "acc-2")):
-        session.add(
+        add(
             BCAccountAccess(
                 tenant_id=tenant,
                 bc_id=bc,

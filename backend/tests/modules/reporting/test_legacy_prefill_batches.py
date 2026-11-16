@@ -62,7 +62,7 @@ def test_large_single_parent_page_has_bounded_identity_reads_and_writes(
         _config,
     ):
         with Session(engine) as db, db.begin():
-            tenant = sync_seed.__wrapped__(db).tenant_id
+            tenant = sync_seed.__wrapped__(db, historical=True).tenant_id
             ids = [f"creative-{i:04}" for i in range(count)]
             _reference(db, tenant, ids)
         with Session(engine) as db, db.begin(), _statements(engine) as statements:
@@ -118,7 +118,7 @@ def test_missing_identity_writes_once_with_exact_legacy_evidence(
     with historical_database(monkeypatch, "0115_copy_current_source") as (engine, _):
         with Session(engine) as db, db.begin():
             db.execute(text("SET LOCAL TIME ZONE 'UTC'"))
-            tenant = sync_seed.__wrapped__(db).tenant_id
+            tenant = sync_seed.__wrapped__(db, historical=True).tenant_id
             for asset in assets:
                 _reference(db, tenant, ["new"], video=asset, kind=kind)
             # 数据库行级触发器计数真实写入，防止一条 SQL 内再次改写同一身份。
@@ -191,7 +191,7 @@ def test_batch_enrichment_preserves_newer_state_and_every_conflict_proof(monkeyp
     ):
         now = datetime.now(UTC)
         with Session(engine) as db, db.begin():
-            tenant = sync_seed.__wrapped__(db).tenant_id
+            tenant = sync_seed.__wrapped__(db, historical=True).tenant_id
             ids = [f"creative-{i:03}" for i in range(129)]
             _reference(db, tenant, ids)
             rows = [
@@ -271,7 +271,7 @@ def test_cache_publication_is_refreshed_before_legacy_classification(
 ):
     with historical_database(monkeypatch, "0115_copy_current_source") as (engine, _):
         with Session(engine) as db, db.begin():
-            tenant = sync_seed.__wrapped__(db).tenant_id
+            tenant = sync_seed.__wrapped__(db, historical=True).tenant_id
             observed = datetime(2026, 11, 11, tzinfo=UTC)
             db.add(
                 AdObject(
@@ -344,7 +344,7 @@ def test_multiple_observations_of_one_cid_keep_parent_order_and_all_proofs(monke
         _config,
     ):
         with Session(engine) as db, db.begin():
-            tenant = sync_seed.__wrapped__(db).tenant_id
+            tenant = sync_seed.__wrapped__(db, historical=True).tenant_id
             for parent, mid in [("a", None), ("a", "one"), ("b", "two")]:
                 _reference(db, tenant, ["shared", "second"], parent=parent, mid=mid)
         with Session(engine) as db, db.begin():

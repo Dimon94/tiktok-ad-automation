@@ -12,7 +12,7 @@ from sqlmodel import Session
 from app.modules.builds.execution_models import Submission
 from app.modules.materials.cover_models import MaterialCoverJob
 from app.modules.materials.models import MaterialAssetOperation, MaterialDistribution
-from tests.migration_database import historical_database
+from tests.migration_database import historical_database, insert_historical_row
 from tests.modules.builds.test_route_migration import historical_rows
 from tests.modules.materials.test_tenant_materials import mapping, material
 
@@ -29,7 +29,7 @@ def _history(db):
         actor_id=context.actor_id,
         ordinal=1,
     )
-    db.add(submission)
+    insert_historical_row(db, submission)
     file = material(db, context, "old.mp4", bc=preview.bc_id, historical=True)
     asset = mapping(db, context, file, historical=True)
     scope = {

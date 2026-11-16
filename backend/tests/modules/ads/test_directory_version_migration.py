@@ -19,7 +19,7 @@ def test_publish_sequence_starts_above_all_legacy_versions(monkeypatch):
         config,
     ):
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             reference = AdMaterialReference(
                 tenant_id=seed.tenant_id,
                 advertiser_id="acc-1",

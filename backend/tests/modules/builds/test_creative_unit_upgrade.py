@@ -192,9 +192,8 @@ def test_real_old_schema_upgrade_and_mixed_history_drain(monkeypatch):
     ):
         with Session(engine) as db:
             context = create_context(db)
-            intent = create_intent(db, context)
-            draft, drama = historical_scaffold(db, context, intent)
-            draft.media_kind = "VIDEO"
+            intent = create_intent(db, context, historical=True)
+            draft, drama = historical_scaffold(db, context, intent, media_kind="VIDEO")
             old = preview(db, context, draft.id, intent)
             scope = {
                 "tenant_id": context.tenant_id,
@@ -234,12 +233,17 @@ def test_real_old_schema_upgrade_and_mixed_history_drain(monkeypatch):
             sub = Submission(
                 **scope, draft_id=draft.id, actor_id=context.actor_id, ordinal=1
             )
-            db.add(sub)
+            insert_historical_row(db, sub)
             db.flush()
             assert probe.creative_unit_drain(db.connection())["blockers"].keys() == {
                 "submission_runnable"
             }
-            sub.expanded, sub.status = True, "COMPLETED"
+            db.execute(
+                text(
+                    "UPDATE build_submission SET expanded=true,status='COMPLETED' WHERE id=:id"
+                ),
+                {"id": sub.id},
+            )
             db.add(
                 SubmissionUnit(
                     **scope,

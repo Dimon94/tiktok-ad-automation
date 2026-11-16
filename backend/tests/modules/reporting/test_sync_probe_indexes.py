@@ -56,7 +56,7 @@ def test_sync_probe_indexes_roundtrip_and_reduce_scans(monkeypatch, record_prope
     with historical_database(monkeypatch, PREVIOUS) as (engine, config):
         now = datetime(2026, 10, 12, 20, tzinfo=UTC)
         with Session(engine) as session, session.begin():
-            seed = sync_seed.__wrapped__(session)
+            seed = sync_seed.__wrapped__(session, historical=True)
             ensure_month_partitions_for_range(
                 session, date(2026, 10, 1), date(2026, 10, 1)
             )
