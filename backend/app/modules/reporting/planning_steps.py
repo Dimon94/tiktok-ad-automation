@@ -334,9 +334,6 @@ def _execute(
     elif phase == "closeout":
         planner.plan_day_closeout(session, plan, now=at, accounts=batch)
     elif phase == "daily":
-        from app.modules.operation_logs.planning import plan_logs
-
-        plan_logs(session, plan, now=at, accounts=batch)
         planner.plan_daily(
             session,
             plan,
