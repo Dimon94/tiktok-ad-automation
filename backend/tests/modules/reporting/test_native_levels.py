@@ -1028,6 +1028,7 @@ def celery_delivery(seed, factory, job, redis_client, calls):
             if r.payload.get("job_id") == str(job.id)
             and r.payload.get("claim_id") == str(job.claim_token)
         )
+        task_name = record.task_name
         kwargs = {
             "tenant_id": str(seed.tenant_id),
             "actor_id": str(seed.actor_id),
@@ -1109,7 +1110,7 @@ def celery_delivery(seed, factory, job, redis_client, calls):
         )
         # Duplicate broker delivery exercises the canonical consumer guard as well.
         for _ in range(2):
-            celery_app.send_task("reporting.job_step", kwargs=kwargs, queue=queue)
+            celery_app.send_task(task_name, kwargs=kwargs, queue=queue)
         from multiprocessing.connection import wait
 
         done_count = 0

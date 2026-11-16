@@ -82,3 +82,12 @@
 消费者152项通过（单独运行的SDK/浏览器用例当批未运行），最终范围/AI/素材30项通过；原1000系列/10000广告验收保留<=30SQL/<30秒，实测11SQL/363.06ms。新鲜隔离库的真实HTTP/SDK/Worker/浏览器/CSV完整链1项通过13.71秒，涵盖INSTANCE/COMPOSITE/UNMAPPED及父控制完整记录、原行数/金额、快照失效前取证与失效后CSV独立性。独立调度完整文件8项通过8.24秒；混合库残留导致的旧失败另记，不改生产控制器。DSH2项、来源展开浏览器1项通过；最终生产/demo构建、全app ty、28个Python文件Ruff和差异检查通过。集合重叠不相加。
 
 本地证据不替代完整模块远端门禁。尚待额度配置、Linux任务夹具串行集成、最新主线合并及最终独立审查/CI；未部署或执行真实平台操作。
+
+
+## Native SDK额度及Linux规范投递
+
+完整226失败节点清单确认SDK注册了identity/native_series/get，但Ultimate50物理端点表遗漏该项，保留base并发3而既有SDK合同要求96。原精确用例先1 failed（3!=96），仅补同类端点配置后整文件52 passed/0.12s；基础额度、MCP、上传4并发及部署值不变，未修改线上配置。
+
+隔离Linux原6c源码的完整Nativelevels[False]先失败：两个Celery消息均SUCCESS/IGNORED、无SDK请求、任务仍RUNNING；PendingDispatch正式task_name为reporting.backfill_step，测试helper硬编码reporting.job_step，消费端正确拒绝。helper在现有session内保存record.task_name并发送相同正式消息两次；不改产品围栏、等待时间、计数或重试。固定副本完整场景1 passed/76.72s，包括两页发布和真实浏览器；两次投递分别COMPLETE及重复竞争失败，PG最终COMPLETE/request_count2/pages2。诊断补丁与正式两行修复分离，主分支只纳入后者。
+
+原EE与6c的helper/dispatcher/envelope/job_tasks blob相同，旧红绿证据适用于该根因；最终合并头Linux场景仍待验证。独立容器、网络及PG测试卷已清理，仅保留依赖缓存镜像；本地ownedPG/Redis继续用于根代理集成。Python语法/Ruff、JSON与差异检查通过。
