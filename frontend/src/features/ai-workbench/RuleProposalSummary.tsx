@@ -53,6 +53,7 @@ export function RuleProposalSummary({
 }) {
   const old = ruleSnapshot(before),
     next = ruleSnapshot(after)
+  const hasBefore = Object.keys(old).length > 0
   const def = next.definition
   if (
     !def?.accounts ||
@@ -116,25 +117,26 @@ export function RuleProposalSummary({
     upcoming = rows(next)
   const changed = upcoming.filter(
     (row, i) =>
-      !before || JSON.stringify(row.raw) !== JSON.stringify(previous[i]?.raw),
+      !hasBefore ||
+      JSON.stringify(row.raw) !== JSON.stringify(previous[i]?.raw),
   )
   return (
     <div className="flex flex-col gap-2">
-      {!!before && (
+      {hasBefore && (
         <p className="text-sm text-muted-foreground">
           适用于 {summarizeScope(def)} 的{LEVEL_LABELS[def.apply_to.level]}
         </p>
       )}
       <h4 className="text-sm font-medium">
-        {before ? "具体调整" : "新增规则内容"}
+        {hasBefore ? "具体调整" : "新增规则内容"}
       </h4>
       <div className="overflow-auto rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>调整内容</TableHead>
-              {!!before && <TableHead>现在</TableHead>}
-              <TableHead>{before ? "建议改为" : "建议设置"}</TableHead>
+              {hasBefore && <TableHead>现在</TableHead>}
+              <TableHead>{hasBefore ? "建议改为" : "建议设置"}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -147,7 +149,7 @@ export function RuleProposalSummary({
                   <TableCell className="whitespace-normal font-medium">
                     {row.label}
                   </TableCell>
-                  {!!before && (
+                  {hasBefore && (
                     <TableCell className="whitespace-normal">
                       {previousRow?.value || "尚未设置"}
                     </TableCell>
@@ -165,7 +167,7 @@ export function RuleProposalSummary({
             })}
             {!changed.length && (
               <TableRow>
-                <TableCell colSpan={before ? 3 : 2}>
+                <TableCell colSpan={hasBefore ? 3 : 2}>
                   没有上述运营设置的变化；请在技术记录中核对其他变更。
                 </TableCell>
               </TableRow>

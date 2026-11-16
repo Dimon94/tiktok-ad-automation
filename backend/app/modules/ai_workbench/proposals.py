@@ -132,7 +132,12 @@ class AIProposal(SQLModel, table=True):
     )
 
 
-def _public(row: AIProposal) -> dict[str, Any]:
+EXPLANATION_FIELDS = ("problem", "rationale", "expected_effect", "validation")
+
+
+def _public(
+    row: AIProposal, *, review_result: dict[str, Any] | None = None
+) -> dict[str, Any]:
     names = (
         "id",
         "tenant_id",
@@ -158,15 +163,45 @@ def _public(row: AIProposal) -> dict[str, Any]:
         "created_at",
     )
     result = {name: getattr(row, name) for name in names}
-    # 决策说明与证据共同持久化；公开投影统一展开，历史提案无需改写即可阅读。
+    # 早期新增分支漏存说明；仅从本提案所属复盘、配置完全相同的唯一提案读取原文。
     evidence = row.evidence or {}
+    candidates = [
+        item
+        for item in (review_result or {}).get("proposals", [])
+        if isinstance(item, dict)
+        and item.get("kind") == row.kind
+        and item.get("operation", "update") == row.operation
+        and str(item.get("target_id") or "") == str(row.target_id or "")
+        and item.get("after") == row.after
+    ]
+    original = candidates[0] if len(candidates) == 1 else {}
     result.update(
-        {
-            name: evidence.get(name)
-            for name in ("problem", "rationale", "expected_effect", "validation")
-        }
+        {name: evidence.get(name) or original.get(name) for name in EXPLANATION_FIELDS}
     )
     return result
+
+
+def public_proposal(session: Session, row: AIProposal) -> dict[str, Any]:
+    review_result = session.exec(
+        select(DSHReviewTask.result).where(
+            DSHReviewTask.id == row.review_task_id,
+            DSHReviewTask.tenant_id == row.tenant_id,
+            DSHReviewTask.optimizer_id == row.optimizer_id,
+        )
+    ).first()
+    return _public(row, review_result=review_result)
+
+
+def _proposal_evidence(
+    change: ProposalInput, review_task: DSHReviewTask, version: AIOptimizerVersion
+) -> dict[str, Any]:
+    # 新增与调整必须采用同一持久化合同，避免独立分支再遗漏运营决策说明。
+    return {
+        "evidence_ids": [str(item) for item in change.evidence_ids],
+        "review_task_id": str(review_task.id),
+        "captured_optimizer_version": version.number,
+        **{name: getattr(change, name) for name in EXPLANATION_FIELDS},
+    }
 
 
 def list_proposals(
@@ -194,9 +229,27 @@ def list_proposals(
         query = query.where(AIProposal.status == status)
     if review_task_id is not None:
         query = query.where(AIProposal.review_task_id == review_task_id)
-    return [
-        _public(row) for row in session.exec(query.offset(offset).limit(limit)).all()
-    ]
+    rows = session.exec(query.offset(offset).limit(limit)).all()
+    missing_task_ids = {
+        row.review_task_id
+        for row in rows
+        if any(not (row.evidence or {}).get(name) for name in EXPLANATION_FIELDS)
+    }
+    # 一次批量读取缺说明的历史来源；不加载整份冻结证据，不逐条额外查询。
+    results = (
+        dict(
+            session.exec(
+                select(DSHReviewTask.id, DSHReviewTask.result).where(
+                    DSHReviewTask.id.in_(missing_task_ids),
+                    DSHReviewTask.tenant_id == context.tenant_id,
+                    DSHReviewTask.optimizer_id == optimizer_id,
+                )
+            ).all()
+        )
+        if missing_task_ids
+        else {}
+    )
+    return [_public(row, review_result=results.get(row.review_task_id)) for row in rows]
 
 
 def _within_authorization(
@@ -438,10 +491,7 @@ def create_proposal(
                 status="PENDING",
                 before={},
                 after=sanitize_public(change.after),
-                evidence={
-                    "evidence_ids": [str(item) for item in change.evidence_ids],
-                    "review_task_id": str(review_task.id),
-                },
+                evidence=_proposal_evidence(change, review_task, version),
                 authorization={
                     "allowed": allowed,
                     "reason": reason,
@@ -516,15 +566,7 @@ def create_proposal(
         status="PENDING",
         before=sanitize_public(before),
         after=sanitize_public(change.after),
-        evidence={
-            "evidence_ids": [str(item) for item in change.evidence_ids],
-            "review_task_id": str(review_task.id),
-            "captured_optimizer_version": version.number,
-            "rationale": change.rationale,
-            "problem": change.problem,
-            "expected_effect": change.expected_effect,
-            "validation": change.validation,
-        },
+        evidence=_proposal_evidence(change, review_task, version),
         authorization={
             "allowed": allowed,
             "reason": reason,

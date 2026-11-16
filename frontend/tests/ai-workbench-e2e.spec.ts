@@ -1562,7 +1562,7 @@ test("跨轮变更分页、字段差异、人工发布回读及带原因拒绝�
     validation: "完整日利润不下降",
     before:
       index === 1
-        ? null
+        ? {}
         : {
             name: "低效系列控损",
             enabled: false,
