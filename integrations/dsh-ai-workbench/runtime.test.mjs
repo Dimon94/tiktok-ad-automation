@@ -171,6 +171,83 @@ test('native model turn failure is terminal and is not mistaken for normal idle 
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
+test('model rejection resumes in a fresh bounded session, keeping verified work and draft verification', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-recover-'))
+  const sessions = [], results = [], prompts = []
+  let analyses = 0, disposed = 0
+  const failure = { code: 'PI_AI_ERROR', message: 'The selected model cannot continue this conversation. Please select a different model, or start a new conversation.' }
+  const claim = { task: { id: 'task', tenant_id: 'tenant', optimizer_id: 'optimizer', fence: 'fence', expires_at: new Date(Date.now() + 60000).toISOString(), evidence: { optimizer: { advertiser_ids: ['a'] }, methods: await loadMethods() } } }
+  const ctx = { agentPresets: { mount: async () => {} }, agents: { create: async input => {
+    const index = sessions.length
+    sessions.push(input.sessionId)
+    const tools = new Map(), skills = new Map()
+    await input.setup({ inject: async (_n, callback) => callback({ skills: { register: s => skills.set(s.name, s), get: async n => skills.get(n) }, tools: { register: t => tools.set(t.name, t), restrict() {}, guard() {} } }) })
+    const agent = { session: { snapshotEvents: () => [{ type: 'turn/end', data: { reason: { kind: 'error', error: failure } } }] }, followup: m => prompts.push(JSON.stringify(m)), whenIdle: async () => {
+      if (index === 0) {
+        for (const key of ['ai-delivery-review', 'business', 'builds', 'scale']) await tools.get('skill').execute({ name: skillName(key) })
+        for (const maturity_horizon of ['d0', 'd3', 'd7']) await tools.get('tkada_analyze_evidence').execute({ dimension: 'account', maturity_horizon })
+        await tools.get('tkada_search_knowledge').execute({ query: 'policy' })
+        assert.equal((await tools.get(COMPLETE_TOOL).execute({ report, summary: 'draft', proposals: [] })).status, 'verification_required')
+      } else {
+        // 新模型必须重读方法正文，但不能要求重跑已经成功的分析工具。
+        for (const key of ['ai-delivery-review', 'business', 'builds', 'scale']) await tools.get('skill').execute({ name: skillName(key) })
+        assert.equal((await tools.get(COMPLETE_TOOL).execute({ report, summary: 'done', proposals: [] })).status, 'COMPLETE')
+      }
+    } }
+    return { agent, dispose: async () => { disposed++ } }
+  } } }
+  try {
+    await runClaim(ctx, { stateRoot: directory, modelSelection: { provider: 'test', model: 'test' } }, claim, {
+      analyzeEvidence: async (_c, request) => { analyses++; return { id: 'analysis-' + request.maturity_horizon, request } },
+      searchKnowledge: async () => ({ items: [] }),
+      complete: async (_c, result) => { results.push(result); return { status: 'COMPLETE' } },
+    }, { SessionId: x => x, createUserMessage: x => x, renderSkillContent: s => s.content, scopeOf: () => 'task' })
+    assert.equal(sessions.length, 2)
+    assert.equal(new Set(sessions).size, 2)
+    assert.equal(disposed, 2)
+    assert.equal(analyses, 3)
+    assert.equal(results.length, 1)
+    assert.equal(results[0].summary, 'done')
+    assert.match(prompts[1], /已验证|verified/)
+    assert.match(prompts[1], /tkada_list_notes/)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('repeated session rejection has a finite budget and a classified public failure', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-recover-budget-'))
+  let creates = 0, disposed = 0
+  const results = []
+  const claim = { task: { id: 'task', tenant_id: 'tenant', optimizer_id: 'optimizer', fence: 'fence', expires_at: new Date(Date.now() + 60000).toISOString(), evidence: { methods: await loadMethods() } } }
+  try {
+    await assert.rejects(runClaim({ agents: { create: async () => { creates++; return {
+      agent: { followup() {}, whenIdle: async () => {}, session: { snapshotEvents: () => [{ type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'PI_AI_ERROR', message: 'The selected model cannot continue this conversation. secret=never-publish' } } } }] } },
+      dispose: async () => { disposed++ },
+    } } } }, { stateRoot: directory, modelSelection: { provider: 'test', model: 'test' } }, claim,
+    { complete: async (_c, r) => results.push(r) }, { SessionId: x => x, createUserMessage: x => x }), /MODEL_SESSION_REJECTED/)
+    assert.equal(creates, 3)
+    assert.equal(disposed, 3)
+    assert.equal(results.length, 1)
+    assert.match(results[0].summary, /MODEL_SESSION_REJECTED/)
+    assert.match(results[0].summary, /2/)
+    assert.doesNotMatch(JSON.stringify(results), /secret|never-publish/)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('revoked authorization stops recovery before creating another model session', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'tkada-recover-revoked-'))
+  let creates = 0, completions = 0
+  const claim = { task: { id: 'task', tenant_id: 'tenant', optimizer_id: 'optimizer', fence: 'fence', expires_at: new Date(Date.now() + 60000).toISOString(), evidence: { methods: await loadMethods() } } }
+  try {
+    await assert.rejects(runClaim({ agents: { create: async () => { creates++; return {
+      agent: { followup() {}, whenIdle: async () => {}, session: { snapshotEvents: () => [{ type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'TRANSPORT' } } } }] } }, dispose: async () => {},
+    } } } }, { stateRoot: directory, modelSelection: { provider: 'test', model: 'test' } }, claim,
+    { heartbeat: async () => { throw new Error('TK-ADA runtime HTTP 403; task revoked') }, complete: async () => { completions++ } },
+    { SessionId: x => x, createUserMessage: x => x }), /403/)
+    assert.equal(creates, 1)
+    assert.equal(completions, 0)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
 test('heavy analysis calls queue without blocking light reads and failures release the queue', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tkada-heavy-queue-'))
   try {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { cp, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer, request as httpRequest } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -170,7 +170,7 @@ test('production entrypoint boots real DSH, polls TK-ADA and serves readiness wi
 })
 
 // 必须经过真实 Agent 工厂与 standard 预设；服务级 scope 替身无法发现会话缺少 inject。
-test('claimed review mounts task skills in a real Agent and completes through model transport', { skip: !packageRoot, timeout: 45000 }, async () => {
+for (const recover of [false, true]) test(`claimed review ${recover ? 'recovers from Anthropic session refusal in a new real Agent' : 'mounts task skills in a real Agent and completes through model transport'}`, { skip: !packageRoot, timeout: 45000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'tkada-dsh-claimed-'))
   const { loadMethods } = await import('../methods.mjs')
   const methods = await loadMethods()
@@ -180,6 +180,26 @@ test('claimed review mounts task skills in a real Agent and completes through mo
     for await (const chunk of request) raw += chunk
     if (request.url.startsWith('/model/')) {
       modelCalls++
+      if (recover) {
+        // 与生产相同的Anthropic refusal消息，边界替身不能绕开原生错误分类与Agent工厂。
+        const call = modelCalls === 1 || modelCalls === 3
+          ? { name: 'skill', arguments: { name: 'ai-delivery-review' } }
+          : modelCalls === 4 || modelCalls === 5 ? { name: 'tkada_complete_review', arguments: { report, summary: 'fixture review complete', proposals: [] } } : null
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        const event = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+        event('message_start', { message: { id: `msg-${modelCalls}`, type: 'message', role: 'assistant', model: 'fixture', content: [], stop_reason: null, usage: { input_tokens: 100, output_tokens: 0 } } })
+        if (call) {
+          event('content_block_start', { index: 0, content_block: { type: 'tool_use', id: `tool-${modelCalls}`, name: call.name, input: {} } })
+          event('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.arguments) } })
+          event('content_block_stop', { index: 0 })
+        }
+        event('message_delta', { delta: modelCalls === 2
+          ? { stop_reason: 'refusal', stop_details: { explanation: 'The selected model cannot continue this conversation. Please select a different model, or start a new conversation.' } }
+          : { stop_reason: call ? 'tool_use' : 'end_turn' }, usage: { output_tokens: call ? 30 : 0 } })
+        event('message_stop', {})
+        response.end()
+        return
+      }
       // 只替换模型 HTTP 运输层，真实宿主解析流、执行 Skill 和结果工具。
       const call = modelCalls === 1
         ? { name: 'skill', arguments: JSON.stringify({ name: 'ai-delivery-review' }) }
@@ -212,7 +232,7 @@ test('claimed review mounts task skills in a real Agent and completes through mo
     await cp(dirname(dirname(fileURLToPath(import.meta.url))), join(root, 'plugin'), { recursive: true })
     await symlink(join(resolve(packageRoot), 'node_modules'), join(root, 'node_modules'), 'dir')
     await writeFile(join(root, 'token'), 'test-private-service-token-' + 'x'.repeat(40))
-    await writeFile(join(root, 'provider.json'), JSON.stringify({ provider: 'fixture', model: 'fixture', config: { api: 'openai-completions', models: [{ id: 'fixture', reasoningEfforts: false }], apiKeyEnv: 'DSH_CLAIM_TEST_KEY', baseURL: `http://127.0.0.1:${api.address().port}/model` } }))
+    await writeFile(join(root, 'provider.json'), JSON.stringify({ provider: 'fixture', model: 'fixture', config: { api: recover ? 'anthropic-messages' : 'openai-completions', models: [{ id: 'fixture', reasoningEfforts: false }], apiKeyEnv: 'DSH_CLAIM_TEST_KEY', baseURL: `http://127.0.0.1:${api.address().port}/model` } }))
     const require = createRequire(join(resolve(packageRoot), 'package.json'))
     child = spawn(process.execPath, [join(root, 'plugin/deployment/start.mjs')], { cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {
       PATH: process.env.PATH, HOME: root, DSH_HOME: join(root, 'home'), DSH_WORKSPACE: join(root, 'workspace'),
@@ -228,6 +248,12 @@ test('claimed review mounts task skills in a real Agent and completes through mo
     assert.deepEqual(completion.report, report)
     assert.deepEqual(completion.method_usage, ['ai-delivery-review'])
     assert.notEqual(completion.failed, true)
+    if (recover) {
+      assert.match(output, /MODEL_SESSION_REJECTED; starting recovery 1\/2/)
+      const dirs = await readdir(join(root, 'home/sessions'))
+      const sessions = (await Promise.all(dirs.map(d => readdir(join(root, 'home/sessions', d))))).flat()
+      assert.ok(sessions.some(s => s.endsWith('-resume-1')), `No fresh recovery session: ${sessions}`)
+    }
   } finally {
     if (child?.exitCode === null) { try { process.kill(-child.pid, 'SIGTERM') } catch {} }
     await delay(500)
