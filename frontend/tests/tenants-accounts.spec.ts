@@ -693,6 +693,44 @@ test("member creation draft stays guarded after switching to the existing-user t
   expect(requests.filter((request) => request.method !== "GET")).toHaveLength(0)
 })
 
+test("平台入口精简，DSH 仅在平台租户管理显示且底部菜单紧凑", async ({
+  page,
+}) => {
+  await boundary(page)
+  await page.goto("/platform/tenants")
+  const footer = page.locator('[data-sidebar="footer"]')
+  const dsh = footer.getByRole("link", { name: "DSH 管理台", exact: true })
+  const demo = footer.getByRole("link", { name: "打开体验版", exact: true })
+  await expect(dsh).toHaveAttribute("href", "/api/admin/dsh/entry")
+  await expect(
+    footer.getByRole("link", { name: "平台管理", exact: true }),
+  ).toHaveCount(0)
+  const demoBox = await demo.boundingBox()
+  const dshBox = await dsh.boundingBox()
+  expect(demoBox).not.toBeNull()
+  expect(dshBox).not.toBeNull()
+  expect(dshBox!.y - demoBox!.y - demoBox!.height).toBeLessThanOrEqual(4)
+  await page.screenshot({ path: test.info().outputPath("platform-footer.png") })
+
+  await page
+    .getByRole("row", { name: new RegExp(A) })
+    .getByRole("button", { name: "进入租户", exact: true })
+    .click()
+  await expect(page).toHaveURL(`/tenants/${A}/builds/new`)
+  await expect(dsh).toHaveCount(0)
+  await expect(demo).toBeVisible()
+  await expect(
+    footer.getByRole("link", { name: "平台管理", exact: true }),
+  ).toHaveCount(0)
+  await page.screenshot({ path: test.info().outputPath("tenant-footer.png") })
+  await page.getByRole("link", { name: "返回平台", exact: true }).click()
+  await expect(page).toHaveURL("/platform/tenants")
+  await expect(dsh).toBeVisible()
+
+  await page.goto("/admin")
+  await expect(dsh).toHaveCount(0)
+})
+
 for (const role of ["tenant_admin", "operator", "viewer"] as const)
   test(`${role} can open the demo from the tenant sidebar`, async ({ page }) => {
     await boundary(page, { platform: false, role })

@@ -228,7 +228,7 @@ for (const width of [1440, 1280]) {
     await expect(page.getByText("BC 未连接", { exact: true })).toBeVisible()
     await expect(
       page.getByRole("link", { name: "DSH 管理台", exact: true }),
-    ).toHaveAttribute("href", "/api/admin/dsh/entry")
+    ).toHaveCount(0)
     const labels = await page
       .getByRole("navigation")
       .getByRole("link")

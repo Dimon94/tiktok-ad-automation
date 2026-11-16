@@ -1,4 +1,5 @@
-import { BrainCircuit, FlaskConical, LayoutGrid } from "lucide-react"
+import { useRouterState } from "@tanstack/react-router"
+import { BrainCircuit, FlaskConical } from "lucide-react"
 import type { UserPublic } from "@/client"
 import { WorkspaceBrand } from "@/components/Common/WorkspaceBrand"
 import { Separator } from "@/components/ui/separator"
@@ -24,6 +25,9 @@ export function AppSidebar({
   user?: UserPublic | null
   groups?: NavGroup[]
 }) {
+  const isTenantManagement = useRouterState({
+    select: (state) => state.location.pathname === "/platform/tenants",
+  })
   // 未传入分组时（未接入租户或用户信息加载中）展示全局入口。
   const navigation =
     groups ?? workspaceNavigation({ manage: !!user?.is_superuser })
@@ -41,7 +45,7 @@ export function AppSidebar({
       </SidebarContent>
       <SidebarFooter>
         {/* workspaceNavigation 将 AI 独立分组放到这里之前，保证它紧邻体验版入口。 */}
-        <SidebarGroup data-testid="experience-entry-group">
+        <SidebarGroup className="py-0" data-testid="experience-entry-group">
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
@@ -56,37 +60,20 @@ export function AppSidebar({
                   </a>
                 </SidebarMenuButton>
               </SidebarMenuItem>
+              {/* DSH 仅供平台租户管理使用；与体验版共用菜单，避免分组留白叠加。 */}
+              {user?.is_superuser && isTenantManagement && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton tooltip="DSH 管理台" asChild>
+                    <a href="/api/admin/dsh/entry">
+                      <BrainCircuit />
+                      <span>DSH 管理台</span>
+                    </a>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        {user?.is_superuser && (
-          <>
-            <Main
-              items={[
-                {
-                  icon: LayoutGrid,
-                  title: "平台管理",
-                  path: "/platform/tenants",
-                },
-              ]}
-            />
-            {/* DSH 是独立运行面；入口只对平台管理员展示，避免普通用户看到管理台。 */}
-            <SidebarGroup data-testid="dsh-admin-entry-group">
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  <SidebarMenuItem>
-                    <SidebarMenuButton tooltip="DSH 管理台" asChild>
-                      <a href="/api/admin/dsh/entry">
-                        <BrainCircuit />
-                        <span>DSH 管理台</span>
-                      </a>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-          </>
-        )}
         <Separator />
         <User user={user} />
       </SidebarFooter>
