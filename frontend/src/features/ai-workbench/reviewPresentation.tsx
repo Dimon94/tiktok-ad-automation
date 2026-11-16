@@ -114,12 +114,13 @@ export function ReviewText({ text }: { text?: string }) {
 }
 export function EvidenceIds({ ids }: { ids?: string[] }) {
   return ids?.length ? (
-    <p className="break-all text-xs text-muted-foreground">
-      证据：{ids.join("、")}
-    </p>
-  ) : (
-    <p className="text-xs text-muted-foreground">未提供证据引用</p>
-  )
+    <details className="text-xs text-muted-foreground">
+      <summary className="cursor-pointer">
+        查看依据来源（{ids.length} 项）
+      </summary>
+      <p className="mt-2 break-all">{ids.join("、")}</p>
+    </details>
+  ) : null
 }
 export function ReviewReport({ task }: { task: ReviewTask }) {
   const result = task.result
@@ -137,38 +138,48 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
           <>
             <ReviewText text={report.verdict} />
             {report.sections.map((section, index) => (
-              <section key={index} className="flex flex-col gap-2">
-                <h4 className="font-medium">{section.title}</h4>
-                <ReviewText text={section.body} />
-                {section.table && (
-                  <div className="overflow-auto rounded-md border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          {section.table.columns.map((column, col) => (
-                            <TableHead key={col}>{column}</TableHead>
-                          ))}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {section.table.rows.map((row, index) => (
-                          <TableRow key={index}>
-                            {row.map((cell, col) => (
-                              <TableCell
-                                key={col}
-                                className="whitespace-normal"
-                              >
-                                {cell}
-                              </TableCell>
+              <details
+                key={index}
+                open={/^决策[一二三123：:]|^(控损|放量|新剧测试)(建议|决策)/.test(
+                  section.title,
+                )}
+                className="rounded-md border p-4"
+              >
+                <summary className="cursor-pointer font-medium">
+                  {section.title}
+                </summary>
+                <div className="mt-3 flex flex-col gap-3">
+                  <ReviewText text={section.body} />
+                  {section.table && (
+                    <div className="overflow-auto rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {section.table.columns.map((column, col) => (
+                              <TableHead key={col}>{column}</TableHead>
                             ))}
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
-                <EvidenceIds ids={section.evidence_ids} />
-              </section>
+                        </TableHeader>
+                        <TableBody>
+                          {section.table.rows.map((row, index) => (
+                            <TableRow key={index}>
+                              {row.map((cell, col) => (
+                                <TableCell
+                                  key={col}
+                                  className="whitespace-normal"
+                                >
+                                  {cell}
+                                </TableCell>
+                              ))}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                  <EvidenceIds ids={section.evidence_ids} />
+                </div>
+              </details>
             ))}
           </>
         ) : (
@@ -214,100 +225,6 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
           <p className="text-sm text-muted-foreground">本轮没有普通建议。</p>
         )}
       </section>
-    </div>
-  )
-}
-
-function flatten(value: unknown, prefix = ""): Record<string, unknown> {
-  // 条件数组也逐字段对照，使嵌套规则阈值变化有明确位置。
-  if (Array.isArray(value) && value.length)
-    return Object.fromEntries(
-      value.flatMap((child, index) =>
-        Object.entries(flatten(child, `${prefix}[${index}]`)),
-      ),
-    )
-  if (
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Object.keys(value).length
-  )
-    return Object.fromEntries(
-      Object.entries(value).flatMap(([key, child]) =>
-        Object.entries(flatten(child, prefix ? `${prefix}.${key}` : key)),
-      ),
-    )
-  return { [prefix || "值"]: value }
-}
-function display(value: unknown): string {
-  if (value === undefined) return "未设置"
-  if (value === null) return "空"
-  if (typeof value === "boolean") return value ? "是" : "否"
-  if (Array.isArray(value)) return value.map(display).join("、") || "无"
-  if (typeof value === "object")
-    return Object.entries(value)
-      .map(([key, item]) => `${key}：${display(item)}`)
-      .join("；")
-  return String(value)
-}
-export function ReadableValues({ value }: { value: unknown }) {
-  return (
-    <dl className="grid gap-2 text-sm">
-      {Object.entries(flatten(value)).map(([key, item]) => (
-        <div key={key} className="flex flex-wrap gap-2">
-          <dt className="text-muted-foreground">{key}</dt>
-          <dd className="min-w-0 break-all">{display(item)}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-export function ProposalDiff({
-  before,
-  after,
-}: {
-  before: unknown
-  after: unknown
-}) {
-  const previous = flatten(before),
-    next = flatten(after)
-  const keys = Array.from(
-    new Set([...Object.keys(previous), ...Object.keys(next)]),
-  )
-  const changed = keys.filter(
-    (key) => JSON.stringify(previous[key]) !== JSON.stringify(next[key]),
-  )
-  return (
-    <div className="overflow-auto rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>调整字段</TableHead>
-            <TableHead>调整前</TableHead>
-            <TableHead>调整后</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {changed.map((key) => (
-            <TableRow key={key}>
-              <TableCell className="whitespace-normal break-all">
-                {key}
-              </TableCell>
-              <TableCell className="whitespace-normal break-all">
-                {display(previous[key])}
-              </TableCell>
-              <TableCell className="whitespace-normal break-all">
-                {display(next[key])}
-              </TableCell>
-            </TableRow>
-          ))}
-          {!changed.length && (
-            <TableRow>
-              <TableCell colSpan={3}>未记录字段差异</TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
     </div>
   )
 }

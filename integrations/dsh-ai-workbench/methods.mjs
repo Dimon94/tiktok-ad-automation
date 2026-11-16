@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 
-export const METHOD_VERSION = '1.8.3'
+export const METHOD_VERSION = '1.8.4'
 export const PROVIDER = 'tkada-review'
 export const SKILL_TOOL = 'skill'
 export const MAIN_KEY = 'ai-delivery-review'

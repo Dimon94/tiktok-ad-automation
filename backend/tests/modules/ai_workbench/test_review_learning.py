@@ -48,6 +48,18 @@ def test_second_round_tracks_decision_and_does_not_call_unexecuted_strategy_fail
             rationale="调整预算",
         ),
     )
+    # 页面使用公开提案契约；旧记录的说明只存 evidence，也必须完整返回。
+    from app.modules.ai_workbench.proposals import list_proposals
+
+    public = list_proposals(session, context=context, optimizer_id=optimizer.id)[0]
+    for name, expected in {
+        "problem": "起量不足",
+        "rationale": "调整预算",
+        "expected_effect": "提高测试覆盖",
+        "validation": "七个完整日后核验",
+    }.items():
+        assert public[name] == expected == public["evidence"][name]
+
     accept_proposal(
         session,
         context=context,

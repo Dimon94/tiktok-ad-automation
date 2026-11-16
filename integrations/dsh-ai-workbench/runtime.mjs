@@ -127,6 +127,12 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
             async execute(result) {
               if (controller.signal.aborted) throw new Error('Review cancelled or expired')
               if (!usedMethods.has(MAIN_KEY)) throw new Error('Load the main review skill before completing')
+              // 不允许生成没有决策说明的待确认事项；先让 Agent 补齐，不写入空提案。
+              const missingExplanations = (result.proposals ?? []).flatMap((proposal, index) =>
+                ['problem', 'rationale', 'expected_effect', 'validation'].filter(field =>
+                  typeof proposal[field] !== 'string' || !proposal[field].trim() || ['未记录', '未提供', '详见报告'].includes(proposal[field].trim())
+                ).map(field => ({ proposal: index + 1, field })))
+              if (missingExplanations.length) return { status: 'revision_required', persisted: false, missing_explanations: missingExplanations, instruction: 'Complete each proposal with concise Chinese business problem, evidence, expected benefit AND risk, observation period and withdrawal conditions. Do not use placeholders or only refer to the report. Then resubmit.' }
               // 每次提交都校验成功工具回执，不能把尚未执行的工作包装成证据缺失。
               const gaps = verification.completionGaps(task.evidence, usedMethods)
               if (gaps.length) return { status: 'work_required', persisted: false, gaps, diagnostic_evidence: verification.diagnostics(), instruction: 'Complete these available actions in THIS task, then resubmit. Do not defer them to the next round. Tool failures must be reported honestly; never invent successful work.' }
@@ -145,7 +151,7 @@ export async function runClaim(ctx, config, claim, runtime, { createUserMessage,
                   'Do not pool distinct currency/timezone/window/attribution partitions. A shortfall to break-even 1.0 differs from a shortfall to target_roas. State revenue minus spend as an observed platform amount, not business net profit or causal loss.',
                   'Use accounts:{mode:"REVIEW_ACCOUNTS"} for exact frozen-scope backtests/proposals; no need to enumerate all account IDs. Before claiming data is absent inspect source_catalog and query/read relevant categories, especially BOTH business and data_pack_business, attribution and operation sources. An empty optimizer summary does not mean all account business sources are empty.',
                   'A zero eligible threshold result does not prove many objects passed that threshold. Disabled rules and missing execution history do not prove avoidable loss or missed control opportunities.',
-                  'Use Chinese for the business report. Check uncovered loss patterns and whether a new rule is justified; daily replay accepts candidate_definitions without rule_id. Compare retained ROAS, lost revenue and false-stop risk jointly, state captured-attribution and missing holdout limitations, and do not sum independently replayed rule totals.',
+                  'Write for advertising OPERATORS: headline/summary/verdict and the three decision sections use concise Chinese business language, concrete actions, risks and coverage limits. No API/tool names, UUIDs, raw field paths or technical status codes in these parts or proposal explanations. Put source/Skill/version inventory only in a final analysis appendix, evidence IDs in evidence_ids. Every proposal must fill problem/rationale/expected_effect/validation with readable business explanations, observation period and withdrawal conditions. Use Chinese for the business report. Check uncovered loss patterns and whether a new rule is justified; daily replay accepts candidate_definitions without rule_id. Compare retained ROAS, lost revenue and false-stop risk jointly, state captured-attribution and missing holdout limitations, and do not sum independently replayed rule totals.',
                   'Correct contradictions between summary and recommendations, cite only delivered evidence, and explicitly separate observed facts, hypotheses and verification steps. Resubmit the corrected result with this tool.',
                 ], source_catalog: task.evidence.source_catalog || [] }
               }

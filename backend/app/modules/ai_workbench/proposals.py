@@ -157,7 +157,16 @@ def _public(row: AIProposal) -> dict[str, Any]:
         "request_id",
         "created_at",
     )
-    return {name: getattr(row, name) for name in names}
+    result = {name: getattr(row, name) for name in names}
+    # 决策说明与证据共同持久化；公开投影统一展开，历史提案无需改写即可阅读。
+    evidence = row.evidence or {}
+    result.update(
+        {
+            name: evidence.get(name)
+            for name in ("problem", "rationale", "expected_effect", "validation")
+        }
+    )
+    return result
 
 
 def list_proposals(

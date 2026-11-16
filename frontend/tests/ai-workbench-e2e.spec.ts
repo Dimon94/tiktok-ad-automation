@@ -330,6 +330,11 @@ test("双租户双投手切换保留 AUTO/MANUAL、下单路径和回读边界",
     `/tenants/${tenantA}/ai-workbench?optimizer_id=${optimizerAManual}&view=review`,
   )
   await expect(page.getByTestId("ai-review-view")).toContainText("复盘建议")
+  await page
+    .getByTestId(`proposal-${optimizerAManual}-proposal`)
+    .locator("summary")
+    .first()
+    .click()
   await page.getByRole("button", { name: "接受并发布" }).click()
   await expect.poll(() => proposalRequests.length).toBe(1)
   expect(proposalRequests[0]).toContain(
@@ -575,10 +580,16 @@ test("提案展示前后值与授权证据，决定错误可见，复盘可触�
   await page.goto(
     `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
   )
+  await page
+    .getByTestId("proposal-proposal-1")
+    .locator("summary")
+    .first()
+    .click()
+  await page.getByText("技术记录（供排查使用）", { exact: true }).click()
   await expect(page.getByTestId("ai-review-view")).toContainText("frozen-123")
   await expect(page.getByTestId("ai-review-view")).toContainText("120")
   await expect(page.getByTestId("ai-review-view")).toContainText(
-    "授权与影响范围",
+    "authorization",
   )
   await page.getByRole("button", { name: "接受并发布", exact: true }).click()
   await expect(page.getByRole("alert")).toContainText("版本已变更")
@@ -1246,6 +1257,11 @@ test("知识库独立导航、搜索与详情，待确认合并到复盘并更�
   await page.getByRole("tab", { name: "待确认", exact: true }).click()
   await expect(reviews).toContainText("待确认调整")
   await expect(reviews).not.toContainText("已处理调整")
+  await page
+    .getByTestId("proposal-proposal-1")
+    .locator("summary")
+    .first()
+    .click()
   await page.getByRole("button", { name: "接受并发布", exact: true }).click()
   await expect(
     page.getByRole("tab", { name: "待确认", exact: true }),
@@ -1308,7 +1324,8 @@ test("发起复盘等待时给出反馈，失败可见且重试后显示任务",
     "发起复盘失败：复盘证据超过单轮容量",
   )
   await page.getByRole("button", { name: "发起复盘", exact: true }).click()
-  await expect(page.getByTestId("ai-review-view")).toContainText(
+  await expect(page.getByTestId("review-detail")).toHaveAttribute(
+    "data-review-id",
     "review-created",
   )
   await expect(page.getByRole("alert")).toHaveCount(0)
@@ -1473,6 +1490,12 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
     "观察完整日利润与消耗",
   )
   await expect(
+    page
+      .getByTestId("review-report")
+      .getByText("ev-complete-day", { exact: true }),
+  ).not.toBeVisible()
+  await page.getByText("账户时区分组", { exact: true }).click()
+  await expect(
     page.getByTestId("review-report").getByRole("table"),
   ).toContainText("UTC+8")
   await expect(page.getByRole("button", { name: "接受并发布" })).toHaveCount(0)
@@ -1537,14 +1560,79 @@ test("跨轮变更分页、字段差异、人工发布回读及带原因拒绝�
     rationale: "连续三日低效占比升高",
     expected_effect: "降低低效消耗",
     validation: "完整日利润不下降",
-    before: { thresholds: { spend: 20 } },
-    after: { thresholds: { spend: 30 } },
+    before:
+      index === 1
+        ? null
+        : {
+            name: "低效系列控损",
+            enabled: false,
+            definition: {
+              accounts: {
+                mode: "ACCOUNTS",
+                advertiser_ids: Array.from(
+                  { length: 1344 },
+                  (_, i) => `acc-${i}`,
+                ),
+              },
+              apply_to: { level: "campaign", status: "ACTIVE" },
+              aggregation: "EACH",
+              conditions: [
+                {
+                  metric: "spend",
+                  range: "PAST_3_DAYS",
+                  operator: "GT",
+                  values: ["20"],
+                },
+              ],
+              action: { type: "PAUSE", level: "campaign" },
+              mode: "CONFIRM",
+              schedule: {
+                frequency: "30M",
+                window: "CONTINUOUS",
+                timezone_basis: "ACCOUNT",
+              },
+              notification: { enabled: false },
+            },
+          },
+    after: {
+      name: "低效系列控损",
+      enabled: false,
+      definition: {
+        accounts: {
+          mode: "ACCOUNTS",
+          advertiser_ids: Array.from({ length: 1344 }, (_, i) => `acc-${i}`),
+        },
+        apply_to: { level: "campaign", status: "ACTIVE" },
+        aggregation: "EACH",
+        conditions: [
+          {
+            metric: "spend",
+            range: "PAST_3_DAYS",
+            operator: "GT",
+            values: ["30"],
+          },
+        ],
+        action: { type: "PAUSE", level: "campaign" },
+        mode: "CONFIRM",
+        schedule: {
+          frequency: "30M",
+          window: "CONTINUOUS",
+          timezone_basis: "ACCOUNT",
+        },
+        notification: { enabled: false },
+      },
+    },
     authorization: { advertiser_ids: ["acc-1"] },
     base_rule_version: 2,
     base_optimizer_version: 1,
     published_version_id: "",
     decision_reason: "",
   }))
+  await page.route("**/automation-rules/catalog", (route) =>
+    route.fulfill({
+      json: { metrics: [{ key: "spend", name_zh: "消耗", kind: "fact" }] },
+    }),
+  )
   const decisions: Array<{ path: string; body: Record<string, string> }> = []
   const reads: string[] = []
   await page.route(`**/ai-optimizers/${optimizer}/reviews**`, (route) => {
@@ -1616,19 +1704,48 @@ test("跨轮变更分页、字段差异、人工发布回读及带原因拒绝�
   await expect(page.getByTestId("proposal-proposal-0")).toHaveCount(0)
   await page.getByRole("button", { name: "变更上一页" }).click()
   const proposal = page.getByTestId("proposal-proposal-0")
-  await expect(proposal.getByRole("table")).toContainText("thresholds.spend")
+  await expect(proposal.getByRole("table")).not.toBeVisible()
+  await proposal.locator("summary").first().click()
+  await expect(proposal.getByRole("table")).toContainText("触发条件")
+  await expect(proposal.getByRole("table")).toContainText("近 3 天消耗")
+  await expect(proposal.getByRole("table").locator("tbody tr")).toHaveCount(1)
+  await expect(proposal.getByRole("table")).not.toContainText("acc-1333")
   await expect(proposal.getByRole("table")).toContainText("20")
   await expect(proposal.getByRole("table")).toContainText("30")
-  await proposal.getByRole("button", { name: "来源复盘：round-0" }).click()
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 })
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true)
+    await page.screenshot({
+      path: `../.runtime/review-operator-20261116/proposal-${width}.png`,
+      fullPage: true,
+    })
+  }
+  await proposal.getByRole("button", { name: "查看来源复盘" }).click()
   await expect
     .poll(() => reads.some((path) => path.endsWith("/reviews/round-0")))
     .toBe(true)
-  await proposal.getByRole("button", { name: "接受并发布" }).click()
+  await expect(proposal).toBeVisible()
+  await proposal.locator("summary").first().click()
+  await proposal.getByRole("button", { name: "确认保存（保持停用）" }).click()
   await expect(page.getByRole("alert")).toContainText("发布暂时不可用")
-  await proposal.getByRole("button", { name: "接受并发布" }).click()
-  await expect(proposal).toContainText("已发布版本 rule-version-3")
+  await proposal.getByRole("button", { name: "确认保存（保持停用）" }).click()
+  await expect(proposal).toContainText("已发布")
   expect(decisions[0].body.request_id).toBe(decisions[1].body.request_id)
   const rejected = page.getByTestId("proposal-proposal-1")
+  await rejected.locator("summary").first().click()
+  await expect(
+    rejected.getByText("新增规则内容", { exact: true }),
+  ).toBeVisible()
+  await expect(rejected.getByRole("table")).toContainText("1344 个账户")
+  await expect(
+    rejected.getByRole("columnheader", { name: "现在", exact: true }),
+  ).toHaveCount(0)
+  await expect(rejected.getByRole("table")).not.toContainText("acc-1333")
+
   await rejected
     .getByLabel("拒绝原因（选填）")
     .fill("阈值变化需要更多完整日证据")
@@ -1706,7 +1823,10 @@ test("查看历史仍轮询活动任务，切换投手阻断旧活动和详情�
   await page.goto(
     `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
   )
-  await expect(page.getByTestId("review-detail")).toContainText("old-review")
+  await expect(page.getByTestId("review-detail")).toHaveAttribute(
+    "data-review-id",
+    "old-review",
+  )
   await expect(
     page.getByRole("button", { name: "发起复盘", exact: true }),
   ).toBeDisabled()
