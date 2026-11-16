@@ -23,6 +23,8 @@ import { AssetDetails } from "./AssetDetails"
 import { BatchHistory } from "./BatchHistory"
 import { BatchUploadSheet } from "./BatchUploadSheet"
 import { CarouselPresetList } from "./CarouselPresetList"
+import { LinkUploadSheet } from "./LinkUploadSheet"
+import { LinkUploads } from "./LinkUploads"
 import { MaterialTable } from "./MaterialTable"
 import { materialKey, namingHint, uploadKey } from "./presentation"
 import { UploadQueue } from "./UploadQueue"
@@ -57,15 +59,19 @@ function MaterialWorkspace({
       state.location.search as {
         bc_id?: string
         tab?: string
+        link_batch_id?: string
         batch_id?: string
       },
   })
   const tab =
-    search.tab === "uploads"
-      ? "uploads"
-      : search.tab === "carousels"
-        ? "carousels"
-        : "library"
+    search.tab === "links"
+      ? "links"
+      : search.tab === "uploads"
+        ? "uploads"
+        : search.tab === "carousels"
+          ? "carousels"
+          : "library"
+  const [linkSheet, setLinkSheet] = useState(false)
   const [details, setDetails] = useState<string | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [sheet, setSheet] = useState(false)
@@ -122,13 +128,18 @@ function MaterialWorkspace({
   const write = allowed && !forbidden
   const revoke = () => setForbidden(true)
   const go = (
-    next: "library" | "uploads" | "carousels",
+    next: "library" | "uploads" | "carousels" | "links",
     id: string | null | undefined = batchId,
   ) =>
     void navigate({
       to: "/tenants/$tenantId/materials",
       params: { tenantId },
-      search: { bc_id: search.bc_id, tab: next, batch_id: id ?? undefined },
+      search: {
+        bc_id: search.bc_id,
+        tab: next,
+        batch_id: id ?? undefined,
+        link_batch_id: undefined,
+      },
     })
   useEffect(() => {
     // 先卸载文件选择侧栏，避免它的未保存保护拦截已成功批次的导航。
@@ -152,15 +163,24 @@ function MaterialWorkspace({
           </p>
         </div>
         {write && (
-          <Button
-            disabled={!targetBcId || uploadBusy}
-            onClick={() => {
-              setPinnedBc(targetBcId)
-              setSheet(true)
-            }}
-          >
-            批量上传
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              disabled={!targetBcId}
+              onClick={() => setLinkSheet(true)}
+            >
+              素材链接上传
+            </Button>
+            <Button
+              disabled={!targetBcId || uploadBusy}
+              onClick={() => {
+                setPinnedBc(targetBcId)
+                setSheet(true)
+              }}
+            >
+              批量上传
+            </Button>
+          </div>
         )}
       </div>
       {write && !targetBcId && (
@@ -174,13 +194,14 @@ function MaterialWorkspace({
       <Tabs
         value={tab}
         onValueChange={(value) =>
-          go(value as "library" | "uploads" | "carousels")
+          go(value as "library" | "uploads" | "carousels" | "links")
         }
       >
         <TabsList>
           <TabsTrigger value="carousels">轮播库</TabsTrigger>
           <TabsTrigger value="library">素材库</TabsTrigger>
           <TabsTrigger value="uploads">上传队列</TabsTrigger>
+          <TabsTrigger value="links">链接上传</TabsTrigger>
         </TabsList>
       </Tabs>
       {tab === "carousels" && (
@@ -239,6 +260,42 @@ function MaterialWorkspace({
             setStarted(id)
           }}
           onHistory={() => go("uploads", null)}
+        />
+      )}
+      {linkSheet && targetBcId && (
+        <LinkUploadSheet
+          key={`${tenantId}:${targetBcId}`}
+          tenantId={tenantId}
+          bcId={targetBcId}
+          onClose={() => setLinkSheet(false)}
+          onStarted={(id) => {
+            setLinkSheet(false)
+            void queryClient.invalidateQueries({
+              queryKey: ["tenant", tenantId, "link-uploads"],
+            })
+            void navigate({
+              to: "/tenants/$tenantId/materials",
+              params: { tenantId },
+              search: { bc_id: targetBcId, tab: "links", link_batch_id: id },
+            })
+          }}
+        />
+      )}
+      {tab === "links" && targetBcId && (
+        <LinkUploads
+          key={`${tenantId}:${targetBcId}:${search.link_batch_id ?? "history"}`}
+          tenantId={tenantId}
+          bcId={targetBcId}
+          batchId={search.link_batch_id}
+          allowed={write}
+          onDetails={setDetails}
+          onOpen={(id) =>
+            void navigate({
+              to: "/tenants/$tenantId/materials",
+              params: { tenantId },
+              search: { bc_id: targetBcId, tab: "links", link_batch_id: id },
+            })
+          }
         />
       )}
       {details && (

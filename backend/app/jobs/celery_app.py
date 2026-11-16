@@ -22,6 +22,7 @@ celery_app.conf.update(
         "app.modules.accounts.discovery_recovery",
         "app.modules.providers.tasks",
         "app.modules.materials.tasks",
+        "app.modules.materials.link_tasks",
         "app.modules.materials.cover_tasks",
         "app.modules.materials.source_cover_tasks",
         "app.modules.materials.validation_tasks",
@@ -113,6 +114,11 @@ celery_app.conf.update(
         "ai_workbench.dispatch_due_plans": {"queue": "control"},
     },
     beat_schedule={
+        "repair-material-link-items": {
+            "task": "materials.repair_link_items",
+            "schedule": 30.0,
+            "options": {"queue": "control"},
+        },
         "refresh-active-report-pages": {
             "task": "reporting.plan_query_pages",
             "schedule": 5.0,

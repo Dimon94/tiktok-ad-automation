@@ -20678,3 +20678,415 @@ export type buildsGetSubmissionRecoveryResponses = {
 };
 
 export type buildsGetSubmissionRecoveryResponse = buildsGetSubmissionRecoveryResponses[keyof buildsGetSubmissionRecoveryResponses];
+
+export type LinkBatchCreate = {
+    /**
+     * Request Id
+     */
+    request_id: string;
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Text
+     */
+    text: string;
+    /**
+     * Advertiser Ids
+     */
+    advertiser_ids: Array<string>;
+};
+
+export type LinkBatchPublic = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Naming Date
+     */
+    naming_date: string;
+    /**
+     * Input Count
+     */
+    input_count: number;
+    /**
+     * Unique Count
+     */
+    unique_count: number;
+    /**
+     * Duplicate Count
+     */
+    duplicate_count: number;
+    /**
+     * Account Count
+     */
+    account_count: number;
+    /**
+     * Total
+     */
+    total: number;
+    /**
+     * Counts
+     */
+    counts: {
+        [key: string]: number;
+    };
+    /**
+     * Created At
+     */
+    created_at: string;
+};
+
+export type LinkItemPublic = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Batch Id
+     */
+    batch_id: string;
+    /**
+     * Bc Id
+     */
+    bc_id: string;
+    /**
+     * Duplicate Line No
+     */
+    duplicate_line_no?: number | null;
+    /**
+     * Line No
+     */
+    line_no: number;
+    /**
+     * Source Url
+     */
+    source_url: string;
+    /**
+     * Source Video Id
+     */
+    source_video_id: string;
+    /**
+     * Advertiser Id
+     */
+    advertiser_id: string;
+    /**
+     * Requested File Name
+     */
+    requested_file_name: string;
+    /**
+     * Actual File Name
+     */
+    actual_file_name: string | null;
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Video Id
+     */
+    video_id: string | null;
+    /**
+     * Mid
+     */
+    mid: string | null;
+    /**
+     * Material Id
+     */
+    material_id: string | null;
+    /**
+     * Duplicate Of
+     */
+    duplicate_of: string | null;
+    /**
+     * Error Code
+     */
+    error_code: string | null;
+    /**
+     * Error Message
+     */
+    error_message: string | null;
+    /**
+     * Request Id
+     */
+    request_id: string | null;
+    /**
+     * Can Retry
+     */
+    can_retry: boolean;
+    /**
+     * Can Recheck
+     */
+    can_recheck: boolean;
+    /**
+     * Updated At
+     */
+    updated_at: string;
+};
+
+export type Page_LinkBatchPublic_ = {
+    /**
+     * Items
+     */
+    items: Array<LinkBatchPublic>;
+    /**
+     * Next Cursor
+     */
+    next_cursor?: string | null;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+export type Page_LinkItemPublic_ = {
+    /**
+     * Items
+     */
+    items: Array<LinkItemPublic>;
+    /**
+     * Next Cursor
+     */
+    next_cursor?: string | null;
+    /**
+     * Total
+     */
+    total: number;
+};
+
+export type listLinkUploadsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query: {
+        /**
+         * Bc Id
+         */
+        bc_id: string;
+        /**
+         * Offset
+         */
+        offset?: number;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/tenants/{tenant_id}/materials/link-uploads';
+};
+
+export type listLinkUploadsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type listLinkUploadsError = listLinkUploadsErrors[keyof listLinkUploadsErrors];
+
+export type listLinkUploadsResponses = {
+    /**
+     * Successful Response
+     */
+    200: Page_LinkBatchPublic_;
+};
+
+export type listLinkUploadsResponse = listLinkUploadsResponses[keyof listLinkUploadsResponses];
+
+export type createLinkUploadData = {
+    body: LinkBatchCreate;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/materials/link-uploads';
+};
+
+export type createLinkUploadErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type createLinkUploadError = createLinkUploadErrors[keyof createLinkUploadErrors];
+
+export type createLinkUploadResponses = {
+    /**
+     * Successful Response
+     */
+    201: LinkBatchPublic;
+};
+
+export type createLinkUploadResponse = createLinkUploadResponses[keyof createLinkUploadResponses];
+
+export type listMaterialLinkSourcesData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Material Id
+         */
+        material_id: string;
+    };
+    query?: {
+        /**
+         * Offset
+         */
+        offset?: number;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/tenants/{tenant_id}/materials/link-uploads/material-items/{material_id}';
+};
+
+export type listMaterialLinkSourcesErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type listMaterialLinkSourcesError = listMaterialLinkSourcesErrors[keyof listMaterialLinkSourcesErrors];
+
+export type listMaterialLinkSourcesResponses = {
+    /**
+     * Successful Response
+     */
+    200: Page_LinkItemPublic_;
+};
+
+export type listMaterialLinkSourcesResponse = listMaterialLinkSourcesResponses[keyof listMaterialLinkSourcesResponses];
+
+export type readLinkUploadData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Batch Id
+         */
+        batch_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}';
+};
+
+export type readLinkUploadErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type readLinkUploadError = readLinkUploadErrors[keyof readLinkUploadErrors];
+
+export type readLinkUploadResponses = {
+    /**
+     * Successful Response
+     */
+    200: LinkBatchPublic;
+};
+
+export type readLinkUploadResponse = readLinkUploadResponses[keyof readLinkUploadResponses];
+
+export type listLinkUploadItemsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Batch Id
+         */
+        batch_id: string;
+    };
+    query?: {
+        /**
+         * Offset
+         */
+        offset?: number;
+        /**
+         * Limit
+         */
+        limit?: number;
+    };
+    url: '/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}/items';
+};
+
+export type listLinkUploadItemsErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type listLinkUploadItemsError = listLinkUploadItemsErrors[keyof listLinkUploadItemsErrors];
+
+export type listLinkUploadItemsResponses = {
+    /**
+     * Successful Response
+     */
+    200: Page_LinkItemPublic_;
+};
+
+export type listLinkUploadItemsResponse = listLinkUploadItemsResponses[keyof listLinkUploadItemsResponses];
+
+export type retryLinkUploadItemData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant Id
+         */
+        tenant_id: string;
+        /**
+         * Batch Id
+         */
+        batch_id: string;
+        /**
+         * Item Id
+         */
+        item_id: string;
+    };
+    query?: never;
+    url: '/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}/items/{item_id}/retry';
+};
+
+export type retryLinkUploadItemErrors = {
+    /**
+     * Validation Error
+     */
+    422: HTTPValidationError;
+};
+
+export type retryLinkUploadItemError = retryLinkUploadItemErrors[keyof retryLinkUploadItemErrors];
+
+export type retryLinkUploadItemResponses = {
+    /**
+     * Successful Response
+     */
+    200: LinkItemPublic;
+};
+
+export type retryLinkUploadItemResponse = retryLinkUploadItemResponses[keyof retryLinkUploadItemResponses];

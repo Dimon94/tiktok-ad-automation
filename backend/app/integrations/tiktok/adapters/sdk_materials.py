@@ -264,6 +264,66 @@ class SDKMaterialOperations(sdk_assets.MaterialReadAdapter):
                 evidence=CallEvidence(),
             ) from None
 
+    def upload_video_id(
+        self, request: contracts.VIDVideoUpload, *, budget: contracts.RemoteCallBudget
+    ) -> contracts.VideoReceipt:
+        sent = False
+        try:
+            if (
+                budget.deadline != self._deadline
+                or not re.fullmatch(r"v[a-z0-9]{20,80}", request.video_id)
+                or not 1 <= len(request.file_name) <= 100
+            ):
+                raise DomainError("material_request_invalid", "视频链接参数无效")
+            # VID 仅在平台内引用，使用官方 SDK JSON 调用，复用同一物理上传额度。
+            with self._scope(
+                request.advertiser_id, "materials.upload_video_url", budget.deadline
+            ):
+                budget.timeout(upload=True)
+                sent = True
+                self._client.call_api(
+                    "/open_api/v1.3/file/video/ad/upload/",
+                    "POST",
+                    {},
+                    [],
+                    {
+                        "Access-Token": self._client.default_headers["Access-Token"],
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    body={
+                        "advertiser_id": request.advertiser_id,
+                        "upload_type": "UPLOAD_BY_VIDEO_ID",
+                        "video_id": request.video_id,
+                        "file_name": request.file_name,
+                        "flaw_detect": False,
+                        "auto_fix_enabled": False,
+                        "auto_bind_enabled": False,
+                    },
+                    response_type="InlineResponse200",
+                    auth_settings=[],
+                    _return_http_data_only=True,
+                    async_req=True,
+                    _request_timeout=budget.timeout(upload=True),
+                ).get()
+                return sdk_assets.video_upload_receipt(
+                    _upload_response(self._client, array=True),
+                    advertiser_id=request.advertiser_id,
+                    channel="OFFICIAL_API",
+                )
+        except SDK_SCOPE_INTERRUPTS:
+            raise
+        except RemoteCallError, AccountAdmissionDeferred:
+            raise
+        except Exception as error:
+            raise RemoteCallError(
+                error.code
+                if isinstance(error, DomainError) and not sent
+                else "material_response_unknown",
+                effect="UNKNOWN" if sent else "NOT_SENT",
+                evidence=CallEvidence(),
+            ) from None
+
     def upload_video_url(
         self, request: contracts.URLVideoUpload, *, budget: contracts.RemoteCallBudget
     ) -> contracts.VideoReceipt:

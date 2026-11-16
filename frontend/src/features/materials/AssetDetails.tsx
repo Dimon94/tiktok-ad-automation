@@ -3,6 +3,7 @@ import type { ColumnDef } from "@tanstack/react-table"
 import { useEffect, useRef, useState } from "react"
 import {
   type AccountAsset,
+  MaterialLinksService,
   MaterialsService,
   type RemoteMaterialPreview,
   type UploadAttemptPublic,
@@ -108,12 +109,34 @@ export function AssetDetails({
           })
         ).data,
     })
+  const [linkOffset, setLinkOffset] = useState(0)
+  const linkSources = useQuery({
+    queryKey: [...key, "link-sources", linkOffset],
+    queryFn: async ({ signal }) =>
+      (
+        await MaterialLinksService.listMaterialLinkSources({
+          path,
+          query: { offset: linkOffset, limit: 20 },
+          signal,
+        })
+      ).data,
+  })
   const a = useRetainedData(assets.data, assets.error),
     h = useRetainedData(attempts.data, attempts.error)
   useEffect(() => {
-    if ([detail.error, assets.error, attempts.error].some(isForbidden))
+    if (
+      [detail.error, assets.error, attempts.error, linkSources.error].some(
+        isForbidden,
+      )
+    )
       onForbidden()
-  }, [detail.error, assets.error, attempts.error, onForbidden])
+  }, [
+    detail.error,
+    assets.error,
+    attempts.error,
+    linkSources.error,
+    onForbidden,
+  ])
   async function loadPreview(kind: "original" | "remote") {
     if (
       !previewAuthorized ||
@@ -319,6 +342,54 @@ export function AssetDetails({
             </section>
           )
         )}
+        {linkSources.isError && (
+          <p role="alert" className="text-sm text-destructive">
+            链接上传来源暂时无法读取，请重新打开详情。
+          </p>
+        )}
+        {!!linkSources.data?.total && (
+          <section aria-label="链接上传来源" className="flex flex-col gap-3">
+            <h2 className="font-semibold">链接上传来源</h2>
+            {linkSources.data.items.map((source) => (
+              <div
+                key={source.id}
+                className="flex flex-col gap-1 text-sm break-all"
+              >
+                <span>
+                  第 {source.line_no} 行 · 账户 {source.advertiser_id}
+                </span>
+                <span>{source.source_url}</span>
+                <a
+                  className="underline"
+                  href={`/tenants/${tenantId}/materials?bc_id=${encodeURIComponent(source.bc_id ?? detail.data?.bc_id ?? "")}&tab=links&link_batch_id=${source.batch_id}`}
+                >
+                  查看链接上传批次
+                </a>
+              </div>
+            ))}
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!linkOffset || linkSources.isFetching}
+                onClick={() => setLinkOffset(Math.max(0, linkOffset - 20))}
+              >
+                上一页来源
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  linkOffset + 20 >= linkSources.data.total ||
+                  linkSources.isFetching
+                }
+                onClick={() => setLinkOffset(linkOffset + 20)}
+              >
+                下一页来源
+              </Button>
+            </div>
+          </section>
+        )}
         <section
           aria-label="来源上传记录"
           className="flex min-w-0 flex-col gap-4"
@@ -332,7 +403,7 @@ export function AssetDetails({
             error={attempts.error}
             retry={() => void attempts.refetch()}
             filtered={false}
-            emptyTitle="尚未开始平台上传"
+            emptyTitle="暂无文件上传记录"
           />
           <Pager
             paging={attemptPage}

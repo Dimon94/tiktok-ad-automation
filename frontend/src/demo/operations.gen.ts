@@ -1,5 +1,18 @@
 // 由 scripts/generate-demo-operations.mjs 生成，请勿手改。
 import type {
+  listLinkUploadsData,
+  listLinkUploadsResponse,
+  createLinkUploadData,
+  createLinkUploadResponse,
+  listMaterialLinkSourcesData,
+  listMaterialLinkSourcesResponse,
+  readLinkUploadData,
+  readLinkUploadResponse,
+  listLinkUploadItemsData,
+  listLinkUploadItemsResponse,
+  retryLinkUploadItemData,
+  retryLinkUploadItemResponse,
+
   accountsAuthorizeData,
   accountsAuthorizeResponse,
   accountsBindingData,
@@ -522,6 +535,12 @@ import type {
 } from "@/client/types.gen"
 
 export const DEMO_OPERATIONS = {
+  "create_link_upload": { method: "POST", path: "/api/tenants/{tenant_id}/materials/link-uploads", query: {} },
+  "list_link_upload_items": { method: "GET", path: "/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}/items", query: {"offset":"number","limit":"number"} },
+  "list_link_uploads": { method: "GET", path: "/api/tenants/{tenant_id}/materials/link-uploads", query: {"offset":"number","limit":"number"} },
+  "list_material_link_sources": { method: "GET", path: "/api/tenants/{tenant_id}/materials/link-uploads/material-items/{material_id}", query: {"offset":"number","limit":"number"} },
+  "read_link_upload": { method: "GET", path: "/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}", query: {} },
+  "retry_link_upload_item": { method: "POST", path: "/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}/items/{item_id}/retry", query: {} },
   "accounts-authorize": { method: "POST", path: "/api/tenants/{tenant_id}/tiktok/mcp/authorizations", query: {} },
   "accounts-binding": { method: "POST", path: "/api/tenants/{tenant_id}/tiktok/mcp/candidates/{attempt_id}/binding", query: {} },
   "accounts-candidate_bcs": { method: "GET", path: "/api/tenants/{tenant_id}/tiktok/mcp/candidates/{attempt_id}/bcs", query: {"page":"number","page_size":"number"} },
@@ -787,6 +806,12 @@ export const DEMO_OPERATIONS = {
 } as const
 
 export interface DemoOperationTypes {
+  "create_link_upload": { data: createLinkUploadData; response: createLinkUploadResponse }
+  "list_link_upload_items": { data: listLinkUploadItemsData; response: listLinkUploadItemsResponse }
+  "list_link_uploads": { data: listLinkUploadsData; response: listLinkUploadsResponse }
+  "list_material_link_sources": { data: listMaterialLinkSourcesData; response: listMaterialLinkSourcesResponse }
+  "read_link_upload": { data: readLinkUploadData; response: readLinkUploadResponse }
+  "retry_link_upload_item": { data: retryLinkUploadItemData; response: retryLinkUploadItemResponse }
   "accounts-authorize": { data: accountsAuthorizeData; response: accountsAuthorizeResponse }
   "accounts-binding": { data: accountsBindingData; response: accountsBindingResponse }
   "accounts-candidate_bcs": { data: accountsCandidateBcsData; response: accountsCandidateBcsResponse }

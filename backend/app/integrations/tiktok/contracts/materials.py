@@ -172,6 +172,13 @@ class VideoReceipt:
 
 
 @dataclass(frozen=True)
+class VIDVideoUpload:
+    advertiser_id: str
+    video_id: str
+    file_name: str
+
+
+@dataclass(frozen=True)
 class URLVideoUpload:
     advertiser_id: str
     url: str = field(repr=False)
@@ -250,6 +257,9 @@ class MaterialOperations(Protocol):
         budget: RemoteCallBudget,
         video_name: str | None = None,
     ) -> MaterialPage[VideoRecord]: ...
+    def upload_video_id(
+        self, request: VIDVideoUpload, *, budget: RemoteCallBudget
+    ) -> VideoReceipt: ...
     def upload_video_url(
         self, request: URLVideoUpload, *, budget: RemoteCallBudget
     ) -> VideoReceipt: ...

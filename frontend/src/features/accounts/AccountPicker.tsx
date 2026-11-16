@@ -28,6 +28,7 @@ type Props = {
   value: string
   disabled: boolean
   onChange: (value: string) => void
+  capability?: "build" | "upload"
   selectionMode?: "append" | "replace"
   triggerLabel?: string
 }
@@ -59,6 +60,7 @@ function AccountSelection({
   onChange,
   close,
   selectionMode = "append",
+  capability = "build",
 }: Props & { close: () => void }) {
   const id = useId()
   const [input, setInput] = useState("")
@@ -155,7 +157,7 @@ function AccountSelection({
     !!existing.error
   const eligible = (item: AccountPublic) =>
     item.bc_id === bcId &&
-    item.can_build &&
+    (capability === "upload" ? item.can_upload : item.can_build) &&
     !item.ownership_conflict &&
     (replacing || !existingIds.has(item.advertiser_id))
   const available = (query.data?.items ?? []).filter(eligible)
@@ -365,8 +367,12 @@ function AccountSelection({
                       : ""}
                     {availabilityLabels[item.availability]} ·{" "}
                     {item.remote_status}
-                    {!item.can_build
-                      ? " · 当前不可搭建（请核对账户状态与搭建权限）"
+                    {!(capability === "upload"
+                      ? item.can_upload
+                      : item.can_build)
+                      ? capability === "upload"
+                        ? " · 当前无素材上传权限"
+                        : " · 当前不可搭建（请核对账户状态与搭建权限）"
                       : ""}
                   </span>
                 </FieldLabel>

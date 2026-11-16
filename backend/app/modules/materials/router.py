@@ -262,6 +262,32 @@ def _catalog_statement(context: TenantContext) -> tuple[Any, Any]:
         .correlate(MaterialFile)
         .scalar_subquery()
     )
+    from .link_models import MaterialLinkItem
+
+    link_account = (
+        select(MaterialLinkItem.advertiser_id)
+        .where(
+            MaterialLinkItem.tenant_id == context.tenant_id,
+            MaterialLinkItem.material_id == MaterialFile.id,
+            MaterialLinkItem.status == "success",
+        )
+        .order_by(col(MaterialLinkItem.updated_at).desc(), col(MaterialLinkItem.id))
+        .limit(1)
+        .correlate(MaterialFile)
+        .scalar_subquery()
+    )
+    link_bc = (
+        select(MaterialLinkItem.bc_id)
+        .where(
+            MaterialLinkItem.tenant_id == context.tenant_id,
+            MaterialLinkItem.material_id == MaterialFile.id,
+            MaterialLinkItem.status == "success",
+        )
+        .order_by(col(MaterialLinkItem.updated_at).desc(), col(MaterialLinkItem.id))
+        .limit(1)
+        .correlate(MaterialFile)
+        .scalar_subquery()
+    )
     latest = (
         select(MaterialUploadAttempt.status)
         .where(
@@ -325,7 +351,9 @@ def _catalog_statement(context: TenantContext) -> tuple[Any, Any]:
         (col(MaterialFile.storage_state) == "stored", "stored"),
         else_="receiving",
     )
-    return select(MaterialFile, stage, count, advertiser).add_columns(latest_bc).where(
+    return select(
+        MaterialFile, stage, count, func.coalesce(link_account, advertiser)
+    ).add_columns(func.coalesce(link_bc, latest_bc)).where(
         col(MaterialFile.tenant_id) == context.tenant_id
     ), stage
 

@@ -1,7 +1,8 @@
 // 体验版假后端：materials 领域
 
-import { imageCandidates } from "../fixtures/image-composition-state"
 import { toast } from "sonner"
+import { parseMaterialLinks } from "@/features/materials/link-input"
+import { imageCandidates } from "../fixtures/image-composition-state"
 import {
   addIngestFile,
   completeIngestFile,
@@ -765,3 +766,89 @@ function fileToPublic(file: IngestFileState) {
     task_id: null,
   }
 }
+
+// 链接上传体验数据仅存在于浏览器，不调用平台，不代表真实入库。
+const linkBatches = new Map<string, import("@/client").LinkBatchPublic>()
+const linkItems = new Map<string, import("@/client").LinkItemPublic[]>()
+const linkRequests = new Map<string, string>()
+handle("create_link_upload", (req) => {
+  const { request_id, text, advertiser_ids, bc_id } = req.body
+  const existing = linkRequests.get(request_id)
+  if (existing) return linkBatches.get(existing)!
+  const parsed = parseMaterialLinks(text)
+  if (parsed.errors.length || !parsed.unique.length)
+    return demoError(422, "link_input_invalid", "请填写有效素材链接")
+  if (
+    advertiser_ids.length > 20 ||
+    parsed.unique.length * advertiser_ids.length > 2000
+  )
+    return demoError(422, "link_input_invalid", "请分批提交")
+  const id = demoUuid(),
+    date = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Shanghai" })
+      .format(new Date())
+      .replace(/-/g, "")
+  const items = parsed.unique.flatMap((line) =>
+    advertiser_ids.map((advertiser_id) => ({
+      id: demoUuid(),
+      batch_id: id,
+      bc_id,
+      line_no: line.line,
+      source_url: `https://ad-creative-studio-platform.tiktok-row.net/preview?vid=${line.vid}`,
+      source_video_id: line.vid,
+      advertiser_id,
+      requested_file_name: `${date}_${line.vid}_${String(line.line).padStart(3, "0")}.mp4`,
+      actual_file_name: `${date}_${line.vid}_${String(line.line).padStart(3, "0")}.mp4`,
+      status: "success",
+      video_id: `demo-${line.vid}`,
+      mid: `demo-mid-${demoUuid()}`,
+      material_id: null,
+      duplicate_of: null,
+      duplicate_line_no: null,
+      error_code: null,
+      error_message: null,
+      request_id: "demo-only",
+      can_retry: false,
+      can_recheck: false,
+      updated_at: new Date().toISOString(),
+    })),
+  )
+  const batch = {
+    id,
+    bc_id,
+    naming_date: date,
+    input_count: parsed.lines.length,
+    unique_count: parsed.unique.length,
+    duplicate_count: parsed.lines.length - parsed.unique.length,
+    account_count: advertiser_ids.length,
+    total: items.length,
+    counts: { success: items.length },
+    created_at: new Date().toISOString(),
+  }
+  linkBatches.set(id, batch)
+  linkItems.set(id, items)
+  linkRequests.set(request_id, id)
+  return batch
+})
+handle("list_link_uploads", (req) =>
+  paginate(
+    [...linkBatches.values()].filter((row) => row.bc_id === req.query.bc_id),
+    req.query,
+  ),
+)
+handle(
+  "read_link_upload",
+  (req) =>
+    linkBatches.get(req.path.batch_id) ??
+    demoError(404, "upload_batch_not_found", "批次不存在"),
+)
+handle("list_link_upload_items", (req) =>
+  paginate(linkItems.get(req.path.batch_id) ?? [], req.query),
+)
+handle("list_material_link_sources", () => ({
+  items: [],
+  total: 0,
+  next_cursor: null,
+}))
+handle("retry_link_upload_item", () =>
+  demoError(409, "link_retry_unavailable", "体验批次已完成，无需重试"),
+)
