@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from hashlib import sha256
 from uuid import UUID
@@ -12,7 +11,6 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
-from app.core.errors import DomainError
 from app.modules.ai_workbench.knowledge import KnowledgeVersion, _scope_clause
 
 
@@ -91,25 +89,24 @@ def search_for_task(session: Session, *, task, query: str, offset: int = 0) -> d
 def read_for_task(session: Session, *, task, knowledge_id: UUID) -> dict:
     from fastapi import HTTPException
 
-    from app.modules.ai_workbench.input_budget import MAX_INPUT_BYTES
-
-    cached = next(
-        (r for r in task.evidence.get("knowledge", []) if r["id"] == str(knowledge_id)),
-        None,
+    from app.modules.ai_workbench.review_store import (
+        ReviewArtifact,
+        archive_artifact,
+        scoped,
     )
+
+    cached = session.exec(
+        scoped(ReviewArtifact, task).where(
+            ReviewArtifact.id == knowledge_id, ReviewArtifact.kind == "knowledge"
+        )
+    ).first()
     if cached:
-        return cached
+        return cached.payload
     row = session.exec(
         _query(task).where(col(KnowledgeVersion.id) == knowledge_id)
     ).one_or_none()
     if row is None:
         raise HTTPException(404, "knowledge_not_available_in_task_scope")
-    loaded = task.evidence.get("knowledge", [])
-    if len(loaded) >= 20 or sum(len(r["body"]) for r in loaded) + len(row.body) > 32000:
-        raise DomainError(
-            "ai_knowledge_budget_exceeded",
-            "本轮知识正文预算已用完，请使用已读取证据或下一轮缩小问题",
-        )
     cutoff = datetime.fromisoformat(task.evidence["captured_at"])
     conflict_count = (
         session.exec(
@@ -127,14 +124,11 @@ def read_for_task(session: Session, *, task, knowledge_id: UUID) -> dict:
         "conflict": len(conflict_count) > 1,
         "evidence_ids": row.evidence_ids,
     }
-    updated = {**task.evidence, "knowledge": [*loaded, frozen]}
-    if (
-        len(json.dumps(updated, ensure_ascii=False, separators=(",", ":")).encode())
-        > MAX_INPUT_BYTES
-    ):
-        raise DomainError("ai_knowledge_budget_exceeded", "本轮任务输入容量不足")
-    # task_identity 对任务行加锁，多个正文读取不能丢失更新；任务源数据不变。
-    task.evidence = updated
-    session.add(task)
-    session.flush()
-    return frozen
+    return archive_artifact(
+        session,
+        task=task,
+        kind="knowledge",
+        key=str(knowledge_id),
+        payload=frozen,
+        identity=knowledge_id,
+    )

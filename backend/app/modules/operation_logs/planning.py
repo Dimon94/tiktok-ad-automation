@@ -108,6 +108,29 @@ def plan_logs(
             .correlate(SyncRequirement, SyncScope)
             .exists()
         )
+        # 存量历史窗口先消化；按当前owner/授权判断，不被失效任务永久挡住。
+        history_inflight = (
+            session.exec(
+                select(SyncExecutionScope.id)
+                .join(SyncScope, col(SyncScope.id) == col(SyncExecutionScope.scope_id))
+                .join(
+                    ReportSyncJob,
+                    col(ReportSyncJob.id) == col(SyncExecutionScope.report_job_id),
+                )
+                .where(
+                    SyncScope.identity_digest == key.digest,
+                    SyncExecutionScope.owner_epoch == SyncScope.owner_epoch,
+                    SyncExecutionScope.status == "PENDING",
+                    ReportSyncJob.priority == 4,
+                    col(ReportSyncJob.status).in_(["QUEUED", "WAITING", "RUNNING"]),
+                    execution_owner_current(ReportSyncJob, "report_job_id"),
+                )
+                .limit(1)
+            ).first()
+            is not None
+            if history_start is not None
+            else False
+        )
         for requirement in session.exec(
             select(SyncRequirement)
             .join(SyncScope, col(SyncScope.id) == col(SyncRequirement.scope_id))
@@ -127,7 +150,7 @@ def plan_logs(
         if end not in known:
             windows["daily", end, end].append([advertiser])
         cursor.recent_day = today
-        if history_start is not None:
+        if history_start is not None and not history_inflight:
             last = end - timedelta(days=1)
             while last >= history_start and last in known:
                 last -= timedelta(days=1)

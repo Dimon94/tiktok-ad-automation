@@ -6,8 +6,11 @@ from app.modules.ai_workbench.proposals import (
     accept_proposal,
     create_proposal,
 )
-from app.modules.ai_workbench.reviews import create_review_task
 from app.modules.ai_workbench.schemas import OptimizerCreate
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    source_store,
+)
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -23,7 +26,7 @@ def test_second_round_tracks_decision_and_does_not_call_unexecuted_strategy_fail
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    first = create_review_task(
+    first = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     first.status = "COMPLETE"
@@ -52,12 +55,12 @@ def test_second_round_tracks_decision_and_does_not_call_unexecuted_strategy_fail
         proposal_id=proposal.id,
         request_id=uuid4(),
     )
-    second = create_review_task(
+    second = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     history = next(
         r["payload"]
-        for r in second.evidence_store.values()
+        for r in source_store(session, second).values()
         if r["category"] == "history"
     )
     assert history["reviews"][0]["summary"] == "先观察起量"

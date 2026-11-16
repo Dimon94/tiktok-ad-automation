@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
@@ -17,8 +18,6 @@ from app.modules.reporting.filters import authorized_grants
 from app.modules.reporting.schemas import ReportingFilter
 
 WINDOW_DAYS = 7
-MAX_ACCOUNTS = 10
-MAX_ROWS = 50
 
 
 def account_window(timezone: str, cutoff: datetime) -> dict:
@@ -57,29 +56,52 @@ def build_data_pack(
     context: TenantContext,
     version: AIOptimizerVersion,
     cutoff: datetime | None = None,
+    observed_cutoff: datetime | None = None,
+    advertiser_ids: tuple[str, ...] | None = None,
+    authorized_ids: frozenset[str] | None = None,
 ) -> dict:
+    from sqlalchemy import text
+
+    from app.modules.ai_workbench.review_reporting import freeze_report
     from app.modules.business.models import (
         BusinessDay,
         BusinessPublication,
         BusinessRun,
     )
     from app.modules.operation_logs.models import OperationExport, OperationLogEvent
-    from app.modules.reporting.queries import freeze_review_page
+    from app.modules.reporting.read_models.models import (
+        AccountReportDayState,
+        ReadBucketState,
+    )
+    from app.modules.reporting.store_models import ReportSyncState
 
     cutoff = cutoff or datetime.now(UTC)
-    grants = authorized_grants(
-        session,
-        context=context,
-        bc_id=version.bc_id,
-        advertiser_ids=tuple(version.advertiser_ids),
+    observed_cutoff = observed_cutoff or cutoff
+    selected = (
+        tuple(version.advertiser_ids) if advertiser_ids is None else advertiser_ids
     )
-    allowed = {g.advertiser_id for g in grants}
-    ids = sorted(allowed & set(version.advertiser_ids))
+    if not set(selected).issubset(set(version.advertiser_ids)):
+        raise HTTPException(403, "account_outside_review_scope")
+    # 后台批次已核验完整授权范围；普通直接调用仍独立鉴权。
+    allowed = (
+        set(authorized_ids)
+        if authorized_ids is not None
+        else {
+            grant.advertiser_id
+            for grant in authorized_grants(
+                session, context=context, bc_id=version.bc_id, advertiser_ids=selected
+            )
+        }
+    )
+    ids = sorted(allowed & set(selected))
+    from app.modules.reporting.read_models.evidence import begin_evidence_snapshot
+
+    begin_evidence_snapshot(session)
     accounts = []
     reports = []
     business = []
     events = []
-    for advertiser_id in ids[:MAX_ACCOUNTS]:
+    for advertiser_id in ids:
         account = session.get(AdvertiserAccount, (context.tenant_id, advertiser_id))
         window = account_window(account.timezone if account else "", cutoff)
         window.update(
@@ -88,6 +110,102 @@ def build_data_pack(
         accounts.append(window)
         if window["status"] != "AVAILABLE":
             continue
+        start = date.fromisoformat(window["maturity_windows"]["d7"]["start_date"])
+        end = date.fromisoformat(window["complete_through"])
+        states: dict[str, Any] = {}
+        state_queries = {}
+        state_fingerprints = {}
+        for key, model, day_column in (
+            ("account", AccountReportDayState, col(AccountReportDayState.stat_date)),
+            ("publications", ReportSyncState, col(ReportSyncState.stat_date)),
+            ("material", ReadBucketState, col(ReadBucketState.bucket)),
+        ):
+            query = select(model).where(
+                model.tenant_id == context.tenant_id,
+                model.advertiser_id == advertiser_id,
+                day_column >= start,
+                day_column <= end,
+                *(
+                    [ReadBucketState.kind == "creative_material"]
+                    if key == "material"
+                    else []
+                ),
+            )
+            query = query.order_by(
+                day_column,
+                *([ReportSyncState.report_kind] if key == "publications" else []),
+            )
+            state_queries[key] = query
+            states[key] = session.exec(query).all()
+            state_fingerprints[key] = [
+                row.model_dump(mode="json") for row in states[key]
+            ]
+        from app.modules.reporting.levels import selected_states
+
+        states["account"] = states["campaign"] = states["drama"] = selected_states(
+            session,
+            tenant_id=context.tenant_id,
+            advertiser_id=advertiser_id,
+            dimension="campaign",
+            start=start,
+            end=end,
+        )
+        states["account_name"] = account.name if account else advertiser_id
+        states["review_labels"] = {
+            row.remote_id: {
+                "name": row.name or row.remote_id,
+                "campaign_name": row.name or row.remote_id,
+                "provider": row.provider_label,
+                "naming_status": row.naming_status,
+                "drama_name": row.drama_name,
+                "ad_type": row.ad_type,
+                "operation_status": row.operation_status,
+                "review_status": row.review_status,
+                "secondary_status": row.delivery_status,
+                "target_roas": str(row.target_roas)
+                if row.target_roas is not None
+                else None,
+                "campaign_budget": str(row.budget_value)
+                if row.budget_value is not None
+                else None,
+            }
+            for row in session.connection().execute(
+                text("""
+                SELECT ids.remote_id, COALESCE(NULLIF(e.name,''), p.raw_name, f.campaign_name, native.campaign_name) AS name,
+                    p.provider_label,p.status AS naming_status,p.drama_name,
+                    e.ad_type,e.operation_status,e.review_status,e.delivery_status,
+                    COALESCE(NULLIF(e.roas_bid,0),e.target_roas) AS target_roas,e.budget_value
+                FROM (
+                    SELECT DISTINCT campaign_id AS remote_id FROM campaign_selected_day
+                    WHERE tenant_id=:tenant AND advertiser_id=:adv AND stat_date BETWEEN :start AND :end
+                ) ids
+                LEFT JOIN ad_entity_read e ON e.tenant_id=:tenant AND e.advertiser_id=:adv
+                    AND e.kind='campaign' AND e.remote_id=ids.remote_id
+                LEFT JOIN campaign_name_current p ON p.tenant_id=:tenant AND p.advertiser_id=:adv
+                    AND p.campaign_remote_id=ids.remote_id
+                LEFT JOIN LATERAL (
+                    SELECT campaign_name FROM campaign_report_day
+                    WHERE tenant_id=:tenant AND advertiser_id=:adv AND campaign_id=ids.remote_id
+                        AND stat_date BETWEEN :start AND :end AND campaign_name IS NOT NULL
+                    ORDER BY stat_date DESC,fetched_at DESC LIMIT 1
+                ) f ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT campaign_name FROM campaign_selected_day
+                    WHERE tenant_id=:tenant AND advertiser_id=:adv AND campaign_id=ids.remote_id
+                        AND stat_date BETWEEN :start AND :end AND campaign_name IS NOT NULL
+                    ORDER BY stat_date DESC,fetched_at DESC LIMIT 1
+                ) native ON TRUE
+            """),
+                {
+                    "tenant": context.tenant_id,
+                    "adv": advertiser_id,
+                    "start": start,
+                    "end": end,
+                },
+            )
+        }
+        # 整个账户只设置一次查询参数，避免12份临时快照反复切换。
+        session.connection().execute(text("SET LOCAL jit = off"))
         # 各归因周期独立取七个成熟完整日；D7 不能复用近七日未成熟合计。
         for horizon, mature_window in window["maturity_windows"].items():
             for dimension in ("account", "campaign", "drama", "material"):
@@ -100,14 +218,13 @@ def build_data_pack(
                 # 缺投影属于业务数据缺失；其他错误传播，不能把程序错误伪装为无数据。
                 try:
                     with session.begin_nested():
-                        report = freeze_review_page(
+                        report = freeze_report(
                             session,
                             context=context,
                             bc_id=version.bc_id,
                             filters=filters,
-                            limit=MAX_ROWS,
-                            freeze_limit=5000,
-                            cutoff=cutoff,
+                            states=states,
+                            cutoff=observed_cutoff,
                         )
                 except HTTPException as error:
                     if error.status_code != 409:
@@ -119,6 +236,8 @@ def build_data_pack(
                     }
                 reports.append(
                     {
+                        "captured_at": observed_cutoff.isoformat(),
+                        "requested_at": cutoff.isoformat(),
                         "dimension": dimension,
                         "advertiser_id": advertiser_id,
                         "window": {**window, **mature_window},
@@ -131,7 +250,8 @@ def build_data_pack(
                             horizon=horizon,
                             window={**mature_window, "timezone": window["timezone"]},
                             report=report,
-                            cutoff=cutoff,
+                            cutoff=observed_cutoff,
+                            source_states=states[dimension],
                         ),
                         **report,
                     }
@@ -159,16 +279,15 @@ def build_data_pack(
                 <= date.fromisoformat(window["complete_through"]),
             )
             .order_by(col(BusinessDay.stat_date), col(BusinessDay.campaign_id))
-            .limit(MAX_ROWS + 1)
         ).all()
         business.append(
             {
                 "advertiser_id": advertiser_id,
                 "status": "AVAILABLE" if rows else "MISSING",
-                "rows_truncated": len(rows) > MAX_ROWS,
+                "rows_truncated": False,
                 "rows": [
                     r.model_dump(mode="json", exclude={"provider_rate", "rebate_rate"})
-                    for r in rows[:MAX_ROWS]
+                    for r in rows
                 ],
             }
         )
@@ -185,27 +304,40 @@ def build_data_pack(
                 col(OperationLogEvent.occurred_at) < cutoff,
             )
             .order_by(col(OperationLogEvent.occurred_at).desc())
-            .limit(MAX_ROWS + 1)
         ).all()
         events.append(
             {
                 "advertiser_id": advertiser_id,
                 "status": "AVAILABLE" if logs else "MISSING",
-                "rows_truncated": len(logs) > MAX_ROWS,
+                "rows_truncated": False,
                 "rows": [
                     {**row.model_dump(mode="json"), "advertiser_id": aid}
-                    for row, aid in logs[:MAX_ROWS]
+                    for row, aid in logs
                 ],
             }
         )
+        # READ COMMITTED 下同步可能在各维度读取之间发布；发现任何源代数变化就
+        # 重试整个账户，不能把不同出版版本的金额/覆盖冻结成同一份来源。
+        from app.core.errors import DomainError
+
+        for key, query in state_queries.items():
+            current = session.exec(
+                query.execution_options(populate_existing=True)
+            ).all()
+            if [row.model_dump(mode="json") for row in current] != state_fingerprints[
+                key
+            ]:
+                raise DomainError(
+                    "ai_review_publication_changed", "冻结期间报表已更新，请重试"
+                )
     return sanitize_public(
         {
             "contract": "ai-review-data-v1",
             "cutoff": cutoff,
             "window_days": WINDOW_DAYS,
             "accounts": accounts,
-            "accounts_truncated": len(ids) > MAX_ACCOUNTS,
-            "excluded_accounts": sorted(set(version.advertiser_ids) - allowed),
+            "accounts_truncated": False,
+            "excluded_accounts": sorted(set(selected) - allowed),
             "reporting": reports,
             "business": business,
             "operation_events": events,
@@ -216,8 +348,8 @@ def build_data_pack(
                 "material_production_strategy_to_report_object",
             ],
             "limits": {
-                "accounts": MAX_ACCOUNTS,
-                "rows_per_dimension_per_horizon": 5000,
+                "accounts": len(selected),
+                "rows_per_dimension_per_horizon": None,
                 "maturity_horizons": 3,
                 "days_per_horizon": WINDOW_DAYS,
             },

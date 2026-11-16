@@ -39,6 +39,21 @@ def test_optimizer_contract_accepts_scoped_configuration():
     assert result.optimization_mode == "MANUAL"
 
 
+def test_optimizer_configuration_accepts_more_than_one_thousand_accounts():
+    from app.modules.ai_workbench.schemas import OptimizerUpdate
+
+    accounts = tuple(f"acc-{i}" for i in range(1001))
+    created = OptimizerCreate.model_validate(payload(advertiser_ids=accounts))
+    updated = OptimizerUpdate.model_validate(
+        {"advertiser_ids": accounts, "request_id": str(uuid4())}
+    )
+    assert created.advertiser_ids == updated.advertiser_ids == accounts
+    with pytest.raises(ValidationError):
+        OptimizerCreate.model_validate(
+            payload(advertiser_ids=accounts + (accounts[0],))
+        )
+
+
 def test_optimizer_contract_rejects_invalid_mode_and_roas_priority():
     with pytest.raises(ValidationError):
         OptimizerCreate.model_validate(payload(optimization_mode="INVALID"))

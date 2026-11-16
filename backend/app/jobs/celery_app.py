@@ -54,6 +54,7 @@ celery_app.conf.update(
         "app.modules.ad_management.submissions",
         "app.modules.automation_rules.tasks",
         "app.modules.business.tasks",
+        "app.modules.operation_logs.tasks",
         "app.modules.ai_workbench.build_tasks",
     ),
     task_queues=(
@@ -73,6 +74,7 @@ celery_app.conf.update(
     task_default_queue="control",
     task_create_missing_queues=False,
     task_routes={
+        "operation_logs.plan": {"queue": "control"},
         "business.schedule": {"queue": "control"},
         "business.work": {"queue": "ads-reporting"},
         "material_production.provision": {"queue": "control"},
@@ -106,6 +108,7 @@ celery_app.conf.update(
         "automation.cleanup": {"queue": "control"},
         "automation.scan_summaries": {"queue": "control"},
         "automation.send_summary": {"queue": "control"},
+        "ai_workbench.prepare_review": {"queue": "ads-reporting"},
         "ai_workbench.dispatch_occurrence": {"queue": "builds"},
         "ai_workbench.dispatch_due_plans": {"queue": "control"},
     },
@@ -290,6 +293,12 @@ celery_app.conf.update(
             "task": "reporting.plan_balances",
             "schedule": 1800.0,
             "options": {"queue": "control"},
+        },
+        # 日志完整日无需等待报表筛选。只唤醒独立小批扫描，旧tick过期丢弃。
+        "plan-operation-logs": {
+            "task": "operation_logs.plan",
+            "schedule": 15.0,
+            "options": {"queue": "control", "expires": 14.0},
         },
         "scan-ads-reporting-due": {
             "task": "reporting.plan_due",

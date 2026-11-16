@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, select
 
 from app.core.context import TenantContext
 from app.modules.reporting.metric_catalog import METRIC_CATALOG
@@ -12,7 +12,6 @@ from app.modules.reporting.read_models.models import (
     AccountReportDayState,
     ReadBucketState,
 )
-from app.modules.reporting.store_models import ReportSyncState
 
 
 def maturity_evidence(
@@ -25,21 +24,25 @@ def maturity_evidence(
     window: dict,
     report: dict,
     cutoff: datetime,
+    source_states=None,
 ) -> dict:
     start = date.fromisoformat(window["start_date"])
     end = date.fromisoformat(window["end_date"])
     days = window["maturity_days"]
-    model = AccountReportDayState if dimension == "account" else ReportSyncState
     if dimension == "material":
-        states = session.exec(
-            select(ReadBucketState).where(
-                col(ReadBucketState.tenant_id) == context.tenant_id,
-                col(ReadBucketState.advertiser_id) == advertiser_id,
-                col(ReadBucketState.kind) == "creative_material",
-                col(ReadBucketState.bucket) >= start,
-                col(ReadBucketState.bucket) <= end,
-            )
-        ).all()
+        states = (
+            source_states
+            if source_states is not None
+            else session.exec(
+                select(ReadBucketState).where(
+                    ReadBucketState.tenant_id == context.tenant_id,
+                    ReadBucketState.advertiser_id == advertiser_id,
+                    ReadBucketState.kind == "creative_material",
+                    ReadBucketState.bucket >= start,
+                    ReadBucketState.bucket <= end,
+                )
+            ).all()
+        )
         source = {
             row.bucket: (
                 row.derived_status,
@@ -51,20 +54,20 @@ def maturity_evidence(
             for row in states
         }
     else:
-        conditions = (
-            []
-            if dimension == "account"
-            else [col(ReportSyncState.report_kind) == "ad_day"]
-        )
-        states = session.exec(
-            select(model).where(
-                model.tenant_id == context.tenant_id,
-                model.advertiser_id == advertiser_id,
-                model.stat_date >= start,
-                model.stat_date <= end,
-                *conditions,
+        from app.modules.reporting.levels import selected_states
+
+        states = (
+            source_states
+            if source_states is not None
+            else selected_states(
+                session,
+                tenant_id=context.tenant_id,
+                advertiser_id=advertiser_id,
+                dimension=dimension,
+                start=start,
+                end=end,
             )
-        ).all()
+        )
         source = {
             row.stat_date: (
                 row.status,

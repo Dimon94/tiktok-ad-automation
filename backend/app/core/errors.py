@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 
 # Register exact business codes here; never infer status from provider text.
 ERROR_HTTP_STATUS: dict[str, int] = {
+    "ai_review_reanalysis_unavailable": 409,
     "ai_daily_plan_row_invalid": 422,
     "ai_daily_plan_row_frozen": 409,
     "ai_schedule_not_due": 409,

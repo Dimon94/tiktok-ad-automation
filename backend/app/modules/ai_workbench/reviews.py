@@ -7,7 +7,6 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from typing import cast as typing_cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import Column, DateTime, ForeignKeyConstraint, Index, UniqueConstraint
@@ -45,6 +44,9 @@ class DSHReviewTask(SQLModel, table=True):
             "created_at",
         ),
         UniqueConstraint("tenant_id", "request_id", name="uq_ai_dsh_review_request"),
+        UniqueConstraint(
+            "tenant_id", "optimizer_id", "id", name="uq_ai_dsh_review_scope"
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "optimizer_id"],
             ["ai_optimizer.tenant_id", "ai_optimizer.id"],
@@ -71,7 +73,7 @@ class DSHReviewTask(SQLModel, table=True):
     evidence: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSONB, nullable=False)
     )
-    # 私有冻结正文不进入领取响应；初始 evidence 仅含摘要和目录。
+    # 仅保留已完成旧任务的历史正文；新任务来源、凭证和产物进入独立归档表。
     evidence_store: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSONB, nullable=False)
     )
@@ -167,6 +169,9 @@ def frozen_evidence_ids(evidence: Mapping[str, Any] | None) -> set[str]:
     if not isinstance(evidence, Mapping):
         return set()
 
+    if evidence.get("reading_contract") == "on-demand-v2":
+        return set()
+
     if evidence.get("reading_contract") == "on-demand-v1":
         return {
             *evidence.get("read_evidence_ids", []),
@@ -245,6 +250,70 @@ def frozen_evidence_ids(evidence: Mapping[str, Any] | None) -> set[str]:
     return result
 
 
+def frozen_configuration(session, *, optimizer, version, context):
+    """轻量配置基线可以在 HTTP 固定，不触发任何报表/业务正文查询。"""
+    from app.modules.ai_workbench.models import (
+        AIOptimizerRuleBinding,
+        AIOptimizerStrategyBinding,
+    )
+    from app.modules.automation_rules.models import AutomationRule
+    from app.modules.strategies.models import StrategyVersion
+
+    binding = session.get(AIOptimizerStrategyBinding, version.strategy_binding_id)
+    strategy = session.get(StrategyVersion, binding.strategy_version_id)
+    rule_ids = session.exec(
+        select(AIOptimizerRuleBinding.rule_id).where(
+            AIOptimizerRuleBinding.tenant_id == context.tenant_id,
+            AIOptimizerRuleBinding.optimizer_id == optimizer.id,
+            col(AIOptimizerRuleBinding.active).is_(True),
+        )
+    ).all()
+    bound_rules = (
+        session.exec(
+            select(AutomationRule).where(
+                AutomationRule.tenant_id == context.tenant_id,
+                col(AutomationRule.id).in_(rule_ids),
+            )
+        ).all()
+        if rule_ids
+        else []
+    )
+    return sanitize_public(
+        {
+            "strategy": {
+                "id": strategy.id,
+                "strategy_id": strategy.strategy_id,
+                "version": strategy.number,
+                "config": strategy.config,
+            },
+            "rules": [
+                {
+                    "id": row.id,
+                    "version": row.version,
+                    "definition": row.definition,
+                    "name": row.name,
+                    "enabled": row.enabled,
+                }
+                for row in bound_rules
+            ],
+            "optimizer": {
+                "id": str(optimizer.id),
+                "version": version.number,
+                "daily_spend": version.daily_spend,
+                "target_roas": version.target_roas,
+                "priority": version.priority,
+                "timezone": version.timezone,
+                "bc_id": version.bc_id,
+                "advertiser_ids": list(version.advertiser_ids),
+                "optimization_mode": version.optimization_mode,
+                # 历史细粒度授权已退出领域发布判定，不能继续送给模型造成
+                # rule=false 被误读成“禁止提出人工候选”；能力以 catalog 为准。
+                "strategy_binding_id": str(version.strategy_binding_id),
+            },
+        }
+    )
+
+
 def frozen_evidence(
     session: Session,
     *,
@@ -253,9 +322,11 @@ def frozen_evidence(
     version: AIOptimizerVersion,
     evidence_ids: tuple[UUID, ...] = (),
     knowledge_refs: list[dict[str, Any]] | None = None,
+    cutoff: datetime | None = None,
+    data_pack: dict | None = None,
 ) -> dict[str, Any]:
     """Assemble read-only snapshots from existing plans, builds and rule evidence."""
-    cutoff = _now()
+    cutoff = cutoff or _now()
     plan_rows = session.exec(
         select(AIDailyPlanRow)
         .where(
@@ -310,9 +381,10 @@ def frozen_evidence(
     from app.modules.business.models import BusinessPublication, BusinessRun
     from app.modules.operation_logs.models import OperationCoverage, OperationExport
 
-    data_pack = build_data_pack(
-        session, context=context, version=version, cutoff=cutoff
-    )
+    if data_pack is None:
+        data_pack = build_data_pack(
+            session, context=context, version=version, cutoff=cutoff
+        )
     from app.modules.ai_workbench.attribution import build_attribution_pack
     from app.modules.ai_workbench.execution_observations import freeze_rule_execution
     from app.modules.ai_workbench.review_orders import freeze_orders
@@ -404,71 +476,13 @@ def frozen_evidence(
     ).all()
     # These snapshots intentionally retain IDs/status/version only.  Full report
     # and business rows remain in their own append-only stores and are referenced.
-    from app.modules.ai_workbench.models import (
-        AIOptimizerRuleBinding,
-        AIOptimizerStrategyBinding,
-    )
-    from app.modules.automation_rules.models import AutomationRule
-    from app.modules.strategies.models import StrategyVersion
-
-    binding = typing_cast(
-        AIOptimizerStrategyBinding,
-        session.get(AIOptimizerStrategyBinding, version.strategy_binding_id),
-    )
-
-    strategy = typing_cast(
-        StrategyVersion, session.get(StrategyVersion, binding.strategy_version_id)
-    )
-
-    rule_ids = session.exec(
-        select(col(AIOptimizerRuleBinding.rule_id)).where(
-            col(AIOptimizerRuleBinding.tenant_id) == context.tenant_id,
-            col(AIOptimizerRuleBinding.optimizer_id) == optimizer.id,
-            col(AIOptimizerRuleBinding.active).is_(True),
-        )
-    ).all()
-    bound_rules = (
-        session.exec(
-            select(AutomationRule).where(
-                col(AutomationRule.tenant_id) == context.tenant_id,
-                col(AutomationRule.id).in_(rule_ids),
-            )
-        ).all()
-        if rule_ids
-        else []
+    configuration = frozen_configuration(
+        session, optimizer=optimizer, version=version, context=context
     )
     frozen = sanitize_public(
         {
             "data_pack": data_pack,
-            "strategy": {
-                "id": strategy.id,
-                "strategy_id": strategy.strategy_id,
-                "version": strategy.number,
-                "config": strategy.config,
-            },
-            "rules": [
-                {
-                    "id": row.id,
-                    "version": row.version,
-                    "definition": row.definition,
-                    "name": row.name,
-                    "enabled": row.enabled,
-                }
-                for row in bound_rules
-            ],
-            "optimizer": {
-                "id": str(optimizer.id),
-                "version": version.number,
-                "daily_spend": version.daily_spend,
-                "target_roas": version.target_roas,
-                "priority": version.priority,
-                "timezone": version.timezone,
-                "bc_id": version.bc_id,
-                "advertiser_ids": list(version.advertiser_ids),
-                "optimization_mode": version.optimization_mode,
-                "authorization_limits": version.authorization_limits,
-                "strategy_binding_id": str(version.strategy_binding_id),
-            },
+            **configuration,
             "execution_truncated": {
                 "plans": len(plan_rows) > 200,
                 "builds": len(occurrences) > 200,
@@ -682,36 +696,25 @@ def create_review_task(
             ).encode()
         ).hexdigest()
     )
-    frozen = frozen_evidence(
-        session,
-        context=context,
-        optimizer=optimizer,
-        version=version,
-        evidence_ids=evidence_ids,
-        knowledge_refs=knowledge_refs,
-    )
-    # A review is a durable reference to its decision snapshot.  Extend the
-    # source row's retention fence as a convenience for operators that run
-    # short-term cleanup before the review itself is archived; cleanup also
-    # checks the frozen JSON references and therefore remains safe on retries.
-    referenced = frozen_evidence_ids(frozen)
-    if referenced:
-        retention_until = _now() + timedelta(days=365)
-        evidence_rows = session.exec(
-            select(AutomationRuleEvidence).where(
-                col(AutomationRuleEvidence.tenant_id) == context.tenant_id,
-                col(AutomationRuleEvidence.optimizer_id) == optimizer.id,
-                col(AutomationRuleEvidence.id).in_(
-                    [UUID(item) for item in referenced if _is_uuid(item)]
-                ),
-            )
-        ).all()
-        for row in evidence_rows:
-            if row.retention_until < retention_until:
-                row.retention_until = retention_until
-    from app.modules.ai_workbench.review_reading import split_evidence
-
-    initial, store = split_evidence(frozen)
+    # HTTP 仅固定范围/版本和请求时间；重报表冻结由持久 outbox 分账户完成。
+    now = _now()
+    initial = {
+        **frozen_configuration(
+            session, optimizer=optimizer, version=version, context=context
+        ),
+        "reading_contract": "on-demand-v2",
+        "captured_at": now.isoformat(),
+        "requested_at": now.isoformat(),
+        "preparation": {
+            "total_accounts": len(version.advertiser_ids),
+            "completed_accounts": 0,
+            "failed_accounts": 0,
+            "base_complete": False,
+            "cursor": 0,
+            "generation": 0,
+        },
+        "snapshot_policy": "Local review dates fixed at requested_at; each account has its own actual captured_at and source observed_at. Not a simultaneous global snapshot.",
+    }
     task = DSHReviewTask(
         tenant_id=context.tenant_id,
         optimizer_id=optimizer.id,
@@ -722,11 +725,26 @@ def create_review_task(
         fence=uuid4().hex,
         optimizer_version=version.number,
         evidence=initial,
-        evidence_store=store,
+        status="PREPARING",
         created_by=context.actor_id,
     )
     session.add(task)
     session.flush()
+    from app.modules.ai_workbench.review_preparation import enqueue_preparation
+    from app.modules.ai_workbench.review_store import archive_source
+
+    archive_source(
+        session,
+        task=task,
+        category="request",
+        identity="request",
+        captured_at=now,
+        payload={
+            "evidence_ids": list(map(str, evidence_ids)),
+            "knowledge_refs": snapshot_knowledge_refs(knowledge_refs),
+        },
+    )
+    enqueue_preparation(session, task=task)
     return task
 
 

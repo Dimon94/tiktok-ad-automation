@@ -53,3 +53,17 @@
 验证：23项分区/进度/配置门禁合同通过；实际 shell gate 对 failure/cancelled/skipped/空值全部拒绝；刻意令分区重叠或 gate 恒成功的源码探针均实际失败，finally逐字节恢复后23项通过。独立外层入口样本第一份14项通过；第二份沿最终 CLI 完整通过11项（含先普通组后串行的真实目录浏览器），无并行不稳定，两个分区合计覆盖原25项小样本。真实 PG/HTTP/浏览器的目录撤权链1 passed/15.98s，Native启停、ROAS与搭建三个内嵌浏览器代表场景3 passed/54.45s。语法、差异及 scoped Ruff 通过；两个CI脚本原有EXE001/RUF100告警按基线规则忽略，不修改文件执行权限或冒充全仓lint。
 
 这些检查证明分配和门禁合同，以及已修正场景，不证明整套模块已通过。最终仍须取得两台runner的完整结果与汇总检查成功；新工作流会有9项检查，而原 `backend (modules)` 名称不变。
+
+
+## 合并后续 upstream AI v2（待最终远端门禁）
+
+上游由 `456a2c86` 前进至 `63d0257b`。本轮在原分支以普通 merge 保留双方历史，未改主工作树、在途 M7 或 JB-66；没有撤回上游异步准备、持久 outbox、独立 ReviewSource/ReviewReceipt/ReviewArtifact、按需分页、逐日分析与操作日志独立规划。原始冻结来源及分析产物保留完整 provenance 和 digest，交付页复用既有 Native 投影去掉深层来源展开，继续受 64KB 限制，仅实际交付登记 receipt。
+
+新直接冻结入口使用报表层级选择与实际事实发布坐标，分析分组增加 level/source_kind/contract_revision；素材路径复用完整 INSTANCE tracer 与对账合同，汇总只计普通实例。新增 `0132_native_ai_archive_merge` 只汇合 `0131_native_ai_merge` 与 `0131_ai_review_archive`，无DDL，不改两侧历史迁移。上游逐日回测当前仍沿既有 Ad-derived 日事实口径，不把它写成已完成 Native direct 层级回测迁移。
+
+针对性证据：直接冻结及素材完整人口 parity 2项、AI归档/读取/准备/规模相邻40项、Native混合来源与晚发布截止1项通过；交界回归114项通过，另2项失败分别为不可变观测夹具重复时点和本地浏览器依赖缺失，修正后对应测试均通过（后者真实浏览器1项/13.40s）。两旧head升级及既有迁移6项通过、图/no-op断言2项通过；这些集合重叠，不相加。正式/demo构建与Ruff/ty通过。独立审查与最终远端结果另追加。
+
+以实际工作流相同 `--ignore=tests/acceptance`、`not mcp` 收集，合并后共8541项=4271+4270，两组文件387+387且互斥、并集完整。旧头b629的fork运行只作分区诊断，不能代替合并最新上游后的PR检查；未将运行器关闭的物理原因解释为已确认OOM或时限。
+
+
+本次新合并范围独立审查：Standards R1 PASS（P0/P1=0，P2=1），Spec R1 PASS（P0–P3=0）；未重开已通过的 CI runner R2 或 M1–M5c 原范围。Standards指出显式DateTime Column会丢失原SQLAlchemy Python默认值，已为Receipt/Artifact同时保留Column default和模型factory；元数据探针确认时区/非空/default不变，相关真实PG读取/产品14项通过，修正后Native原件/交付专项1项通过，Ruff/ty通过。两审查者的纯内存探针另验证raw/digest、分组、缩页游标及超限先拒绝再交付，但不把替身验证算成PG/HTTP验收。旧AI目标日志的Native夹具失败由后续1项绿色接续，不覆盖原失败记录。

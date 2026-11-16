@@ -22,17 +22,23 @@ MAX_MAPPINGS = 500
 MAX_GROUPS = 20
 
 
-def resolve_mappings(session: Session, *, context, optimizer_id, version, cutoff):
+def resolve_mappings(
+    session: Session, *, context, optimizer_id, version, cutoff, authorized_ids=None
+):
     from app.modules.reporting.filters import authorized_grants
 
-    accounts = tuple(
-        sorted(
-            g.advertiser_id
-            for g in authorized_grants(
-                session,
-                context=context,
-                bc_id=version.bc_id,
-                advertiser_ids=tuple(version.advertiser_ids),
+    accounts = (
+        tuple(sorted(authorized_ids))
+        if authorized_ids is not None
+        else tuple(
+            sorted(
+                g.advertiser_id
+                for g in authorized_grants(
+                    session,
+                    context=context,
+                    bc_id=version.bc_id,
+                    advertiser_ids=tuple(version.advertiser_ids),
+                )
             )
         )
     )
@@ -164,16 +170,29 @@ def resolve_mappings(session: Session, *, context, optimizer_id, version, cutoff
 
 
 def build_attribution_pack(
-    session: Session, *, context, optimizer_id, version, cutoff, account_windows
+    session: Session,
+    *,
+    context,
+    optimizer_id,
+    version,
+    cutoff,
+    account_windows,
+    observed_cutoff=None,
+    mapping=None,
 ):
     from app.modules.ai_workbench.review_maturity import maturity_evidence
 
-    mapping = resolve_mappings(
-        session,
-        context=context,
-        optimizer_id=optimizer_id,
-        version=version,
-        cutoff=cutoff,
+    observed_cutoff = observed_cutoff or cutoff
+    mapping = (
+        mapping
+        if mapping is not None
+        else resolve_mappings(
+            session,
+            context=context,
+            optimizer_id=optimizer_id,
+            version=version,
+            cutoff=cutoff,
+        )
     )
     windows = {
         row["advertiser_id"]: row
@@ -211,7 +230,8 @@ def build_attribution_pack(
                         bc_id=version.bc_id,
                         filters=filters,
                         limit=50,
-                        cutoff=cutoff,
+                        freeze_all=True,
+                        cutoff=observed_cutoff,
                     )
             except HTTPException as error:
                 if error.status_code != 409:
@@ -257,7 +277,7 @@ def build_attribution_pack(
                         horizon=horizon,
                         window=window,
                         report=report,
-                        cutoff=cutoff,
+                        cutoff=observed_cutoff,
                     ),
                 }
             )

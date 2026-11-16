@@ -160,23 +160,6 @@ def _request_missing_sources(
     if not settings.ADS_SYNC_ENABLED or plan is None or not plan.enabled:
         return 0
     owned = set(owned_accounts(session, plan))
-    from app.modules.operation_logs.planning import plan_logs
-
-    log_after = plan.screening_progress.get("operation_log_plan_after", "")
-    ordered = sorted(owned)
-    rotated = [a for a in ordered if a > log_after] + [
-        a for a in ordered if a <= log_after
-    ]
-    log_accounts = rotated[:8]
-    plan_logs(
-        session, plan, now=now, accounts=log_accounts, history_start=scope.start_date
-    )
-    if log_accounts:
-        plan.screening_progress = {
-            **plan.screening_progress,
-            "operation_log_plan_after": log_accounts[-1],
-        }
-        session.add(plan)
     windows_set: set[tuple[str, date, date]] = set()
     scanned: list[str] = []
     for run in {r.id: r for r in runs}.values():

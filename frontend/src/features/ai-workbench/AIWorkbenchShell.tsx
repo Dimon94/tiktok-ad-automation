@@ -40,7 +40,7 @@ export const aiWorkbenchMenu: Array<{
   icon: typeof Eye
 }> = [
   { id: "overview", label: "概览", icon: Eye },
-  { id: "schedule", label: "剧单排", icon: BarChart3 },
+  { id: "schedule", label: "剧单排期", icon: BarChart3 },
   { id: "execution", label: "执行", icon: Play },
   { id: "review", label: "复盘与建议", icon: ClipboardCheck },
   { id: "knowledge", label: "知识库", icon: BookOpen },

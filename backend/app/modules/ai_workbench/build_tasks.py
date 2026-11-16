@@ -26,6 +26,7 @@ from app.modules.ai_workbench.models import AIOptimizer, BuildOccurrence
 from app.modules.ai_workbench.plans import AIDailyPlanRow
 
 register_dispatch_task(TASK_NAME, "builds")
+register_dispatch_task("ai_workbench.prepare_review", "ads-reporting")
 PLAN_DISPATCH_TASK = "ai_workbench.dispatch_due_plans"
 register_dispatch_task(PLAN_DISPATCH_TASK, "control")
 
@@ -196,7 +197,11 @@ def schedule_reviews_task() -> int:
     from app.modules.ai_workbench.runtime import schedule_reviews
 
     with Session(engine) as session, session.begin():
-        return schedule_reviews(session, now=datetime.now(UTC))
+        from app.modules.ai_workbench.review_preparation import repair_preparation
+
+        now = datetime.now(UTC)
+        repair_preparation(session, now=now)
+        return schedule_reviews(session, now=now)
 
 
 @celery_app.task(
@@ -231,3 +236,36 @@ def material_order_task(
             ),
             order_id=UUID(payload["order_id"]),
         )
+
+
+@celery_app.task(
+    name="ai_workbench.prepare_review", time_limit=300, soft_time_limit=280
+)
+def prepare_review_task(*, tenant_id: str, actor_id: str, payload: dict) -> None:
+    from billiard.exceptions import SoftTimeLimitExceeded
+
+    from app.modules.ai_workbench.review_preparation import (
+        prepare_step,
+        record_step_failure,
+    )
+
+    try:
+        with Session(engine) as session, session.begin():
+            prepare_step(
+                session,
+                tenant_id=UUID(tenant_id),
+                actor_id=UUID(actor_id),
+                payload=payload,
+            )
+    except Exception as error:
+        # 失败事务先回滚，再用新事务保存有界重试，不能依赖 broker 自动重投。
+        with Session(engine) as session, session.begin():
+            record_step_failure(
+                session,
+                tenant_id=UUID(tenant_id),
+                actor_id=UUID(actor_id),
+                payload=payload,
+                error_code=(getattr(error, "code", None) or type(error).__name__),
+            )
+        if isinstance(error, SoftTimeLimitExceeded):
+            raise

@@ -55,3 +55,24 @@ def query_kind(dimension: str) -> str:
     if dimension in {"account", "drama"}:
         return "campaign_day"
     return next((k for k, v in LEVELS.items() if v.level == dimension), "ad_day")
+
+
+def selected_states(session, *, tenant_id, advertiser_id, dimension, start, end):
+    """复盘与页面使用同一父级选择 SQL；返回独立值，避免覆盖 ORM 原始 ad_day 身份。"""
+    from sqlalchemy import text
+
+    from app.modules.reporting.store_models import ReportSyncState
+
+    kind = query_kind(dimension)
+    source = (
+        state_sql(kind)
+        if kind in PARENT_KINDS
+        else "SELECT * FROM report_sync_state WHERE report_kind='ad_day'"
+    )
+    rows = session.execute(
+        text(
+            f"SELECT * FROM ({source}) selected WHERE tenant_id=:tenant AND advertiser_id=:adv AND stat_date BETWEEN :start AND :end ORDER BY stat_date"
+        ),
+        {"tenant": tenant_id, "adv": advertiser_id, "start": start, "end": end},
+    ).mappings()
+    return [ReportSyncState.model_validate(dict(row)) for row in rows]

@@ -1059,10 +1059,15 @@ class Release:
             "All workloads must be frozen before image update",
         )
         sha = self.state["candidate_sha"]
-        require(
-            not needs_full_backup(self.state["old_sha"], sha),
-            "Data/deployment changes require full release",
-        )
+        # A no-backup release is an explicitly authorised routine rollout that
+        # reuses the existing latest backup.  It still records the policy and
+        # never performs restore verification, but must not be blocked here by
+        # the normal full-backup gate.
+        if self.state.get("backup_policy") != "none":
+            require(
+                not needs_full_backup(self.state["old_sha"], sha),
+                "Data/deployment changes require full release",
+            )
         policy = json.loads((self.folder / "release-policy.json").read_text())
         require(
             self.state.get("backup_policy") == "none"

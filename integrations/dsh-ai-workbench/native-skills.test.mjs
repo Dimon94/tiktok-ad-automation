@@ -5,6 +5,8 @@ import { loadMethods, mountTaskSkills, skillName, hashBody } from './methods.mjs
 
 // 指向已有 DSH 宿主的 package.json 所在目录；不安装第二套生产运行时。
 const root = process.env.DSH_TEST_PACKAGE_ROOT
+const report = { headline: '继续观察', verdict: '本轮不调整规则', sections: [{ title: '证据覆盖', body: '成熟窗口不足', evidence_ids: [], table: { columns: ['窗口', '结论'], rows: [['D7', '证据不足']] } }], rule_decision: { status: 'INSUFFICIENT_EVIDENCE', reason: '缺成熟证据与回测' } }
+
 test('real DSH registry scopes task methods and renders on-demand skill content', { skip: !root }, async () => {
   const require = createRequire(`${root}/package.json`)
   const { Context } = await import(require.resolve('@deepseek-ai/cordis'))
@@ -64,7 +66,7 @@ test('real DSH tool registry accepts task session setup and hides inherited tool
           assert.equal(index.items[0].id, 'frozen')
           const page = await scope.ctx.tools.get('tkada_read_evidence', key).execute({ evidence_id: index.items[0].id })
           assert.equal(page.id, 'page')
-          await scope.ctx.tools.get('tkada_complete_review', key).execute({ summary: 'native setup works', proposals: [] })
+          await scope.ctx.tools.get('tkada_complete_review', key).execute({ report, summary: 'native setup works', proposals: [] })
         } }, dispose: () => scope.dispose() }
       } } }
       try {

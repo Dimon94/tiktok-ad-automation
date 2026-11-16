@@ -2,14 +2,16 @@
 
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import cast as typing_cast
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session as SASession
 from sqlmodel import Session, col, select
@@ -24,6 +26,7 @@ from app.modules.ai_workbench.knowledge_refs import sanitize_public
 from app.modules.ai_workbench.methods import MethodBundle
 from app.modules.ai_workbench.models import AIOptimizer, AIOptimizerVersion
 from app.modules.ai_workbench.proposals import ProposalInput
+from app.modules.ai_workbench.review_report import ReviewReport
 from app.modules.automation_rules.schemas import RuleDefinition
 
 SERVICE_AUDIENCE = "tkada-ai-review"
@@ -53,7 +56,8 @@ class ExperienceCandidate(BaseModel):
 
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    summary: str = Field(min_length=1, max_length=20000)
+    summary: str = Field(min_length=1, max_length=1000)
+    report: ReviewReport | None = None
     proposals: list[ProposalInput] = Field(default_factory=list, max_length=20)
     recommendations: list[Recommendation] = Field(default_factory=list, max_length=20)
     experience_candidates: list[ExperienceCandidate] = Field(
@@ -61,6 +65,32 @@ class ReviewResult(BaseModel):
     )
     method_usage: list[str] = Field(default_factory=list, max_length=6)
     failed: bool = False
+
+    @model_validator(mode="after")
+    def structured_success(self):
+        if not self.failed:
+            if self.report is None:
+                raise ValueError("成功复盘必须提供结构化 report 和规则处置原因")
+            rule_proposals = [p for p in self.proposals if p.kind == "rule"]
+            if (self.report.rule_decision.status == "PROPOSED") != bool(rule_proposals):
+                raise ValueError("规则处置 PROPOSED 必须与实际规则提案一致")
+            for proposal in self.proposals:
+                if (
+                    not all(
+                        value.strip()
+                        for value in (
+                            proposal.rationale,
+                            proposal.problem,
+                            proposal.expected_effect,
+                            proposal.validation,
+                        )
+                    )
+                    or not proposal.evidence_ids
+                ):
+                    raise ValueError(
+                        "可执行提案须提供原因、问题、预期、验证条件和已读证据"
+                    )
+        return self
 
 
 def _credentials(value: HTTPAuthorizationCredentials | None) -> str:
@@ -234,6 +264,8 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
                 )
             task.evidence = bound_evidence
             session.add(task)
+        from app.modules.ai_workbench.review_store import source_catalog
+
         payload = {
             "task": {
                 "id": str(task.id),
@@ -241,7 +273,13 @@ def claim(session: SessionDep, methods: MethodBundle) -> dict:
                 "optimizer_id": str(task.optimizer_id),
                 "fence": task.fence,
                 "expires_at": task.authorization_expires_at.isoformat(),
-                "evidence": task.evidence,
+                "max_expires_at": (
+                    typing_cast(datetime, task.started_at) + timedelta(hours=2)
+                ).isoformat(),
+                "evidence": {
+                    **task.evidence,
+                    "source_catalog": source_catalog(session, task),
+                },
             },
             "task_token": _task_token(task),
         }
@@ -283,7 +321,13 @@ def complete(
         for item in [*body.recommendations, *body.experience_candidates]
         for e in item.evidence_ids
     }
-    if not cited.issubset(reviews.frozen_evidence_ids(task.evidence)):
+    if body.report is not None:
+        cited.update(
+            str(e) for section in body.report.sections for e in section.evidence_ids
+        )
+    from app.modules.ai_workbench.review_store import delivered_evidence_ids
+
+    if not cited.issubset(delivered_evidence_ids(session, task)):
         raise DomainError("ai_evidence_not_found", "建议或经验引用了任务范围外的证据")
     if body.failed and (body.proposals or body.experience_candidates):
         raise DomainError("ai_proposal_invalid", "失败复盘不能发布提案")
@@ -369,11 +413,29 @@ def schedule_reviews(session: Session, *, now: datetime, limit: int = 100) -> in
 
 @router.post("/{task_id}/heartbeat")
 def heartbeat(
-    task_id: UUID, task: reviews.DSHReviewTask = Depends(task_identity)
+    task_id: UUID,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
 ) -> dict:
     if task.id != task_id or task.status != "RUNNING":
         raise DomainError("ai_task_fence_conflict", "复盘任务已停止")
-    return {"active": True, "expires_at": task.authorization_expires_at}
+    _read_task_scope(task, session)
+    from app.modules.ai_workbench.review_authorization import heartbeat_expiry
+
+    # 当前授权/版本仍有效才允许续签；fence 不变，取消或重启立刻使旧令牌失效。
+    task.authorization_expires_at = heartbeat_expiry(
+        started_at=task.started_at or datetime.now(UTC), now=datetime.now(UTC)
+    )
+    session.add(task)
+    # 必须在任务行锁内固定响应；commit 后 ORM 过期重读可能看到恢复轮的新 fence，
+    # 不能把新轮令牌泄给恰好等待旧轮心跳的会话。
+    response = {
+        "active": True,
+        "expires_at": task.authorization_expires_at,
+        "task_token": _task_token(task),
+    }
+    session.commit()
+    return response
 
 
 class KnowledgeSearch(BaseModel):
@@ -444,6 +506,49 @@ class RuleBacktest(BaseModel):
     candidate_definition: RuleDefinition
 
 
+class DailyRuleBacktest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    rule_id: UUID | None = None
+    cache_only: bool = False
+    candidate_definitions: list[dict] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def candidate_or_baseline(self):
+        if self.rule_id is None and not self.candidate_definitions:
+            raise ValueError("新规则回测须提供完整候选定义，或指定绑定规则")
+        return self
+
+
+@router.post("/{task_id}/rules/daily-backtest")
+def daily_backtest_rule(
+    task_id: UUID,
+    body: DailyRuleBacktest,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.backtests import daily_backtest_for_task
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    expected_fence = task.fence
+    # 大范围纯读取不能占住任务行锁，否则续期/取消被长回测阻塞。
+    # 产物落库前重新锁定并核验原 fence；期间撤权/取消会回滚本次产物。
+    session.commit()
+    result = daily_backtest_for_task(
+        session,
+        task=task,
+        rule_id=body.rule_id,
+        candidate_definitions=body.candidate_definitions,
+        cache_only=body.cache_only,
+    )
+    session.refresh(task, with_for_update=True)
+    ai_tasks._check_fence(task, fence=expected_fence)
+    _read_task_scope(task, session)
+    session.commit()
+    return result
+
+
 @router.post("/{task_id}/rules/backtest")
 def backtest_rule(
     task_id: UUID,
@@ -469,16 +574,21 @@ def backtest_rule(
 class EvidenceQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
     category: str = Field(
-        pattern=r"^(reporting|plans|build_occurrences|rule_evidence|attribution|material_orders|history|business|operation_logs|data_pack_business|data_pack_operation_events|knowledge_refs)$"
+        pattern=r"^(reporting|plans|build_occurrences|rule_evidence|attribution|material_orders|history|business|operation_logs|data_pack_business|data_pack_operation_events|knowledge_refs|preparation|rule_backtest_inputs)$"
     )
-    offset: int = Field(default=0, ge=0, le=10000)
+    offset: int = Field(default=0, ge=0)
+    advertiser_id: str | None = Field(default=None, max_length=100)
+    dimension: str | None = Field(
+        default=None, pattern="^(account|campaign|drama|material)$"
+    )
+    maturity_horizon: str | None = Field(default=None, pattern="^d(0|3|7)$")
 
 
 class EvidenceRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evidence_id: UUID
-    offset: int = Field(default=0, ge=0, le=100000)
-    limit: int = Field(default=1, ge=1, le=10)
+    offset: int = Field(default=0, ge=0, le=1000000000)
+    limit: int = Field(default=10, ge=1, le=100)
 
 
 @router.post("/{task_id}/evidence/query")
@@ -493,7 +603,7 @@ def query_evidence(
     if task.id != task_id:
         raise HTTPException(403, "Task scope mismatch")
     _read_task_scope(task, session)
-    return query_for_task(task=task, category=body.category, offset=body.offset)
+    return query_for_task(session, task=task, **body.model_dump())
 
 
 @router.post("/{task_id}/evidence/read")
@@ -509,5 +619,118 @@ def read_evidence(
         raise HTTPException(403, "Task scope mismatch")
     _read_task_scope(task, session)
     result = read_for_task(session, task=task, **body.model_dump())
+    session.commit()
+    return result
+
+
+class EvidenceAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dimension: str = Field(
+        default="account", pattern="^(account|campaign|drama|material)$"
+    )
+    maturity_horizon: str = Field(default="d0", pattern="^d(0|3|7)$")
+    advertiser_id: str | None = Field(default=None, max_length=100)
+    sort_by: str = Field(
+        default="spend",
+        pattern="^(spend|revenue_d0|revenue_d3|revenue_d7|profit|roas)$",
+    )
+    descending: bool = True
+    min_spend: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_spend: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    max_roas: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    offset: int = Field(default=0, ge=0, le=100000)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+@router.post("/{task_id}/evidence/analyze")
+def analyze_evidence(
+    task_id: UUID,
+    body: EvidenceAnalysis,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_analysis import analyze_for_task
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    result = analyze_for_task(session, task=task, **body.model_dump())
+    session.commit()
+    return result
+
+
+class ReviewNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=100)
+    body: str = Field(max_length=16000)
+
+
+class ReviewNotePage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    offset: int = Field(default=0, ge=0, le=100000)
+    limit: int = Field(default=10, ge=1, le=100)
+
+
+@router.post("/{task_id}/notes")
+def write_review_note(
+    task_id: UUID,
+    body: ReviewNote,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_reading import write_note
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    result = write_note(session, task=task, **body.model_dump())
+    session.commit()
+    return result
+
+
+@router.post("/{task_id}/notes/list")
+def list_review_notes(
+    task_id: UUID,
+    body: ReviewNotePage,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_reading import list_notes
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    return list_notes(session, task=task, **body.model_dump())
+
+
+class ReviewTimelineRequest(BaseModel):
+    cache_only: bool = False
+    model_config = ConfigDict(extra="forbid")
+    dimension: str = Field(default="campaign", pattern="^(campaign|material)$")
+    days: int = Field(default=7, ge=2, le=14)
+    advertiser_id: str | None = Field(default=None, max_length=100)
+    offset: int = Field(default=0, ge=0, le=100000)
+    limit: int = Field(default=2, ge=1, le=4)
+
+
+@router.post("/{task_id}/evidence/timeline")
+def analyze_timeline(
+    task_id: UUID,
+    body: ReviewTimelineRequest,
+    session: SessionDep,
+    task: reviews.DSHReviewTask = Depends(task_identity),
+) -> dict:
+    from app.modules.ai_workbench.review_timeline import timeline_for_task
+
+    if task.id != task_id:
+        raise HTTPException(403, "Task scope mismatch")
+    _read_task_scope(task, session)
+    expected_fence = task.fence
+    # 与日回放相同：计算不持有任务行锁，提交前重验fence和当前授权。
+    session.commit()
+    result = timeline_for_task(session, task=task, **body.model_dump())
+    session.refresh(task, with_for_update=True)
+    ai_tasks._check_fence(task, fence=expected_fence)
+    _read_task_scope(task, session)
     session.commit()
     return result

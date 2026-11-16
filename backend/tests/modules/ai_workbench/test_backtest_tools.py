@@ -5,11 +5,17 @@ from uuid import uuid4
 from app.core.config import settings
 from app.modules.ai_workbench import service
 from app.modules.ai_workbench.evidence import RuleEvidenceSnapshot
-from app.modules.ai_workbench.reviews import create_review_task, frozen_evidence_ids
+from app.modules.ai_workbench.review_store import delivered_evidence_ids
 from app.modules.ai_workbench.schemas import OptimizerCreate
 from app.modules.automation_rules.evaluate import evaluate
 from app.modules.automation_rules.inputs import AccountInfo, Inputs
 from app.modules.automation_rules.models import AutomationRule, AutomationRuleRun
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    minimal_report,
+    source_index,
+    source_store,
+)
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -76,13 +82,13 @@ def test_agent_can_replay_frozen_nonhits_cite_result_and_cannot_read_foreign_his
         scope=scope,
         inputs=facts,
     ).persist(session, run_id=run.id)
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     assert (
         next(
             r["payload"]
-            for r in task.evidence_store.values()
+            for r in source_store(session, task).values()
             if r["category"] == "rule_evidence"
         )[0]["historical_replay"]["replay"]["current"]["nonhit_count"]
         == 1
@@ -106,7 +112,7 @@ def test_agent_can_replay_frozen_nonhits_cite_result_and_cannot_read_foreign_his
 
     assert evidence.id in referenced_evidence_ids(session, tenant_id=context.tenant_id)
     source = next(
-        r for r in task.evidence["evidence_index"] if r["category"] == "rule_evidence"
+        r for r in source_index(session, task) if r["category"] == "rule_evidence"
     )
     assert (
         client.post(
@@ -120,12 +126,24 @@ def test_agent_can_replay_frozen_nonhits_cite_result_and_cannot_read_foreign_his
     assert result["result"]["replay"]["comparison"]["added_hit_subjects"] == [
         "adgroup:acc-1:g2"
     ]
-    assert result["id"] in frozen_evidence_ids(task.evidence)
+    assert result["id"] in delivered_evidence_ids(session, task)
     assert (
         client.post(path + "/rules/backtest", headers=headers, json=payload).json()
         == result
     )
-    assert len(task.evidence["rule_backtests"]) == 1
+    from app.modules.ai_workbench.review_store import ReviewArtifact, scoped
+
+    assert (
+        len(
+            session.exec(
+                scoped(ReviewArtifact, task).where(
+                    ReviewArtifact.kind == "rule_backtest"
+                )
+            ).all()
+        )
+        == 1
+    )
+    assert "rule_backtests" not in task.evidence
     assert (
         client.post(
             path + "/rules/backtest",
@@ -138,6 +156,7 @@ def test_agent_can_replay_frozen_nonhits_cite_result_and_cannot_read_foreign_his
         path + "/complete",
         headers=headers,
         json={
+            "report": minimal_report(),
             "summary": "回测新增命中一个对象，不能推定节省",
             "proposals": [],
             "recommendations": [

@@ -178,7 +178,9 @@ def build_daily_report(
 
     frozen_ids: set[str] = {str(row.id) for row in day_evidence}
     for task in review_tasks:
-        frozen_ids.update(reviews.frozen_evidence_ids(task.evidence))
+        from app.modules.ai_workbench.review_store import delivered_evidence_ids
+
+        frozen_ids.update(delivered_evidence_ids(session, task))
     for occurrence in occurrences:
         frozen_ids.update(_evidence_ids_from_value(occurrence.evidence))
 

@@ -68,6 +68,8 @@ def start_task(
         raise DomainError("ai_dsh_authorization_expired", "DSH authorization expired")
     if row.status in {"COMPLETE", "CANCELLED"}:
         return row
+    if row.status not in {"PENDING", "RUNNING"}:
+        raise DomainError("ai_review_not_ready", "复盘证据尚未准备完成")
     row.status = "RUNNING"
     row.started_at = row.started_at or datetime.now(UTC)
     session.flush()
@@ -134,7 +136,19 @@ def restart_task(
         return row
     row.restart_generation += 1
     row.fence = uuid4().hex
-    row.status = "PENDING"
+    if row.evidence.get("reading_contract") != "on-demand-v2":
+        raise DomainError(
+            "ai_review_contract_retired", "旧复盘合同已退役，请创建新复盘"
+        )
+    preparation = row.evidence.get("preparation", {})
+    preparing = (
+        row.status == "PREPARING"
+        or not preparation.get("base_complete", False)
+        or preparation.get("cursor", 0) < preparation.get("total_accounts", 0)
+    )
+    if preparing:
+        row.evidence = {**row.evidence, "preparation": {**preparation, "attempts": 0}}
+    row.status = "PREPARING" if preparing else "PENDING"
     row.cancellation_requested = False
     row.started_at = None
     row.finished_at = None
@@ -142,5 +156,9 @@ def restart_task(
     # A restart gets a fresh short-lived worker grant.  Setting the expiry to
     # ``now`` would make every recovered task fail its own start fence.
     row.authorization_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+    if preparing:
+        from app.modules.ai_workbench.review_preparation import enqueue_preparation
+
+        enqueue_preparation(session, task=row, repair=True)
     session.flush()
     return row

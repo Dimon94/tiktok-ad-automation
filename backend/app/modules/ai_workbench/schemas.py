@@ -21,7 +21,7 @@ class OptimizerFields(BaseModel):
     )
     priority: Priority = "BALANCED"
     bc_id: str = Field(min_length=1, max_length=128)
-    advertiser_ids: tuple[str, ...] = Field(min_length=1, max_length=1000)
+    advertiser_ids: tuple[str, ...] = Field(min_length=1, max_length=10000)
     optimization_mode: OptimizationMode = "MANUAL"
     timezone: str = "Asia/Shanghai"
     review_time: str = Field(default="13:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
@@ -66,7 +66,7 @@ class OptimizerUpdate(BaseModel):
     priority: Priority | None = None
     bc_id: str | None = Field(default=None, min_length=1, max_length=128)
     advertiser_ids: tuple[str, ...] | None = Field(
-        default=None, min_length=1, max_length=1000
+        default=None, min_length=1, max_length=10000
     )
     optimization_mode: OptimizationMode | None = None
     timezone: str | None = None

@@ -6,6 +6,10 @@ from app.modules.ai_workbench.knowledge import KnowledgeInput, create_version
 from app.modules.ai_workbench.reviews import create_review_task
 from app.modules.ai_workbench.schemas import OptimizerCreate
 from app.modules.tenants.models import TenantMembership
+from tests.modules.ai_workbench.review_helpers import (
+    create_prepared_review_task,
+    minimal_report,
+)
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
     seed_optimizer_dependencies,
@@ -36,7 +40,7 @@ def test_agent_search_read_frozen_policy_and_scoped_citation(
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     assert not task.evidence["knowledge"]
@@ -91,6 +95,7 @@ def test_agent_search_read_frozen_policy_and_scoped_citation(
         base + "/complete",
         headers=headers,
         json={
+            "report": minimal_report(),
             "summary": "按已读取政策分析",
             "proposals": [],
             "recommendations": [
@@ -132,7 +137,7 @@ def test_search_never_reads_other_tenant_or_bc(session, context):
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     assert search_for_task(session, task=task, query="赔付")["items"] == []
@@ -141,9 +146,6 @@ def test_search_never_reads_other_tenant_or_bc(session, context):
 def test_search_beyond_initial_catalog_and_read_budget(session, context):
     from datetime import UTC, datetime, timedelta
 
-    import pytest
-
-    from app.core.errors import DomainError
     from app.modules.ai_workbench.knowledge_search import read_for_task, search_for_task
 
     member = session.get(TenantMembership, (context.tenant_id, context.actor_id))
@@ -179,7 +181,7 @@ def test_search_beyond_initial_catalog_and_read_budget(session, context):
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     assert "knowledge_catalog" not in task.evidence
@@ -188,14 +190,11 @@ def test_search_beyond_initial_catalog_and_read_budget(session, context):
     frozen = read_for_task(session, task=task, knowledge_id=target.id)
     assert frozen["body"] == target.body
     assert read_for_task(session, task=task, knowledge_id=target.id) == frozen
-    assert len(task.evidence["knowledge"]) == 1
-    # 目录搜索不加载全部正文，也不绕过本轮读取额度。
-    task.evidence = {
-        **task.evidence,
-        "knowledge": [{"id": str(uuid4()), "body": "x" * 32000}],
-    }
-    with pytest.raises(DomainError, match="预算"):
-        read_for_task(session, task=task, knowledge_id=target.id)
+    from app.modules.ai_workbench.review_store import delivered_evidence_ids
+
+    assert str(target.id) in delivered_evidence_ids(session, task)
+    assert task.evidence["knowledge"] == []
+    assert read_for_task(session, task=task, knowledge_id=target.id) == frozen
 
 
 def test_bc_retrieval_pagination_retirement_and_cancellation(
@@ -249,7 +248,7 @@ def test_bc_retrieval_pagination_retirement_and_cancellation(
         context=context,
         body=OptimizerCreate.model_validate(create_body(strategy.id)),
     )
-    task = create_review_task(
+    task = create_prepared_review_task(
         session, context=context, optimizer_id=optimizer.id, request_id=uuid4()
     )
     first = search_for_task(session, task=task, query="赔付")

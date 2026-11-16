@@ -16,7 +16,7 @@ test('evidence tools pass scoped identity and page arguments; cancelled reads ne
   assert.equal(page.id, 'read-page')
   assert.deepEqual(calls, [[claim, query], [claim, read]])
   assert.equal(tools.get(READ_EVIDENCE).parameters.additionalProperties, false)
-  assert.equal(tools.get(READ_EVIDENCE).parameters.properties.limit.maximum, 10)
+  assert.equal(tools.get(READ_EVIDENCE).parameters.properties.limit.maximum, 100)
   assert.ok(!tools.get(READ_EVIDENCE).output.render(read, page)[0].text.includes('private'))
   controller.abort()
   await assert.rejects(tools.get(QUERY_EVIDENCE).execute(query), /cancelled/)

@@ -31,7 +31,6 @@ from app.modules.ai_workbench.models import (
 from app.modules.ai_workbench.reviews import (
     DSHReviewTask,
     authorize,
-    frozen_evidence_ids,
     load_optimizer,
 )
 from app.modules.automation_rules.models import AutomationRule
@@ -177,6 +176,9 @@ def list_proposals(
     context: TenantContext,
     optimizer_id: UUID,
     status: str | None = None,
+    review_task_id: UUID | None = None,
+    offset: int = 0,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     authorize(session, context)
     query = (
@@ -185,11 +187,17 @@ def list_proposals(
             col(AIProposal.tenant_id) == context.tenant_id,
             col(AIProposal.optimizer_id) == optimizer_id,
         )
-        .order_by(col(AIProposal.created_at).desc())
+        .order_by(col(AIProposal.created_at).desc(), col(AIProposal.id).desc())
     )
-    if status is not None:
+    if status == "PROCESSED":
+        query = query.where(col(AIProposal.status) != "PENDING")
+    elif status is not None:
         query = query.where(col(AIProposal.status) == status)
-    return [_public(row) for row in session.exec(query).all()]
+    if review_task_id is not None:
+        query = query.where(col(AIProposal.review_task_id) == review_task_id)
+    return [
+        _public(row) for row in session.exec(query.offset(offset).limit(limit)).all()
+    ]
 
 
 def _within_authorization(
@@ -352,7 +360,9 @@ def create_proposal(
     optimizer, version = load_optimizer(session, context, optimizer_id)
     if review_task.optimizer_version != version.number:
         raise DomainError("ai_proposal_stale", "review task optimizer version is stale")
-    frozen_ids = frozen_evidence_ids(review_task.evidence)
+    from app.modules.ai_workbench.review_store import delivered_evidence_ids
+
+    frozen_ids = delivered_evidence_ids(session, review_task)
     if any(str(item) not in frozen_ids for item in change.evidence_ids):
         raise DomainError(
             "ai_evidence_not_found",

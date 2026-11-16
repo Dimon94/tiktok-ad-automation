@@ -895,3 +895,68 @@ def test_adgroup_residual_csv_retains_signed_coordinates(session, sync_seed):
     )
     assert json.loads(residual["row_coverage"])["status"] == "NOT_COMPARABLE"
     assert sum(Decimal(v["values"]["spend"]) for v in page.summary["buckets"]) == 10
+
+
+def test_review_freeze_preserves_mapped_instance_totals_and_archived_observations(
+    session, sync_seed
+):
+    from datetime import UTC, datetime
+
+    from sqlmodel import select
+
+    from app.modules.ai_workbench.review_projection import report_for_reading
+    from app.modules.ai_workbench.review_reporting import freeze_report
+    from app.modules.reporting.read_models.models import ReadBucketState
+    from app.modules.reporting.store_models import ReportSyncState
+    from tests.modules.reporting.query_helpers import finish_projections
+
+    publish(session, sync_seed, "acc-1", [material_row("cr1", "40")])
+    use(
+        session,
+        sync_seed,
+        adv="acc-1",
+        ad="ad1",
+        video="vid1",
+        ad_material="mid1",
+        post="cr1",
+    )
+    finish_projections(session)
+    filters = ReportingFilter(
+        dimension="material", start_date=D, end_date=D, advertiser_ids=("acc-1",)
+    )
+    page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
+    states = {
+        "material": session.exec(
+            select(ReadBucketState).where(
+                ReadBucketState.tenant_id == sync_seed.tenant_id,
+                ReadBucketState.advertiser_id == "acc-1",
+                ReadBucketState.kind == "creative_material",
+            )
+        ).all(),
+        "publications": session.exec(
+            select(ReportSyncState).where(
+                ReportSyncState.tenant_id == sync_seed.tenant_id,
+                ReportSyncState.advertiser_id == "acc-1",
+            )
+        ).all(),
+    }
+    report = freeze_report(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=filters,
+        cutoff=datetime.now(UTC),
+        states=states,
+    )
+    assert report["summary"] == page.summary
+    assert report["summary"]["scope"] == "SELECTED_MATERIALS"
+    assert report["summary"]["buckets"][0]["values"]["spend"] == "40"
+    instance = report["rows"][0]["material_instances"][0]
+    assert instance["row_kind"] == "INSTANCE" and instance["observations"]
+    visible = report_for_reading(report)
+    assert visible["rows"][0]["material_instances"][0]["observations_archived"]
+    assert "observations" not in visible["rows"][0]["material_instances"][0]
+    for row in visible["rows"]:
+        assert not row.get("refs") and not row.get("material_uses")
+        assert all("observations" not in r for r in row["reconciliation_rows"])
+    assert instance["observations"]  # 交付投影不能就地删除归档正文。

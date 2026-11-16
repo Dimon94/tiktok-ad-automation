@@ -206,3 +206,5 @@ from app.modules.sync_control import models as sync_control_models  # noqa: E402
 from app.modules.ai_workbench.order_models import MaterialOrder  # noqa: F401, E402
 
 from app.modules.ai_workbench import knowledge as ai_knowledge_models  # noqa: E402,F401
+
+from app.modules.ai_workbench import review_store as ai_review_store_models  # noqa: E402, F401

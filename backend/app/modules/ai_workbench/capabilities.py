@@ -17,7 +17,11 @@ def catalog(version) -> dict:
 
     return sanitize_public(
         {
-            "version": "1.1.0",
+            "version": "1.2.0",
+            "proposal_submission_allowed": True,
+            "publication_mode": "HUMAN_CONFIRMATION"
+            if version.optimization_mode == "MANUAL"
+            else "AUTHORIZED_AUTO",
             "strategy": {
                 "operations": ["create", "update"],
                 "creation": {"name": "required", "config": "complete StrategyConfig"},
@@ -36,7 +40,7 @@ def catalog(version) -> dict:
             },
             "scope": {"bc_id": version.bc_id, "advertiser_ids": version.advertiser_ids},
             "mode": version.optimization_mode,
-            "publication": "MANUAL requires explicit human acceptance; AUTO publishes supported domain changes within managed scope.",
+            "publication": "Submitting an evidence-backed proposal is allowed in BOTH modes. MANUAL saves it as PENDING for explicit human acceptance; AUTO publishes supported domain changes within managed scope. Archived authorization_limits are not capability flags. Disabled rules may be reviewed; do not enable them without a justified explicit proposal.",
             "unsupported": [
                 "scale_copy",
                 "automatic_drama_selection",

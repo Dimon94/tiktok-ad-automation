@@ -1,12 +1,13 @@
 """HTTP contracts for tenant AI optimizer configuration."""
 
 from datetime import date, datetime
+from typing import Literal
 from typing import cast as typing_cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session as SQLAlchemySession
 from sqlmodel import select
 
@@ -332,13 +333,20 @@ def get_proposals(
     optimizer_id: UUID,
     session: SessionDep,
     user: CurrentUser,
-    status: str | None = Query(default=None),
+    status: Literal["PENDING", "ACCEPTED", "REJECTED", "STALE", "PROCESSED"]
+    | None = Query(default=None),
+    review_task_id: UUID | None = Query(default=None),
+    offset: int = Query(default=0, ge=0, le=1000000),
+    limit: int = Query(default=100, ge=1, le=100),
 ) -> list[dict]:
     return proposals.list_proposals(
         session,
         context=_context(user, tenant_id),
         optimizer_id=optimizer_id,
         status=status,
+        review_task_id=review_task_id,
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -385,40 +393,69 @@ def reject_proposal(
 
 @router.get("/ai-optimizers/{optimizer_id}/reviews")
 def list_reviews(
-    tenant_id: UUID, optimizer_id: UUID, session: SessionDep, user: CurrentUser
+    tenant_id: UUID,
+    optimizer_id: UUID,
+    session: SessionDep,
+    user: CurrentUser,
+    offset: int = Query(default=0, ge=0, le=1000000),
+    limit: int = Query(default=10, ge=1, le=100),
+    status: Literal[
+        "PREPARING", "PENDING", "RUNNING", "COMPLETE", "FAILED", "CANCELLED"
+    ]
+    | None = Query(default=None),
 ) -> dict:
-    from app.core.config import settings
+    from app.modules.ai_workbench.review_queries import list_review_page
 
     service.get_optimizer(
         session, context=_context(user, tenant_id), optimizer_id=optimizer_id
     )
-    tasks = session.exec(
-        select(reviews.DSHReviewTask)
-        .where(
-            col(reviews.DSHReviewTask.tenant_id) == tenant_id,
-            col(reviews.DSHReviewTask.optimizer_id) == optimizer_id,
-        )
-        .order_by(col(reviews.DSHReviewTask.created_at).desc())
-        .limit(50)
-    ).all()
-    return {
-        "runtime_ready": bool(settings.AI_DSH_SERVICE_TOKEN),
-        "items": [
-            {
-                "id": task.id,
-                "status": task.status,
-                "created_at": task.created_at,
-                "finished_at": task.finished_at,
-                "optimizer_version": task.optimizer_version,
-                "result": task.result,
-            }
-            for task in tasks
-        ],
-    }
+    return list_review_page(
+        session,
+        tenant_id=tenant_id,
+        optimizer_id=optimizer_id,
+        offset=offset,
+        limit=limit,
+        status=status,
+    )
 
 
 class ReviewControlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ReviewReanalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    authorization_ttl_seconds: int = Field(default=900, ge=30, le=900)
+
+
+@router.post(
+    "/ai-optimizers/{optimizer_id}/reviews/{task_id}/reanalyze", status_code=201
+)
+def reanalyze_review(
+    tenant_id: UUID,
+    optimizer_id: UUID,
+    task_id: UUID,
+    body: ReviewReanalysisRequest,
+    session: SessionDep,
+    user: CurrentUser,
+) -> dict:
+    from app.modules.ai_workbench.review_reanalysis import reanalyze_review_task
+
+    task = reanalyze_review_task(
+        session,
+        context=_context(user, tenant_id),
+        optimizer_id=optimizer_id,
+        source_task_id=task_id,
+        request_id=body.request_id,
+        authorization_ttl_seconds=body.authorization_ttl_seconds,
+    )
+    session.commit()
+    return {
+        "id": task.id,
+        "status": task.status,
+        "reanalysis": task.evidence["reanalysis"],
+    }
 
 
 @router.post("/ai-optimizers/{optimizer_id}/reviews/{task_id}/cancel")
@@ -484,6 +521,19 @@ def get_review(
         "id": task.id,
         "status": task.status,
         "result": task.result,
+        "created_at": task.created_at,
+        "finished_at": task.finished_at,
+        "optimizer_version": task.optimizer_version,
+        "review_context": {
+            "optimization_mode": task.evidence.get("optimizer", {}).get(
+                "optimization_mode", "MANUAL"
+            ),
+            "proposal_submission_allowed": True,
+            "publication": "AUTHORIZED_AUTO"
+            if task.evidence.get("optimizer", {}).get("optimization_mode") == "AUTO"
+            else "HUMAN_CONFIRMATION",
+        },
+        "preparation": task.evidence.get("preparation"),
         "error_message": task.result.get("summary")
         if task.status == "FAILED"
         else None,
@@ -517,7 +567,6 @@ def material_options(tenant_id: UUID, session: SessionDep, user: CurrentUser) ->
 
 
 # 知识资产独立于优化师：公共版本跨租户复用，私有版本受成员权限约束。
-from pydantic import Field  # noqa: E402
 from sqlalchemy import or_  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
