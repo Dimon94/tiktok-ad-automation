@@ -73,11 +73,31 @@ NO_EFFECT_REJECTIONS = {
 }
 
 
-def known_no_effect_rejection(kind: str, remote_code: object) -> bool:
-    """Return whether a saved business code proves that no object was created."""
-    return type(remote_code) is int and remote_code in NO_EFFECT_REJECTIONS.get(
-        kind, ()
+CAMPAIGN_QUOTA_MESSAGE = (
+    "Your ad account has met its Smart+ campaign quota. "
+    "Pause an active Smart+ campaign to activate another one."
+)
+
+
+def campaign_quota_rejection(
+    kind: str, remote_code: object, remote_message: object
+) -> bool:
+    """仅识别实际额度拒绝全文，不把其他40002或传输异常当成未创建。"""
+    return (
+        kind == "CAMPAIGN"
+        and type(remote_code) is int
+        and remote_code == 40002
+        and remote_message == CAMPAIGN_QUOTA_MESSAGE
     )
+
+
+def known_no_effect_rejection(
+    kind: str, remote_code: object, remote_message: object = None
+) -> bool:
+    """Return whether a saved business code proves that no object was created."""
+    return (
+        type(remote_code) is int and remote_code in NO_EFFECT_REJECTIONS.get(kind, ())
+    ) or campaign_quota_rejection(kind, remote_code, remote_message)
 
 
 def sdk_creation_envelope(
@@ -98,8 +118,17 @@ def sdk_creation_envelope(
     )
     if (
         isinstance(raw, dict)
+        and campaign_quota_rejection(kind or "", code, raw.get("message"))
+        and raw.get("data") not in (None, {})
+    ):
+        # 保留矛盾标记，历史核查也不能仅凭同一额度文案将它改为明确拒绝。
+        raise RemoteCallError(
+            "create_receipt_conflict", effect="UNKNOWN", evidence=evidence
+        )
+    if (
+        isinstance(raw, dict)
         and type(raw.get("code")) is int
-        and raw["code"] in NO_EFFECT_REJECTIONS.get(kind or "", ())
+        and known_no_effect_rejection(kind or "", raw["code"], raw.get("message"))
     ):
         raise RemoteCallError(
             "tiktok_business_error", effect="REJECTED_NO_EFFECT", evidence=evidence
