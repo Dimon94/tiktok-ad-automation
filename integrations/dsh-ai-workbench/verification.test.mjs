@@ -43,3 +43,57 @@ test('bounded reminders preserve scope diagnostics while lower-priority ranking 
   assert.equal(v.diagnostics().records[0].evidence.request.dimension, 'account')
   assert.ok(v.diagnostics().records.length <= 16)
 })
+
+test('completion requires actual full-scope work and every rule, independent of reminder eviction', async () => {
+  const evidence = { optimizer: { advertiser_ids: ['a', 'b'] }, rules: [{ id: 'r1' }, { id: 'r2' }], source_catalog: ['rule_backtest_inputs', 'history', 'business', 'data_pack_business', 'rule_evidence'].map(category => ({ category, source_count: 2 })) }
+  const methods = new Set(['business', 'materials', 'rules'])
+  let id = 0
+  const v = verificationRuntime({
+    analyzeEvidence: async (_claim, request) => ({ id: String(++id), request, totals: [] }),
+    analyzeTimeline: async (_claim, request) => ({ id: String(++id), request, partitions: [{ daily: [{ loss_proxy: '10' }] }] }),
+    dailyBacktestRule: async (_claim, request) => ({ id: String(++id), rule_id: request.rule_id || null, variants: request.rule_id ? [{ name: 'baseline', status: 'UNSUPPORTED' }] : [{ name: 'candidate_1', status: request.invalid ? 'INVALID_DEFINITION' : 'COMPLETE', ...(request.invalid ? {} : { metrics: {} }) }] }),
+    readEvidence: async (_claim, request) => ({ id: String(++id), category: request.category, rows: [] }),
+    searchKnowledge: async () => ({ items: [{ id: 'knowledge' }] }),
+    readKnowledge: async (_claim, request) => ({ id: request.knowledge_id, body: 'SECRET' }),
+  })
+  assert.ok(v.completionGaps(evidence, methods).length > 5)
+  await v.runtime.analyzeEvidence({}, { dimension: 'account', maturity_horizon: 'd0', advertiser_id: 'a' })
+  await v.runtime.analyzeEvidence({}, { dimension: 'account', maturity_horizon: 'd0', min_spend: '1' })
+  assert.ok(v.completionGaps(evidence, methods).some(g => g.includes('maturity_horizon=d0')))
+  for (const maturity_horizon of ['d0', 'd3', 'd7']) await v.runtime.analyzeEvidence({}, { dimension: 'account', maturity_horizon })
+  for (const dimension of ['campaign', 'material']) await v.runtime.analyzeTimeline({}, { dimension })
+  await v.runtime.dailyBacktestRule({}, { rule_id: 'r1' })
+  assert.ok(v.completionGaps(evidence, methods).some(g => g.includes('rule_id=r2')))
+  await v.runtime.dailyBacktestRule({}, { rule_id: 'r2' })
+  for (const category of ['history', 'business', 'data_pack_business', 'rule_evidence']) await v.runtime.readEvidence({}, { category })
+  await v.runtime.searchKnowledge()
+  await v.runtime.readKnowledge({}, { knowledge_id: 'unrelated' })
+  assert.ok(v.completionGaps(evidence, methods).some(g => g.includes('knowledge body')))
+  await v.runtime.readKnowledge({}, { knowledge_id: 'knowledge' })
+  await v.runtime.dailyBacktestRule({}, { candidate_definitions: [{}], invalid: true })
+  assert.ok(v.completionGaps(evidence, methods).some(g => g.includes('NEW policy')))
+  await v.runtime.dailyBacktestRule({}, { candidate_definitions: [{}] })
+  for (let i = 0; i < 40; i++) await v.runtime.analyzeEvidence({}, { dimension: 'material' })
+  assert.deepEqual(v.completionGaps(evidence, methods), [])
+  assert.equal(JSON.stringify(v.diagnostics()).includes('SECRET'), false)
+  assert.ok(v.completionGaps(evidence, new Set()).some(g => g.includes('ai-delivery-review-materials')))
+})
+
+test('empty knowledge search is a legitimate gap and failed tools never satisfy work', async () => {
+  const evidence = { optimizer: { advertiser_ids: ['a'] }, source_catalog: [] }
+  const methods = new Set(['business'])
+  const v = verificationRuntime({ searchKnowledge: async () => ({ items: [] }), analyzeEvidence: async (_claim, request) => { if (request.maturity_horizon === 'd7') throw Error('transport failure'); return { id: 'a', request } } })
+  await v.runtime.searchKnowledge()
+  for (const maturity_horizon of ['d0', 'd3']) await v.runtime.analyzeEvidence({}, { dimension: 'account', maturity_horizon })
+  await assert.rejects(v.runtime.analyzeEvidence({}, { dimension: 'account', maturity_horizon: 'd7' }))
+  assert.equal(v.completionGaps(evidence, methods).length, 1)
+  assert.ok(v.completionGaps(evidence, methods)[0].includes('d7'))
+})
+
+
+test('equal financial totals retain distinct campaign/material cohort and balanced-panel checks', async () => {
+  const v = verificationRuntime({ analyzeTimeline: async (_claim, request) => ({ id: request.dimension, request, partitions: [{ currency: 'USD', timezone: 'UTC', daily: [{ date: '2026-11-13', spend: '100', roas: '0.4', cohorts: [{ cohort: 'first_observed_spend', spend: request.dimension === 'campaign' ? '36' : '1', spend_share: request.dimension === 'campaign' ? '0.36' : '0.01' }] }], balanced_panel: { accounts: request.dimension === 'campaign' ? 381 : 274, daily: [{ roas: request.dimension === 'campaign' ? '0.50' : '0.74' }] } }] }) })
+  for (const dimension of ['campaign', 'material']) await v.runtime.analyzeTimeline({}, { dimension })
+  const checks = v.diagnostics().records.map(r => r.evidence.timeline.partitions[0].dimension_check)
+  assert.deepEqual(checks.map(c => [c.dimension, c.balanced_accounts, c.balanced_roas_end, c.last_day_cohorts[0].spend_share]), [['campaign', 381, '0.50', '0.36'], ['material', 274, '0.74', '0.01']])
+})

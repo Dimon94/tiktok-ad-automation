@@ -397,3 +397,29 @@ def test_read_page_preserves_frozen_d7_maturity_and_exact_window(
         == (cutoff.date() - timedelta(days=8)).isoformat()
     )
     assert page["rows"][0]["metric_buckets"][0]["values"]["revenue_d7"] == "49"
+
+
+def test_history_index_shows_optimizer_context_before_account_samples(session, reading):
+    from app.modules.ai_workbench.review_reading import query_for_task
+    from app.modules.ai_workbench.review_store import archive_source
+
+    task, _, cutoff = reading
+    root = archive_source(
+        session,
+        task=task,
+        category="history",
+        identity="context-first-root",
+        captured_at=cutoff,
+        payload={"proposals": [{"status": "PENDING"}]},
+    )
+    account = archive_source(
+        session,
+        task=task,
+        category="history",
+        identity="context-first-account",
+        captured_at=cutoff,
+        payload={"advertiser_id": "acc-1", "reviews": []},
+    )
+    page = query_for_task(session, task=task, category="history")
+    ids = [item["id"] for item in page["items"]]
+    assert ids.index(str(root.id)) < ids.index(str(account.id))

@@ -47,12 +47,21 @@ test('native DSH session has only structured result tool and a tenant/task direc
     const tools = new Map(), skills = new Map()
     const ctx = { get: () => ({ currentSelection: () => ({ provider: 'test', model: 'test' }) }), agentPresets: { mount: async () => {} }, agents: { create: async input => {
       options = input
-      const agent = { followup: message => { prompt = message }, whenIdle: async () => { await assert.rejects(registered.execute({ report, summary: 'premature', proposals: [] }), /Load the main/); await tools.get('skill').execute({ name: skillName('ai-delivery-review') }); await tools.get('skill').execute({ name: skillName('scale') }); assert.equal((await tools.get('tkada_search_knowledge').execute({ query: '补贴' })).items[0].id, 'knowledge-1'); assert.equal((await tools.get('tkada_read_knowledge').execute({ knowledge_id: 'knowledge-1' })).body, 'policy text'); assert.equal((await registered.execute({ report, summary: 'uncorrected draft', proposals: [] })).status, 'verification_required'); assert.equal(completions.length, 0); await registered.execute({ report, summary: 'insufficient evidence', proposals: [] }) } }
+      const agent = { followup: message => { prompt = message }, whenIdle: async () => { await assert.rejects(registered.execute({ report, summary: 'premature', proposals: [] }), /Load the main/); await tools.get('skill').execute({ name: skillName('ai-delivery-review') }); await tools.get('skill').execute({ name: skillName('scale') }); assert.equal((await tools.get('tkada_search_knowledge').execute({ query: '补贴' })).items[0].id, 'knowledge-1'); assert.equal((await tools.get('tkada_read_knowledge').execute({ knowledge_id: 'knowledge-1' })).body, 'policy text'); assert.equal((await registered.execute({ report, summary: 'uncorrected draft', proposals: [] })).status, 'verification_required'); assert.equal(completions.length, 0);
+        // 即使首稿已通过，补充真实业务范围后第二次提交仍必须重新核验，不能直写结果。
+        claim.task.evidence.optimizer.advertiser_ids = ['a']
+        const blocked = await registered.execute({ report, summary: 'skip available work', proposals: [] })
+        assert.equal(blocked.status, 'work_required')
+        assert.equal(blocked.persisted, false)
+        assert.equal(completions.length, 0)
+        for (const maturity_horizon of ['d0', 'd3', 'd7']) await tools.get('tkada_analyze_evidence').execute({ dimension: 'account', maturity_horizon })
+        await tools.get('skill').execute({ name: skillName('business') })
+        await registered.execute({ report, summary: 'insufficient evidence', proposals: [] }) } }
       await input.setup({ inject: async (names, callback) => { assert.deepEqual(names, ['tools', 'skills']); return callback({ skills: { register: s => skills.set(s.name, s), get: async name => skills.get(name) }, tools: { restrict: value => { allowed = value.allow }, guard: value => { guard = value }, register: value => { tools.set(value.name, value); if (value.name === COMPLETE_TOOL) registered = value } } }) } }, agent)
       return { agent, dispose: async () => { disposed = true } }
     } } }
     const completions = []
-    await runClaim(ctx, { stateRoot: directory }, claim, { searchKnowledge: async () => ({ items: [{ id: 'knowledge-1' }] }), readKnowledge: async () => ({ id: 'knowledge-1', body: 'policy text' }), complete: async (identity, result) => { completions.push({ identity, result }); return { status: 'COMPLETE' } } }, { SessionId: value => value, createUserMessage: value => value, renderSkillContent: s => s.content, scopeOf: () => "task-scope" })
+    await runClaim(ctx, { stateRoot: directory }, claim, { analyzeEvidence: async (_claim, request) => ({ id: 'analysis', request }), searchKnowledge: async () => ({ items: [{ id: 'knowledge-1' }] }), readKnowledge: async () => ({ id: 'knowledge-1', body: 'policy text' }), complete: async (identity, result) => { completions.push({ identity, result }); return { status: 'COMPLETE' } } }, { SessionId: value => value, createUserMessage: value => value, renderSkillContent: s => s.content, scopeOf: () => "task-scope" })
     assert.deepEqual(allowed, [])
     assert.deepEqual([...tools.keys()].sort(), ["tkada_analyze_timeline", "tkada_analyze_evidence", "tkada_write_note", "tkada_list_notes", "tkada_query_evidence", "tkada_read_evidence", "skill", "tkada_search_knowledge", "tkada_read_knowledge", "tkada_backtest_rule", "tkada_daily_backtest_rule", COMPLETE_TOOL].sort())
     assert.equal(guard({ name: 'exec' }), 'Only task-scoped evidence, analysis, notes, skills and review completion are permitted')
@@ -61,7 +70,7 @@ test('native DSH session has only structured result tool and a tenant/task direc
     assert.equal(completions.length, 1)
     assert.ok(registered.parameters.required.includes('report'))
     assert.deepEqual(completions[0].result.report, report)
-    assert.deepEqual(completions[0].result.method_usage, ['ai-delivery-review', 'scale'])
+    assert.deepEqual(completions[0].result.method_usage, ['ai-delivery-review', 'business', 'scale'])
     assert.ok(!JSON.stringify(prompt).includes('必需：完整当地日'))
     assert.equal(skills.size, 6)
     assert.equal(disposed, true)

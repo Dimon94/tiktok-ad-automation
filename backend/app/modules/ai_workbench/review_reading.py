@@ -55,7 +55,8 @@ def query_for_task(
     total = session.exec(select(func.count()).select_from(query.subquery())).one()
     rows = session.exec(
         query.order_by(
-            ReviewSource.advertiser_id,
+            # 优先展示优化师总览（含历史建议），避免被千户账户历史淹没。
+            ReviewSource.advertiser_id.asc().nulls_first(),
             ReviewSource.dimension,
             ReviewSource.maturity_horizon,
             ReviewSource.id,
