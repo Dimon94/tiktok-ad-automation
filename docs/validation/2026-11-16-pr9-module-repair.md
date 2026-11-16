@@ -106,3 +106,14 @@ Python冲突保留上游批量说明恢复及captured_at投影、SQLModel列类�
 另补既有MATERIAL/CTA两个前置失败例的真实续跑：实际PendingDispatch→deliver_step/finish_delivery唤醒→成功兄弟MATCH；新主线原始步骤标签会使已确定Native计划PARTIAL仍存RUNNING。现在仅在无实际在途步骤的收尾阶段复用native_completion.batch_results canonical owner，内部事实汇总不依赖原操作者仍可读公共API；非Native/真正QUEUED/RUNNING/UNKNOWN分支保留。真实红后专项16项通过66.18秒，包括兄弟成功/失败计划隔离、撤销账户无平台写、操作者停用后仍保留PARTIAL、上游收尾7例、实际financial-review-v2分析归档到HTTP封面（D7有效/缺失、精确金额及截止）。
 
 最终全app ty、Ruff、生产/demo构建通过；独立端口且重试0的冻结来源/今日超时/历史完整三项前端通过4.6秒。默认本地服务器/环境组合此前三例未加载工作台，独立端口及明确本地API构建后通过，不将其判为源码修复。DSH联合12通过/2既有真实运行时门槛未运行；严格证据工具2例包含在其中。通过集合重叠不相加。最终提交后的两轴复审、合并头Linux及远端完整CI仍待，不宣称已上线。
+
+
+## 独立审查、精确合并头Linux与P2收口
+
+独立Standards/Spec均在362066209c7f5b5093a2753b3912a0f6d7250e69完成：A范围R2均PASS，原跨日分母P1关闭；B范围R1均PASS，无P0/P1。各轴各遇到一个P2：UNAVAILABLE兄弟报告缺id导致读取有效归因报告500，以及覆盖缺口与缺失字段共存时解释标记误为false。已通过后不重开审查scope；后续仅对这两项做明确测试修正，不将旧审查说成覆盖不同提交。
+
+两个P2真实PG/HTTP先红后绿。读取器在ID选择前按已有UNAVAILABLE状态排除不可用报告，无伪造ID或额外引用权。覆盖标记从canonical不完整账户、精确桶/币种及既有缺失成员描述单独计算，与字段缺失计数独立；完整NULL仍false，覆盖缺口+NULL为true，同币种其他来源和其他币种不串标。最终27项通过16.41秒，含真实生产者混合归档的两种顺序、原记录相等、重复读收据稳定、非法选择无新收据、浏览器/SQL汇总和AI归档范围正反例。全app ty/四文件Ruff通过；不改金额、原始记录、选择、摘要或游标，不重复10万条遍历和前端构建。导出合同歧义已澄清：409限制生成/重生成，已完成CSV保留原授权/有效期下下载历史bytes的既有行为。
+
+精确合并头36206620完整Linux Nativelevels[False]验证1 passed/62.20秒，含真实浏览器；规范backfill_step两次投递分别完成和拒绝重复，PG COMPLETE/pages2/request_count2。保留旧错误任务名的原失败及关联任务ID证据。另Native MATCH/差异两项通过39.99秒。独立Docker容器/网络/测试卷已清理；只保留自有依赖缓存。此后P2仅变解释元数据和归档选择，完整Linux规范投递/金额/浏览器路径证据继续适用；未宣称又运行一次合并头Linux。
+
+容量量测为legacy事实夹具，publication_map仅2B，不据此声称Native高发布密度全量边界或已独立测量峰值RSS。远端最终提交完整9项门禁仍待发布后核验；无部署、真实平台或Issue写操作。

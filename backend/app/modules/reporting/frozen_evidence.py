@@ -101,7 +101,9 @@ def _stats(records: list[dict], name: str) -> dict:
     }
 
 
-def _provenance(vector: MetricVector, stats: dict, scope: str) -> dict:
+def _provenance(
+    vector: MetricVector, stats: dict, scope: str, *, coverage_incomplete: bool = False
+) -> dict:
     result = {}
     for name in vector.values:
         ratio = next((r for r in DERIVED_RATIOS if r[0] == name), None)
@@ -130,23 +132,26 @@ def _provenance(vector: MetricVector, stats: dict, scope: str) -> dict:
             metric_contract=semantics_for(name, NATIVE_CONTRACT)
             if vector.contract_revision == NATIVE_CONTRACT
             else None,
-            denominator_coverage_incomplete=bool(
-                ratio
-                and vector.reasons.get(name) == "MISSING_DENOMINATOR"
-                and not data["denominator_missing_count"]
-            ),
+            denominator_coverage_incomplete=bool(ratio and coverage_incomplete),
             **data,
         )
     return result
 
 
 def provenance_for(
-    vector: MetricVector, records: list[dict], scope: str
+    vector: MetricVector,
+    records: list[dict],
+    scope: str,
+    *,
+    coverage_incomplete: bool = False,
 ) -> MetricVector:
     return vector.model_copy(
         update={
             "provenance": _provenance(
-                vector, {name: _stats(records, name) for name in vector.values}, scope
+                vector,
+                {name: _stats(records, name) for name in vector.values},
+                scope,
+                coverage_incomplete=coverage_incomplete,
             )
         }
     )
@@ -174,6 +179,52 @@ def row_scope(row: dict, filters: dict) -> str:
     )
 
 
+def _incomplete_advertisers(row: dict) -> set[str]:
+    coverage = row.get("coverage", {})
+    if "incomplete_advertiser_ids" in coverage:
+        return set(coverage["incomplete_advertiser_ids"])
+    from app.modules.reporting.dimension_query import COMPLETE_COVERAGE_STATUSES
+
+    if coverage.get("status") in COMPLETE_COVERAGE_STATUSES:
+        return set()
+    # AI单账户投影及独立实例/父控制保留各自覆盖，不借用其他来源层的状态。
+    return set(coverage.get("advertiser_ids", [])) | {
+        value
+        for value in (
+            row.get("key", {}).get("advertiser_id"),
+            row.get("display", {}).get("advertiser_id"),
+        )
+        if value
+    }
+
+
+def missing_coverage_currencies(row: dict) -> set[str]:
+    """沿用已选缺失贡献；跨来源的无事实成员只影响同币种分母。"""
+    missing = {
+        item["vector"]["currency"]
+        for item in row.get("coverage", {}).get("missing_contributions", [])
+        if item["incomplete"]
+    }
+    for vector in row.get("metric_buckets", []):
+        if vector.get("reasons", {}).get("spend") == "MISSING_MEMBER_COVERAGE" or (
+            _incomplete_advertisers(row)
+            and all(v is None for v in vector["values"].values())
+            and not selected_records(
+                row, {"bucket": bucket_of(vector), "summary": False}
+            )
+        ):
+            missing.add(vector["currency"])
+    return missing
+
+
+def coverage_gap(row: dict, vector: dict, records: list[dict]) -> bool:
+    # 字段NULL计数与选定账户/日期的覆盖是独立证据，不能相互消去。
+    missing = _incomplete_advertisers(row)
+    return any(r["advertiser_id"] in missing for r in records) or vector[
+        "currency"
+    ] in missing_coverage_currencies(row)
+
+
 def bind_vector(
     vector: dict,
     row: dict,
@@ -195,7 +246,27 @@ def bind_vector(
         record_count=len(records),
         evidence_digest=digest([scope, selection, records]),
     )
-    value = provenance_for(MetricVector.model_validate(vector), records, scope)
+    subject = (
+        row
+        if component is None
+        else next(
+            child
+            for child in row.get("material_instances", [])
+            + row.get("parent_controls", [])
+            if component_key(child) == component
+        )
+        | {
+            "source_evidence": [
+                r for r in row["source_evidence"] if r.get("component") == component
+            ]
+        }
+    )
+    value = provenance_for(
+        MetricVector.model_validate(vector),
+        records,
+        scope,
+        coverage_incomplete=coverage_gap(subject, vector, records),
+    )
     return value.model_copy(update={"evidence_ref": ref}).model_dump(mode="json")
 
 
@@ -306,6 +377,8 @@ class EvidenceAccumulator:
         self.rows: dict[str, list] = defaultdict(list)
         self.scopes: dict[str, str] = {}
         self.stats: dict[str, dict] = {}
+        self.coverage_gaps: set[str] = set()
+        self.missing_currencies: set[str] = set()
 
     def add(self, row: dict) -> None:
         # 特殊素材行不属于普通素材合计；零实例普通行仍定义所选范围。
@@ -316,10 +389,13 @@ class EvidenceAccumulator:
             return
         scope = row_scope(row, self.filters)
         self.scopes[row["row_key"]] = scope
+        self.missing_currencies.update(missing_coverage_currencies(row))
         for vector in row["metric_buckets"]:
             bucket = bucket_of(vector)
             key = canonical(bucket).decode()
             records = selected_records(row, {"bucket": bucket, "summary": True})
+            if coverage_gap(row, vector, records):
+                self.coverage_gaps.add(key)
             self.rows[key].append(
                 [row["row_key"], scope, len(records), digest(records)]
             )
@@ -381,7 +457,13 @@ class EvidenceAccumulator:
             buckets.append(
                 vector.model_copy(
                     update={
-                        "provenance": _provenance(vector, stats, scope),
+                        "provenance": _provenance(
+                            vector,
+                            stats,
+                            scope,
+                            coverage_incomplete=key in self.coverage_gaps
+                            or vector.currency in self.missing_currencies,
+                        ),
                         "evidence_ref": ref,
                     }
                 ).model_dump(mode="json")
@@ -592,7 +674,8 @@ def archive_evidence_page(
     reports = [
         r
         for r in archive_reports(payload, category)
-        if report_id is None or r["id"] == report_id
+        if r.get("status") != "UNAVAILABLE"
+        and (report_id is None or r["id"] == report_id)
     ]
     if len(reports) != 1:
         raise HTTPException(422, "evidence_report_required")

@@ -1382,6 +1382,14 @@ def report_provenance(
         )
     )
 
+    from app.modules.reporting.frozen_evidence import coverage_gap, provenance_for
+
+    selected_scope = {
+        "coverage": row.coverage,
+        "display": row.display,
+        "metric_buckets": [v.model_dump(mode="json") for v in row.metric_buckets],
+        "source_evidence": records,
+    }
     vectors = []
     for vector in row.metric_buckets:
         selected = [
@@ -1407,7 +1415,16 @@ def report_provenance(
                 sort_keys=True,
             ).encode()
         ).hexdigest()
-        vectors.append(vector_provenance(vector, selected, scope))
+        vectors.append(
+            provenance_for(
+                vector,
+                selected,
+                scope,
+                coverage_incomplete=coverage_gap(
+                    selected_scope, vector.model_dump(mode="json"), selected
+                ),
+            )
+        )
     display["report_metric_reasons"] = "；".join(
         sorted({p.reason for v in vectors for p in v.provenance.values() if p.reason})
     )

@@ -312,6 +312,8 @@ def test_partial_window_empty_authority_cannot_make_denominator_zero(
         assert vector.availability["spend"] == "PARTIAL"
         assert vector.values["roas_d0"] is None
         assert vector.availability["roas_d0"] == "MISSING"
+        assert vector.provenance["roas_d0"].denominator_missing_count == 1
+        assert vector.provenance["roas_d0"].denominator_coverage_incomplete is True
     assert page.items[-1].row_key == missing.row_key
     filtered = query_ads(
         session,
@@ -320,3 +322,174 @@ def test_partial_window_empty_authority_cannot_make_denominator_zero(
         filters=filters.model_copy(update={"min_d0_roas": Decimal("0.1")}),
     )
     assert [r.display["name"] for r in filtered.items] == ["Other"]
+
+
+@pytest.mark.parametrize("gap", [False, True])
+def test_null_denominator_coverage_flag_is_independent_of_field_count(
+    session, sync_seed, gap
+):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlmodel import select
+
+    from app.modules.ai_workbench.review_reporting import freeze_report
+    from app.modules.reporting.store_models import ReportSyncState
+    from tests.modules.reporting.test_native_scope_roas import D, publish
+
+    publish(session, sync_seed, (None,), ("5",))
+    filters = ReportingFilter(
+        dimension="account",
+        start_date=D,
+        end_date=D + timedelta(days=int(gap)),
+        advertiser_ids=("acc-1",),
+    )
+    page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
+    assert page.items[0].coverage["status"] == ("INCOMPLETE" if gap else "COMPLETE")
+    states = session.exec(
+        select(ReportSyncState).where(
+            ReportSyncState.tenant_id == sync_seed.tenant_id,
+            ReportSyncState.advertiser_id == "acc-1",
+            ReportSyncState.report_kind == "campaign_day",
+        )
+    ).all()
+    archive = freeze_report(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=filters,
+        cutoff=datetime.now(UTC),
+        states={"account": states},
+    )
+    for vector in [
+        page.items[0].metric_buckets[0].model_dump(mode="json"),
+        page.summary["buckets"][0],
+        archive["rows"][0]["metric_buckets"][0],
+        archive["summary"]["buckets"][0],
+    ]:
+        assert vector["values"]["roas_d0"] is None
+        proof = vector["provenance"]["roas_d0"]
+        assert proof["denominator_missing_count"] == 1
+        assert proof["denominator_coverage_incomplete"] is gap
+
+
+@pytest.mark.parametrize(
+    "missing_currency,expected_gap", [("USD", True), ("EUR", False)]
+)
+def test_missing_member_coverage_keeps_source_buckets_and_currency_scope(
+    session, sync_seed, missing_currency, expected_gap
+):
+    from app.modules.accounts.models import AdvertiserAccount
+    from tests.modules.reporting.test_native_scope_roas import D, publish
+
+    publish(session, sync_seed, (None,), ("5",))
+    account = session.get(AdvertiserAccount, (sync_seed.tenant_id, "acc-2"))
+    account.currency = missing_currency
+    session.flush()
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=ReportingFilter(
+            dimension="account",
+            start_date=D,
+            end_date=D,
+            advertiser_ids=("acc-1", "acc-2"),
+            include_empty=True,
+        ),
+    )
+    native = next(
+        vector
+        for vector in page.summary["buckets"]
+        if vector["contract_revision"] == "native-growth-day-v1"
+    )
+    assert native["currency"] == "USD" and native["source_kind"] == "PLATFORM_DIRECT"
+    assert native["provenance"]["roas_d0"]["denominator_missing_count"] == 1
+    assert (
+        native["provenance"]["roas_d0"]["denominator_coverage_incomplete"]
+        is expected_gap
+    )
+    assert any(
+        vector["currency"] == missing_currency
+        and vector["contract_revision"] == "LEGACY_UNKNOWN"
+        for vector in page.summary["buckets"]
+    )
+    known_row = next(
+        row for row in page.items if row.display["advertiser_id"] == "acc-1"
+    )
+    assert (
+        known_row.metric_buckets[0]
+        .provenance["roas_d0"]
+        .denominator_coverage_incomplete
+        is False
+    )
+
+
+def test_known_other_source_gap_does_not_relabel_complete_native_null(
+    session, sync_seed
+):
+    from datetime import UTC, datetime
+
+    from app.modules.ads.models import AdObject, CampaignNameProjection
+    from tests.modules.reporting.test_native_scope_roas import D, publish
+
+    publish(session, sync_seed, (None,), ("5",))
+    session.execute(
+        text("""INSERT INTO campaign_report_day
+        (tenant_id,advertiser_id,stat_date,campaign_id,spend,currency,timezone,fetched_at,sync_job_id)
+        VALUES (:t,'acc-2',:d,'legacy',NULL,'USD','UTC',now(),gen_random_uuid())"""),
+        {"t": sync_seed.tenant_id, "d": D},
+    )
+    for adv, rid in (("acc-1", "c0"), ("acc-2", "legacy")):
+        session.add(
+            AdObject(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id=adv,
+                kind="campaign",
+                remote_id=rid,
+                ad_type="NATIVE_SERIES",
+                name="P-Drama",
+                observed_at=datetime.now(UTC),
+                published_version=1,
+            )
+        )
+        session.add(
+            CampaignNameProjection(
+                tenant_id=sync_seed.tenant_id,
+                advertiser_id=adv,
+                campaign_remote_id=rid,
+                raw_name="P-Drama",
+                provider_label="P",
+                drama_name="Drama",
+                status="VALID",
+                parser_revision=1,
+                grouping_revision=1,
+                name_revision=1,
+            )
+        )
+    page = query_ads(
+        session,
+        context=sync_seed.context,
+        bc_id="bc-a",
+        filters=ReportingFilter(
+            dimension="drama",
+            start_date=D,
+            end_date=D,
+            advertiser_ids=("acc-1", "acc-2"),
+        ),
+    )
+    assert len(page.items) == 1 and page.items[0].coverage[
+        "incomplete_advertiser_ids"
+    ] == ["acc-2"]
+    for vectors in (
+        [v.model_dump(mode="json") for v in page.items[0].metric_buckets],
+        page.summary["buckets"],
+    ):
+        native = next(v for v in vectors if v["source_kind"] == "PLATFORM_DIRECT")
+        legacy = next(v for v in vectors if v["contract_revision"] == "LEGACY_UNKNOWN")
+        assert native["provenance"]["roas_d0"]["denominator_missing_count"] == 1
+        assert (
+            native["provenance"]["roas_d0"]["denominator_coverage_incomplete"] is False
+        )
+        assert (
+            legacy["provenance"]["roas_d0"]["denominator_coverage_incomplete"] is True
+        )

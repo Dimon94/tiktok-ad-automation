@@ -583,3 +583,63 @@ def test_old_financial_archive_contract_is_not_reinterpreted(session, reading):
             "report_evidence_contract_changed",
         )
     assert delivered_evidence_ids(session, task) == before
+
+
+@pytest.mark.parametrize("unavailable_first", [False, True])
+def test_attribution_provenance_selects_valid_report_beside_unavailable_archive(
+    client, session, context, reading, unavailable_first
+):
+    from app.modules.ai_workbench.review_store import archive_source
+    from app.modules.reporting.queries import freeze_review_page
+    from app.modules.reporting.schemas import ReportingFilter
+    from tests.modules.reporting.evidence_helpers import archived_records
+
+    task, _, cutoff = reading
+    _, headers = claim_task(client)
+    original = session.exec(
+        scoped(ReviewSource, task).where(
+            ReviewSource.category == "reporting",
+            ReviewSource.dimension == "account",
+            ReviewSource.maturity_horizon == "d0",
+        )
+    ).one()
+    filters = ReportingFilter.model_validate(original.payload["filters"])
+    args = {"context": context, "bc_id": "bc-a", "filters": filters, "freeze_all": True}
+    valid = freeze_review_page(session, **args, cutoff=cutoff)
+    unavailable = freeze_review_page(
+        session, **args, cutoff=cutoff - timedelta(seconds=2)
+    )
+    assert unavailable == {
+        "status": "UNAVAILABLE",
+        "reason": "publication_after_cutoff",
+        "rows": [],
+    }
+    reports = [unavailable, valid] if unavailable_first else [valid, unavailable]
+    source = archive_source(
+        session,
+        task=task,
+        category="attribution",
+        captured_at=cutoff,
+        payload={"rows": [{"reports": reports}]},
+        identity=f"mixed-availability-{unavailable_first}",
+    )
+    expected = archived_records(valid, valid["summary"]["buckets"][0])
+    before = delivered_evidence_ids(session, task)
+    path = f"/api/integrations/ai-workbench/reviews/{task.id}/evidence/read"
+    body = {
+        "evidence_id": str(source.id),
+        "view": "provenance",
+        "report_id": valid["id"],
+        "limit": 1,
+    }
+    response = client.post(path, headers=headers, json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["records"] == expected[:1]
+    assert delivered_evidence_ids(session, task) == before | {response.json()["id"]}
+    assert client.post(path, headers=headers, json=body).json() == response.json()
+    assert delivered_evidence_ids(session, task) == before | {response.json()["id"]}
+    rejected = client.post(
+        path, headers=headers, json=body | {"report_id": "missing-report"}
+    )
+    assert rejected.status_code == 422
+    assert delivered_evidence_ids(session, task) == before | {response.json()["id"]}
