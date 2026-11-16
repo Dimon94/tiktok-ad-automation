@@ -562,7 +562,7 @@ test.describe("parsePastedRows", () => {
 })
 
 for (const paged of [false, true]) {
-  test(`启用回读后原页更新状态，不改快照、分页、筛选或后续勾选（${paged ? "第二页" : "首页与详情"}）`, async ({
+  test(`启用回读更新当前目录，冻结报表、分页、筛选与勾选保持到明确重查（${paged ? "第二页" : "首页与详情"}）`, async ({
     page,
   }) => {
     await page.clock.install()
@@ -605,7 +605,7 @@ for (const paged of [false, true]) {
     // 提交受理尚未等于成功，继续显示真实旧状态；后续用户的勾选必须保留。
     await expect(row.getByText("已暂停", { exact: true })).toBeVisible()
     await row.getByRole("checkbox").check()
-    if (!paged) {
+    {
       await page.route("**/ads/campaign/campaign-1?*", (route) =>
         route.fulfill({
           json: {
@@ -618,7 +618,7 @@ for (const paged of [false, true]) {
         }),
       )
       await row
-        .getByRole("button", { name: "嘉书-总裁归来-测试", exact: true })
+        .getByRole("button", { name: paged ? "嘉书-第二页-测试" : "嘉书-总裁归来-测试", exact: true })
         .click()
       await expect(
         page
@@ -626,10 +626,12 @@ for (const paged of [false, true]) {
           .getByText("已暂停", { exact: true }),
       ).toBeVisible()
     }
+    const beforePublication = queries.length
+    const heldQuery = queries.at(-1)?.toString()
     reportOptions.campaignOperationStatus = "ENABLE"
     version = "directory-published"
     await page.clock.fastForward(3_000)
-    if (!paged) {
+    {
       await expect(
         page
           .getByTestId("ads-detail-header")
@@ -643,17 +645,21 @@ for (const paged of [false, true]) {
         .getByRole("button", { name: "Close", exact: true })
         .click()
     }
-    await expect(row.getByText("已开启", { exact: true })).toBeVisible()
+    await expect(row.getByText("已暂停", { exact: true })).toBeVisible()
+    expect(queries).toHaveLength(beforePublication)
     await expect(row.getByRole("checkbox")).toBeChecked()
     await expect(page.getByRole("textbox", { name: "搜索广告" })).toHaveValue(
       "总裁归来",
     )
-    expect(queries.at(-1)?.get("snapshot_id")).toBe(
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    )
+    expect(queries.at(-1)?.toString()).toBe(heldQuery)
     expect(queries.at(-1)?.get("cursor")).toBe(paged ? "cursor-1" : null)
 
     expect(queries.at(-1)?.get("query")).toBe("总裁归来")
+    await page.getByRole("button", { name: "有新数据，点击加载", exact: true }).click()
+    await expect(page.getByRole("row", { name: /嘉书-总裁归来-测试/ }).getByText("已开启", { exact: true })).toBeVisible()
+    expect(queries.at(-1)?.get("snapshot_id")).toBeNull()
+    expect(queries.at(-1)?.get("cursor")).toBeNull()
+    await expect(page.getByText("已选 1 条", { exact: true })).toHaveCount(0)
   })
 }
 

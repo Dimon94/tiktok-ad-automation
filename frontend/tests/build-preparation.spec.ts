@@ -2839,8 +2839,9 @@ test("原生草稿原子保存双角色身份与地区，不要求 Mini 链接",
     .getByLabel("creative_identity ID", { exact: true })
     .fill("creative-owner")
   await page
-    .getByLabel("广告账户", { exact: true })
+    .getByLabel("精确目标账户", { exact: true })
     .fill("90071992547409936666")
+  await page.getByLabel("视频与封面来源", { exact: true }).fill("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
   await expect(
     page.getByRole("combobox", { name: "版权方连接", exact: true }),
   ).toHaveCount(0)
@@ -2864,19 +2865,27 @@ test("原生草稿原子保存双角色身份与地区，不要求 Mini 链接",
     drama_lines: [],
     scene_selection: {
       kind: "NATIVE_SERIES_DIRECT_VIDEO",
-      native_series_id: "native-exact",
-      regions: ["US", "CA"],
-      series_identity: { identity_id: "series-owner" },
-      creative_identity: { identity_id: "creative-owner" },
+      plans: [{
+        plan_key: expect.any(String),
+        selection: {
+          advertiser_id: "90071992547409936666",
+          native_series_id: "native-exact",
+          regions: ["US", "CA"],
+          series_identity: { identity_id: "series-owner" },
+          creative_identity: { identity_id: "creative-owner" },
+          video_sources: [{ material_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+        },
+      }],
     },
   })
 })
 
-test("原生目录首次发现到双身份选择、精确 Series 保存与刷新回显", async ({
+test("原生完整计划准备目录后双身份选择、精确 Series 保存与刷新回显", async ({
   page,
 }) => {
   const api = await buildsBoundary(page)
   let selection: any = null
+  let planKey = ""
   let preparedIdentity: any = null
   const owner = {
     identity_type: "TT_USER",
@@ -2892,18 +2901,29 @@ test("原生目录首次发现到双身份选择、精确 Series 保存与刷新
     const req = route.request(),
       path = new URL(req.url()).pathname
     if (req.method() === "POST" && path.endsWith("/build-drafts")) {
-      selection = req.postDataJSON().scene_selection
+      const planSet = req.postDataJSON().scene_selection
+      selection = planSet.plans[0].selection
+      planKey = planSet.plans[0].plan_key
       Object.assign(api.summary, {
-        scene_selection: selection,
+        scene_selection: planSet,
         status: "DRAFT",
       })
     }
     if (req.method() === "PATCH" && path.endsWith(`/build-drafts/${D}`)) {
-      selection = req.postDataJSON().scene_selection
-      api.summary.scene_selection = selection
+      const planSet = req.postDataJSON().scene_selection
+      expect(planSet.plans).toHaveLength(1)
+      expect(planSet.plans[0].plan_key).toBe(planKey)
+      selection = planSet.plans[0].selection
+      api.summary.scene_selection = planSet
     }
     if (path.endsWith("/prepare")) preparedIdentity = selection.series_identity
     if (path.endsWith("/native-checkpoint")) {
+      const url = new URL(req.url())
+      if (url.searchParams.get("view") === "plans") return route.fulfill({ json: {
+        draft_revision: api.summary.revision,
+        plans: [{ plan_key: planKey, state: "BLOCKED", selection, reason_codes: ["native_series_identity_combination_unverified"] }],
+      } })
+      expect(url.searchParams.get("plan_key")).toBe(planKey)
       return route.fulfill({
         json: {
           state: "BLOCKED",
@@ -2964,11 +2984,16 @@ test("原生目录首次发现到双身份选择、精确 Series 保存与刷新
     .getByRole("radio", { name: "原生 Series 直接视频", exact: true })
     .check()
   await page
-    .getByLabel("广告账户", { exact: true })
+    .getByLabel("精确目标账户", { exact: true })
     .fill("90071992547409936666")
+  await page.getByLabel("视频与封面来源", { exact: true }).fill("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
   await page.getByLabel("投放地区", { exact: true }).fill("US")
+  await expect(page.getByRole("button", { name: "保存草稿", exact: true })).toBeDisabled()
+  await page.getByLabel("精确 Series ID", { exact: true }).fill("seed-series")
+  await page.getByLabel("series_identity ID", { exact: true }).fill("seed-owner")
+  await page.getByLabel("creative_identity ID", { exact: true }).fill("seed-creative")
   await page.getByRole("button", { name: "保存草稿", exact: true }).click()
-  await expect.poll(() => selection?.series_identity).toBeNull()
+  await expect.poll(() => selection?.series_identity.identity_id).toBe("seed-owner")
   await page.getByRole("button", { name: "解析并准备", exact: true }).click()
   await edit()
   await page
@@ -2979,6 +3004,9 @@ test("原生目录首次发现到双身份选择、精确 Series 保存与刷新
     .getByRole("combobox", { name: "creative_identity 目录", exact: true })
     .click()
   await page.getByRole("option", { name: /创意账号/ }).click()
+  // 更换承载身份会清除旧 Series；完整计划必须明确输入后才能重新准备目录。
+  await expect(page.getByLabel("精确 Series ID", { exact: true })).toHaveValue("")
+  await page.getByLabel("精确 Series ID", { exact: true }).fill("seed-series")
   await page.getByRole("button", { name: "保存草稿", exact: true }).click()
   await page.getByRole("button", { name: "解析并准备", exact: true }).click()
   await edit()

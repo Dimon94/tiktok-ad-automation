@@ -263,18 +263,26 @@ export function AdsWorkspace() {
     [clearSelection, clearManagementPreview, closeDetail, forceNextQuery],
   )
   const refetchRows = ads.query.refetch
-  const refreshCurrentPage = useCallback(() => {
-    forceNextQuery()
-    void refetchRows()
-    // 已打开的详情/广告内素材也读取同一轮目录回读，不留着操作前的缓存。
+  const refreshCurrentDirectory = useCallback(() => {
+    // 本人操作回读只更新当前目录观察；报表成员、金额及展示继续绑定原查询。
     void queryClient.invalidateQueries({
       queryKey: ["tenant", tenantId, "ads"],
       predicate: (query) =>
-        ["detail", "ad-materials", "linked"].includes(
-          String(query.queryKey[3]),
-        ) && query.queryKey[4] === currentBcId,
+        query.queryKey[3] === "detail" && query.queryKey[4] === currentBcId,
     })
-  }, [refetchRows, queryClient, tenantId, currentBcId, forceNextQuery])
+  }, [queryClient, tenantId, currentBcId])
+  const refreshCurrentPage = useCallback(() => {
+    forceNextQuery()
+    void refetchRows()
+    refreshCurrentDirectory()
+    // 素材维度沿用原有回读：刷新广告内素材和关联报表。
+    void queryClient.invalidateQueries({
+      queryKey: ["tenant", tenantId, "ads"],
+      predicate: (query) =>
+        ["ad-materials", "linked"].includes(String(query.queryKey[3])) &&
+        query.queryKey[4] === currentBcId,
+    })
+  }, [refetchRows, forceNextQuery, refreshCurrentDirectory, queryClient, tenantId, currentBcId])
   const syncMutation = useMutation({
     mutationFn: async () => {
       // 手动刷新按当前筛选账户插队，不从当前页推导范围，也不触发历史回补。
@@ -665,12 +673,18 @@ export function AdsWorkspace() {
       pendingRefreshScope.current = null
       setNewDataAvailable(false)
       // 早于首次同步状态响应完成的提交，也要读取当前页的真实状态。
-      if (followOwnOperation) void refreshCurrentPage()
+      if (followOwnOperation) {
+        if (applied.dimension === "material") refreshCurrentPage()
+        else refreshCurrentDirectory()
+      }
       return
     }
     // 日报固定本次查询，源发布只提示用户重查；素材沿用原有刷新合同。
     if (applied.dimension !== "material") {
-      if (previous.version !== version) setNewDataAvailable(true)
+      if (previous.version !== version) {
+        setNewDataAvailable(true)
+        if (followOwnOperation) refreshCurrentDirectory()
+      }
       return
     }
     // 延迟的新版本在操作结束后仍可自动加载；同一版本只加载一次，避免刷新循环。
@@ -700,6 +714,7 @@ export function AdsWorkspace() {
     currentBcId,
     ads.snapshot,
     refreshCurrentPage,
+    refreshCurrentDirectory,
     canAutoLoadLatest,
     applied.dimension,
     newDataAvailable,

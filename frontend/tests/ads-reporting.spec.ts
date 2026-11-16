@@ -35,7 +35,7 @@ test("首次素材投影未完成不能显示没有匹配广告", async ({ page 
   await expect(page.getByText("没有匹配的广告", { exact: true })).toHaveCount(0)
 })
 
-test("空闲首屏自动重建快照的间隔不少于60秒", async ({ page }) => {
+test("素材空闲首屏自动重建快照的间隔不少于60秒", async ({ page }) => {
   await page.clock.install()
   const options = { lastSuccess: "2026-10-01T05:00:00Z" }
   await adsBoundary(page, options)
@@ -45,9 +45,9 @@ test("空闲首屏自动重建快照的间隔不少于60秒", async ({ page }) =
   })
   await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
   await expect(page.getByRole("heading", { name: "广告报表" })).toBeVisible()
-  await page.getByRole("tab", { name: "系列", exact: true }).click()
+  await page.getByRole("tab", { name: "素材", exact: true }).click()
   await expect(
-    page.getByText("嘉书-总裁归来-测试", { exact: true }),
+    page.getByText("素材-测试", { exact: true }),
   ).toBeVisible()
   const initial = queries
   options.lastSuccess = "2026-10-01T05:01:00Z"
@@ -137,7 +137,7 @@ test("详情沿用快照并读取 operation 状态", async ({ page }) => {
   await page
     .getByRole("button", { name: "嘉书-总裁归来-测试", exact: true })
     .click()
-  await expect(page.getByText("PAUSED", { exact: true })).toBeVisible()
+  await expect(page.getByTitle("PAUSED", { exact: true })).toHaveText("PAUSED")
   expect(
     new URL(detailRequests.at(-1) ?? "http://localhost").searchParams.get(
       "snapshot_id",
@@ -237,7 +237,7 @@ test("账户对账提示保留广告汇总", async ({ page }) => {
   await expect(page.getByRole("cell", { name: /100.00/ }).first()).toBeVisible()
 })
 
-test("同步发布后清除第二页快照和选择并显示放缓", async ({ page }) => {
+test("日报同步发布保留第二页快照和选择，明确加载后清除", async ({ page }) => {
   await page.clock.install()
   const options = {
     paged: true,
@@ -263,6 +263,10 @@ test("同步发布后清除第二页快照和选择并显示放缓", async ({ pa
   options.lastSuccess = "2026-10-05T05:01:00Z"
   await page.clock.fastForward(31_000)
   await expect(page.getByText(/数据更新到 13:01/)).toBeVisible()
+  await page.clock.fastForward(61_000)
+  await expect(page.getByText("嘉书-第二页-测试", { exact: true })).toBeVisible()
+  await expect(page.getByText("已选 1 条", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "有新数据，点击加载", exact: true }).click()
   await expect(page.getByText("嘉书-第二页-测试", { exact: true })).toHaveCount(
     0,
   )
@@ -321,7 +325,7 @@ test("后台发布不打断第二页选择，用户可选择加载最新数据",
   )
 })
 
-test("空闲页面后台发布自动更新汇总且同版本不循环刷新", async ({ page }) => {
+test("素材空闲页面后台发布自动更新汇总且同版本不循环刷新", async ({ page }) => {
   await page.clock.install()
   const options = { lastSuccess: "2026-10-05T05:00:00Z", reportSpend: "100" }
   await adsBoundary(page, options)
@@ -331,6 +335,7 @@ test("空闲页面后台发布自动更新汇总且同版本不循环刷新", as
       requests.push(request.url())
   })
   await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
+  await page.getByRole("tab", { name: "素材", exact: true }).click()
   await expect(page.getByTestId("summary-spend")).toContainText("100.00")
   const before = requests.length
   options.lastSuccess = "2026-10-05T05:01:00Z"
@@ -351,12 +356,13 @@ test("空闲页面后台发布自动更新汇总且同版本不循环刷新", as
   ).toHaveCount(0)
 })
 
-test("第一页勾选保留汇总，取消选择后自动加载已发布数据", async ({ page }) => {
+test("素材第一页勾选保留汇总，取消选择后自动加载已发布数据", async ({ page }) => {
   await page.clock.install()
   const options = { lastSuccess: "2026-10-05T05:00:00Z", reportSpend: "100" }
   await adsBoundary(page, options)
   await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
-  const checkbox = page.getByRole("checkbox", { name: "选择 甲账户" })
+  await page.getByRole("tab", { name: "素材", exact: true }).click()
+  const checkbox = page.getByRole("checkbox", { name: "选择 素材-测试" })
   await checkbox.check()
   options.lastSuccess = "2026-10-05T05:01:00Z"
   options.reportSpend = "240"
@@ -425,7 +431,7 @@ test("覆盖时间取最旧账户，混时区明确本地日期及超时账户�
 })
 
 for (const busy of ["详情", "第二页"] as const) {
-  test(`后台发布保留正在查看的${busy}，返回空闲页面后自动更新`, async ({
+  test(`后台发布保留正在查看的${busy}，返回空闲页面仍冻结，明确加载后更新`, async ({
     page,
   }) => {
     await page.clock.install()
@@ -433,6 +439,7 @@ for (const busy of ["详情", "第二页"] as const) {
       paged: true,
       lastSuccess: "2026-10-05T05:00:00Z",
       reportSpend: "100",
+      frozenReportSpend: "100",
     }
     await adsBoundary(page, options)
     await page.goto(`/tenants/${TENANT}/ads?bc_id=${BC_A}`)
@@ -462,7 +469,9 @@ for (const busy of ["详情", "第二页"] as const) {
       ).toBeVisible()
       await page.getByRole("button", { name: "上一页" }).click()
     }
-    await page.clock.fastForward(31_000)
+    await page.clock.fastForward(61_000)
+    await expect(page.getByTestId("summary-spend")).toContainText("100.00")
+    await page.getByRole("button", { name: "有新数据，点击加载", exact: true }).click()
     await expect(page.getByTestId("summary-spend")).toContainText("240.00")
   })
 }

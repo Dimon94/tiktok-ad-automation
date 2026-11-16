@@ -292,7 +292,12 @@ function DetailBody({
   })
   const detail = detailQuery.data
   const name = detail?.name ?? rowDisplayName(row, dimension)
-  const status = statusLabel(row.display ?? {})
+  // 页头与目录配置同属当前观察；下方冻结报表仍保留查询时的状态和金额。
+  const status = statusLabel(detail ? {
+    operation_status: detail.statuses?.operation,
+    secondary_status: detail.statuses?.delivery,
+    review_status: detail.statuses?.review,
+  } : row.display ?? {})
   // 没有快照的行无法冻结选择，不显示操作按钮。
   const actions =
     readonly ||

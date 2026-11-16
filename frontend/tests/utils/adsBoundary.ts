@@ -17,6 +17,8 @@ export type AdsBoundaryOptions = {
   lastSuccess?: string
   materialViewOnly?: "UNMAPPED_CREATIVE" | "UNATTRIBUTED" | "CAROUSEL"
   reportSpend?: string
+  /** 带旧 snapshot_id 的查询继续读取原快照金额。 */
+  frozenReportSpend?: string
   syncAccounts?: Array<{
     advertiser_id: string
     timezone: string
@@ -350,7 +352,7 @@ export async function adsBoundary(
                   timezone: "UTC",
                   attribution: "IAA",
                   values: {
-                    spend: options.reportSpend ?? "100",
+                    spend: (url.searchParams.has("snapshot_id") ? options.frozenReportSpend : undefined) ?? options.reportSpend ?? "100",
                     revenue_d0: "120",
                     revenue_total: "150",
                     ad_impression_events: "50",
@@ -390,7 +392,7 @@ export async function adsBoundary(
                         timezone: "Asia/Shanghai",
                         attribution: "IAA",
                         values: {
-                          spend: options.reportSpend ?? "100",
+                          spend: (url.searchParams.has("snapshot_id") ? options.frozenReportSpend : undefined) ?? options.reportSpend ?? "100",
                           revenue_d0: "120",
                           revenue_total: "150",
                           ad_impression_events: "50",
@@ -453,7 +455,7 @@ export async function adsBoundary(
                 timezone: "UTC",
                 attribution: "IAA",
                 values: {
-                  spend: options.reportSpend ?? "100",
+                  spend: (url.searchParams.has("snapshot_id") ? options.frozenReportSpend : undefined) ?? options.reportSpend ?? "100",
                   revenue_d0: "120",
                   revenue_total: "150",
                   ad_impression_events: "50",
@@ -496,7 +498,7 @@ export async function adsBoundary(
                       timezone: "Asia/Shanghai",
                       attribution: "IAA",
                       values: {
-                        spend: options.reportSpend ?? "100",
+                        spend: (url.searchParams.has("snapshot_id") ? options.frozenReportSpend : undefined) ?? options.reportSpend ?? "100",
                         revenue_d0: "120",
                         revenue_total: "150",
                         ad_impression_events: "50",

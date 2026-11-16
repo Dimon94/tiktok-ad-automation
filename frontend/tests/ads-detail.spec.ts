@@ -85,7 +85,7 @@ test.describe("ads detail", () => {
     await expect(sheet.getByRole("tab", { name: "概览" })).toBeVisible()
     await expect(sheet.getByText("版权方")).toBeVisible()
     // 状态枚举显示中文，原值保留在悬停说明里。
-    await expect(sheet.getByTitle("APPROVED")).toHaveText("已通过")
+    await expect(sheet.getByTitle("APPROVED", { exact: true })).toHaveText("已通过")
     // 页头动作文案与表格工具栏一致。
     const header = sheet.getByTestId("ads-detail-header")
     for (const name of ["启用", "暂停", "修改目标 ROAS", "修改预算"])
@@ -618,6 +618,7 @@ for (const complete of [true, false]) {
               metric_buckets: [
                 {
                   currency: "USD",
+                  timezone: "UTC",
                   values: { spend: "90", revenue_total: "20" },
                   availability: { spend: "PARTIAL" },
                 },
@@ -674,7 +675,7 @@ for (const complete of [true, false]) {
     const sheet = page.getByRole("dialog")
     await sheet.getByRole("tab", { name: "素材" }).click()
     await expect(sheet.getByText("图片轮播", { exact: true })).toBeVisible()
-    await expect(sheet.getByText(/USD · 消耗 90 · 收入 20/)).toHaveCount(1)
+    await expect(sheet.getByText(/USD · UTC · 消耗 90 · 收入 20/)).toHaveCount(1)
     await expect(sheet.getByText("部分数据", { exact: true })).toBeVisible()
     await expect(
       sheet.getByText("图片顺序：shared → second", { exact: true }),
