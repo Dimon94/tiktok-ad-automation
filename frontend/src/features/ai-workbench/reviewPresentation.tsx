@@ -7,6 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { type Performance, ReportPerformance } from "./ReportPerformance"
 
 export type Proposal = {
   id: string
@@ -32,6 +33,8 @@ export type Proposal = {
   published_version_id?: string
 }
 export type ReviewTask = {
+  performance?: Performance
+  captured_at?: string
   id: string
   status: string
   created_at?: string
@@ -56,6 +59,16 @@ export type ReviewTask = {
   result?: {
     summary?: string
     report?: {
+      executive?: {
+        assessment: string
+        drivers: Array<{
+          finding: string
+          impact: string
+          action: string
+          evidence_ids: string[]
+        }>
+        next_review: string
+      }
       headline: string
       verdict: string
       sections: Array<{
@@ -132,11 +145,57 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
   const report = result.report
   return (
     <div className="flex min-w-0 flex-col gap-5" data-testid="review-report">
+      {report?.headline && (
+        <header className="border-b pb-5">
+          <p className="mb-2 text-xs tracking-widest text-muted-foreground">
+            投放经营复盘
+          </p>
+          <h2 className="text-xl font-semibold leading-8 sm:text-2xl">
+            {report.headline}
+          </h2>
+        </header>
+      )}
+      <ReportPerformance performance={task.performance} />
+      {report?.executive && (
+        <section
+          className="flex flex-col gap-4"
+          aria-label="主要拖累与优先动作"
+        >
+          <h3 className="text-lg font-semibold">02　主要拖累与优先动作</h3>
+          <ReviewText text={report.executive.assessment} />
+          {report.executive.drivers.map((driver, index) => (
+            <section key={index} className="rounded-lg border p-4">
+              <h4 className="font-semibold">
+                {index + 1}. {driver.finding}
+              </h4>
+              <p className="mt-2 text-sm leading-7">{driver.impact}</p>
+              <p className="mt-3 border-l-2 pl-3 text-sm leading-7">
+                <strong>优先动作：</strong>
+                {driver.action}
+              </p>
+              <EvidenceIds ids={driver.evidence_ids} />
+            </section>
+          ))}
+          <p className="rounded-md bg-muted p-3 text-sm leading-7">
+            <strong>下次验收：</strong>
+            {report.executive.next_review}
+          </p>
+        </section>
+      )}
       <section className="flex flex-col gap-3" aria-label="复盘报告">
-        <h3 className="font-semibold">{report?.headline || "复盘报告"}</h3>
+        <h3 className="text-lg font-semibold">
+          {report?.executive
+            ? "03　专项决策与分析附录"
+            : "02　经营判断与专项决策"}
+        </h3>
+        {!report?.executive && (
+          <p className="text-sm text-muted-foreground">
+            历史报告保留原始判断；金额和数据日期见上方概览。
+          </p>
+        )}
         {report ? (
           <>
-            <ReviewText text={report.verdict} />
+            {!report.executive && <ReviewText text={report.verdict} />}
             {report.sections.map((section, index) => {
               const decision =
                 /^决策[一二三123：:]|^(控损|放量|新剧测试)(建议|决策)/.test(
@@ -147,7 +206,7 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
               return (
                 <details
                   key={index}
-                  open={decision}
+                  open={decision && !report.executive}
                   className="rounded-md border p-4"
                 >
                   <summary className="cursor-pointer font-medium">

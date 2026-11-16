@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 
-export const METHOD_VERSION = '1.8.4'
+export const METHOD_VERSION = '1.9.0'
 export const PROVIDER = 'tkada-review'
 export const SKILL_TOOL = 'skill'
 export const MAIN_KEY = 'ai-delivery-review'
@@ -18,7 +18,9 @@ export const hashBody = body => createHash('sha256').update(body).digest('hex')
 
 export async function loadMethods() {
   async function resource(key, path, description) {
-    const body = await readFile(new URL(`./skills/ai-delivery-review/${path}`, import.meta.url), 'utf8')
+    let body = await readFile(new URL(`./skills/ai-delivery-review/${path}`, import.meta.url), 'utf8')
+    // 原生任务没有文件读取权限；将报告方法正文一同冻结，而非只交付一个无法打开的相对链接。
+    if (key === MAIN_KEY) body += '\n\n' + await readFile(new URL('./skills/ai-delivery-review/references/operator-report.md', import.meta.url), 'utf8')
     return { key, description, version: METHOD_VERSION, sha256: hashBody(body), body }
   }
   return { main: await resource(MAIN_KEY, 'SKILL.md', '统一检查目标、执行兑现、证据资格、历史建议与下一轮验证。'),

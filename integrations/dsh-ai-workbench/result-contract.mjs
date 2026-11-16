@@ -5,6 +5,13 @@ const object = (properties, required) => ({ type: 'object', properties, required
 export const REVIEW_RESULT_PARAMETERS = object({
   summary: text(1000),
   report: object({
+    executive: object({
+      assessment: text(300),
+      drivers: { type: 'array', minItems: 1, maxItems: 3, items: object({
+        finding: text(160), impact: text(350), action: text(250), evidence_ids: { ...evidenceIds, minItems: 1 },
+      }, ['finding', 'impact', 'action', 'evidence_ids']) },
+      next_review: text(250),
+    }, ['assessment', 'drivers', 'next_review']),
     headline: text(160),
     verdict: text(1000),
     sections: { type: 'array', minItems: 1, maxItems: 12, items: object({
@@ -17,7 +24,7 @@ export const REVIEW_RESULT_PARAMETERS = object({
     rule_decision: object({
       status: { enum: ['PROPOSED', 'NO_CHANGE', 'INSUFFICIENT_EVIDENCE'] }, reason: text(2000),
     }, ['status', 'reason']),
-  }, ['headline', 'verdict', 'sections', 'rule_decision']),
+  }, ['executive', 'headline', 'verdict', 'sections', 'rule_decision']),
   proposals: { type: 'array', maxItems: 20, items: object({
     kind: { enum: ['strategy', 'rule'] }, operation: { enum: ['create', 'update'] },
     target_id: { type: 'string', format: 'uuid' }, after: { type: 'object' },

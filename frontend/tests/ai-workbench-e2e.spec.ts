@@ -824,11 +824,21 @@ test("复盘历史支持失败重试、取消排队任务和服务未配置提�
   await page.goto(
     `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
   )
+  await page
+    .getByRole("button", { name: "查看复盘 historical-task", exact: true })
+    .click()
   await expect(page.getByTestId("review-detail")).toContainText(
     "上次服务暂时不可用",
   )
   await page.getByRole("button", { name: "重试复盘", exact: true }).click()
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click()
   await page.getByRole("button", { name: "取消复盘", exact: true }).click()
+  await page
+    .getByRole("button", { name: "查看复盘 historical-task", exact: true })
+    .click()
   await expect(page.getByTestId("review-detail")).toContainText("已取消")
   expect(actions).toEqual(["retry", "cancel"])
   await page.route(`**/ai-optimizers/${optimizer}/reviews{,?**}`, (route) =>
@@ -1488,6 +1498,16 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
   await expect(
     page.getByTestId("review-history").locator("tbody tr"),
   ).toHaveCount(10)
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  expect(reads.filter((path) => /\/reviews\/review-/.test(path))).toHaveLength(
+    0,
+  )
+  await page
+    .getByRole("button", { name: "查看复盘 review-0", exact: true })
+    .click()
+  await expect(
+    page.getByRole("dialog", { name: "投放经营复盘报告" }),
+  ).toBeVisible()
   await expect(page.getByTestId("review-report")).toContainText(
     "尚缺规则执行后的完整日证据",
   )
@@ -1514,10 +1534,16 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
     page.getByTestId("review-report").getByRole("table"),
   ).toContainText("UTC+8")
   await expect(page.getByRole("button", { name: "接受并发布" })).toHaveCount(0)
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
   await page.getByRole("button", { name: "历史下一页" }).click()
   await expect(page.getByTestId("review-history")).toContainText(
     "第 11 轮短结论",
   )
+  await page.keyboard.press("Escape")
   await page
     .getByRole("button", { name: "查看复盘 review-10", exact: true })
     .click()
@@ -1529,6 +1555,7 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
       .filter((path) => /\/reviews\/review-/.test(path))
       .every((path) => path.endsWith("review-0") || path.endsWith("review-10")),
   ).toBe(true)
+  await page.keyboard.press("Escape")
   await page
     .getByRole("button", { name: "查看复盘 review-11", exact: true })
     .click()
@@ -1539,6 +1566,7 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
       .filter({ hasText: "历史第一段" }),
   ).toHaveText("历史第一段")
   await expect(page.getByTestId("review-report").locator("img")).toHaveCount(0)
+  await page.keyboard.press("Escape")
   await page
     .getByRole("button", { name: "查看复盘 review-10", exact: true })
     .click()
@@ -1743,6 +1771,10 @@ test("跨轮变更分页、字段差异、人工发布回读及带原因拒绝�
   await expect
     .poll(() => reads.some((path) => path.endsWith("/reviews/round-0")))
     .toBe(true)
+  await expect(
+    page.getByRole("dialog", { name: "投放经营复盘报告" }),
+  ).toBeVisible()
+  await page.keyboard.press("Escape")
   await expect(proposal).toBeVisible()
   await proposal.locator("summary").first().click()
   await proposal.getByRole("button", { name: "确认保存（保持停用）" }).click()
@@ -1838,10 +1870,14 @@ test("查看历史仍轮询活动任务，切换投手阻断旧活动和详情�
   await page.goto(
     `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
   )
+  await page
+    .getByRole("button", { name: "查看复盘 old-review", exact: true })
+    .click()
   await expect(page.getByTestId("review-detail")).toHaveAttribute(
     "data-review-id",
     "old-review",
   )
+  await page.keyboard.press("Escape")
   await expect(
     page.getByRole("button", { name: "发起复盘", exact: true }),
   ).toBeDisabled()
@@ -1918,4 +1954,178 @@ test("搭建工作表复用排期单元格：批量粘贴、文本 ID、键盘�
   await expect(page.getByLabel("剧目名称", { exact: true })).toHaveValue(
     "剧目甲\n剧目乙",
   )
+})
+
+test("报告按需弹窗显示消耗ROAS与三个重点，币种切换不混算且关闭回到原列表", async ({
+  page,
+}) => {
+  await page.route(`**/api/tenants/${tenant}/ai-optimizers?**`, (route) =>
+    route.fulfill({ json: { items: [configuredOptimizer()] } }),
+  )
+  let reads = 0
+  const partition = {
+    currency: "USD",
+    timezone: "UTC",
+    start_date: "2026-11-08",
+    end_date: "2026-11-14",
+    spend: "30000",
+    revenue: "18000",
+    roas: "0.6",
+    revenue_minus_spend: "-12000",
+  }
+  await page.route(`**/ai-optimizers/${optimizer}/reviews**`, (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith("/reviews"))
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: "business-report",
+              status: "COMPLETE",
+              headline: "消耗集中在低回收系列",
+              captured_at: "2026-11-15T03:00:00Z",
+            },
+          ],
+          total: 1,
+          runtime_ready: true,
+          active_task: null,
+          has_more: false,
+        },
+      })
+    reads++
+    return route.fulfill({
+      json: {
+        id: "business-report",
+        status: "COMPLETE",
+        created_at: "2026-11-16T03:00:00Z",
+        performance: {
+          captured_at: "2026-11-15T03:00:00Z",
+          historical_reanalysis: true,
+          age_hours: 30,
+          windows: [
+            {
+              horizon: "d0",
+              coverage: {
+                requested_accounts: 1344,
+                available_accounts: 1000,
+                available_accounts_percent: "74.4",
+              },
+              partitions: [
+                partition,
+                {
+                  ...partition,
+                  currency: "JPY",
+                  spend: "900000",
+                  revenue: "450000",
+                  roas: "0.5",
+                  revenue_minus_spend: "-450000",
+                },
+              ],
+            },
+          ],
+          timelines: [
+            {
+              dimension: "campaign",
+              currency: "USD",
+              timezone: "UTC",
+              accounts: 1000,
+              start_date: "2026-11-13",
+              end_date: "2026-11-14",
+              balanced_accounts: 800,
+              daily: [],
+              balanced_daily: [
+                {
+                  date: "2026-11-13",
+                  spend: "1000",
+                  revenue_total: "800",
+                  roas: "0.8",
+                },
+                {
+                  date: "2026-11-14",
+                  spend: "1500",
+                  revenue_total: "750",
+                  roas: "0.5",
+                },
+              ],
+            },
+          ],
+        },
+        result: {
+          summary: "先处理高消耗低回收对象",
+          report: {
+            headline: "消耗增加但回收没有跟上，优先核查低回收系列",
+            verdict: "详细判定保留在原报告",
+            executive: {
+              assessment:
+                "固定账户消耗增加50%，回收比从0.8降至0.5，不能把新增消耗直接当作新剧测试。",
+              drivers: [
+                {
+                  finding: "消耗集中于低回收系列",
+                  impact: "系列甲消耗1500，ROAS仅0.5，尚需等待收入成熟。",
+                  action: "先核对系列甲的出价和收入回收情况，再决定是否暂停。",
+                  evidence_ids: ["evidence-1"],
+                },
+              ],
+              next_review: "收入观察3天后再验收，回收未改善则缩小测试。",
+            },
+            sections: [
+              {
+                title: "分析口径与来源",
+                body: "技术来源清单",
+                evidence_ids: [],
+              },
+            ],
+            rule_decision: { status: "NO_CHANGE", reason: "先观察回收" },
+          },
+          recommendations: [],
+        },
+      },
+    })
+  })
+  await page.route(`**/ai-optimizers/${optimizer}/proposals**`, (route) =>
+    route.fulfill({ json: [] }),
+  )
+  await page.goto(
+    `/tenants/${tenant}/ai-workbench?optimizer_id=${optimizer}&view=review`,
+  )
+  await expect(page.getByTestId("review-history")).toContainText(
+    "消耗集中在低回收系列",
+  )
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  expect(reads).toBe(0)
+  await page.getByRole("button", { name: "查看复盘 business-report" }).click()
+  const dialog = page.getByRole("dialog", { name: "投放经营复盘报告" })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByTestId("report-metrics")).toContainText("30,000.00")
+  await expect(dialog.getByTestId("report-metrics")).toContainText("0.600")
+  await expect(dialog).toContainText("不能代表当前实时表现")
+  await expect(dialog).toContainText("优先动作")
+  await expect(dialog).toContainText("+50.0%")
+  await expect(
+    dialog.getByText("技术来源清单", { exact: true }),
+  ).not.toBeVisible()
+  await dialog.getByRole("combobox", { name: "报表币种与时区" }).click()
+  await page.getByRole("option", { name: /JPY/ }).click()
+  await expect(dialog.getByTestId("report-metrics")).toContainText("900,000.00")
+  await expect(dialog.getByTestId("report-metrics")).not.toContainText(
+    "30,000.00",
+  )
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 960 })
+    const size = await dialog.boundingBox()
+    expect(size!.width).toBeLessThanOrEqual(width)
+    expect(size!.height).toBeLessThanOrEqual(960)
+    expect(
+      await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    ).toBe(true)
+    await page.screenshot({
+      path: `../.runtime/review-report-20261116/report-${width}.png`,
+    })
+  }
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(page.getByTestId("review-history")).toContainText(
+    "消耗集中在低回收系列",
+  )
+  expect(reads).toBe(1)
 })

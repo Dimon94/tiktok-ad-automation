@@ -3,6 +3,13 @@ import { useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -67,6 +74,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
   const [page, setPage] = useState<HistoryPage | null>(null)
   const [historyOffset, setHistoryOffset] = useState(0)
   const [historyStatus, setHistoryStatus] = useState("all")
+  const [reportOpen, setReportOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [task, setTask] = useState<ReviewTask | null>(null)
   const [active, setActive] = useState<ReviewTask | null>(null)
@@ -112,7 +120,6 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
         if (controller.signal.aborted) return
         setPage(result)
         setActive(result.active_task)
-        setSelectedId((previous) => previous ?? result.items[0]?.id ?? null)
       })
       .catch((reason) => {
         if (!controller.signal.aborted) setError(errorMessage(reason))
@@ -252,6 +259,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
         setActive(result.task)
         setSelectedId(result.task.id)
         setTask(result.task)
+        setReportOpen(true)
         setHistoryOffset(0)
         setRefresh((value) => value + 1)
       }
@@ -331,11 +339,16 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
               活动复盘 · {statusLabel(active.status)}
               {active.preparation &&
                 ` · 账户数据准备 ${active.preparation.completed_accounts ?? 0} / ${active.preparation.total_accounts ?? 0}`}
+              {!!active.preparation?.failed_accounts &&
+                ` · ${active.preparation.failed_accounts} 个账户准备失败`}
             </span>
             <Button
               size="sm"
               variant="outline"
-              onClick={() => setSelectedId(active.id)}
+              onClick={() => {
+                setSelectedId(active.id)
+                setReportOpen(true)
+              }}
             >
               查看活动复盘
             </Button>
@@ -382,7 +395,8 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
             <Table data-testid="review-history">
               <TableHeader>
                 <TableRow>
-                  <TableHead>时间</TableHead>
+                  <TableHead>生成时间</TableHead>
+                  <TableHead>数据冻结</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>短结论</TableHead>
                   <TableHead>详情</TableHead>
@@ -400,9 +414,14 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
                       <TableCell className="text-xs">
                         {dateLabel(item.created_at)}
                       </TableCell>
+                      <TableCell className="text-xs">
+                        {dateLabel(item.captured_at)}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline">
-                          {item.status === "PENDING" ? "待确认" : statusLabel(item.status)}
+                          {item.status === "PENDING"
+                            ? "待确认"
+                            : statusLabel(item.status)}
                         </Badge>
                       </TableCell>
                       <TableCell
@@ -418,17 +437,18 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
                           aria-label={`查看复盘 ${item.id}`}
                           onClick={() => {
                             setSelectedId(item.id)
+                            setReportOpen(true)
                             setProposalOffset(0)
                           }}
                         >
-                          查看
+                          查看报告
                         </Button>
                       </TableCell>
                     </TableRow>
                   ))}
                 {(loadingHistory || !page?.items.length) && (
                   <TableRow>
-                    <TableCell colSpan={4}>
+                    <TableCell colSpan={5}>
                       {loadingHistory ? "正在读取历史…" : "暂无复盘历史。"}
                     </TableCell>
                   </TableRow>
@@ -458,76 +478,76 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
             </Button>
           </div>
         </section>
-        {selectedId && (
-          <section
-            className="flex min-w-0 flex-col gap-4 rounded-lg border p-4"
-            aria-label="单轮复盘详情"
-            data-testid="review-detail"
-            data-review-id={selectedId}
+        <Dialog open={reportOpen && !!selectedId} onOpenChange={setReportOpen}>
+          <DialogContent
+            className="flex max-h-[92dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
+            aria-describedby="review-report-description"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="font-semibold">单轮复盘详情</h3>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!!busy}
-                onClick={() => {
-                  setDetailRefresh((value) => value + 1)
-                  setRefresh((value) => value + 1)
-                }}
-              >
-                刷新复盘状态
-              </Button>
-            </div>
+            <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12 text-left">
+              <DialogTitle>投放经营复盘报告</DialogTitle>
+              <DialogDescription id="review-report-description">
+                按数据日期阅读消耗、回收表现和经营建议。报告不代表实时数据。
+              </DialogDescription>
+            </DialogHeader>
+            <section
+              className="min-h-0 min-w-0 overflow-y-auto px-5 py-6 sm:px-8"
+              aria-label="单轮复盘详情"
+              data-testid="review-detail"
+              data-review-id={selectedId}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {dateLabel(task?.created_at)} ·{" "}
+                  {task ? statusLabel(task.status) : "读取中"}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setDetailRefresh((value) => value + 1)
+                    setRefresh((value) => value + 1)
+                  }}
+                >
+                  刷新复盘状态
+                </Button>
+              </div>
 
-            {!task ? (
-              <p role="status">正在读取报告…</p>
-            ) : (
-              <>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  <Badge variant="outline">{statusLabel(task.status)}</Badge>
-                  <span>
-                    创建 {dateLabel(task.created_at)} · 完成{" "}
-                    {dateLabel(task.finished_at)} · 投手版本 v
-                    {task.optimizer_version ?? "—"}
-                  </span>
-                </div>
-                {task.preparation && (
-                  <p className="text-sm">
-                    账户数据准备 {task.preparation.completed_accounts ?? 0} /{" "}
-                    {task.preparation.total_accounts ?? 0}
-                    {!!task.preparation.failed_accounts &&
-                      `，${task.preparation.failed_accounts} 个账户准备失败，复盘将注明缺口`}
-                  </p>
-                )}
-                {task.error_message && (
-                  <p className="text-sm text-destructive">
-                    {task.error_message}
-                  </p>
-                )}
-                {task.review_context && (
-                  <p className="text-xs text-muted-foreground">
-                    本轮发布方式：
-                    {task.review_context.publication === "AUTHORIZED_AUTO"
-                      ? "授权范围内自动发布"
-                      : "人工确认后发布"}
-                  </p>
-                )}
-                <ReviewReport task={task} />
-                {task.status === "FAILED" && (
-                  <Button
-                    variant="outline"
-                    className="self-start"
-                    disabled={!!busy || !!active || !page?.runtime_ready}
-                    onClick={() => void controlTask("retry", task)}
-                  >
-                    重试复盘
-                  </Button>
-                )}
-              </>
-            )}
-          </section>
-        )}
+              {!task ? (
+                <p role="status">正在读取报告…</p>
+              ) : (
+                <>
+                  {task.status === "PREPARING" && task.preparation && (
+                    <p className="text-sm">
+                      账户数据准备 {task.preparation.completed_accounts ?? 0} /{" "}
+                      {task.preparation.total_accounts ?? 0}
+                      {!!task.preparation.failed_accounts &&
+                        `，${task.preparation.failed_accounts} 个账户准备失败，复盘将注明缺口`}
+                    </p>
+                  )}
+                  {task.error_message && (
+                    <p className="text-sm text-destructive">
+                      {task.error_message}
+                    </p>
+                  )}
+                  <div className="mx-auto mt-6 max-w-4xl">
+                    <ReviewReport key={task.id} task={task} />
+                  </div>
+                  {task.status === "FAILED" && (
+                    <Button
+                      variant="outline"
+                      className="self-start"
+                      disabled={!!busy || !!active || !page?.runtime_ready}
+                      onClick={() => void controlTask("retry", task)}
+                    >
+                      重试复盘
+                    </Button>
+                  )}
+                </>
+              )}
+            </section>
+          </DialogContent>
+        </Dialog>
         <section
           className="flex min-w-0 flex-col gap-4"
           aria-label="可执行变更"
@@ -608,7 +628,11 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
                         : item.kind === "strategy"
                           ? "投放策略调整"
                           : "可执行变更")}
-                    <Badge variant="outline">{item.status === "PENDING" ? "待确认" : statusLabel(item.status)}</Badge>
+                    <Badge variant="outline">
+                      {item.status === "PENDING"
+                        ? "待确认"
+                        : statusLabel(item.status)}
+                    </Badge>
                   </span>
                   <span className="mt-2 block text-xs text-muted-foreground">
                     {item.status === "PENDING"
@@ -628,6 +652,7 @@ function ReviewWorkspace({ tenantId, optimizerId }: Props) {
                       className="h-auto justify-start self-start whitespace-normal break-all p-0 text-left"
                       onClick={() => {
                         setSelectedId(item.review_task_id!)
+                        setReportOpen(true)
                         setProposalOffset(0)
                       }}
                     >

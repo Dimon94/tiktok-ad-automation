@@ -39,6 +39,7 @@ def list_review_page(
             task.created_at,
             task.finished_at,
             task.optimizer_version,
+            col(task.evidence)["captured_at"].as_string().label("captured_at"),
             col(task.evidence)["preparation"].label("preparation"),
             result["report"]["headline"].as_string().label("headline"),
             func.left(result["summary"].as_string(), 240).label("summary"),

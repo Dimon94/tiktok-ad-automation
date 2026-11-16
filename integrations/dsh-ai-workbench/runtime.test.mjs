@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { loadMethods, skillName } from './methods.mjs'
 import { createRuntime, runClaim, COMPLETE_TOOL } from './runtime.mjs'
 
-const report = { headline: '继续观察', verdict: '本轮不调整规则', sections: [{ title: '证据覆盖', body: '成熟窗口不足', evidence_ids: [], table: { columns: ['窗口', '结论'], rows: [['D7', '证据不足']] } }], rule_decision: { status: 'INSUFFICIENT_EVIDENCE', reason: '缺成熟证据与回测' } }
+const report = { executive: { assessment: '当前收入观察不足，不能判断低回收原因', drivers: [{ finding: '缺少可用收入', impact: '部分账户没有成熟收入，不能补零', action: '补齐事实后复查', evidence_ids: ['11111111-1111-4111-8111-111111111111'] }], next_review: '补齐后复查消耗和回收' }, headline: '继续观察', verdict: '本轮不调整规则', sections: [{ title: '证据覆盖', body: '成熟窗口不足', evidence_ids: [], table: { columns: ['窗口', '结论'], rows: [['D7', '证据不足']] } }], rule_decision: { status: 'INSUFFICIENT_EVIDENCE', reason: '缺成熟证据与回测' } }
 
 test('service credential is used only for claim, task completion uses scoped token', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'tkada-review-'))

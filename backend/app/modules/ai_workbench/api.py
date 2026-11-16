@@ -513,10 +513,13 @@ def get_review(
         optimizer_id=optimizer_id,
         task_id=task_id,
     )
+    from app.modules.ai_workbench.report_performance import report_performance
+
     return {
         "id": task.id,
         "status": task.status,
         "result": task.result,
+        "performance": report_performance(session, task),
         "created_at": task.created_at,
         "finished_at": task.finished_at,
         "optimizer_version": task.optimizer_version,
