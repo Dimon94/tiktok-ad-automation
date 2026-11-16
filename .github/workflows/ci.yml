@@ -13,8 +13,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - suite: modules
-            pytest-args: --ignore=tests/acceptance
           - suite: acceptance
             pytest-args: tests/acceptance -k 'not lost_reply'
           - suite: campaign-recovery
@@ -23,7 +21,7 @@ jobs:
             pytest-args: tests/acceptance -k 'lost_reply and not campaign'
           - suite: browser
             pytest-args: ''
-    services:
+    services: &backend-services
       postgres:
         image: postgres:18
         env:
@@ -39,7 +37,7 @@ jobs:
         image: redis:8
         ports: ['6379:6379']
         options: --health-cmd="redis-cli ping" --health-interval=5s --health-timeout=3s --health-retries=20
-    env:
+    env: &backend-env
       PROJECT_NAME: TikTok Ad Automation CI
       DATABASE_URL: postgresql://postgres:ci-local-password@127.0.0.1:5432/tiktok_ci_test
       REDIS_URL: redis://127.0.0.1:6379/0
@@ -48,7 +46,7 @@ jobs:
       FIRST_SUPERUSER_PASSWORD: ci-only-superuser-password
       SECRET_KEY: ci-only-signing-key-not-for-deployment
       FASTAPI_ENV: development
-    steps:
+    steps: &backend-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: '3.14'}
@@ -93,10 +91,25 @@ jobs:
       - run: uv run pytest -q --tb=short --show-capture=no -m "not mcp" ${{ matrix.pytest-args }}
         if: matrix.suite != 'browser' && matrix.suite != 'modules'
         working-directory: backend
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        if: matrix.suite == 'browser' || matrix.suite == 'modules'
+        with: {bun-version: '1.4.2'}
+      - run: bun install --frozen-lockfile && bun run --filter frontend build
+        if: matrix.suite == 'browser' || matrix.suite == 'modules'
+        env:
+          VITE_API_URL: ''
+      - run: bun x playwright install --with-deps chromium
+        if: matrix.suite == 'browser' || matrix.suite == 'modules'
+        working-directory: frontend
+      - name: Verify module partition and gate contracts
+        if: matrix.suite == 'modules'
+        run: uv run python ../deploy/ci/test_backend_tests.py
+        working-directory: backend
       - name: Run all module tests in isolated groups
         if: matrix.suite == 'modules'
         run: >-
           uv run python ../deploy/ci/backend_tests.py --shards 4 --isolate-files
+          --runner-count 2 --runner-index ${{ matrix.partition }}
           --serial-file tests/modules/ads/test_directory_large_publish.py
           --serial-file tests/modules/builds/test_carousel_execution.py
           --serial-file tests/modules/builds/test_carousel_freeze.py
@@ -105,6 +118,21 @@ jobs:
           --serial-file tests/modules/business/test_prefix_large_inputs.py
           --serial-file tests/modules/materials/test_seed_resume_capacity.py
           --serial-file tests/modules/accounts/test_discovery_worker.py
+          --serial-file tests/modules/ads/test_directory_navigation.py
+          --serial-file tests/modules/builds/test_native_plan_set.py
+          --serial-file tests/modules/builds/test_native_batch_recovery.py
+          --serial-file tests/modules/builds/test_native_execution.py
+          --serial-file tests/modules/builds/test_native_batch_preview.py
+          --serial-file tests/modules/builds/test_native_batch_execution.py
+          --serial-file tests/modules/reporting/test_native_campaign.py
+          --serial-file tests/modules/reporting/test_native_levels.py
+          --serial-file tests/modules/reporting/test_material_instance_tracer.py
+          --serial-file tests/modules/ad_management/test_native_recovery.py
+          --serial-file tests/modules/ad_management/test_native_budget.py
+          --serial-file tests/modules/ad_management/test_native_budget_recovery.py
+          --serial-file tests/modules/ad_management/test_native_roas.py
+          --serial-file tests/modules/ad_management/test_native_roas_recovery.py
+          --serial-file tests/modules/ad_management/test_native_status.py
           --work "$RUNNER_TEMP/backend-modules"
           --save-durations "$RUNNER_TEMP/backend-modules/durations.json"
           -- --ignore=tests/acceptance
@@ -113,18 +141,8 @@ jobs:
         if: always() && matrix.suite == 'modules'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: backend-modules
+          name: backend-modules-${{ matrix.partition }}
           path: ${{ runner.temp }}/backend-modules
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        if: matrix.suite == 'browser'
-        with: {bun-version: '1.4.2'}
-      - run: bun install --frozen-lockfile && bun run --filter frontend build
-        if: matrix.suite == 'browser'
-        env:
-          VITE_API_URL: ''
-      - run: bun x playwright install --with-deps chromium
-        if: matrix.suite == 'browser'
-        working-directory: frontend
       - run: bun x playwright test --config=playwright.acceptance.config.ts
         if: matrix.suite == 'browser'
         working-directory: frontend
@@ -132,6 +150,32 @@ jobs:
         run: bun x playwright test --config=playwright.r2-acceptance.config.ts
         if: matrix.suite == 'browser'
         working-directory: frontend
+  backend_modules:
+    name: backend (modules ${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: modules
+            partition: 0
+            label: 1/2
+          - suite: modules
+            partition: 1
+            label: 2/2
+    services: *backend-services
+    env: *backend-env
+    steps: *backend-steps
+  backend_modules_gate:
+    name: backend (modules)
+    needs: backend_modules
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both complete module partitions
+        env:
+          MODULE_RESULT: ${{ needs.backend_modules.result }}
+        run: test "$MODULE_RESULT" = success
   frontend:
     runs-on: ubuntu-latest
     steps:

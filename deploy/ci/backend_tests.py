@@ -20,6 +20,7 @@ REDIS_URL、TEST_REDIS_URL（Redis 需开启足够多的库号）。
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -47,7 +48,7 @@ def weights_for(nodeids, durations):
     return result
 
 
-def partition(nodeids, durations, shards):
+def partition(nodeids, durations, shards, *, split_files=True):
     """最长处理时间优先装箱；返回每组的 pytest 参数（文件路径或用例 ID）。"""
     weights = weights_for(nodeids, durations)
     by_file = defaultdict(list)
@@ -56,7 +57,7 @@ def partition(nodeids, durations, shards):
     units = []  # (估计耗时, 文件, 参数列表)
     for path, ids in by_file.items():
         total = sum(weights[i] for i in ids)
-        if total > SPLIT_SECONDS and len(ids) > 1:
+        if split_files and total > SPLIT_SECONDS and len(ids) > 1:
             units.extend((weights[i], path, [i]) for i in ids)
         else:
             units.append((total, path, [path]))
@@ -70,6 +71,15 @@ def partition(nodeids, durations, shards):
         for load, items in bins
         if items
     ]
+
+
+def runner_partition(nodeids, durations, index, count):
+    """外层按完整文件归属 runner；内层仍复用原分组与容量独占流程。"""
+    if count < 1 or not 0 <= index < count:
+        raise ValueError("runner partition index must be within partition count")
+    groups = partition(nodeids, durations, count, split_files=False)
+    files = set(groups[index][1]) if index < len(groups) else set()
+    return [nodeid for nodeid in nodeids if nodeid.split("::", 1)[0] in files]
 
 
 def split_exclusive(nodeids):
@@ -139,7 +149,9 @@ def read_results(path):
     outcomes, durations = {}, defaultdict(float)
     if not path.exists():
         return outcomes, durations
-    for line in path.read_text().splitlines():
+    for line in path.read_text().splitlines(keepends=True):
+        if not line.endswith("\n"):
+            continue
         record = json.loads(line)
         nodeid = record["nodeid"]
         durations[nodeid] += record["duration"]
@@ -197,6 +209,34 @@ def start_groups(groups, first_index, label, args, base_env, database_url=None, 
 def wait_groups(running, label, args, started):
     outcomes, measured = {}, {}
     process_errors = []
+    next_progress = started
+    while True:
+        live = [index for index, process, _, _ in running if process.poll() is None]
+        if not live:
+            break
+        if time.monotonic() >= next_progress:
+            # 直接读既有逐条结果流，宿主退出前也能看到各组进度，不能靠事后 artifact。
+            for index, _, _, results in running:
+                current, _ = read_results(results)
+                print(
+                    f"  {label}组 {index} 进度：完成 {len(current)}，"
+                    f"失败 {sum(outcome == 'failed' for outcome in current.values())}，"
+                    f"进程 {'running' if index in live else 'exited'}，"
+                    f"最近 {next(reversed(current), 'none')}",
+                    flush=True,
+                )
+            memory_path = Path("/proc/meminfo")
+            memory = next(
+                (line.split()[1] for line in memory_path.read_text().splitlines()
+                 if line.startswith("MemAvailable:")), "unknown"
+            ) if memory_path.is_file() else "n/a"
+            print(
+                f"  宿主采样：MemAvailable_KiB={memory}，"
+                f"free_disk_GiB={shutil.disk_usage(args.work).free // (1024 ** 3)}",
+                flush=True,
+            )
+            next_progress = time.monotonic() + 30
+        time.sleep(1)
     for index, process, log, results in running:
         returncode = process.wait()
         log.close()
@@ -222,6 +262,8 @@ def main():
         default=int(os.environ.get("CHECK_ACCEPTANCE_SHARDS", "2")),
         help="验收独占阶段的并行组数",
     )
+    parser.add_argument("--runner-count", type=int, default=1)
+    parser.add_argument("--runner-index", type=int, default=0)
     parser.add_argument("--serial-file", action="append", default=[], help="普通组结束后串行运行的容量测量文件")
     parser.add_argument("--fast", action="store_true", help="只跑快速层，排除 slow 标记")
     parser.add_argument("--isolate-files", action="store_true", help="测试文件之间恢复独立的 head 测试库")
@@ -239,6 +281,21 @@ def main():
         if path.exists():
             durations.update(json.loads(path.read_text()))
     nodeids = collect(args.targets or ["tests"], base_env, args.fast)
+    collected = nodeids
+    try:
+        nodeids = runner_partition(collected, durations, args.runner_index, args.runner_count)
+    except ValueError as error:
+        parser.error(str(error))
+    manifest = {
+        "runner_index": args.runner_index,
+        "runner_count": args.runner_count,
+        "collected_count": len(collected),
+        "selected_count": len(nodeids),
+        "selected_files": sorted({nodeid.split("::", 1)[0] for nodeid in nodeids}),
+    }
+    (args.work / "runner-partition.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Runner {args.runner_index + 1}/{args.runner_count}："
+          f"全量收集 {len(collected)}，本分区 {len(nodeids)}", flush=True)
     if not nodeids:
         print("后端：没有需要运行的测试")
         return 0
