@@ -228,6 +228,8 @@ export const reasonLabels: Record<string, string> = {
   sdk_upload_capacity_exceeded: "素材超过文件上传容量限制",
   material_refresh_required: "正在重新核实目标账户的视频与封面",
   tiktok_business_error: "TikTok 拒绝创建，请查看下方具体原因。",
+  tiktok_campaign_quota_exceeded:
+    "账户已达到 Smart+ 活跃系列上限，请调整已有投放或改用有额度的账户后重新准备。",
   cover_source_unavailable: "来源封面不可用，请核查或恢复来源封面任务。",
   cover_pending: "正在准备目标账户的视频封面",
   cover_result_unknown: "封面上传结果待核实，请核查原任务，勿重复上传",

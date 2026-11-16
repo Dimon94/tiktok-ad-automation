@@ -373,6 +373,8 @@ def test_unknown_campaign_remote_effect_is_recovered_without_create_or_database_
 
     env = recon_env
     identity, body = arm(env)
+    # Gateway已按真实物理接口准入，不能再查询废弃的逻辑端点桶。
+    endpoint = sdk_endpoint("build.get_campaigns")
 
     def hook(_path, _query):
         with Session(env.engine) as session:
@@ -384,7 +386,7 @@ def test_unknown_campaign_remote_effect_is_recovered_without_create_or_database_
             assert step.lease_token and step.status == "UNKNOWN"
             keys = admission_keys(
                 settings.TIKTOK_APP_ID,
-                sdk_endpoint("build.get_campaigns"),
+                endpoint,
                 env.context.tenant_id,
                 body["advertiser_id"],
             )
@@ -429,7 +431,7 @@ def test_unknown_campaign_remote_effect_is_recovered_without_create_or_database_
         env.redis.zcard(key) == 0
         for key in admission_keys(
             settings.TIKTOK_APP_ID,
-            calls[0][0],
+            endpoint,
             env.context.tenant_id,
             body["advertiser_id"],
         )[2:]

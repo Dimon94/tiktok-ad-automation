@@ -21,7 +21,10 @@ from sqlmodel import Session, col, select
 
 from app.core.context import TenantContext
 from app.core.errors import DomainError
-from app.integrations.tiktok.adapters.build_results import known_no_effect_rejection
+from app.integrations.tiktok.adapters.build_results import (
+    campaign_quota_rejection,
+    known_no_effect_rejection,
+)
 from app.integrations.tiktok.bounded_resources import bounded_session
 from app.integrations.tiktok.contracts.builds import (
     AdGroupStatus,
@@ -386,11 +389,19 @@ def _recover_known_rejection(
     # 不能只改为FAILED，否则历史未知证据会阻止安全重试。
     if remote_code == 41021:
         return None
-    if not known_no_effect_rejection(source.kind, remote_code):
+    message = summary.get("remote_message")
+    if summary.get("reason_code") == "create_receipt_conflict":
         return None
+    if not known_no_effect_rejection(source.kind, remote_code, message):
+        return None
+    reason = (
+        "tiktok_campaign_quota_exceeded"
+        if campaign_quota_rejection(source.kind, remote_code, message)
+        else "tiktok_business_error"
+    )
     now = datetime.now(UTC)
     source.status, source.phase = "FAILED", "DONE"
-    source.error_code = "tiktok_business_error"
+    source.error_code = reason
     source.lease_token = source.lease_expires_at = None
     source.due_at = now
     source.checked_at = now
@@ -398,7 +409,7 @@ def _recover_known_rejection(
     session.add(source)
     if step.id != source.id and step.status not in {"SUCCEEDED", "FAILED"}:
         step.status, step.phase = "FAILED", "DONE"
-        step.error_code = "tiktok_business_error"
+        step.error_code = reason
         step.lease_token = step.lease_expires_at = None
         step.due_at = now
         step.checked_at = now
@@ -409,8 +420,9 @@ def _recover_known_rejection(
         source,
         conclusion="REMOTE_REJECTED_RECOVERED",
         summary={
-            "reason_code": "tiktok_business_error",
+            "reason_code": reason,
             "remote_code": remote_code,
+            "remote_message": message,
             "recovered_from": "RESULT_UNKNOWN",
         },
         request_id=evidence_row.request_id if evidence_row is not None else None,

@@ -13,7 +13,10 @@ from sqlmodel import Session, col, select
 from app.core.context import TenantContext
 from app.core.diagnostics import emit
 from app.core.errors import DomainError
-from app.integrations.tiktok.adapters.build_results import NO_EFFECT_REJECTIONS
+from app.integrations.tiktok.adapters.build_results import (
+    NO_EFFECT_REJECTIONS,
+    campaign_quota_rejection,
+)
 from app.integrations.tiktok.contracts.builds import CreatedObject
 from app.integrations.tiktok.contracts.common import (
     CallEvidence,
@@ -484,7 +487,12 @@ def record_rejected(
     previous = counts.get(key, 0)
     count = previous + 1 if type(previous) is int and previous >= 0 else 1
     counts[key] = count
-    retryable = count <= _BUSINESS_REJECTION_RETRIES[remote_code]
+    quota = campaign_quota_rejection(
+        step.kind, remote_code, error.evidence.remote_message
+    )
+    # 活跃系列额度不会因数秒重试释放；明确落定，不替用户暂停现有投放。
+    retryable = not quota and count <= _BUSINESS_REJECTION_RETRIES[remote_code]
+    reason = "tiktok_campaign_quota_exceeded" if quota else error.code
     from .preview_models import BuildUnit
 
     unit = session.get(BuildUnit, step.unit_id)
@@ -502,14 +510,14 @@ def record_rejected(
         call_evidence=error.evidence,
         transport_diagnostics=error.transport_diagnostics,
         summary={
-            "reason_code": error.code,
+            "reason_code": reason,
             "remote_code": remote_code,
             "body_digest": step.request_body_digest,
             "rejection_count": count,
         },
     )
     step.status, step.phase = ("PENDING", "IDLE") if retryable else ("FAILED", "DONE")
-    step.error_code = error.code
+    step.error_code = reason
     step.lease_token = step.lease_expires_at = None
     step.due_at = datetime.now(UTC) + timedelta(seconds=delay)
     step.updated_at = datetime.now(UTC)
@@ -744,7 +752,8 @@ def require_local_send_open(session: Session, step: ExecutionStep) -> None:
     row = session.exec(
         select(Submission)
         .where(
-            col(Submission.id) == step.submission_id, col(Submission.tenant_id) == step.tenant_id
+            col(Submission.id) == step.submission_id,
+            col(Submission.tenant_id) == step.tenant_id,
         )
         .with_for_update()
         .execution_options(populate_existing=True)

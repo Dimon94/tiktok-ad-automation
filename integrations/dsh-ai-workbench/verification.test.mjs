@@ -24,6 +24,27 @@ test('failed calls are not remembered and retained diagnostics have bounded size
   assert.ok(JSON.stringify(v.diagnostics()).length < 65000)
 })
 
+test('recovery pointers distinguish source pages from analysis artifacts and remain bounded', async () => {
+  let n = 0
+  const v = verificationRuntime({
+    readEvidence: async () => ({ id: 'page', source_id: 'source', category: 'business', body: 'PRIVATE-BODY' }),
+    analyzeEvidence: async (_c, request) => ({ id: 'artifact-' + n++, request, body: 'PRIVATE-BODY' }),
+  })
+  await v.runtime.readEvidence({}, { evidence_id: 'source', offset: 10, limit: 1 })
+  const request = { dimension: 'account', maturity_horizon: 'd0' }
+  await v.runtime.analyzeEvidence({}, request)
+  const state = v.resumeContext()
+  assert.equal(state.references[0].source_id, 'source')
+  assert.equal(state.references[0].id, 'page')
+  assert.deepEqual(state.references[0].request, { evidence_id: 'source', offset: 10, limit: 1 })
+  assert.deepEqual(state.references[1].request, request)
+  assert.deepEqual(state.verified.horizons, ['d0'])
+  assert.doesNotMatch(JSON.stringify(state), /PRIVATE-BODY/)
+  for (let i = 0; i < 150; i++) await v.runtime.analyzeEvidence({}, { dimension: 'material', advertiser_id: 'a'.repeat(1000), offset: i })
+  assert.ok(JSON.stringify(v.resumeContext().references).length <= 12000)
+  assert.deepEqual(v.resumeContext().verified.horizons, ['d0'])
+})
+
 
 test('timeline reminders keep endpoint cohort values but discard bodies and secrets', async () => {
   const row = { date: '2026-11-13', spend: '100', loss_proxy: '60', cohorts: [{ cohort: 'prior_low_spend', spend: '40', body: 'SECRET' }], token: 'SECRET' }
