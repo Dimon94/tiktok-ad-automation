@@ -1445,6 +1445,11 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
                   verdict: "本轮继续观察。",
                   sections: [
                     {
+                      title: "决策一：控损",
+                      body: "现在做什么：保持观察，不调整规则。\n\n验证细节：待七个完整日后再比较误关比例。",
+                      evidence_ids: [],
+                    },
+                    {
                       title: "账户时区分组",
                       body: "比较两个账户时区的完整日。",
                       evidence_ids: ["ev-complete-day"],
@@ -1494,6 +1499,16 @@ test("100 轮复盘服务端分页、结构化报告和无提案结论，桌面�
       .getByTestId("review-report")
       .getByText("ev-complete-day", { exact: true }),
   ).not.toBeVisible()
+  await expect(
+    page.getByText("现在做什么：保持观察，不调整规则。", { exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByText("验证细节：待七个完整日后再比较误关比例。", { exact: true }),
+  ).not.toBeVisible()
+  await page.getByText("查看分析依据与验证", { exact: true }).click()
+  await expect(
+    page.getByText("验证细节：待七个完整日后再比较误关比例。", { exact: true }),
+  ).toBeVisible()
   await page.getByText("账户时区分组", { exact: true }).click()
   await expect(
     page.getByTestId("review-report").getByRole("table"),

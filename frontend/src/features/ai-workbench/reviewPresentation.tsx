@@ -137,50 +137,66 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
         {report ? (
           <>
             <ReviewText text={report.verdict} />
-            {report.sections.map((section, index) => (
-              <details
-                key={index}
-                open={/^决策[一二三123：:]|^(控损|放量|新剧测试)(建议|决策)/.test(
+            {report.sections.map((section, index) => {
+              const decision =
+                /^决策[一二三123：:]|^(控损|放量|新剧测试)(建议|决策)/.test(
                   section.title,
-                )}
-                className="rounded-md border p-4"
-              >
-                <summary className="cursor-pointer font-medium">
-                  {section.title}
-                </summary>
-                <div className="mt-3 flex flex-col gap-3">
-                  <ReviewText text={section.body} />
-                  {section.table && (
-                    <div className="overflow-auto rounded-md border">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            {section.table.columns.map((column, col) => (
-                              <TableHead key={col}>{column}</TableHead>
-                            ))}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {section.table.rows.map((row, index) => (
-                            <TableRow key={index}>
-                              {row.map((cell, col) => (
-                                <TableCell
-                                  key={col}
-                                  className="whitespace-normal"
-                                >
-                                  {cell}
-                                </TableCell>
+                )
+              const [action, ...analysis] = section.body.split(/\n\s*\n/)
+              const Detail = decision ? "details" : "div"
+              return (
+                <details
+                  key={index}
+                  open={decision}
+                  className="rounded-md border p-4"
+                >
+                  <summary className="cursor-pointer font-medium">
+                    {section.title}
+                  </summary>
+                  <div className="mt-3 flex flex-col gap-3">
+                    {decision && <ReviewText text={action} />}
+                    <Detail className="flex flex-col gap-3">
+                      {decision && (
+                        <summary className="cursor-pointer text-sm text-muted-foreground">
+                          查看分析依据与验证
+                        </summary>
+                      )}
+                      <ReviewText
+                        text={decision ? analysis.join("\n\n") : section.body}
+                      />
+                      {section.table && (
+                        <div className="overflow-auto rounded-md border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                {section.table.columns.map((column, col) => (
+                                  <TableHead key={col}>{column}</TableHead>
+                                ))}
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {section.table.rows.map((row, index) => (
+                                <TableRow key={index}>
+                                  {row.map((cell, col) => (
+                                    <TableCell
+                                      key={col}
+                                      className="whitespace-normal"
+                                    >
+                                      {cell}
+                                    </TableCell>
+                                  ))}
+                                </TableRow>
                               ))}
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  )}
-                  <EvidenceIds ids={section.evidence_ids} />
-                </div>
-              </details>
-            ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      )}
+                      <EvidenceIds ids={section.evidence_ids} />
+                    </Detail>
+                  </div>
+                </details>
+              )
+            })}
           </>
         ) : (
           <ReviewText text={result.summary} />
@@ -195,21 +211,26 @@ export function ReviewReport({ task }: { task: ReviewTask }) {
             INSUFFICIENT_EVIDENCE: "证据不足",
           }[report?.rule_decision.status ?? ""] ?? "未记录结构化结论"}
         </Badge>
-        <ReviewText
-          text={
-            report?.rule_decision.reason ||
-            (result.proposals?.length
-              ? "本轮有可执行变更，请查看下方变更记录及其发布状态。"
-              : "本轮未提交可执行变更。报告中的分析和普通建议不会自动修改规则；历史报告未记录不调整或证据不足的具体原因。")
-          }
-        />
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            查看规则判断依据
+          </summary>
+          <ReviewText
+            text={
+              report?.rule_decision.reason ||
+              (result.proposals?.length
+                ? "本轮有可执行变更，请查看下方变更记录及其发布状态。"
+                : "本轮未提交可执行变更。报告中的分析和普通建议不会自动修改规则；历史报告未记录不调整或证据不足的具体原因。")
+            }
+          />
+        </details>
       </section>
       <section className="flex flex-col gap-3" aria-label="普通建议">
         <h3 className="font-semibold">
-          普通建议（{result.recommendations?.length ?? 0}）
+          后续行动（{result.recommendations?.length ?? 0}）
         </h3>
         <p className="text-xs text-muted-foreground">
-          用于后续行动和验证，不会作为规则变更发布。
+          以下是需要跟进的运营动作；确认规则请查看规则建议。
         </p>
         {result.recommendations?.map((item, index) => (
           <div key={index} className="flex flex-col gap-2 border-l-2 pl-4">
