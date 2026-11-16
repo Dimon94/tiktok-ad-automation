@@ -71,9 +71,7 @@ def test_real_full_timeouts_do_not_regrow_into_repeated_dense_batches_or_next_cy
         second = _start(args, key, redis_client)
         assert second["cycle"] != first["cycle"] and second["at"] != first["at"]
         assert second["metrics"] == {} and second["repairs"] == {
-            "ad": [],
-            "material": [],
-            "directory": [],
+            name: [] for name in ("ad", "material", "directory", *health.PARENT_KINDS)
         }
         assert all(stage["offset"] == 0 for stage in second["stages"].values())
         assert second["stages"]["directory"]["growth_cap"] == 32

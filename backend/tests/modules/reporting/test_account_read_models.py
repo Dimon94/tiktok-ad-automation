@@ -344,6 +344,7 @@ def test_account_daily_and_source_query_match_across_dates_currencies_and_nulls(
     from datetime import timedelta
 
     from app.modules.reporting.schemas import ReportingFilter
+    from tests.modules.reporting.evidence_helpers import comparable_snapshot_evidence
 
     case = report_case
     params = {"t": case.context.tenant_id}
@@ -364,9 +365,23 @@ def test_account_daily_and_source_query_match_across_dates_currencies_and_nulls(
     }
     daily = query(case, filters=ReportingFilter(**arguments))
     source = query(case, filters=ReportingFilter(**arguments, query="report-account"))
-    assert daily.summary == source.summary
     assert daily.coverage == source.coverage
-    assert daily.items[0].metric_buckets == source.items[0].metric_buckets
+    values = [
+        comparable_snapshot_evidence(
+            case.session,
+            case,
+            page.snapshot.snapshot_id,
+            {
+                "summary": page.summary,
+                "metrics": [
+                    vector.model_dump(mode="json")
+                    for vector in page.items[0].metric_buckets
+                ],
+            },
+        )
+        for page in (daily, source)
+    ]
+    assert values[0] == values[1]
 
 
 def test_read_committed_account_writers_serialize_before_recomputing(

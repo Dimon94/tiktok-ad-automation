@@ -4,7 +4,28 @@ from types import SimpleNamespace
 from uuid import UUID
 
 from app.modules.reporting.frozen_evidence import read_snapshot_evidence
-from app.modules.reporting.schemas import BucketStamp
+from app.modules.reporting.schemas import BucketStamp, MetricVector
+
+
+def comparable_snapshot_evidence(session, seed, snapshot_id, value):
+    """先验证各自快照并解析全部原件，只归一跨快照必然不同的定位 ID。"""
+    resolved = []
+
+    def compare(item):
+        if isinstance(item, list):
+            return [compare(child) for child in item]
+        if not isinstance(item, dict):
+            return item
+        if ref := item.get("evidence_ref"):
+            assert ref["owner"] == "QUERY_SNAPSHOT_ROWS"
+            assert ref["owner_id"] == str(snapshot_id)
+            resolved.append(records(session, seed, MetricVector.model_validate(item)))
+            item = item | {"evidence_ref": ref | {"owner_id": "OWN_SNAPSHOT"}}
+        return {key: compare(child) for key, child in item.items()}
+
+    comparable = compare(value)
+    assert any(resolved)
+    return comparable, resolved
 
 
 def records(session, seed, vector, source_row=None):

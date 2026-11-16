@@ -30,6 +30,7 @@ from app.modules.ai_workbench.review_store import (
     scoped,
 )
 from app.modules.ai_workbench.schemas import OptimizerCreate
+from app.modules.reporting.frozen_evidence import rebind_report
 from tests.modules.ai_workbench.review_helpers import prepare_task
 from tests.modules.ai_workbench.test_optimizer import (
     create_body,
@@ -113,7 +114,9 @@ def report(
     mature="AVAILABLE",
     padding="",
 ):
-    return {
+    # 数值聚合夹具也通过正式归档绑定器，再计算不可变来源摘要。
+    payload = {
+        "id": str(uuid4()),
         "advertiser_id": aid,
         "dimension": "campaign",
         "maturity_horizon": "d0",
@@ -147,6 +150,7 @@ def report(
             }
         ],
     }
+    return rebind_report(payload)
 
 
 @pytest.mark.parametrize("count", [50, 100, 500, 1000, 1001])

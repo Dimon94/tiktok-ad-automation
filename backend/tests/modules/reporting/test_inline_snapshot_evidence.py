@@ -74,6 +74,8 @@ def test_inline_missing_version_fails_closed(session, sync_seed):
 
 
 def test_unfiltered_material_summary_matches_full_row_filter_path(session, sync_seed):
+    from tests.modules.reporting.evidence_helpers import comparable_snapshot_evidence
+
     material_snapshot(session, sync_seed)
     use(session, sync_seed, adv="acc-2", ad="a2", video="v1", ad_material="m2")
     pages = [
@@ -88,8 +90,22 @@ def test_unfiltered_material_summary_matches_full_row_filter_path(session, sync_
         for bounds in ({}, {"min_spend": 0})
     ]
     assert pages[0].total == pages[1].total
-    assert pages[0].summary == pages[1].summary
-    assert pages[0].items == pages[1].items
+    assert pages[0].snapshot.snapshot_id != pages[1].snapshot.snapshot_id
+
+    values = [
+        comparable_snapshot_evidence(
+            session,
+            sync_seed,
+            page.snapshot.snapshot_id,
+            {
+                "summary": page.summary,
+                "items": [item.model_dump(mode="json") for item in page.items],
+            },
+        )
+        for page in pages
+    ]
+    # 定位已独立验证；金额、覆盖、摘要及全部冻结原件都保持严格相等。
+    assert values[0] == values[1]
 
 
 def test_active_snapshot_watermark_preserves_old_retired_version_until_expiry(

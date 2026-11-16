@@ -224,7 +224,9 @@ def test_interleaved_stage_merges_keep_newer_freshness_and_coverage(
     seed, factory = committed_sync_seed
     _case(seed, factory, monkeypatch)
     now = datetime.now(UTC)
-    repairs = {"ad": set(), "material": set(), "directory": set()}
+    repairs = {
+        name: set() for name in ("ad", "material", "directory", *health.PARENT_KINDS)
+    }
     fresh = {
         "stale_ad_accounts": 0,
         "stale_material_accounts": 0,

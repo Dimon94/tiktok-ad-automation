@@ -20,9 +20,11 @@ from app.modules.reporting.query_models import (
     QuerySnapshot,
     QuerySnapshotRow,
     ReportExport,
+    read_snapshot,
 )
 from app.modules.reporting.schemas import ReportingFilter
 from tests.modules.accounts.conftest import app_config as app_config
+from tests.modules.reporting.evidence_helpers import comparable_snapshot_evidence
 from tests.modules.reporting.query_helpers import finish_projections, query_ads
 from tests.modules.reporting.test_material_query import D, material_row, publish, use
 
@@ -316,10 +318,26 @@ def test_contract_exit_requery_does_not_reuse_old_identity(session, sync_seed):
     first = query_ads(
         session, context=sync_seed.context, bc_id="bc-a", filters=filters()
     )
+    original = comparable_snapshot_evidence(
+        session,
+        sync_seed,
+        first.snapshot.snapshot_id,
+        [item.model_dump(mode="json") for item in first.items],
+    )
     snapshot = session.get(QuerySnapshot, first.snapshot.snapshot_id)
-    snapshot.result_contract = {"revision": "old-material"}
+    snapshot.result_contract = snapshot.result_contract | {
+        "revision": "material-instance-result-v1"
+    }
     session.add(snapshot)
     session.flush()
+    with pytest.raises(HTTPException) as rejected:
+        read_snapshot(
+            session, context=sync_seed.context, bc_id="bc-a", snapshot_id=snapshot.id
+        )
+    assert (rejected.value.status_code, rejected.value.detail) == (
+        409,
+        "query_snapshot_contract_changed",
+    )
     try:
         fresh = query_ads(
             session, context=sync_seed.context, bc_id="bc-a", filters=filters()
@@ -329,8 +347,16 @@ def test_contract_exit_requery_does_not_reuse_old_identity(session, sync_seed):
             "explicit requery must replace incompatible identity"
         ) from error
     assert fresh.snapshot.snapshot_id != snapshot.id
-    assert fresh.snapshot.result_contract["revision"] == "material-instance-result-v1"
-    assert fresh.items == first.items  # unchanged source, no invented business change
+    assert fresh.snapshot.result_contract["revision"] == "material-instance-result-v2"
+    assert (
+        comparable_snapshot_evidence(
+            session,
+            sync_seed,
+            fresh.snapshot.snapshot_id,
+            [item.model_dump(mode="json") for item in fresh.items],
+        )
+        == original
+    )
 
 
 def test_shared_requery_replaces_old_contract(committed_sync_seed):
@@ -342,15 +368,42 @@ def test_shared_requery_replaces_old_contract(committed_sync_seed):
         s.commit()
     with factory() as s:
         first = shared_query(s, context=seed.context, bc_id="bc-a", filters=filters())
+        original = comparable_snapshot_evidence(
+            s,
+            seed,
+            first.snapshot.snapshot_id,
+            [item.model_dump(mode="json") for item in first.items],
+        )
     with factory() as s:
         snapshot = s.get(QuerySnapshot, first.snapshot.snapshot_id)
-        snapshot.result_contract = {"revision": "old-material"}
+        snapshot.result_contract = snapshot.result_contract | {
+            "revision": "material-instance-result-v1"
+        }
         s.add(snapshot)
         s.commit()
     with factory() as s:
+        with pytest.raises(HTTPException) as rejected:
+            read_snapshot(
+                s,
+                context=seed.context,
+                bc_id="bc-a",
+                snapshot_id=first.snapshot.snapshot_id,
+            )
+        assert (rejected.value.status_code, rejected.value.detail) == (
+            409,
+            "query_snapshot_contract_changed",
+        )
         fresh = shared_query(s, context=seed.context, bc_id="bc-a", filters=filters())
         assert fresh.snapshot.snapshot_id != first.snapshot.snapshot_id
         assert (
-            fresh.snapshot.result_contract["revision"] == "material-instance-result-v1"
+            fresh.snapshot.result_contract["revision"] == "material-instance-result-v2"
         )
-        assert fresh.items == first.items
+        assert (
+            comparable_snapshot_evidence(
+                s,
+                seed,
+                fresh.snapshot.snapshot_id,
+                [item.model_dump(mode="json") for item in fresh.items],
+            )
+            == original
+        )

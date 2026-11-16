@@ -402,15 +402,30 @@ def test_normal_hot_cycles_wait_for_directory_completion_without_ad_repairs(
     from app.modules.automation_rules.models import AutomationRule
     from app.modules.reporting.directory_refresh import refresh_report_directory
     from app.modules.reporting.health import measure_health
+    from app.modules.reporting.jobs import enqueue_job
     from tests.modules.reporting.test_directory_refresh import (
         directory_objects,
         prepared,
         runs_for,
     )
+    from tests.modules.reporting.test_jobs import _route
 
     monkeypatch.setattr(settings, "ADS_SYNC_ENABLED", True)
     start = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
     job = prepared(session, sync_seed, day=start.date())
+    # 此场景要求完整三层热同步；目录夹具本身只登记单一 ad_day。
+    enqueue_job(
+        session,
+        tenant_id=sync_seed.tenant_id,
+        bc_id="bc-a",
+        kind="ad_day",
+        tier="hot",
+        advertiser_ids=["acc-2"],
+        start=start.date(),
+        end=start.date(),
+        frozen_route=_route(sync_seed),
+        actor_id=sync_seed.actor_id,
+    )
     initial_jobs = session.exec(
         select(ReportSyncJob).where(ReportSyncJob.tenant_id == sync_seed.tenant_id)
     ).all()

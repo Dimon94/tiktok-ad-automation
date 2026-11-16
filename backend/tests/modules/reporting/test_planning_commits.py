@@ -979,7 +979,9 @@ def test_live_batches_get_a_turn_between_each_background_phase(
     def slow_background(_session, _plan, _state, phase, *_args):
         phases.append(phase)
         budget = _args[-1]
-        clock[0] += min(budget, 0.05 if phase in {"hot", "material", "empty_hot"} else 3)
+        clock[0] += min(
+            budget, 0.05 if phase in {"hot", "material", "empty_hot"} else 3
+        )
 
     monkeypatch.setattr(steps, "_execute", slow_background)
     # 入口10秒中维护已花3秒；每个后台批用满3秒，实时规划0.05秒/64户。

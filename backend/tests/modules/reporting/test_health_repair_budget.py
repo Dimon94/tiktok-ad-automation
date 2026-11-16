@@ -179,7 +179,10 @@ def test_coverage_repair_does_not_repeat_unknown_account_selection(
         measurement=(
             {"missing_directory_ads": 0, "unmapped_creatives": 0},
             [],
-            {"ad": set(), "material": set(), "directory": set()},
+            {
+                name: set()
+                for name in ("ad", "material", "directory", *health.PARENT_KINDS)
+            },
         ),
     )
     assert "ACCOUNT_SCREEN_STALE" in row.issues

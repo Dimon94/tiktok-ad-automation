@@ -88,7 +88,15 @@ def test_bootstrap_schema_excludes_template_business_and_signup(client):
     paths = client.get("/api/openapi.json").json()["paths"]
     assert "/api/integrations/tiktok/callback" in paths
     assert "/api/users/" in paths
+    assert "/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}/items" in paths
+    assert (
+        "/api/tenants/{tenant_id}/materials/link-uploads/{batch_id}/items/{item_id}/retry"
+        in paths
+    )
     assert not any(
-        "/items" in path or "/private/" in path or path.endswith("/signup")
+        path == "/api/items"
+        or path.startswith("/api/items/")
+        or "/private/" in path
+        or path.endswith("/signup")
         for path in paths
     )

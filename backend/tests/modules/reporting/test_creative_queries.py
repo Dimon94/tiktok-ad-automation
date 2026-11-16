@@ -297,6 +297,7 @@ def test_old_material_cache_and_snapshot_contracts_are_rejected(session, sync_se
 
     from app.modules.reporting.query_models import QuerySnapshot, read_snapshot
     from app.modules.reporting.query_reuse import _digest, query_key
+    from app.modules.reporting.schemas import MATERIAL_QUERY_CONTRACT
     from tests.modules.reporting.query_helpers import query_ads
     from tests.modules.reporting.test_material_query import material_row, publish
 
@@ -313,18 +314,29 @@ def test_old_material_cache_and_snapshot_contracts_are_rejected(session, sync_se
     publish(session, sync_seed, "acc-1", [material_row("unknown", "11")])
     page = query_ads(session, context=sync_seed.context, bc_id="bc-a", filters=filters)
     snapshot = session.get(QuerySnapshot, page.snapshot.snapshot_id)
-    assert snapshot.publication_versions["material_query_contract"] == 3
-    snapshot.publication_versions = {"reporting": 1}
-    session.add(snapshot)
-    session.flush()
-    with pytest.raises(HTTPException) as exc:
-        read_snapshot(
-            session, context=sync_seed.context, bc_id="bc-a", snapshot_id=snapshot.id
-        )
     assert (
-        exc.value.status_code == 409
-        and exc.value.detail == "query_snapshot_contract_changed"
+        snapshot.publication_versions["material_query_contract"]
+        == MATERIAL_QUERY_CONTRACT
     )
+    # 缺失合同及容量迁移前的 v3 都不能复用为当前快照。
+    for old_versions in (
+        {"reporting": 1},
+        snapshot.publication_versions | {"material_query_contract": 3},
+    ):
+        snapshot.publication_versions = old_versions
+        session.add(snapshot)
+        session.flush()
+        with pytest.raises(HTTPException) as exc:
+            read_snapshot(
+                session,
+                context=sync_seed.context,
+                bc_id="bc-a",
+                snapshot_id=snapshot.id,
+            )
+        assert (
+            exc.value.status_code == 409
+            and exc.value.detail == "query_snapshot_contract_changed"
+        )
 
 
 def test_same_video_keeps_currency_buckets_separate(session, sync_seed):
