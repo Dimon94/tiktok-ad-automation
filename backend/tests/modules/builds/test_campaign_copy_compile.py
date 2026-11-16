@@ -65,6 +65,33 @@ def test_malformed_creative_is_a_visible_blocker():
         observed_body("AD", body)
 
 
+def test_empty_platform_video_file_name_is_omitted_for_creation():
+    body = {
+        "advertiser_id": "a",
+        "adgroup_id": "g",
+        "ad_name": "ad",
+        "operation_status": "ENABLE",
+        "creative_list": [
+            {
+                "creative_info": {
+                    "ad_format": "SINGLE_VIDEO",
+                    "identity_type": "BC_AUTH_TT",
+                    "identity_id": "identity",
+                    "identity_authorized_bc_id": "bc",
+                    "video_info": {"video_id": "video", "file_name": ""},
+                    "image_info": [{"web_uri": "cover"}],
+                }
+            }
+        ],
+        "ad_text_list": [{"ad_text": "text"}],
+        "landing_page_url_list": [{"landing_page_url": "https://example.com"}],
+        "ad_configuration": {"call_to_action_id": "cta"},
+    }
+    result = observed_body("AD", body)
+    assert "file_name" not in result["creative_list"][0]["creative_info"]["video_info"]
+    assert body["creative_list"][0]["creative_info"]["video_info"]["file_name"] == ""
+
+
 def group():
     return {
         "advertiser_id": "a",

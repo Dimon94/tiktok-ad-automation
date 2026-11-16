@@ -170,6 +170,11 @@ def observed_body(kind: str, configuration: dict[str, Any]) -> dict[str, Any]:
                 creative.pop(key, None)
             info = creative.get("creative_info", {})
             info.pop("material_name", None)
+            # TikTok 广告目录有时返回空视频文件名；创建接口用 video_id
+            # 和封面 ID 识别素材，空名称应按“未提供”省略，不能阻断复制。
+            video_info = info.get("video_info")
+            if isinstance(video_info, dict) and video_info.get("file_name") == "":
+                video_info.pop("file_name", None)
     if kind == "CAMPAIGN" and (
         body.get("budget") is None or type(body.get("budget_optimize_on")) is not bool
     ):

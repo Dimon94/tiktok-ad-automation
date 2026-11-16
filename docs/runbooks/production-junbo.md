@@ -1,3 +1,11 @@
+## 2026-11-16 复盘中断修复与两轮恢复验收完成
+
+独立DSH精确c8300b0a9a64f4d5658f4eea267abd96f9a5a0d9/镜像摘要a82cd539448749a4cca07caad3aa84a3d566a3bd82305d547ff4922ee7008dbf，应用仍为并行已发布9bde1aea。两原失败轮均COMPLETE：星屿1344账户9节报告/1条PENDING，50账户8节/0提案；原冻结方法1.8.4和证据保留，两投手MANUAL、原5条规则均停用，新提案未发布启用。完整DSH spec仅镜像改变、Secret/其他应用保持，共享锁释放，无DDL/备份恢复。明确模型拒绝及网关SSE断流支持最多两次新会话接续；成功真实运行未触发接续，原生运输边界测试覆盖。详见[最终验收](../validation/2026-11-16-review-session-recovery.md)。以下为历史记录。
+
+## 2026-11-16 复盘SSE断流增量修复已上线
+
+独立DSH现为c8300b0a9a64f4d5658f4eea267abd96f9a5a0d9，镜像摘要a82cd539448749a4cca07caad3aa84a3d566a3bd82305d547ff4922ee7008dbf，Ready；仅新增明确网关SSE断流的可恢复分类。应用9bde1aea及配置/Secret保持，共享锁释放，无DDL/备份恢复。50账户复盘已COMPLETE，星屿再次续跑中；不宣称两轮均恢复。详见[实际验证](../validation/2026-11-16-review-session-recovery.md)。以下为历史记录。
+
 ## 2026-11-16 复盘模型中断修复已发布
 
 独立DSH现为25a24ac536ba4d8130b78eee7908f2192b91402d，镜像摘要cd38d2f93fdbee30cabffbc80084f6947b7f5c39e7336476fcc97e1cd20c509c，Ready；运行方法仍1.9.0，历史原任务保留1.8.4。应用当前9bde1aea为并行搭建修复，本轮仅更新DSH。完整spec仅DSH镜像变更，配置/Secret保持，共享锁释放。错误固定分类、最多两次新会话接续已接入；原13:00两轮已重启排队，真实结果尚待验收。无DDL/新备份恢复或广告操作。详见[修复及实际发布](../validation/2026-11-16-review-session-recovery.md)。以下为历史记录。
